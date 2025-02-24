@@ -1,10 +1,8 @@
 #include "quakedef.h"
 #include "fs.h"
 
-//#define AVAIL_BZLIB
-//#define DYNAMIC_BZLIB
-
-
+#define AVAIL_BZLIB
+#define DYNAMIC_BZLIB
 
 //supported ZIP features:
 //zip64 for huge zips

@@ -1312,6 +1312,8 @@ static qboolean OpenAL_InitLibrary(void)
 		openallib = Sys_LoadLibrary("OpenAL32", openalfuncs);
 		if (!openallib)
 			openallib = Sys_LoadLibrary("soft_oal", openalfuncs);
+#elif defined(__ANDROID__) //karin: use OpenAL
+        openallib = Sys_LoadLibrary("libopenal", openalfuncs);
 #else
 		openallib = Sys_LoadLibrary("libopenal.so.1", openalfuncs);
 		if (!openallib)

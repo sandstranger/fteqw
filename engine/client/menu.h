@@ -566,8 +566,10 @@ qboolean	Plugin_ExecuteString(void);
 void		Plug_FreeAllImages(void);
 
 #ifdef ANDROID
+#define PLUGINPREFIX "libfteplug_" //this string defines what consitutes a plugin, as opposed to some other dll
+#else
 #define PLUGINPREFIX "libplug_" //android is kinda annoying and only extracts specific files.
+#endif
 #else
 #define PLUGINPREFIX "fteplug_" //this string defines what consitutes a plugin, as opposed to some other dll
-#endif
 #endif

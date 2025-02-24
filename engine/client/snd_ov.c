@@ -429,6 +429,12 @@ static qboolean OV_StartDecode(unsigned char *start, unsigned long length, ovdec
 		if (!oggvorbislibrary)
 			Con_Printf("Couldn't load DLL: \"vorbisfile.dll\" or \"libvorbisfile-3\".\n");
 	}
+#elif defined(__ANDROID__) //karin: libvorbisfile.so
+	{
+		oggvorbislibrary = Sys_LoadLibrary("libvorbis", funcs);
+		if (!oggvorbislibrary)
+			Con_Printf("Couldn't load library: \"libvorbis\".\n");
+	}
 #else
 	{
 		oggvorbislibrary = Sys_LoadLibrary("libvorbisfile.so.3", funcs);

@@ -2718,6 +2718,33 @@ static vfsfile_t *VFS_Filter(const char *filename, vfsfile_t *handle)
 	return handle;
 }
 
+#if ANDROID
+char * Sys_MakeDLLPath(const char *libname, char path[], int max_length)
+{
+#undef snprintf
+#define HARM_MAX_OSPATH 1024
+    char dllName[HARM_MAX_OSPATH];
+    memset(dllName, 0, HARM_MAX_OSPATH);
+    size_t libnameLength = strlen(libname);
+
+    if(libnameLength >= 3 && (libname[0] != 'l' || libname[1] != 'i' || libname[2] != 'b'))
+        snprintf(dllName, HARM_MAX_OSPATH - 1, "lib");
+    snprintf(dllName + strlen(dllName), HARM_MAX_OSPATH - 1 - strlen(dllName), "%s", libname);
+
+    if(libnameLength >= 3 && (libname[libnameLength - 3] != '.' || libname[libnameLength - 2] != 's' || libname[libnameLength - 1] != 'o'))
+        snprintf(dllName + strlen(dllName), HARM_MAX_OSPATH - 1 - strlen(dllName), ".so");
+
+    memset(path, 0, max_length);
+    const char * dllDefaultPath = getenv("DLL_DEFAULT_PATH");
+    if(dllDefaultPath && dllDefaultPath[0])
+        snprintf(path, max_length - 1, "%s/%s", dllDefaultPath, dllName);
+    else
+        snprintf(path, max_length - 1, "%s", dllName);
+    return path;
+#undef HARM_MAX_OSPATH
+}
+#endif
+
 static qboolean FS_NativePath(const char *fname, enum fs_relative relativeto, char *out, int outlen, qboolean fordisplay)
 {
 	flocation_t loc;
@@ -2804,6 +2831,13 @@ static qboolean FS_NativePath(const char *fname, enum fs_relative relativeto, ch
 			nlen = Q_snprintfz(out, outlen, "$libdir/%s", fname);
 		else
 			nlen = Q_snprintfz(out, outlen, STRINGIFY(FTE_LIBRARY_PATH)"/%s", fname);
+		break;
+#elif defined(ANDROID) //karin: load library path
+		{
+			char dllName[MAX_OSPATH];
+			Sys_MakeDLLPath(fname, dllName, MAX_OSPATH);
+			nlen = Q_snprintfz(out, outlen, "%s", dllName);
+		}
 		break;
 #else
 		return false;
