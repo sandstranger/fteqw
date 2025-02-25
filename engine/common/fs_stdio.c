@@ -1,6 +1,10 @@
+#include <unistd.h>
 #include "quakedef.h"
 #include "fs.h"
 #include "errno.h"
+#include "SDL_log.h"
+#include "SDL.h"
+
 #if _POSIX_C_SOURCE >= 200112L
 #include <sys/stat.h>
 #endif
@@ -121,6 +125,38 @@ static qboolean QDECL VFSSTDIO_CloseTemp(vfsfile_t *file)
 }
 #endif
 
+#if ANDROID
+#define TMPFILE_NAME "/idtech4amm_harmattan_tmpfile_XXXXXX"
+FILE * android_tmpfile(void)
+{
+    const char * game_data_dir = SDL_AndroidGetExternalStoragePath();
+    const int Len = strlen(game_data_dir) + 1 + strlen(TMPFILE_NAME) + 1;
+    char *tmp_file = malloc(Len);
+    memset(tmp_file, 0, Len);
+    sprintf(tmp_file, "%s/%s", game_data_dir, TMPFILE_NAME);
+    int fd = mkstemp(tmp_file);
+    if(fd == -1)
+    {
+        SDL_Log("Call mkstemp(%s) error: %s", tmp_file, strerror(errno));
+        free(tmp_file);
+        return NULL;
+    }
+
+    FILE *res = fdopen(fd, "w+b");
+    if(!res)
+    {
+        SDL_Log("Call fdopen(%d) error: %s", fd, strerror(errno));
+        close(fd);
+        free(tmp_file);
+        return NULL;
+    }
+    unlink(tmp_file);
+    SDL_Log("android_tmpfile create: %s", tmp_file);
+    free(tmp_file);
+    return res;
+}
+#endif
+
 vfsfile_t *FSSTDIO_OpenTemp(void)
 {
 	FILE *f;
@@ -146,6 +182,11 @@ vfsfile_t *FSSTDIO_OpenTemp(void)
 	f = tmpfile64();
 #else
 	f = tmpfile();
+#ifdef ANDROID //karin: tmpfile always return NULL on Android
+	if(!f) {
+		f = android_tmpfile();
+	}
+#endif
 #endif
 	if (!f)
 		return NULL;
