@@ -94,10 +94,7 @@ void *SVQ2_GetGameAPI (void *parms)
 #ifdef ANDROID //karin: load q2game
 			else if (o == 5)
 			{
-				extern char *Sys_MakeDLLPath(const char *libname, char path[], int max_length);
-				char dllName[MAX_OSPATH];
-				Sys_MakeDLLPath(gamename[o], dllName, MAX_OSPATH);
-				Q_snprintfz(name, sizeof(name), "%s", dllName);
+				Q_snprintfz(name, sizeof(name), "%s", gamename[o]);
 			}
 #endif
 			else if (*gamename[o] == '/')
