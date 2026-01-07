@@ -549,15 +549,6 @@ static qboolean GL_CheckExtensions (void *(*getglfunction) (char *name))
 			s++;
 		gl_minor_version = atoi(s);
 	}
-#ifdef _DEBUG
-	{ extern cvar_t vid_gl_context_es;
-	if (vid_gl_context_es.ival == 3)
-	{
-		gl_config.gles = true;
-		gl_major_version = 1;
-		gl_minor_version = 0;
-	} }
-#endif
 	if (webgl)	//webgl version 1 equates to gles 2.
 	{
 		if (gl_major_version < 1)
@@ -603,14 +594,6 @@ static qboolean GL_CheckExtensions (void *(*getglfunction) (char *name))
 		if (!gl_extensions)
 			Sys_Error("no extensions\n");
 	}
-
-#ifdef _DEBUG
-	{ extern cvar_t vid_gl_context_es;
-	if (vid_gl_context_es.ival == 3)
-	{
-		gl_extensions = "";
-	} }
-#endif
 
 	if (gl_config.gles)
 		gl_config.nofixedfunc = gl_config.glversion >= 2;
