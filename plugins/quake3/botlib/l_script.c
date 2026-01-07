@@ -34,6 +34,8 @@ Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA  02110-1301  USA
 //#define MEQCC
 //#define BSPC
 
+#pragma clang diagnostic push
+#pragma clang diagnostic ignored "-Wunused-but-set-variable"
 #ifdef SCREWUP
 #include <stdio.h>
 #include <stdlib.h>
@@ -1451,3 +1453,5 @@ void PS_SetBaseFolder(char *path)
 	Com_sprintf(basefolder, sizeof(basefolder), "%s", path);
 #endif
 } //end of the function PS_SetBaseFolder
+
+#pragma clang diagnostic pop

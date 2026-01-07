@@ -140,7 +140,7 @@ ENDIF()
 
 SET(FTE_BUILD_CONFIG ${PROJECT_SOURCE_DIR}/engine/common/config_fteqw.h CACHE FILEPATH "Which build config file to use to control supported features.")
 SET(FTE_LIB_DEFINES ${FTE_LIB_DEFINES};CONFIG_FILE_NAME=${FTE_BUILD_CONFIG})
-SET(FTE_USE_SDL false CACHE BOOL "Force the use of SDL2 instead of using native builds.")
+SET(FTE_USE_SDL true CACHE BOOL "Force the use of SDL2 instead of using native builds.")
 
 INCLUDE(GNUInstallDirs)
 SET(FTE_INSTALL_BINDIR games CACHE STRING "Binary dir to install to.")
@@ -181,6 +181,7 @@ ELSE()
 	MESSAGE(WARNING "bzip2 library NOT available. bz2-compressed pk3s will not be available, as if anyone cares.")
 ENDIF()
 else ()
+    INCLUDE_DIRECTORIES( ${BZIP2_INCLUDE_DIR} )
     SET(FTE_LIB_DEFINES ${FTE_LIB_DEFINES};AVAIL_BZLIB;BZLIB_STATIC)
     SET(FTE_LIBS ${FTE_LIBS} ${BZIP2_LIBRARY})
     SET(FTESV_LIBS ${FTESV_LIBS} ${BZIP2_LIBRARY})
@@ -372,10 +373,15 @@ endif ()
 
 FUNCTION(EMBED_PLUGIN_META PLUGNAME PLUGTITLE PLUGDESC)
 	SET_TARGET_PROPERTIES(plug_${PLUGNAME} PROPERTIES OUTPUT_NAME "${PLUGNAME}")
-	SET_TARGET_PROPERTIES(plug_${PLUGNAME} PROPERTIES PREFIX "fteplug_")
+    if(ANDROID)
+        SET_TARGET_PROPERTIES(plug_${PLUGNAME} PROPERTIES PREFIX "libfteplug_")
+    else()
+        SET_TARGET_PROPERTIES(plug_${PLUGNAME} PROPERTIES PREFIX "fteplug_")
+    endif()
 	SET_TARGET_PROPERTIES(plug_${PLUGNAME} PROPERTIES LINK_FLAGS "-Wl,--no-undefined")
-	SET(INSTALLTARGS ${INSTALLTARGS} "plug_${PLUGNAME}" PARENT_SCOPE)
-	#sadly we need to use a temp zip file, because otherwise zip insists on using zip64 extensions which breaks zip -A (as well as any attempts to read any files).
+	if (NOT ANDROID)
+        SET(INSTALLTARGS ${INSTALLTARGS} "plug_${PLUGNAME}" PARENT_SCOPE)
+    #sadly we need to use a temp zip file, because otherwise zip insists on using zip64 extensions which breaks zip -A (as well as any attempts to read any files).
 	ADD_CUSTOM_COMMAND(
 		TARGET plug_${PLUGNAME} POST_BUILD
 		COMMAND /bin/echo -e "{\\n	package fteplug_${PLUGNAME}\\n	ver \"${SVNREVISION}\"\\n	category Plugins\\n	title \"${PLUGTITLE}\"\\n	gamedir \"\"\\n	desc \"${PLUGDESC}\"\\n}" | zip -q -9 -fz- $<TARGET_FILE:plug_${PLUGNAME}>.zip -
@@ -383,10 +389,10 @@ FUNCTION(EMBED_PLUGIN_META PLUGNAME PLUGTITLE PLUGDESC)
 		COMMAND zip -A "$<TARGET_FILE:plug_${PLUGNAME}>"
 		COMMAND cmake -E rm $<TARGET_FILE:plug_${PLUGNAME}>.zip
 		VERBATIM)
+    endif ()
 ENDFUNCTION()
 
-if (NOT ANDROID)
-SET(FTE_DEP_GNUTLS true CACHE BOOL "Link against gnutls")
+SET(FTE_DEP_GNUTLS false BOOL "Link against gnutls")
 IF(FTE_DEP_GNUTLS)
 	FIND_PACKAGE(GnuTLS)
 	IF(NOT GNUTLS_FOUND)
@@ -405,12 +411,6 @@ IF(FTE_DEP_GNUTLS)
 		ENDIF()
 	ENDIF()
 ENDIF()
-else ()
-    SET(FTE_LIB_DEFINES ${FTE_LIB_DEFINES};GNUTLS_STATIC)
-    SET(FTE_LIBS ${FTE_LIBS} ${GNUTLS_LIBRARY})
-    SET(FTESV_LIBS ${FTESV_LIBS} ${GNUTLS_LIBRARY})
-    MESSAGE("gnutls library available. HTTPS/DTLS will be available.")
-endif ()
 
 IF(WIN32)
 	SET(FTE_DEP_WINSSPI true CACHE BOOL "Link against winsspi(schannel)")
@@ -419,236 +419,14 @@ IF(WIN32)
 	ENDIF()
 ENDIF()
 
-SET(FTE_DEP_SDL3 false CACHE BOOL "Use SDL3 if available (disabling many platform-specific behaviours).")
-IF(FTE_DEP_SDL3)
-	FIND_PACKAGE(SDL3 QUIET)
-ENDIF()
-IF(SDL3_FOUND)	#SDL3
-	MESSAGE(STATUS "SDL3 library found, woo, modern, for now.")
-
-#	FIND_PACKAGE(PkgConfig REQUIRED)
-#	PKG_SEARCH_MODULE(sdl3 REQUIRED sdl3)
-
-	FIND_PACKAGE(SDL3 REQUIRED)
-
-	INCLUDE_DIRECTORIES(${FREETYPE_INCLUDE_DIRS} ${SDL3_INCLUDE_DIRS})
-
-	SET(FTE_DEFINES ${FTE_DEFINES};FTE_SDL3;MULTITHREAD)
-	SET(FTE_LIBS ${FTE_LIBS} ${SYS_LIBS} ${CMAKE_DL_LIBS} ${SDL3_LIBRARIES})
-	SET(FTE_ARCH_FILES
-		engine/client/sys_sdl.c
-		engine/client/snd_al.c
-		engine/client/snd_sdl.c
-		engine/client/in_sdl.c
-		engine/client/cd_sdl.c
-		engine/gl/gl_vidsdl.c
-	)
-
-	SET(FTESV_DEFINES ${FTESV_DEFINES};MULTITHREAD)
-	SET(FTESV_LIBS ${FTESV_LIBS} ${SYS_LIBS} ${CMAKE_DL_LIBS} ${SDL3_LIBRARIES})
-
-	IF(WIN32)
-		SET(FTE_LIBS ${FTE_LIBS} wsock32 gdi32 ole32)
-		SET(FTE_DEFINES ${FTE_DEFINES})
-		SET(FTE_ARCH_FILES ${FTE_ARCH_FILES}
-			engine/client/winquake.rc
-			engine/common/net_ssl_winsspi.c
-			engine/common/fs_win32.c
-		)
-		SET(FTESV_ARCH_FILES ${FTESV_ARCH_FILES}
-			engine/client/winquake.rc
-			engine/common/net_ssl_winsspi.c
-			engine/common/fs_win32.c
-			engine/server/sv_sys_win.c
-		)
-	ELSE()
-		SET(FTE_ARCH_FILES ${FTE_ARCH_FILES}
-			engine/common/net_ssl_gnutls.c
-		)
-		SET(FTESV_ARCH_FILES ${FTESV_ARCH_FILES}
-			engine/common/net_ssl_gnutls.c
-			engine/common/sys_linux_threads.c
-			engine/server/sv_sys_unix.c
-		)
-		SET(FTESV_LIBS ${FTESV_LIBS} pthread)
-	ENDIF()
-ELSEIF(${ANDROID})
-#	FIND_PACKAGE(Freetype REQUIRED)
-
-#	INCLUDE_DIRECTORIES(	${FREETYPE_INCLUDE_DIRS} )
-
-	SET(FTE_DEFINES ${FTE_DEFINES};ANDROID;VKQUAKE;MULTITHREAD)
-	SET(FTE_LIBS ${FTE_LIBS} android log EGL ${SYS_LIBS} ${CMAKE_DL_LIBS})
-	SET(FTE_ARCH_FILES
-		engine/client/sys_droid.c
-		engine/common/sys_linux_threads.c
-		engine/client/snd_droid.c
-		engine/client/cd_null.c
-		engine/gl/gl_viddroid.c
-	)
-ELSEIF(WIN32 AND NOT FTE_USE_SDL)
-	INCLUDE_DIRECTORIES(engine/libs engine/libs/freetype2/include)
-#	LINK_DIRECTORIES(engine/libs/mingw64-libs)
-	
-	#	engine/server/sv_sys_win.c
-	
-	SET(FTE_LIBS ${FTE_LIBS} ole32 gdi32 wsock32 winmm dxguid)
-	SET(FTE_DEFINES ${FTE_DEFINES};D3D9QUAKE;D3D11QUAKE)
-	SET(FTE_ARCH_FILES 
-		engine/client/winquake.rc
-		engine/common/sys_win_threads.c
-		engine/common/net_ssl_winsspi.c
-		engine/common/net_ssl_gnutls.c
-		engine/common/fs_win32.c
-		engine/client/cd_win.c
-		engine/client/in_win.c
-		engine/client/snd_al.c
-		engine/client/snd_directx.c
-		engine/client/snd_wasapi.c
-		engine/client/snd_win.c
-		engine/client/snd_xaudio.c
-		engine/client/sys_win.c
-		
-		engine/gl/gl_vidnt.c
-
-		engine/d3d/d3d_backend.c
-		engine/d3d/d3d_image.c
-		engine/d3d/d3d_shader.c
-		engine/d3d/d3d11_backend.c
-		engine/d3d/d3d11_image.c
-		engine/d3d/d3d11_shader.c
-		engine/d3d/d3d8_backend.c
-		engine/d3d/d3d8_image.c
-		engine/d3d/vid_d3d.c
-		engine/d3d/vid_d3d11.c
-		engine/d3d/vid_d3d8.c
-	)
-	
-	SET(FTESV_LIBS ${FTESV_LIBS} wsock32 winmm)
-	SET(FTESV_ARCH_FILES 
-		engine/client/winquake.rc
-		engine/common/sys_win_threads.c
-		engine/common/net_ssl_winsspi.c
-		engine/common/net_ssl_gnutls.c
-		engine/common/fs_win32.c
-		engine/server/sv_sys_win.c
-	)
-ELSEIF(UNIX AND NOT FTE_USE_SDL)	#linux(ish)
-				#openbsd will have issues with snd_linux.c
-
-	#linux-only packages
-	FIND_PACKAGE(ALSA)
-	IF(ALSA_FOUND)
-		SET(FTE_LIB_DEFINES ${FTE_LIB_DEFINES};AUDIO_ALSA;AUDIO_PULSE)
-	ELSE()
-		MESSAGE(WARNING "asound (alsa) library NOT available.")
-	ENDIF()
-
-	FIND_PACKAGE(X11)
-	IF(X11_FOUND)
-		IF (NOT X11_Xcursor_FOUND)
-			SET(FTE_LIB_DEFINES ${FTE_LIB_DEFINES};NO_X11_CURSOR)
-			MESSAGE(WARNING "Xcursor library NOT available.")
-		ENDIF()
-		IF (NOT X11_Xrandr_FOUND)
-			SET(FTE_LIB_DEFINES ${FTE_LIB_DEFINES};NO_X11_RANDR)
-			MESSAGE(WARNING "Xrandr library NOT available.")
-		ENDIF()
-		IF (NOT X11_Xscreensaver_FOUND)
-			SET(FTE_LIB_DEFINES ${FTE_LIB_DEFINES};NO_X11_XSS)
-			MESSAGE(WARNING "Xss library NOT available.")
-		ENDIF()
-	ELSE()
-		MESSAGE(WARNING "x11 library NOT available.")
-		SET(FTE_LIB_DEFINES ${FTE_LIB_DEFINES};NO_X11)
-	ENDIF()
-
-	SET(FTE_DEFINES ${FTE_DEFINES};DYNAMIC_SDL;MULTITHREAD)
-	SET(FTE_LIBS ${FTE_LIBS} ${SYS_LIBS} ${CMAKE_DL_LIBS} pthread ${SDL2_LIBRARIES})
-	SET(FTE_ARCH_FILES ${FTE_ARCH_FILES}
-		engine/client/sys_linux.c
-		engine/common/sys_linux_threads.c
-		engine/common/net_ssl_gnutls.c
-
-		engine/client/snd_al.c
-		engine/client/snd_alsa.c
-		engine/client/snd_linux.c
-		engine/client/snd_pulse.c
-		engine/client/snd_sdl.c	#we use SDL audio even without sys_sdl, because of pulseaudio fucking over alsa, alsa fucking over oss3, and oss4 not being used. Either way, openal should be the default anyway.
-
-		engine/client/cd_linux.c
-		engine/gl/gl_vidlinuxglx.c
-		engine/gl/gl_videgl.c
-
-#		engine/gl/gl_vidrpi.c
-#		engine/gl/gl_vidwayland.c
-	)
-
-	#openbsd uses a libossaudio library for all the oss stuff, use that to ensure that we still get sound
-	FIND_LIBRARY(
-		OSSAUDIO_LIBRARY
-		NAMES ossaudio
-	)
-	IF(OSSAUDIO_LIBRARY)
-		SET(FTE_LIBS ${FTE_LIBS} ${OSSAUDIO_LIBRARY})
-	ENDIF()
-
-	#on linux, use wayland (we normally dynamically link, but we still need headers).
-	FIND_LIBRARY(
-		WAYLAND_CLIENT_LIBRARY
-		NAMES wayland-client libwayland-client
-	)
-	FIND_LIBRARY(
-		WAYLAND_EGL
-		NAMES wayland-egl
-	)
-	FIND_LIBRARY(
-		HAVE_XKBCOMMON
-		NAMES xkbcommon
-	)
-	IF(NOT HAVE_XKBCOMMON)
-		MESSAGE(WARNING "xkbcommon library not found, needed for wayland to be usable.")
-		UNSET(WAYLAND_CLIENT_LIBRARY)
-	ENDIF()
-	IF(WAYLAND_CLIENT_LIBRARY AND WAYLAND_EGL)
-#		SET(FTE_LIBS ${FTE_LIBS} ${WAYLAND_CLIENT_LIBRARY} ${HAVE_XKBCOMMON} ${WAYLAND_EGL})
-#		SET(FTE_DEFINES ${FTE_DEFINES};STATIC_WAYLAND)
-
-		SET(FTE_DEFINES ${FTE_DEFINES};WAYLANDQUAKE;USE_EGL)
-		SET(FTE_ARCH_FILES ${FTE_ARCH_FILES}
-			engine/gl/gl_vidwayland.c
-		)
-	ELSE()
-		MESSAGE(WARNING "Wayland library NOT available. X11 will live forever anyway.")
-		IF(NOT X11_FOUND)
-			MESSAGE(WARNING "No renderers supported!")
-			SET(FTE_NO_RENDERERS 1)
-		ENDIF()
-	ENDIF()
-
-	IF(CMAKE_SYSTEM_NAME MATCHES "BSD" OR CMAKE_SYSTEM_NAME MATCHES "Darwin")
-		FIND_LIBRARY(epoll-shim REQUIRED)
-		INCLUDE_DIRECTORIES(${EPOLL_INC_DIR})
-		SET(FTESV_LIBS ${FTESV_LIBS} epoll-shim)
-		SET(FTESV_DEFINES ${FTESV_DEFINES};HAVE_EPOLL)
-	ENDIF()
-
-	SET(FTESV_DEFINES ${FTESV_DEFINES};MULTITHREAD)
-	SET(FTESV_ARCH_FILES ${FTESV_ARCH_FILES}
-		engine/server/sv_sys_unix.c
-		engine/common/sys_linux_threads.c
-		engine/common/net_ssl_gnutls.c
-	)
-	SET(FTESV_LIBS ${FTESV_LIBS} ${SYS_LIBS} ${CMAKE_DL_LIBS} pthread)
-
-ELSEIF(1)	#SDL2
 #	FIND_PACKAGE(Freetype REQUIRED)
 #	INCLUDE_DIRECTORIES(engine/libs engine/libs/freetype2/include)
 
+if (NOT ANDROID)
 	FIND_PACKAGE(PkgConfig REQUIRED)
 	PKG_SEARCH_MODULE(sdl2 REQUIRED sdl2)
-
 	FIND_PACKAGE(SDL2 REQUIRED)
+endif ()
 
 	INCLUDE_DIRECTORIES(${FREETYPE_INCLUDE_DIRS} ${SDL2_INCLUDE_DIRS})
 	
@@ -692,45 +470,6 @@ ELSEIF(1)	#SDL2
 		)
 		SET(FTESV_LIBS ${FTESV_LIBS} pthread)
 	ENDIF()
-ELSE()
-#	engine/common/sys_linux_threads.c
-#	engine/common/net_ssl_gnutls.c
-#	engine/server/sv_sys_unix.c
-
-#	engine/client/snd_alsa.c
-#	engine/client/snd_droid.c
-#	engine/client/snd_linux.c
-#	engine/client/snd_macos.c
-#	engine/client/snd_morphos.c
-#	engine/client/snd_sblaster.c
-#	engine/client/snd_sdl.c
-#	engine/client/snd_sndio.c
-
-#	engine/client/sys_dos.c
-#	engine/client/sys_droid.c
-#	engine/client/sys_linux.c
-#	engine/client/sys_morphos.c
-#	engine/client/sys_plugfte.c
-#	engine/client/sys_sdl.c
-#	engine/client/sys_xdk.c
-
-#	engine/client/cd_linux.c
-#	engine/client/cd_null.c
-#	engine/client/cd_sdl.c
-#	engine/client/in_morphos.c
-#	engine/client/in_sdl.c
-	
-#	engine/gl/gl_viddroid.c
-#	engine/gl/gl_videgl.c
-#	engine/gl/gl_vidlinuxglx.c
-#	engine/gl/gl_vidmacos.c
-#	engine/gl/gl_vidmorphos.c
-#	engine/gl/gl_vidnull.c
-#	engine/gl/gl_vidrpi.c
-#	engine/gl/gl_vidsdl.c
-#	engine/gl/gl_vidtinyglstubs.c
-#	engine/gl/gl_vidwayland.c
-ENDIF()
 
 SET(FTE_GL_FILES
 #These are GL-specific, but can be left even if no gl is supported.
@@ -1142,10 +881,14 @@ ELSE()
 	ENDIF()
 ENDIF()
 else ()
-    SET(FTE_COMMON_FILES ${FTE_COMMON_FILES} plugins/bullet/bulletplug.cpp)
-    INCLUDE_DIRECTORIES( ${BULLET_INCLUDE_DIRS} )
-    SET(FTE_LIBS ${FTE_LIBS} ${BULLET_LIBRARIES})
-    SET(FTESV_LIBS ${FTESV_LIBS} ${BULLET_LIBRARIES})
+    ADD_LIBRARY(plug_bullet MODULE
+            plugins/plugin.c
+            plugins/bullet/bulletplug.cpp
+        )
+    TARGET_INCLUDE_DIRECTORIES(plug_bullet PUBLIC ${BULLET_INCLUDE_DIRS})
+    SET_TARGET_PROPERTIES(plug_bullet PROPERTIES COMPILE_DEFINITIONS "FTEPLUGIN;${FTE_LIB_DEFINES}")
+    TARGET_LINK_LIBRARIES(plug_bullet PRIVATE ${BULLET_LIBRARIES})
+    EMBED_PLUGIN_META(bullet "Bullet Physics Plugin" "Provides Rigid Body Physics.")
     MESSAGE("bullet library detected")
 endif ()
 
@@ -1189,6 +932,7 @@ IF(ANDROID)
 			${FTE_ARCH_FILES}
 			${FTE_COMMON_FILES}
 			${FTE_CLIENT_FILES}
+            ${FTE_SERVER_FILES}
 		)
 		SET_TARGET_PROPERTIES(ftedroid PROPERTIES COMPILE_DEFINITIONS "${FTE_LIB_DEFINES};${FTE_DEFINES};${FTE_REVISON}")
 		TARGET_INCLUDE_DIRECTORIES(ftedroid PUBLIC ${FTE_INCLUDES})
@@ -1721,7 +1465,7 @@ else ()
             plugins/avplug/avdecode.c
             plugins/avplug/avencode.c
     )
-    TARGET_INCLUDE_DIRECTORIES(plug_ffmpeg PUBLIC ${AVCODEC_INCLUDE_DIR} ${AVFORMAT_INCLUDE_DIR} ${AVUTIL_INCLUDE_DIR} ${AVSWSCALE_INCLUDE_DIR})
+    TARGET_INCLUDE_DIRECTORIES(plug_ffmpeg PUBLIC ${FFMPEG_INCLUDE_DIRS})
     TARGET_LINK_LIBRARIES(plug_ffmpeg ${AVFORMAT_LIBRARY} ${AVCODEC_LIBRARY} ${AVUTIL_LIBRARY} ${AVSWSCALE_LIBRARY})
     SET_TARGET_PROPERTIES(plug_ffmpeg PROPERTIES COMPILE_DEFINITIONS "FTEPLUGIN;${FTE_LIB_DEFINES}")
 

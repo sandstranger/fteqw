@@ -534,8 +534,13 @@ static qboolean SDLVID_Init (rendererstate_t *info, unsigned char *palette, r_qr
 #else
 		SDL_SetWindowDisplayMode(sdlwindow, usemode);
 #endif
-		SDL_SetWindowFullscreen(sdlwindow, SDL_WINDOW_FULLSCREEN);
+#if ANDROID
+		SDL_SetWindowFullscreen(sdlwindow, SDL_WINDOW_FULLSCREEN_DESKTOP);
+#else
+        SDL_SetWindowFullscreen(sdlwindow, SDL_WINDOW_FULLSCREEN);
+#endif
 	}
+#if !ANDROID
 	else if (info->fullscreen)
 	{
 #if SDL_VERSION_ATLEAST(3,0,0)
@@ -544,6 +549,7 @@ static qboolean SDLVID_Init (rendererstate_t *info, unsigned char *palette, r_qr
 		SDL_SetWindowFullscreen(sdlwindow, SDL_WINDOW_FULLSCREEN_DESKTOP);
 #endif
 	}
+#endif
 	SDL_ShowWindow(sdlwindow);
 
 #if defined(__linux__) && !SDL_VERSION_ATLEAST(3,0,0)
