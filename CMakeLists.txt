@@ -892,6 +892,7 @@ else ()
     MESSAGE("bullet library detected")
 endif ()
 
+if (NOT ANDROID)
 #ODE Physics library plugin
 SET(FTE_PLUG_ODE true CACHE BOOL "Compile ODE rigid body physics plugin.")
 SET_PROPERTY(CACHE FTE_PLUG_ODE PROPERTY STRINGS false true static)
@@ -923,6 +924,18 @@ IF(FTE_PLUG_ODE)
 		MESSAGE(WARNING "ODE library not found, no ode plugin for you")
 	ENDIF()
 ENDIF()
+else ()
+    ADD_LIBRARY(plug_ode MODULE
+            plugins/plugin.c
+            engine/common/com_phys_ode.c
+            engine/common/mathlib.c
+    )
+    TARGET_INCLUDE_DIRECTORIES(plug_ode PUBLIC ${ODE_INCLUDE_DIRS})
+    SET_TARGET_PROPERTIES(plug_ode PROPERTIES COMPILE_DEFINITIONS "FTEPLUGIN;ODE_STATIC")
+    TARGET_LINK_LIBRARIES(plug_ode ${SYS_LIBS} ${LIBODE_LIBRARY})
+    EMBED_PLUGIN_META(ode "ODE Physics" "Provides Rigid Body Physics behaviours.")
+    MESSAGE("ODE library found")
+endif ()
 
 IF(ANDROID)
 	#android sucks. everything is a library. so we build the engine as a shared library and completely ignore dedicated servers+tools
