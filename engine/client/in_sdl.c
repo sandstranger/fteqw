@@ -2018,6 +2018,7 @@ void Sys_SendKeyEvents(void)
 #endif
 
 #if SDL_VERSION_ATLEAST(2,0,0)
+#ifndef ANDROID
 		case SDL_FINGERDOWN:
 		case SDL_FINGERUP:
 			{
@@ -2032,7 +2033,7 @@ void Sys_SendKeyEvents(void)
 				IN_MouseMove(thefinger, true, event.tfinger.x * vid.pixelwidth, event.tfinger.y * vid.pixelheight, 0, event.tfinger.pressure);
 			}
 			break;
-
+#endif
 		case SDL_DROPFILE:
 			Host_RunFile(event.drop.file, strlen(event.drop.file), NULL);
 			SDL_free(event.drop.file);
@@ -2040,9 +2041,13 @@ void Sys_SendKeyEvents(void)
 #endif
 
 		case SDL_MOUSEMOTION:
+            SDL_Log("CALLED EVENT");
+
 #if SDL_VERSION_ATLEAST(2,0,0)
+#ifndef ANDROID
 			if (event.motion.which == SDL_TOUCH_MOUSEID)
 				break;	//ignore legacy touch events.
+#endif
 #endif
 			which = INS_MouseID(event.button.which);
 			if (!mouseactive)
@@ -2053,8 +2058,10 @@ void Sys_SendKeyEvents(void)
 
 #if SDL_VERSION_ATLEAST(2,0,0)
 		case SDL_MOUSEWHEEL:
+#ifndef ANDROID
 			if (event.motion.which == SDL_TOUCH_MOUSEID)
 				break;	//ignore legacy touch events.
+#endif
 			which = INS_MouseID(event.button.which);
 			if (event.wheel.direction == SDL_MOUSEWHEEL_FLIPPED)
 				event.wheel.y *= -1;
@@ -2083,7 +2090,7 @@ void Sys_SendKeyEvents(void)
 
 		case SDL_MOUSEBUTTONDOWN:
 		case SDL_MOUSEBUTTONUP:
-#if SDL_VERSION_ATLEAST(2,0,0)
+#if SDL_VERSION_ATLEAST(2,0,0) && !ANDROID
 			if (event.button.which == SDL_TOUCH_MOUSEID)
 				break;	//ignore legacy touch events. SDL_FINGER* events above will handle it (for multitouch)
 #endif

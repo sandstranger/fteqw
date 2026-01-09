@@ -399,7 +399,9 @@ static qboolean SDLVID_Init (rendererstate_t *info, unsigned char *palette, r_qr
 	int display = -1;
 	SDL_DisplayMode modeinfo, *usemode;
 
+#ifndef ANDROID
 	SDL_SetHint(SDL_HINT_TOUCH_MOUSE_EVENTS, "0");		//we understand touch events. we do NOT want to get confused with mouse motion constantly warping.
+#endif
 #ifdef SDL_HINT_IME_INTERNAL_EDITING
 	SDL_SetHint(SDL_HINT_IME_INTERNAL_EDITING, "1");	//our code doesn't handle displaying non-committed text. ask to not be expected to show it, where possible.
 #endif
