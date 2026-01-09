@@ -218,19 +218,19 @@ static void J_AllocateDevID(struct sdljoy_s *joy)
 	}
 #endif
 }
-static void J_ControllerAdded(int enumid)
+static bool J_ControllerAdded(int enumid)
 {
 	const char *cname;
 	int i;
 
 	if (joy_only.ival)
-		return;
+		return false;
 
 	for (i = 0; i < MAX_JOYSTICKS; i++)
 		if (sdljoy[i].controller == NULL && sdljoy[i].joystick == NULL)
 			break;
 	if (i == MAX_JOYSTICKS)
-		return;
+		return false;
 
 #if SDL_VERSION_ATLEAST(3,0,0)
 	sdljoy[i].controller = SDL_OpenGamepad(enumid);
@@ -243,7 +243,7 @@ static void J_ControllerAdded(int enumid)
 #else
 	sdljoy[i].controller = SDL_GameControllerOpen(enumid);
 	if (!sdljoy[i].controller)
-		return;
+		return false;
 	sdljoy[i].joystick = SDL_GameControllerGetJoystick(sdljoy[i].controller);
 	sdljoy[i].id = SDL_JoystickInstanceID(sdljoy[i].joystick);
 
@@ -254,8 +254,10 @@ static void J_ControllerAdded(int enumid)
 	Con_Printf("Found new controller (%i): %s\n", i, cname);
 	sdljoy[i].devname = Z_StrDup(cname);
 	sdljoy[i].qdevid = DEVID_UNSET;
+
+    return true;
 }
-static void J_JoystickAdded(int enumid)
+static bool J_JoystickAdded(int enumid)
 {
 	const char *cname;
 	int i;
@@ -263,7 +265,7 @@ static void J_JoystickAdded(int enumid)
 		if (sdljoy[i].joystick == NULL && sdljoy[i].controller == NULL)
 			break;
 	if (i == MAX_JOYSTICKS)
-		return;
+		return false;
 
 #if SDL_VERSION_ATLEAST(3,0,0)
 	if (!joy_only.ival  &&  SDL_IsGamepad(enumid))	//if its reported via the gamecontroller api then use that instead. don't open it twice.
@@ -277,11 +279,11 @@ static void J_JoystickAdded(int enumid)
 	cname = SDL_GetJoystickName(sdljoy[i].joystick);
 #else
 	if (!joy_only.ival  &&  SDL_IsGameController(enumid))	//if its reported via the gamecontroller api then use that instead. don't open it twice.
-		return;
+		return false;
 
 	sdljoy[i].joystick = SDL_JoystickOpen(enumid);
 	if (!sdljoy[i].joystick)
-		return;
+		return false;
 	sdljoy[i].id = SDL_JoystickInstanceID(sdljoy[i].joystick);
 
 	cname = SDL_JoystickName(sdljoy[i].joystick);
@@ -290,6 +292,8 @@ static void J_JoystickAdded(int enumid)
 		cname = "Unknown Joystick";
 	Con_Printf("Found new joystick (%i): %s\n", i, cname);
 	sdljoy[i].qdevid = DEVID_UNSET;
+
+    return true;
 }
 static struct sdljoy_s *J_DevId(SDL_JoystickID jid)
 {
@@ -1807,6 +1811,48 @@ static int INS_MouseID(Uint32 mid)
 }
 #endif
 
+static void rescanGameControllers() {
+    SDL_GameControllerUpdate();
+    const int numJoysticks = SDL_NumJoysticks();
+    int virtualControllerIndex = -1;
+#if ANDROID
+    for (int i = 0;i<numJoysticks;i++) {
+        if(SDL_JoystickIsVirtual(i)){
+            virtualControllerIndex = i;
+            break;
+        }
+}
+#endif
+    const bool hasVirtualController = virtualControllerIndex!=-1;
+
+    for (int i=0; i <MAX_JOYSTICKS; ++i){
+        if (sdljoy[i].controller!= nullptr || sdljoy[i].joystick!= nullptr){
+            J_Kill(i, true);
+            sdljoy[i].controller = nullptr;
+            sdljoy[i].joystick = nullptr;
+        }
+    }
+
+    for (int joyIdx = 0; joyIdx<numJoysticks; ++joyIdx) {
+        if (hasVirtualController && joyIdx!=virtualControllerIndex){
+            continue;
+        }
+        if (SDL_IsGameController(joyIdx) && J_ControllerAdded(joyIdx) && hasVirtualController) {
+            break;
+        }
+
+        if (J_JoystickAdded(joyIdx) && hasVirtualController){
+            break;
+        }
+    }
+}
+
+#if ANDROID
+void rescanGameControllersForced(){
+    rescanGameControllers();
+}
+#endif
+
 
 void Sys_SendKeyEvents(void)
 {
@@ -2058,13 +2104,6 @@ void Sys_SendKeyEvents(void)
 		case SDL_JOYBUTTONUP:
 			J_JoystickButton(event.jbutton.which, event.jbutton.button, event.type==SDL_JOYBUTTONDOWN);
 			break;
-		case SDL_JOYDEVICEADDED:
-			J_JoystickAdded(event.jdevice.which);
-			break;
-		case SDL_JOYDEVICEREMOVED:
-			J_Kill(event.jdevice.which, true);
-			break;
-
 		case SDL_CONTROLLERAXISMOTION:
 			J_ControllerAxis(event.caxis.which, event.caxis.axis, event.caxis.value);
 			break;
@@ -2072,12 +2111,13 @@ void Sys_SendKeyEvents(void)
 		case SDL_CONTROLLERBUTTONUP:
 			J_ControllerButton(event.cbutton.which, event.cbutton.button, event.type==SDL_CONTROLLERBUTTONDOWN);
 			break;
-		case SDL_CONTROLLERDEVICEADDED:
-			J_ControllerAdded(event.cdevice.which);
-			break;
-		case SDL_CONTROLLERDEVICEREMOVED:
-			J_Kill(event.cdevice.which, true);
-			break;
+        case SDL_JOYDEVICEADDED:
+        case SDL_JOYDEVICEREMOVED:
+        case SDL_CONTROLLERDEVICEADDED:
+        case SDL_CONTROLLERDEVICEREMOVED:
+        case SDL_CONTROLLERDEVICEREMAPPED:
+            rescanGameControllers();
+            break;
 //		case SDL_CONTROLLERDEVICEREMAPPED:
 //			break;
 #if SDL_VERSION_ATLEAST(2,0,14)
