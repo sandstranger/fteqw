@@ -2,7 +2,7 @@
 #include "fs.h"
 
 #define AVAIL_BZLIB
-#define DYNAMIC_BZLIB
+//#define DYNAMIC_BZLIB
 
 //supported ZIP features:
 //zip64 for huge zips

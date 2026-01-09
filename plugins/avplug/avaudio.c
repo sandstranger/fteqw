@@ -742,10 +742,11 @@ qboolean AVEnc_Init(void);
 qboolean AVDec_Init(void);
 qboolean Plug_Init(void)
 {
+/*
 #ifdef ANDROID //karin: dynamic load ffmpeg
     if(!FFmpeg_Init())
 		return false;
-#endif
+#endif*/
 	qboolean okay = false;
 
 	okay |= AVAudio_Init();
@@ -762,10 +763,11 @@ qboolean Plug_Init(void)
 		av_log_set_level(AV_LOG_WARNING);
 		av_log_set_callback(AVLogCallback);
 	}
+    /*
 #ifdef ANDROID //karin: dynamic load ffmpeg
     else
 		FFmpeg_Shutdown();
-#endif
+#endif*/
 	return okay;
 }
 
