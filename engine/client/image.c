@@ -1433,7 +1433,7 @@ static png_structp (PNGAPI *qpng_create_read_struct) PNGARG((png_const_charp use
 static int (PNGAPI *qpng_sig_cmp) PNGARG((png_const_bytep sig, png_size_t start, png_size_t num_to_check)) PSTATIC(png_sig_cmp);
 
 static void (PNGAPI *qpng_write_end) PNGARG((png_structrp png_ptr, png_inforp info_ptr)) PSTATIC(png_write_end);
-static void (PNGAPI *qpng_write_image) PNGARG((png_structrp png_ptr, png_bytepp image)) PSTATIC(png_write_image);
+static void (PNGAPI *qpng_gwrite_image) PNGARG((png_structrp png_ptr, png_bytepp image)) PSTATIC(png_write_image);
 static void (PNGAPI *qpng_write_info) PNGARG((png_structrp png_ptr, png_const_inforp info_ptr)) PSTATIC(png_write_info);
 #ifdef PNG_TEXT_SUPPORTED
 static void (PNGAPI *qpng_set_text) PNGARG((png_const_structrp png_ptr, png_infop info_ptr, png_const_textp text_ptr, int num_text)) PSTATIC(png_set_text);
@@ -2039,7 +2039,7 @@ err:
 			row_pointers[i] = pixels + i * outwidth * pxsize;
 		}
 	}
-	qpng_write_image(png_ptr, row_pointers);
+    qpng_gwrite_image(png_ptr, row_pointers);
 	qpng_write_end(png_ptr, info_ptr);
 	BZ_Free(row_pointers);
 	qpng_destroy_write_struct(&png_ptr, &info_ptr);

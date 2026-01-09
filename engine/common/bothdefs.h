@@ -339,9 +339,6 @@ Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
 #ifdef ANDROID
 	#define GLESONLY	//should reduce the conditions a little
 //	#undef HEADLESSQUAKE
-	#ifndef NO_FREETYPE
-		#define NO_FREETYPE
-	#endif
 #endif
 #if (defined(_MSC_VER) && (_MSC_VER < 1500)) || defined(FTE_SDL)
 	#undef AVAIL_WASAPI	//wasapi is available in the vista sdk, while that's compatible with earlier versions, its not really expected until 2008
