@@ -338,6 +338,7 @@ Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
 #endif
 #ifdef ANDROID
 	#define GLESONLY	//should reduce the conditions a little
+    #undef VKQUAKE
 //	#undef HEADLESSQUAKE
 #endif
 #if (defined(_MSC_VER) && (_MSC_VER < 1500)) || defined(FTE_SDL)

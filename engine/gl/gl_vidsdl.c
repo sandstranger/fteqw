@@ -454,6 +454,7 @@ static qboolean SDLVID_Init (rendererstate_t *info, unsigned char *palette, r_qr
 		if (info->srgb)
 			SDL_GL_SetAttribute(SDL_GL_FRAMEBUFFER_SRGB_CAPABLE, 1);
 
+#ifndef ANDROID
 		//FIXME: this stuff isn't part of info.
 		//this means it shouldn't be exposed to the menu or widely advertised.
 		if (*vid_gl_context_version.string)
@@ -471,17 +472,30 @@ static qboolean SDLVID_Init (rendererstate_t *info, unsigned char *palette, r_qr
 			SDL_GL_SetAttribute(SDL_GL_CONTEXT_MAJOR_VERSION, major);
 			SDL_GL_SetAttribute(SDL_GL_CONTEXT_MINOR_VERSION, minor);
 		}
+#else
+            const bool useLegacyOpenGLES2_0 = strcmp(getenv("LIBGL_ES"), "2") == 0;
+            SDL_Log(useLegacyOpenGLES2_0 ? "Legacy OpenGL ES 2.0 is using for rendering" :
+                    "OpenGL ES 3.2 is using for rendering");
+            SDL_GL_SetAttribute(SDL_GL_CONTEXT_MAJOR_VERSION, useLegacyOpenGLES2_0 ? 2 : 3);
+            SDL_GL_SetAttribute(SDL_GL_CONTEXT_MINOR_VERSION, useLegacyOpenGLES2_0 ? 0 : 2);
+            vid_isfullscreen = true;
+            info->fullscreen = true;
+#endif
 		SDL_GL_SetAttribute(SDL_GL_CONTEXT_FLAGS,
 				(vid_gl_context_debug.ival?SDL_GL_CONTEXT_DEBUG_FLAG:0) |
 				(vid_gl_context_forwardcompatible.ival?SDL_GL_CONTEXT_FORWARD_COMPATIBLE_FLAG:0) |
 				0);
 
+#ifndef ANDROID
 		if (vid_gl_context_es.ival)
 			SDL_GL_SetAttribute(SDL_GL_CONTEXT_PROFILE_MASK, SDL_GL_CONTEXT_PROFILE_ES);
 		else if (vid_gl_context_compatibility.ival)
 			SDL_GL_SetAttribute(SDL_GL_CONTEXT_PROFILE_MASK, SDL_GL_CONTEXT_PROFILE_COMPATIBILITY);
 		else
 			SDL_GL_SetAttribute(SDL_GL_CONTEXT_PROFILE_MASK, SDL_GL_CONTEXT_PROFILE_CORE);
+#else
+            SDL_GL_SetAttribute(SDL_GL_CONTEXT_PROFILE_MASK, SDL_GL_CONTEXT_PROFILE_ES);
+#endif
 		if (info->multisample)
 		{
 			SDL_GL_SetAttribute(SDL_GL_MULTISAMPLESAMPLES, info->multisample);
@@ -517,7 +531,7 @@ static qboolean SDLVID_Init (rendererstate_t *info, unsigned char *palette, r_qr
 #if SDL_VERSION_ATLEAST(3,0,0)
 	sdlwindow = SDL_CreateWindow(FULLENGINENAME, info->width, info->height, flags);
 #else
-	sdlwindow = SDL_CreateWindow(FULLENGINENAME, SDL_WINDOWPOS_CENTERED_DISPLAY(display), SDL_WINDOWPOS_CENTERED_DISPLAY(display), info->width, info->height, flags);
+	sdlwindow = SDL_CreateWindow(FULLENGINENAME, SDL_WINDOWPOS_CENTERED_DISPLAY(display), SDL_WINDOWPOS_CENTERED_DISPLAY(display), info->width, info->height, flags | SDL_WINDOW_FULLSCREEN_DESKTOP);
 #endif
 	if (!sdlwindow)
 	{
@@ -525,8 +539,9 @@ static qboolean SDLVID_Init (rendererstate_t *info, unsigned char *palette, r_qr
 		return false;
 	}
 
+#ifndef ANDROID
 	SDL_SetWindowMinimumSize(sdlwindow, 320, 200);
-
+#endif
 	if (usemode)
 	{
 #if SDL_VERSION_ATLEAST(3,0,0)
@@ -572,7 +587,7 @@ static qboolean SDLVID_Init (rendererstate_t *info, unsigned char *palette, r_qr
 	CL_UpdateWindowTitle();
 	GLVID_SetIcon();
 
-#if SDL_VERSION_ATLEAST(2,26,0)
+#if SDL_VERSION_ATLEAST(2,26,0) && !ANDROID
 	SDL_GetWindowSizeInPixels(sdlwindow, &vid.pixelwidth, &vid.pixelheight);
 #else
 	switch(qrenderer)

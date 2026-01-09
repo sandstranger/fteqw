@@ -698,6 +698,7 @@ static void R_ShowBatches_f(void)
 
 void R_ToggleFullscreen_f(void)
 {
+#ifndef ANDROID
 	double time;
 	rendererstate_t newr;
 
@@ -750,6 +751,7 @@ void R_ToggleFullscreen_f(void)
 	Con_DPrintf("main thread video restart took %f secs\n", Sys_DoubleTime() - time);
 //	COM_WorkerFullSync();
 //	Con_Printf("full video restart took %f secs\n", Sys_DoubleTime() - time);
+#endif
 }
 
 void Renderer_Init(void)

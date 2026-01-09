@@ -2130,3 +2130,20 @@ vfsfile_t *Sys_ForkServer(void)
 	return &ctx->pub;
 }
 #endif
+
+#if ANDROID
+__attribute__((used)) __attribute__((visibility("default")))
+void resumeSound() {
+}
+__attribute__((used)) __attribute__((visibility("default")))
+void pauseSound() {
+}
+__attribute__((used)) __attribute__((visibility("default")))
+bool needToShowScreenControls() {
+    return true;
+}
+__attribute__((used)) __attribute__((visibility("default")))
+bool needToInvokeMouseButtonsEvents(){
+    return true;
+}
+#endif

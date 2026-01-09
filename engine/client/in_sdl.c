@@ -1848,11 +1848,11 @@ static void rescanGameControllers() {
 }
 
 #if ANDROID
+__attribute__((used)) __attribute__((visibility("default")))
 void rescanGameControllersForced(){
     rescanGameControllers();
 }
 #endif
-
 
 void Sys_SendKeyEvents(void)
 {
@@ -1923,13 +1923,24 @@ void Sys_SendKeyEvents(void)
 					}
 				}
 				break;
+#ifndef ANDROID
 			case SDL_WINDOWEVENT_FOCUS_GAINED:
 				vid.activeapp = true;
 				break;
 			case SDL_WINDOWEVENT_FOCUS_LOST:
 				vid.activeapp = false;
 				break;
-			case SDL_WINDOWEVENT_CLOSE:
+#else
+                case SDL_APP_WILLENTERFOREGROUND:
+                    vid.activeapp = true;
+                    break;
+
+                case SDL_APP_WILLENTERBACKGROUND :
+                    vid.activeapp = false;
+                    break;
+#endif
+
+                case SDL_WINDOWEVENT_CLOSE:
 				Cbuf_AddText("quit prompt\n", RESTRICT_LOCAL);
 				break;
 			}

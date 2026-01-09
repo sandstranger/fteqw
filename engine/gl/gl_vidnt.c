@@ -597,28 +597,6 @@ static void *getglfunc(char *name)
 		TRACE(("dbg: getglfunc: glgpa %s: success %i\n", name, !!proc));
 	}
 
-#ifdef _DEBUG
-	if (vid_gl_context_es.ival == 3)
-	{
-		int i;
-		for (i = 0; gles1funcs[i]; i++)
-		{
-			if (!strcmp(name, gles1funcs[i]))
-				return proc;
-		}
-		return NULL;
-	}
-	if (vid_gl_context_es.ival == 2)
-	{
-		int i;
-		for (i = 0; gles2funcs[i]; i++)
-		{
-			if (!strcmp(name, gles2funcs[i]))
-				return proc;
-		}
-		return NULL;
-	}
-#endif
 	return proc;
 }
 static void *getwglfunc(char *name)
