@@ -9,6 +9,9 @@
 	#endif
 
 	#include <SDL_loadso.h>
+#if ANDROID
+    #include "SDL_main.h"
+#endif
 #endif
 
 #ifdef _WIN32
@@ -1423,7 +1426,11 @@ static double oldtime;
 SDL_AppResult SDL_AppInit(void **appstate, int argc, char **argv)
 {
 #else
+#if ANDROID
+int SDL_main(int argc, char **argv)
+#else
 int QDECL main(int argc, char **argv)
+#endif
 {
 	double time, newtime, oldtime, sleeptime;
 #endif
@@ -1431,13 +1438,19 @@ int QDECL main(int argc, char **argv)
 
 	memset(&parms, 0, sizeof(parms));
 
+#ifndef ANDROID
 #if SDL_VERSION_ATLEAST(3, 0, 0)
 	parms.basedir = SDL_GetCurrentDirectory();
 #else
 	parms.basedir = "./";
 #endif
 	parms.binarydir = SDL_GetBasePath();
-
+#else
+    const char *pathToHomeDirectory = getenv("PATH_TO_HOME_DIRECTORY");
+    parms.basedir = getenv("PATH_TO_BASE_DIRECTORY");
+    parms.binarydir = pathToHomeDirectory;
+    chdir(pathToHomeDirectory);
+#endif
 	parms.argc = argc;
 	parms.argv = (const char**)argv;
 #ifdef CONFIG_MANIFEST_TEXT
