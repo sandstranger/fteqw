@@ -2149,10 +2149,10 @@ void pauseSound() {
 }
 __attribute__((used)) __attribute__((visibility("default")))
 bool needToShowScreenControls() {
-    return true;
+    return topmenu == nullptr;
 }
 __attribute__((used)) __attribute__((visibility("default")))
 bool needToInvokeMouseButtonsEvents(){
-    return true;
+    return !needToShowScreenControls();
 }
 #endif
