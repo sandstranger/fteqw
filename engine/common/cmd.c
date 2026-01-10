@@ -943,7 +943,7 @@ static void Cmd_Exec_f (void)
                 "bind		J           impulse 105\n"
                 "bind		K           impulse 106\n"
                 "bind		L           impulse 107\n"
-                "bind		X           impulse 109\n"
+                "bind		R           impulse 109\n"
                 "bind		V           impulse 110\n"
                 "bind		B           impulse 111\n"
                 "bind		N           impulse 112\n"
