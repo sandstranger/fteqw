@@ -963,10 +963,10 @@ static void Cmd_Exec_f (void)
                     "bind		MWHEELDOWN	cmd weapprev\n"
                     "bind		I        	cmd inven\n"
                     "bind		B        	cmd invdrop\n"
-                    "bind		M        	cmd invuse\n"
+                    "bind		E        	cmd invuse\n"
                     "bind		[        	cmd invprev\n"
                     "bind		]        	cmd invnext\n"
-                    "bind		H        	cmd help\n",
+                    "bind		F1        	cmd help\n",
                     s);
 
         }
