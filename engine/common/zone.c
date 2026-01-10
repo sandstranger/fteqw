@@ -526,7 +526,11 @@ void *BZ_ReallocNamed(void *data, int newsize, const char *file, int line)
 #else
 void *BZF_Realloc(void *data, size_t newsize)
 {
-	return realloc(data, newsize);
+    if (newsize == 0) {
+        free(data);
+        return NULL;
+    }
+    return realloc(data, newsize);
 }
 
 void *BZ_Realloc(void *data, size_t newsize)

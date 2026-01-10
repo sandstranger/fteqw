@@ -430,8 +430,13 @@ static qboolean S_Opus_Init(void)
 #ifndef OPUS_STATIC
 #ifdef _WIN32
 	char *modulename = "libopus-0" ARCH_DL_POSTFIX;
+#elif ANDROID
+    extern char *Sys_MakeDLLPath(const char *libname, char path[], int max_length);
+    char dllName[MAX_OSPATH];
+    Sys_MakeDLLPath("opus", dllName, MAX_OSPATH);
+    char *modulename = dllName;
 #else
-	char *modulename = "libopus"ARCH_DL_POSTFIX".0";
+    char *modulename = "libopus"ARCH_DL_POSTFIX".0";
 #endif
 
 	if (s_voip.opus.inited)

@@ -670,8 +670,8 @@ static const char *replacementq1binds =
 	"bind		y			messagemode\n"
 	"bind		TAB			+showscores\n"
 
-	"bind		e			+moveup\n"
-	"bind		c			+movedown\n"
+	"bind		Q			+moveup\n"
+	"bind		Z			+movedown\n"
 
 	"bind		MWHEELUP	impulse 12\n"
 	"bind		MWHEELDOWN	impulse 10\n"
@@ -681,7 +681,8 @@ static const char *replacementq1binds =
 	"bind		LEFTARROW	+left\n"
 	"bind		RIGHTARROW	+right\n"
 
-	"bind		LCTRL		+attack\n"
+    "bind		ENTER		+attack\n"
+    "bind		LCTRL		+attack\n"
 	"bind		RCTRL		+attack\n"
 	"bind		LALT		+strafe\n"
 	"bind		RALT		+strafe\n"
@@ -913,11 +914,16 @@ static void Cmd_Exec_f (void)
 		if (fs_manifest->defaultoverrides)
 			Cbuf_InsertText (fs_manifest->defaultoverrides, level, false);
 
+#if ANDROID
+        const char *activeGame = getenv("ACTIVE_GAME");
+#else
+        const char *activeGame = "";
+#endif
 #if defined(HAVE_LEGACY) && defined(HAVE_CLIENT)
-		if (l == 1914 && CalcHashInt(&hash_md4, f, l) == 0x2d7b72b9)
+		if (strcmp(activeGame,"Quake") == 0 || (l == 1914 && CalcHashInt(&hash_md4, f, l) == 0x2d7b72b9))
 			s = (char*)replacementq1binds;
 #ifdef HEXEN2
-		else if (l == 1875 && CalcHashInt(&hash_md4, f, l) == 0x27b4d813)
+		else if ( (strcmp(activeGame,"Hexen2")) == 0 || (l == 1875 && CalcHashInt(&hash_md4, f, l) == 0x27b4d813))
 		{	//hexen2 has weird stuff in there. just give it wasd.
 			s = va(
 				"%s\n"
@@ -926,10 +932,14 @@ static void Cmd_Exec_f (void)
 				"bind s +back\n"
 				"bind d +moveright\n"
 
-				"bind mouse2 +jump\n"
-				"bind mouse3 +forward\n" //mneh
+                "bind		ENTER		+attack\n"
+                "bind mouse3 +forward\n" //mneh
 				"bind x +lookup\n"	//moved to x instead of a
                 "bind		E        	invuse\n"
+                "bind		Q        	+moveup\n"
+                "bind		Z        	+movedown\n"
+                "bind		F2        	+showdm\n"
+                "bind		C        	+crouch\n"
                 "bind		F        	impulse 13\n"
                 "bind		MWHEELUP    impulse 10\n"
                 "bind		F1          +infoplaque\n"
@@ -956,19 +966,28 @@ static void Cmd_Exec_f (void)
 		}
 #endif
 #if ANDROID
-        else {
+        else if (strcmp(activeGame,"Quake2") == 0) {
             s = va(
                     "%s\n"
                     "bind		MWHEELUP	cmd weapnext\n"
                     "bind		MWHEELDOWN	cmd weapprev\n"
-                    "bind		I        	cmd inven\n"
+                    "bind		I        	inven\n"
+                    "bind		С        	+movedown\n"
+                    "bind		SPACE       +moveup\n"
                     "bind		B        	cmd invdrop\n"
                     "bind		E        	cmd invuse\n"
                     "bind		[        	cmd invprev\n"
                     "bind		]        	cmd invnext\n"
+                    "bind		ENTER		+attack\n"
                     "bind		F1        	cmd help\n",
                     s);
 
+        }
+        else if (strcmp(activeGame,"Quake3") == 0){
+            s = va(
+                    "%s\n"
+                    "bind		ENTER		+attack\n",
+                    s);
         }
 #endif
 #endif
