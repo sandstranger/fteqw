@@ -1825,13 +1825,7 @@ static void rescanGameControllers() {
 #endif
     const bool hasVirtualController = virtualControllerIndex!=-1;
 
-    for (int i=0; i <MAX_JOYSTICKS; ++i){
-        if (sdljoy[i].controller!= nullptr || sdljoy[i].joystick!= nullptr){
-            J_Kill(i, true);
-            sdljoy[i].controller = nullptr;
-            sdljoy[i].joystick = nullptr;
-        }
-    }
+    J_KillAll();
 
     for (int joyIdx = 0; joyIdx<numJoysticks; ++joyIdx) {
         if (hasVirtualController && joyIdx!=virtualControllerIndex){
@@ -1846,13 +1840,6 @@ static void rescanGameControllers() {
         }
     }
 }
-
-#if ANDROID
-__attribute__((used)) __attribute__((visibility("default")))
-void rescanGameControllersForced(){
-    rescanGameControllers();
-}
-#endif
 
 void Sys_SendKeyEvents(void)
 {
@@ -2201,10 +2188,6 @@ void Sys_SendKeyEvents(void)
 }
 
 
-
-
-
-
 void INS_Shutdown (void)
 {
 	IN_DeactivateMouse();
@@ -2219,8 +2202,15 @@ void INS_Shutdown (void)
 #endif
 }
 
+#if ANDROID
+static bool controlsWereReinit = false;
+#endif
+
 void INS_ReInit (void)
 {
+#if ANDROID
+    controlsWereReinit = true;
+#endif
 #if SDL_VERSION_ATLEAST(2, 0, 0)
 	unsigned int i;
 	memset(sdljoy, 0, sizeof(sdljoy));
@@ -2260,6 +2250,7 @@ void INS_ReInit (void)
 	#endif
 #endif
 
+    rescanGameControllers();
 	IN_ActivateMouse();
 
 #ifndef HAVE_SDL_TEXTINPUT
@@ -2271,6 +2262,22 @@ void INS_ReInit (void)
 	SDL_EventState(SDL_DROPFILE, SDL_ENABLE);
 #endif
 }
+
+#if ANDROID
+__attribute__((used)) __attribute__((visibility("default")))
+bool needToReInitGameControllers (){
+    bool needToReInitControllers = controlsWereReinit;
+    if (needToReInitControllers){
+        controlsWereReinit = false;
+    }
+    return needToReInitControllers;
+}
+
+__attribute__((used)) __attribute__((visibility("default")))
+void rescanGameControllersForced(){
+    rescanGameControllers();
+}
+#endif
 
 //stubs, all the work is done in Sys_SendKeyEvents
 void INS_Move(void)
