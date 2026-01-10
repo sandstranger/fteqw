@@ -1880,6 +1880,19 @@ void Sys_SendKeyEvents(void)
 		switch(event.type)
 		{
 #if SDL_VERSION_ATLEAST(2,0,0)
+#if ANDROID
+            case SDL_APP_WILLENTERFOREGROUND:
+                extern void ResumeAudio();
+                vid.activeapp = true;
+                ResumeAudio();
+                break;
+
+            case SDL_APP_WILLENTERBACKGROUND :
+                extern void MuteAllAudio();
+                vid.activeapp = false;
+                MuteAllAudio();
+                break;
+#endif
 		case SDL_WINDOWEVENT:
 			switch(event.window.event)
 			{
@@ -1917,14 +1930,6 @@ void Sys_SendKeyEvents(void)
 			case SDL_WINDOWEVENT_FOCUS_LOST:
 				vid.activeapp = false;
 				break;
-#else
-                case SDL_APP_WILLENTERFOREGROUND:
-                    vid.activeapp = true;
-                    break;
-
-                case SDL_APP_WILLENTERBACKGROUND :
-                    vid.activeapp = false;
-                    break;
 #endif
 
                 case SDL_WINDOWEVENT_CLOSE:

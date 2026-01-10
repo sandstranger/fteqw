@@ -29,6 +29,10 @@ We also have no doppler with WebAudio.
 
 #ifdef AVAIL_OPENAL
 
+#if ANDROID
+#include "AL/al.h"
+#endif
+
 #ifdef FTE_TARGET_WEB
 #include <emscripten/emscripten.h>
 	//emscripten provides an openal -> webaudio wrapper. its not the best, but does get the job done.
@@ -1247,6 +1251,16 @@ static void S_Info (void)
 	Con_Printf("OpenAL ALC Extension  : %s\n",palcGetString(NULL,ALC_EXTENSIONS));
 }
 */
+
+#if ANDROID
+void MuteAllAudio() {
+    alListenerf(AL_GAIN, 0.0f);
+}
+
+void ResumeAudio() {
+    alListenerf(AL_GAIN, 1.0f);
+}
+#endif
 
 static qboolean OpenAL_InitLibrary(void)
 {
