@@ -45,6 +45,8 @@ void Sys_Error (const char *error, ...)
 
 	Sys_Printf ("Quake Error: %s\n", string);
 
+    SDL_LogError(SDL_LOG_CATEGORY_APPLICATION, "Quake Error: %s\n", string);
+
 #if SDL_VERSION_ATLEAST(2,0,0)
 	SDL_ShowSimpleMessageBox(SDL_MESSAGEBOX_ERROR, "Sys_Error", string, sdlwindow);
 #endif
@@ -166,6 +168,12 @@ static void ApplyColour(unsigned int chrflags)
 //#include <wchar.h>
 void Sys_Printf (char *fmt, ...)
 {
+#if ANDROID
+    va_list args;
+    va_start(args, fmt);
+    SDL_LogMessageV(SDL_LOG_CATEGORY_APPLICATION, SDL_LOG_PRIORITY_INFO, fmt, args);
+    va_end(args);
+#else
 	va_list		argptr;
 	char		text[2048];
 	conchar_t	ctext[2048];
@@ -242,6 +250,7 @@ void Sys_Printf (char *fmt, ...)
 
 	ApplyColour(CON_WHITEMASK);
 	fflush(stdout);
+#endif
 }
 
 //#define QCLOCK(enumname,readablename,query,frequency,initcode) //query must have t=

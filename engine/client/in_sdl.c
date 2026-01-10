@@ -1553,7 +1553,7 @@ void INS_SetOSK(int osk)
 #if SDL_VERSION_ATLEAST(3, 0, 0)
 			SDL_StartTextInput(sdlwindow);
 #else
-#ifdef __linux__
+#if __linux__ && !ANDROID
 			if (usesteamosk)
 				SDL_OpenURL("steam://open/keyboard?Mode=1");
 			else
@@ -1571,7 +1571,7 @@ void INS_SetOSK(int osk)
 #if SDL_VERSION_ATLEAST(3, 0, 0)
 			SDL_StopTextInput(sdlwindow);
 #else
-#ifdef __linux__
+#if __linux__ && !ANDROID
 			if (usesteamosk)
 				SDL_OpenURL("steam://close/keyboard?Mode=1");
 			else
@@ -2041,8 +2041,6 @@ void Sys_SendKeyEvents(void)
 #endif
 
 		case SDL_MOUSEMOTION:
-            SDL_Log("CALLED EVENT");
-
 #if SDL_VERSION_ATLEAST(2,0,0)
 #ifndef ANDROID
 			if (event.motion.which == SDL_TOUCH_MOUSEID)

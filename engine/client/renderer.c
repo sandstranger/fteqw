@@ -300,7 +300,7 @@ cvar_t vid_desktopsettings					= CVARFD ("vid_desktopsettings", "0",
 #ifdef FTE_TARGET_WEB
 cvar_t vid_fullscreen						= CVARF ("vid_fullscreen", "0",	CVAR_ARCHIVE|CVAR_VIDEOLATCH);
 #else
-cvar_t vid_fullscreen						= CVARFD ("vid_fullscreen", "2",	CVAR_ARCHIVE|CVAR_VIDEOLATCH, "Specifies whether the game should be fullscreen or not (requires vid_restart).\n0: Run in a resizable window, which can be manually maximized (with borders).\n1: Traditional fullscreen-exclusive video mode with mode switching and everything.\n2: Simply maximize the window and hide any borders without interfering with any other parts of the system.");
+cvar_t vid_fullscreen						= CVARFD ("vid_fullscreen", "1",	CVAR_ARCHIVE|CVAR_VIDEOLATCH, "Specifies whether the game should be fullscreen or not (requires vid_restart).\n0: Run in a resizable window, which can be manually maximized (with borders).\n1: Traditional fullscreen-exclusive video mode with mode switching and everything.\n2: Simply maximize the window and hide any borders without interfering with any other parts of the system.");
 #endif
 cvar_t vid_height							= CVARFD ("vid_height", "0",
 												CVAR_ARCHIVE | CVAR_VIDEOLATCH, "The screen height to attempt to use, in physical pixels. 0 means use desktop resolution.");
@@ -367,7 +367,7 @@ cvar_t	vid_gl_context_debug				= CVARD  ("vid_gl_context_debug", "0", "Requests 
 cvar_t	vid_gl_context_es					= CVARD  ("vid_gl_context_es", "0", "Requests an OpenGLES context. Be sure to set vid_gl_context_version to 2 or so."); //requires version set correctly, no debug, no compat
 cvar_t	vid_gl_context_robustness			= CVARD	("vid_gl_context_robustness", "1", "Attempt to enforce extra buffer protection in the gl driver, but can be slower with pre-gl3 hardware.");
 cvar_t	vid_gl_context_selfreset			= CVARD	("vid_gl_context_selfreset", "1", "Upon hardware failure, have the engine create a new context instead of depending on the drivers to restore everything. This can help to avoid graphics drivers randomly killing your game, and can help reduce memory requirements.");
-cvar_t	vid_gl_context_noerror				= CVARD	("vid_gl_context_noerror", "", "Disables OpenGL's error checks for a small performance speedup. May cause segfaults if stuff wasn't properly implemented/tested.");
+cvar_t	vid_gl_context_noerror				= CVARD	("vid_gl_context_noerror", "1", "Disables OpenGL's error checks for a small performance speedup. May cause segfaults if stuff wasn't properly implemented/tested.");
 
 cvar_t	gl_immutable_textures				= CVARFD ("gl_immutable_textures", "1", CVAR_VIDEOLATCH, "Controls whether to use immutable GPU memory allocations for OpenGL textures. This potentially means less work for the drivers and thus higher framerates.");
 cvar_t	gl_immutable_buffers				= CVARFD ("gl_immutable_buffers", "1", CVAR_VIDEOLATCH, "Controls whether to use immutable GPU memory allocations for static OpenGL vertex buffers. This potentially means less work for the drivers and thus higher framerates.");

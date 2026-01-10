@@ -2315,7 +2315,6 @@ static GLuint GLSlang_CreateShader (program_t *prog, const char *name, int ver, 
 					ver = 330;	//gles3 is roughly equivelent to gl3.3
 			}
 
-
 			if (gl_config_gles && ver != 100)
 				Q_snprintfz(verline, sizeof(verline), "#version %u es\n", ver);
 			else if (!gl_config_gles && ver >= 150 && !gl_config_nofixedfunc)
@@ -2865,10 +2864,15 @@ qboolean GLSlang_CreateProgramPermu(program_t *prog, struct programpermu_s *perm
 {
 	if (!ver)
 	{
+#ifndef ANDROID
 		if (gl_config.gles)
 			ver = 100;
 		else
 			ver = 110;
+#else
+        const bool useLegacyOpenGLES2_0 = strcmp(getenv("LIBGL_ES"), "2") == 0;
+        ver = useLegacyOpenGLES2_0 ? 100 : 320;
+#endif
 	}
 	if ((permu->permutation & PERMUTATION_SKELETAL) && gl_config.maxattribs < 10)
 		return false;	//can happen in gles2

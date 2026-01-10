@@ -70,11 +70,7 @@ static char *vidfilenames[] =	//list of filenames to check to see if graphics st
 	"set r_replacemodels " IFMINIMAL("","md3 md5mesh")"\n"	\
 	"set r_glsl_emissive 0\n" /*work around the _glow textures not being meant to glow*/
 /*Q3's ui doesn't like empty model/headmodel/handicap cvars, even if the gamecode copes*/
-#ifdef ANDROID //karin: error if load *.so, so using *.qvm
-#define Q3CFG "//schemes quake3\n" "set v_gammainverted 0\nset snd_ignorecueloops 1\nsetfl g_gametype 0 s\nset gl_clear 1\nset r_clearcolour 0 0 0\nset com_parseutf8 0\ngl_overbright "FORWEB("0","2")"\nseta model sarge\nseta headmodel sarge\nseta handicap 100\ncom_gamedirnativecode 0\nsv_port "STRINGIFY(PORT_Q3SERVER)"\ncl_defaultport "STRINGIFY(PORT_Q3SERVER)"\ncom_protocolversion 68\n"
-#else
 #define Q3CFG "//schemes quake3\n" "set v_gammainverted 0\nset snd_ignorecueloops 1\nsetfl g_gametype 0 s\nset gl_clear 1\nset r_clearcolour 0 0 0\nset com_parseutf8 0\ngl_overbright "FORWEB("0","2")"\nseta model sarge\nseta headmodel sarge\nseta handicap 100\ncom_gamedirnativecode 1\nsv_port "STRINGIFY(PORT_Q3SERVER)"\ncl_defaultport "STRINGIFY(PORT_Q3SERVER)"\ncom_protocolversion 68\n"
-#endif
 //#define RMQCFG "sv_bigcoords 1\n"
 
 #define HLCFG "plug_load ffmpeg\n"
@@ -2723,8 +2719,29 @@ static vfsfile_t *VFS_Filter(const char *filename, vfsfile_t *handle)
 }
 
 #if ANDROID
-char * Sys_DLLInternalPath() {
-    return getenv("DLL_DEFAULT_PATH");
+char * Sys_MakeDLLPath(const char *libname, char path[], int max_length)
+{
+#undef snprintf
+#define HARM_MAX_OSPATH 1024
+    char dllName[HARM_MAX_OSPATH];
+    memset(dllName, 0, HARM_MAX_OSPATH);
+    size_t libnameLength = strlen(libname);
+
+    if(libnameLength >= 3 && (libname[0] != 'l' || libname[1] != 'i' || libname[2] != 'b'))
+        snprintf(dllName, HARM_MAX_OSPATH - 1, "lib");
+    snprintf(dllName + strlen(dllName), HARM_MAX_OSPATH - 1 - strlen(dllName), "%s", libname);
+
+    if(libnameLength >= 3 && (libname[libnameLength - 3] != '.' || libname[libnameLength - 2] != 's' || libname[libnameLength - 1] != 'o'))
+        snprintf(dllName + strlen(dllName), HARM_MAX_OSPATH - 1 - strlen(dllName), ".so");
+
+    memset(path, 0, max_length);
+    const char * dllDefaultPath = getenv("DLL_DEFAULT_PATH");
+    if(dllDefaultPath && dllDefaultPath[0])
+        snprintf(path, max_length - 1, "%s/%s", dllDefaultPath, dllName);
+    else
+        snprintf(path, max_length - 1, "%s", dllName);
+    return path;
+#undef HARM_MAX_OSPATH
 }
 #endif
 
@@ -2817,8 +2834,9 @@ static qboolean FS_NativePath(const char *fname, enum fs_relative relativeto, ch
 		break;
 #elif defined(ANDROID) //karin: load library path
 		{
-			const char *dllPath = Sys_DLLInternalPath();
-			nlen = Q_snprintfz(out, outlen, "%s/%s", dllPath, fname);
+            char dllName[MAX_OSPATH];
+            Sys_MakeDLLPath(fname, dllName, MAX_OSPATH);
+            nlen = Q_snprintfz(out, outlen, "%s", dllName);
 		}
 		break;
 #else
@@ -6877,7 +6895,7 @@ qboolean FS_ChangeGame(ftemanifest_t *man, qboolean allowreloadconfigs, qboolean
 			confpath[i] = NULL;
 	}
 
-#if defined(FTE_TARGET_WEB) || defined(ANDROID) || defined(WINRT)
+#if defined(FTE_TARGET_WEB) || defined(WINRT)
 	//these targets are considered to be sandboxed already, and have their own app-based base directory which they will always use.
 	Q_strncpyz (newbasedir, host_parms.basedir, sizeof(newbasedir));
 	fixedbasedir = true;
@@ -7138,29 +7156,6 @@ qboolean FS_ChangeGame(ftemanifest_t *man, qboolean allowreloadconfigs, qboolean
 				Con_TPrintf("Disabled home directory support\n");
 		}
 	}
-
-#ifdef ANDROID
-	{
-		//write a .nomedia file to avoid people from getting random explosion sounds etc interspersed with their music
-		vfsfile_t *f;
-		char nomedia[MAX_OSPATH];
-		//figure out the path we're going to end up writing to
-		if (com_homepathenabled)
-			snprintf(nomedia, sizeof(nomedia), "%s%s", com_homepath, ".nomedia");
-		else
-			snprintf(nomedia, sizeof(nomedia), "%s%s", com_gamepath, ".nomedia");
-
-		//make sure it exists.
-		f = VFSOS_Open(nomedia, "rb");
-		if (!f)	//don't truncate
-		{
-			COM_CreatePath(nomedia);
-			f = VFSOS_Open(nomedia, "wb");
-		}
-		if (f)
-			VFS_CLOSE(f);
-	}
-#endif
 
 	//our basic filesystem should be okay, but no packages loaded yet.
 #ifdef MANIFESTDOWNLOADS
@@ -8536,7 +8531,7 @@ void FS_RegisterDefaultFileSystems(void)
 #endif
 #ifdef PACKAGE_Q1PAK
 	FS_RegisterFileSystemType(NULL, "pak", FSPAK_LoadArchive, true);
-#if !defined(_WIN32) && !defined(ANDROID)
+#if !defined(_WIN32)
 	/*for systems that have case sensitive paths, also include *.PAK */
 	FS_RegisterFileSystemType(NULL, "PAK", FSPAK_LoadArchive, true);
 #endif
@@ -8554,7 +8549,9 @@ void FS_RegisterDefaultFileSystems(void)
 	FS_RegisterFileSystemType(NULL, "kpf", FSZIP_LoadArchive, true);	//regular zip file (don't automatically read from these, because it gets messy)
 	FS_RegisterFileSystemType(NULL, "exe", FSZIP_LoadArchive, false);	//for self-extracting zips.
 	FS_RegisterFileSystemType(NULL, "dll", FSZIP_LoadArchive, false);	//for plugin metas / self-extracting zips.
+#ifndef ANDROID
 	FS_RegisterFileSystemType(NULL, "so", FSZIP_LoadArchive, false);	//for plugin metas / self-extracting zips.
+#endif
 #endif
 	FS_RegisterFileSystemType(NULL, "pk3dir", VFSOS_OpenPath, true);	//used for git repos or whatever, to make packaging easier
 }

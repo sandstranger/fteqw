@@ -429,8 +429,9 @@ static qboolean SDLVID_Init (rendererstate_t *info, unsigned char *palette, r_qr
 		return false;
 #ifdef OPENGL_SDL
 	case QR_OPENGL:
+#ifndef ANDROID
 		SDL_GL_LoadLibrary(NULL);
-
+#endif
 		if (info->bpp >= 32)
 		{
 			SDL_GL_SetAttribute(SDL_GL_RED_SIZE, 8);
@@ -477,9 +478,9 @@ static qboolean SDLVID_Init (rendererstate_t *info, unsigned char *palette, r_qr
 #else
             const bool useLegacyOpenGLES2_0 = strcmp(getenv("LIBGL_ES"), "2") == 0;
             SDL_Log(useLegacyOpenGLES2_0 ? "Legacy OpenGL ES 2.0 is using for rendering" :
-                    "OpenGL ES 3.2 is using for rendering");
+                    "OpenGL ES 3.0 is using for rendering");
             SDL_GL_SetAttribute(SDL_GL_CONTEXT_MAJOR_VERSION, useLegacyOpenGLES2_0 ? 2 : 3);
-            SDL_GL_SetAttribute(SDL_GL_CONTEXT_MINOR_VERSION, useLegacyOpenGLES2_0 ? 0 : 2);
+            SDL_GL_SetAttribute(SDL_GL_CONTEXT_MINOR_VERSION, 0);
             vid_isfullscreen = true;
             info->fullscreen = true;
 #endif
@@ -523,6 +524,11 @@ static qboolean SDLVID_Init (rendererstate_t *info, unsigned char *palette, r_qr
 	#if SDL_VERSION_ATLEAST(2,0,1)
 		flags |= SDL_WINDOW_ALLOW_HIGHDPI;
 	#endif
+#endif
+
+#ifdef __ANDROID__
+    SDL_GL_LoadLibrary(NULL);
+    flags =  SDL_WINDOW_OPENGL;
 #endif
 
 	usemode = NULL;

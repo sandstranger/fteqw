@@ -398,7 +398,7 @@ static cvar_t s_al_disable = CVARD("s_al_disable", "1", "0: OpenAL works (genera
 static cvar_t s_al_disable = CVARD("s_al_disable", "0", "0: OpenAL works (generally as the highest priority).\n1: OpenAL will be used only when a specific device is selected.\n2: Don't allow ANY use of OpenAl.\nWith OpenAL disabled, audio ouput will fall back to platform-specific output, avoiding miscilaneous third-party openal limitation bugs.");
 #endif
 static cvar_t s_al_debug = CVARD("s_al_debug", "0", "Enables periodic checks for OpenAL errors.");
-static cvar_t s_al_hrtf = CVARD("s_al_hrtf", "", "Enables use of HRTF, and which HRTF table to use.\nempty: auto, depending on openal config to enable it.\n\0: force off.\n1: Use the default HRTF.");
+static cvar_t s_al_hrtf = CVARD("s_al_hrtf", "1", "Enables use of HRTF, and which HRTF table to use.\nempty: auto, depending on openal config to enable it.\n\0: force off.\n1: Use the default HRTF.");
 static cvar_t s_al_use_reverb = CVARD("s_al_use_reverb", "1", "Controls whether reverb effects will be used. Set to 0 to block them. Reverb requires gamecode to configure the reverb properties, other than underwater.");
 //static cvar_t s_al_max_distance = CVARFC("s_al_max_distance", "1000",0,OnChangeALSettings);
 static cvar_t s_al_speedofsound = CVARFCD("s_al_speedofsound", "343.3",0,OnChangeALSettings, "Configures the speed of sound, in game units per second. This affects doppler.");
