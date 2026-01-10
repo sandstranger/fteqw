@@ -2871,7 +2871,7 @@ qboolean GLSlang_CreateProgramPermu(program_t *prog, struct programpermu_s *perm
 			ver = 110;
 #else
         const bool useLegacyOpenGLES2_0 = strcmp(getenv("LIBGL_ES"), "2") == 0;
-        ver = useLegacyOpenGLES2_0 ? 100 : 320;
+        ver = useLegacyOpenGLES2_0 ? 100 : 300;
 #endif
 	}
 	if ((permu->permutation & PERMUTATION_SKELETAL) && gl_config.maxattribs < 10)
