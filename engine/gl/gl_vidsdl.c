@@ -505,7 +505,9 @@ static qboolean SDLVID_Init (rendererstate_t *info, unsigned char *palette, r_qr
 			SDL_GL_SetAttribute(SDL_GL_MULTISAMPLESAMPLES, info->multisample);
 			SDL_GL_SetAttribute(SDL_GL_MULTISAMPLEBUFFERS, 1);
 		}
-
+#ifdef __ANDROID__
+          SDL_GL_LoadLibrary(NULL);
+#endif
 		flags |= SDL_WINDOW_OPENGL;
 		break;
 #endif
@@ -525,11 +527,6 @@ static qboolean SDLVID_Init (rendererstate_t *info, unsigned char *palette, r_qr
 	#if SDL_VERSION_ATLEAST(2,0,1)
 		flags |= SDL_WINDOW_ALLOW_HIGHDPI;
 	#endif
-#endif
-
-#ifdef __ANDROID__
-    SDL_GL_LoadLibrary(NULL);
-    flags =  SDL_WINDOW_OPENGL;
 #endif
 
 	usemode = NULL;
