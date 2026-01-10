@@ -936,6 +936,7 @@ static void Cmd_Exec_f (void)
                 "bind mouse3 +forward\n" //mneh
 				"bind x +lookup\n"	//moved to x instead of a
                 "bind		E        	invuse\n"
+                "bind		B        	impulse 44\n"
                 "bind		Q        	+moveup\n"
                 "bind		Z        	+movedown\n"
                 "bind		F2        	+showdm\n"
@@ -945,7 +946,8 @@ static void Cmd_Exec_f (void)
                 "bind		F1          +infoplaque\n"
                 "bind		[           invleft\n"
                 "bind		]           invright\n"
-                "bind		I           impulse 100\n"
+                "bind		I           +showinfo\n"
+                "bind		F3           impulse 100\n"
                 "bind		O           impulse 101\n"
                 "bind		P           impulse 102\n"
                 "bind		G           impulse 103\n"
@@ -954,13 +956,13 @@ static void Cmd_Exec_f (void)
                 "bind		K           impulse 106\n"
                 "bind		L           impulse 107\n"
                 "bind		R           impulse 109\n"
-                "bind		V           impulse 110\n"
-                "bind		B           impulse 111\n"
+                "bind		T           impulse 110\n"
+                "bind		F4          impulse 111\n"
                 "bind		N           impulse 112\n"
                 "bind		M           impulse 113\n"
                 "bind		U           impulse 114\n"
                 "bind		SPACE       +jump\n"
-                "bind		T           +voip\n"
+                "bind		V           +voip\n"
 				"cl_forwardspeed 400\n" //hexen2's autorun state.
 			, s);
 		}
@@ -971,7 +973,7 @@ static void Cmd_Exec_f (void)
                     "%s\n"
                     "bind		MWHEELUP	cmd weapnext\n"
                     "bind		MWHEELDOWN	cmd weapprev\n"
-                    "bind		I        	inven\n"
+                    "bind		I        	cmd inven\n"
                     "bind		С        	+movedown\n"
                     "bind		SPACE       +moveup\n"
                     "bind		B        	cmd invdrop\n"
