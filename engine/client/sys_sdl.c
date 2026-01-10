@@ -506,7 +506,7 @@ void Sys_Quit (void)
 {
 	Host_Shutdown();
 
-#if !SDL_VERSION_ATLEAST(3, 0, 0)
+#if !SDL_VERSION_ATLEAST(3, 0, 0) && !ANDROID
 	SDL_free((char*)host_parms.binarydir);
 #endif
 	host_parms.binarydir = NULL;

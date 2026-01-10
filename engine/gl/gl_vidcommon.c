@@ -32,6 +32,11 @@
 extern cvar_t	gl_immutable_textures;
 extern cvar_t	gl_immutable_buffers;
 
+#if ANDROID
+static char * libGLesVersion = nullptr;
+static bool useGLES2_0 = false;
+#endif
+
 #ifndef GL_STATIC
 //standard gles2 opengl calls.
 void (APIENTRY *qglBlendFunc) (GLenum sfactor, GLenum dfactor);
@@ -2854,6 +2859,16 @@ union programhandle_u GLSlang_CreateProgram(program_t *prog, const char *name, i
 	return ret;
 }
 
+#if ANDROID
+bool useGLes2_0Version(){
+    if (!libGLesVersion){
+        libGLesVersion = getenv("LIBGL_ES");
+        useGLES2_0 = strcmp(getenv("LIBGL_ES"), "2") == 0;
+    }
+    return useGLES2_0;
+}
+#endif
+
 qboolean GLSlang_ValidateProgramPermu(program_t *prog, struct programpermu_s *permu, qboolean noerrors, vfsfile_t *blobfile)
 {
 	if (!permu)
@@ -2870,8 +2885,7 @@ qboolean GLSlang_CreateProgramPermu(program_t *prog, struct programpermu_s *perm
 		else
 			ver = 110;
 #else
-        const bool useLegacyOpenGLES2_0 = strcmp(getenv("LIBGL_ES"), "2") == 0;
-        ver = useLegacyOpenGLES2_0 ? 100 : 300;
+        ver = useGLes2_0Version() ? 100 : 300;
 #endif
 	}
 	if ((permu->permutation & PERMUTATION_SKELETAL) && gl_config.maxattribs < 10)
