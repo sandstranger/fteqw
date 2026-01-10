@@ -13,9 +13,9 @@ cvar_t vk_stagingbuffers						= CVARFD ("vk_stagingbuffers",			"", CVAR_RENDERER
 static cvar_t vk_submissionthread				= CVARD	("vk_submissionthread",			"", "Execute submits+presents on a thread dedicated to executing them. This may be a significant speedup on certain drivers.");
 static cvar_t vk_debug							= CVARFD("vk_debug",					"0", CVAR_VIDEOLATCH, "Register a debug handler to display driver/layer messages. 2 enables the standard validation layers.");
 static cvar_t vk_dualqueue						= CVARFD("vk_dualqueue",				"", CVAR_VIDEOLATCH, "Attempt to use a separate queue for presentation. Blank for default.");
-static cvar_t vk_busywait						= CVARD ("vk_busywait",					"", "Force busy waiting until the GPU finishes doing its thing.");
+static cvar_t vk_busywait						= CVARD ("vk_busywait",					"1", "Force busy waiting until the GPU finishes doing its thing.");
 static cvar_t vk_waitfence						= CVARD ("vk_waitfence",				"", "Waits on fences, instead of semaphores. This is more likely to result in gpu stalls while the cpu waits.");
-static cvar_t vk_usememorypools					= CVARFD("vk_usememorypools",			"",	CVAR_VIDEOLATCH, "Allocates memory pools for sub allocations. Vulkan has a limit to the number of memory allocations allowed so this should always be enabled, however at this time FTE is unable to reclaim pool memory, and would require periodic vid_restarts to flush them.");
+static cvar_t vk_usememorypools					= CVARFD("vk_usememorypools",			"1",	CVAR_VIDEOLATCH, "Allocates memory pools for sub allocations. Vulkan has a limit to the number of memory allocations allowed so this should always be enabled, however at this time FTE is unable to reclaim pool memory, and would require periodic vid_restarts to flush them.");
 static cvar_t vk_khr_get_memory_requirements2	= CVARFD("vk_khr_get_memory_requirements2", "", CVAR_VIDEOLATCH, "Enable extended memory info querires");
 static cvar_t vk_khr_dedicated_allocation		= CVARFD("vk_khr_dedicated_allocation",	"", CVAR_VIDEOLATCH, "Flag vulkan memory allocations as dedicated, where applicable.");
 static cvar_t vk_khr_push_descriptor			= CVARFD("vk_khr_push_descriptor",		"", CVAR_VIDEOLATCH, "Enables better descriptor streaming.");
@@ -33,6 +33,21 @@ extern cvar_t vid_srgb, vid_vsync, vid_triplebuffer, r_stereo_method, vid_multis
 
 texid_t r_blackcubeimage, r_whitecubeimage;
 
+#ifdef ANDROID
+static bool paused = false;
+static bool needToRecreaseVulkanSurfaces = false;
+extern void VKSDL_RecreateSurface();
+
+__attribute__((used)) __attribute__((visibility("default")))
+void destroyVulkanSwapChain() {
+    paused = true;
+}
+__attribute__((used)) __attribute__((visibility("default")))
+void recreateVulkanSwapChain() {
+    needToRecreaseVulkanSurfaces = paused;
+    paused = false;
+}
+#endif
 
 void VK_RegisterVulkanCvars(void)
 {
@@ -729,23 +744,33 @@ static qboolean VK_CreateSwapChain(void)
 		}
 
 		swapinfo.imageUsage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT|VK_IMAGE_USAGE_TRANSFER_SRC_BIT;
+#ifndef ANDROID
 		swapinfo.preTransform = surfcaps.currentTransform;//VK_SURFACE_TRANSFORM_IDENTITY_BIT_KHR;
+#else
+        swapinfo.preTransform = VK_SURFACE_TRANSFORM_IDENTITY_BIT_KHR;
+#endif
 		if (surfcaps.supportedCompositeAlpha & VK_COMPOSITE_ALPHA_OPAQUE_BIT_KHR)
 			swapinfo.compositeAlpha = VK_COMPOSITE_ALPHA_OPAQUE_BIT_KHR;
 		else if (surfcaps.supportedCompositeAlpha & VK_COMPOSITE_ALPHA_PRE_MULTIPLIED_BIT_KHR)
 		{
 			swapinfo.compositeAlpha = VK_COMPOSITE_ALPHA_PRE_MULTIPLIED_BIT_KHR;
-			Con_Printf(CON_WARNING"Vulkan swapchain using composite alpha premultiplied\n");
+#ifndef ANDROID
+            Con_Printf(CON_WARNING"Vulkan swapchain using composite alpha premultiplied\n");
+#endif
 		}
 		else if (surfcaps.supportedCompositeAlpha & VK_COMPOSITE_ALPHA_POST_MULTIPLIED_BIT_KHR)
 		{
-			swapinfo.compositeAlpha = VK_COMPOSITE_ALPHA_POST_MULTIPLIED_BIT_KHR;
+            swapinfo.compositeAlpha = VK_COMPOSITE_ALPHA_POST_MULTIPLIED_BIT_KHR;
+#ifndef ANDROID
 			Con_Printf(CON_WARNING"Vulkan swapchain using composite alpha postmultiplied\n");
+#endif
 		}
 		else
 		{
 			swapinfo.compositeAlpha = VK_COMPOSITE_ALPHA_INHERIT_BIT_KHR;	//erk?
+#ifndef ANDROID
 			Con_Printf(CON_WARNING"composite alpha inherit\n");
+#endif
 		}
 		swapinfo.imageArrayLayers = /*(r_stereo_method.ival==1)?2:*/1;
 		swapinfo.imageSharingMode = VK_SHARING_MODE_EXCLUSIVE;
@@ -790,6 +815,7 @@ static qboolean VK_CreateSwapChain(void)
 				Con_Printf("Warning: vulkan graphics driver does not support VK_PRESENT_MODE_IMMEDIATE_KHR.\n");
 
 		vk.srgbcapable = false;
+#ifndef ANDROID
 		swapinfo.imageColorSpace = VK_COLOR_SPACE_SRGB_NONLINEAR_KHR;
 		swapinfo.imageFormat = VK_FORMAT_UNDEFINED;
 		for (i = 0, curpri = 0; i < fmtcount; i++)
@@ -868,7 +894,8 @@ static qboolean VK_CreateSwapChain(void)
 		}
 
 		if (swapinfo.imageFormat == VK_FORMAT_UNDEFINED)
-		{	//if we found this format then it means the drivers don't really give a damn. pick a real format.
+        {
+            //if we found this format then it means the drivers don't really give a damn. pick a real format.
 			if (vid_srgb.ival > 1 && swapinfo.imageColorSpace == VK_COLOR_SPACE_EXTENDED_SRGB_LINEAR_EXT)
 				swapinfo.imageFormat = VK_FORMAT_R16G16B16A16_SFLOAT;
 			else if (vid_srgb.ival)
@@ -876,7 +903,10 @@ static qboolean VK_CreateSwapChain(void)
 			else
 				swapinfo.imageFormat = VK_FORMAT_R8G8B8A8_UNORM;
 		}
-
+#else
+        swapinfo.imageFormat = VK_FORMAT_R8G8B8A8_UNORM;
+        swapinfo.imageColorSpace = VK_COLOR_SPACE_SRGB_NONLINEAR_KHR;
+#endif
 		if (vk.backbufformat != swapinfo.imageFormat)
 		{
 			VK_DestroyRenderPasses();
@@ -908,6 +938,16 @@ static qboolean VK_CreateSwapChain(void)
 		free(presentmode);
 		free(surffmts);
 
+#if ANDROID
+        if (paused){
+            return false;
+        }
+
+        if (needToRecreaseVulkanSurfaces){
+            VKSDL_RecreateSurface();
+            needToRecreaseVulkanSurfaces = false;
+        }
+#endif
 		if (vid_isfullscreen)	//nvidia really doesn't like this. its fine when windowed though.
 			VK_DestroySwapChain();
 		swapinfo.oldSwapchain = vk.swapchain;
@@ -926,10 +966,8 @@ static qboolean VK_CreateSwapChain(void)
         case VK_ERROR_SURFACE_LOST_KHR:
         case VK_ERROR_NATIVE_WINDOW_IN_USE_KHR:
         case VK_ERROR_INITIALIZATION_FAILED:
-			if (swapinfo.oldSwapchain)
-				Con_Printf(CON_WARNING"vkCreateSwapchainKHR(%u * %u) failed with error %s\n", swapinfo.imageExtent.width, swapinfo.imageExtent.height, VK_VKErrorToString(err));
-			else
-				Sys_Error("vkCreateSwapchainKHR(%u * %u) failed with error %s\n", swapinfo.imageExtent.width, swapinfo.imageExtent.height, VK_VKErrorToString(err));
+			if (!swapinfo.oldSwapchain)
+                Sys_Error("vkCreateSwapchainKHR(%u * %u) failed with error %s\n", swapinfo.imageExtent.width, swapinfo.imageExtent.height, VK_VKErrorToString(err));
 			VK_DestroySwapChain();
 			return false;
         }
@@ -3356,11 +3394,16 @@ char	*VKVID_GetRGBInfo			(int *bytestride, int *truevidwidth, int *truevidheight
 				ici.format = VK_FORMAT_B8G8R8_UNORM;
 		}
 		else*/
-		{	//otherwise lets just get bgra data.
+		{
+#if ANDROID
+            ici.format = VK_FORMAT_R8G8B8A8_UNORM;
+#else
+            //otherwise lets just get bgra data.
 			if (vid.flags & VID_SRGB_FB)
 				ici.format = VK_FORMAT_B8G8R8A8_SRGB;
 			else
 				ici.format = VK_FORMAT_B8G8R8A8_UNORM;
+#endif
 		}
 		ici.extent.width = vid.pixelwidth;
 		ici.extent.height = vid.pixelheight;
@@ -4637,7 +4680,9 @@ qboolean VK_CreateInstance(vrsetup_t *info, char *vrexts, void *result)
 	err = vkCreateInstance(&inst_info, vkallocationcb, &vk.instance);
 	if (err == VK_ERROR_LAYER_NOT_PRESENT && inst_info.enabledLayerCount>0 && !strcmp(inst_info.ppEnabledLayerNames[inst_info.enabledLayerCount-1], "VK_LAYER_KHRONOS_validation"))
 	{	//if we can't do debugging then just try to create a context without it.
+#ifndef ANDROID
 		Con_Printf(CON_WARNING"VK_ERROR_LAYER_NOT_PRESENT... trying again without debug layers\n");
+#endif
 		inst_info.enabledLayerCount--;
 		err = vkCreateInstance(&inst_info, vkallocationcb, &vk.instance);
 	}
@@ -4755,6 +4800,8 @@ qboolean VK_EnumerateDevices (void *usercontext, void(*callback)(void *context, 
 	vk_DestroyInstance(vk_instance, vkallocationcb);
 	return true;
 }
+
+#include "SDL_log.h"
 
 //initialise the vulkan instance, context, device, etc.
 qboolean VK_Init(rendererstate_t *info, const char *const*sysextnames, unsigned int numsysext, qboolean (*createSurface)(void), void (*dopresent)(struct vkframe *theframe))
@@ -5007,9 +5054,12 @@ qboolean VK_Init(rendererstate_t *info, const char *const*sysextnames, unsigned 
 #endif
 	}
 
+#if ANDROID
+    VKSDL_RecreateSurface();
+#else
 	//create the platform-specific surface
 	createSurface();
-
+#endif
 	//figure out which gpu we're going to use
 	{
 		uint32_t gpucount = 0, i;
@@ -5054,13 +5104,17 @@ qboolean VK_Init(rendererstate_t *info, const char *const*sysextnames, unsigned 
 				{
 					if ((wantdev >= 0 && i==wantdev) || (wantdev==-1 && *info->subrenderer && !Q_strcasecmp(props.deviceName, info->subrenderer)))
 					{
+#ifndef ANDROID
 						Con_Printf(CON_WARNING"vulkan: attempting to use device \"%s\" despite no device queues being able to present to window surface\n", props.deviceName);
+#endif
 						ignorequeuebugs = true;
 					}
 					else
 					{
+#ifndef ANDROID
 						//no queues can present to that surface, so I guess we can't use that device
 						Con_DLPrintf((wantdev != i)?1:0, "vulkan: ignoring device \"%s\" as it can't present to window\n", props.deviceName);
+#endif
 						continue;
 					}
 				}

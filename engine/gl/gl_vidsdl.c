@@ -1006,6 +1006,24 @@ static qboolean VKSDL_CreateSurface(void)
 	return SDL_Vulkan_CreateSurface(sdlwindow, vk.instance, &vk.surface);
 #endif
 }
+
+void VKSDL_RecreateSurface() {
+#if ANDROID
+    if (sdlwindow == nullptr || vk.instance == nullptr) {
+        return;
+    }
+
+    if (vk.surface) {
+        vkDestroySurfaceKHR(vk.instance, vk.surface, nullptr);
+        vk.surface = VK_NULL_HANDLE;
+    }
+
+    if (VKSDL_CreateSurface()) {
+        SDL_Log("Vulkan surface recreated successfully");
+        SDL_Delay(16);
+    }
+#endif
+}
 static qboolean VKVID_Init (rendererstate_t *info, unsigned char *palette)
 {
 	unsigned extcount;

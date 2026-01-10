@@ -307,6 +307,10 @@ static void J_ControllerAxis(SDL_JoystickID jid, int axis, int value)
 {
 	struct sdljoy_s *joy = J_DevId(jid);
 
+    if (joy == nullptr) {
+        return;
+    }
+
 	if (joy->qdevid == DEVID_UNSET)
 	{
 		if (abs(value) < 0x4000)
@@ -353,6 +357,10 @@ static void J_JoystickAxis(SDL_JoystickID jid, int axis, int value)
 {
 	struct sdljoy_s *joy = J_DevId(jid);
 
+    if (joy == nullptr) {
+        return;
+    }
+
 	if (joy->qdevid == DEVID_UNSET)
 	{
 		if (abs(value) < 0x1000)
@@ -369,6 +377,11 @@ static void J_ControllerButton(SDL_JoystickID jid, int button, qboolean pressed)
 	//controllers have reliable button maps.
 	//but that doesn't meant that fte has specific k_ names for those buttons, but the mapping should be reliable, at least until they get mapped to proper k_ values.
 	struct sdljoy_s *joy = J_DevId(jid);
+
+    if (joy == nullptr) {
+        return;
+    }
+
 	if (joy && button < countof(gpbuttonmap))
 	{
 		if (joy->qdevid == DEVID_UNSET)
@@ -1813,6 +1826,9 @@ static int INS_MouseID(Uint32 mid)
 
 static void rescanGameControllers() {
     SDL_GameControllerUpdate();
+
+    J_KillAll();
+
     const int numJoysticks = SDL_NumJoysticks();
     int virtualControllerIndex = -1;
 #if ANDROID
@@ -1825,14 +1841,16 @@ static void rescanGameControllers() {
 #endif
     const bool hasVirtualController = virtualControllerIndex!=-1;
 
-    J_KillAll();
-
     for (int joyIdx = 0; joyIdx<numJoysticks; ++joyIdx) {
         if (hasVirtualController && joyIdx!=virtualControllerIndex){
             continue;
         }
-        if (SDL_IsGameController(joyIdx) && J_ControllerAdded(joyIdx) && hasVirtualController) {
-            break;
+        if (SDL_IsGameController(joyIdx) && J_ControllerAdded(joyIdx)) {
+            if (hasVirtualController) {
+                break;
+            } else{
+                continue;
+            }
         }
 
         if (J_JoystickAdded(joyIdx) && hasVirtualController){
@@ -2192,6 +2210,9 @@ void Sys_SendKeyEvents(void)
 	}
 }
 
+#if ANDROID
+static bool controlsWereReinit = false;
+#endif
 
 void INS_Shutdown (void)
 {
@@ -2205,17 +2226,13 @@ void INS_Shutdown (void)
 		SDL_QuitSubSystem(SDL_INIT_JOYSTICK|SDL_INIT_GAMECONTROLLER);
 	#endif
 #endif
-}
-
-#if ANDROID
-static bool controlsWereReinit = false;
-#endif
-
-void INS_ReInit (void)
-{
 #if ANDROID
     controlsWereReinit = true;
 #endif
+}
+
+void INS_ReInit (void)
+{
 #if SDL_VERSION_ATLEAST(2, 0, 0)
 	unsigned int i;
 	memset(sdljoy, 0, sizeof(sdljoy));

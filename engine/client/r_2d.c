@@ -1360,7 +1360,11 @@ void R2D_Console_Resize(void)
 	cwidth = vid_conwidth.value;
 	cheight = vid_conheight.value;
 
+#ifdef ANDROID
+    xratio = 2.7f;
+#else
 	xratio = vid_conautoscale.value;
+#endif
 	if (xratio > 0)
 	{
 		char *s = strchr(vid_conautoscale.string, ' ');

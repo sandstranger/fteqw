@@ -3244,10 +3244,8 @@ void M_Menu_Video_f (void)
 			MB_TEXT("^Ue080^Ue081^Ue081^Ue081^Ue081^Ue081^Ue081^Ue081^Ue081^Ue081^Ue081^Ue081^Ue082", true),
 			MB_CMD("Apply Settings", M_VideoApply, "Restart video and apply renderer, display, and 2D resolution options."),
 			MB_SPACING(4),
+#if !defined(ANDROID)
 			MB_COMBOCVAR("Renderer", vid_renderer, rendererops, renderervalues, NULL),
-#if defined(ANDROID) && !defined(FTE_SDL)
-			MB_COMBOCVAR("Orientation", sys_orientation, orientationopts, orientationvalues, NULL),
-#else
 			MB_COMBOCVARRETURN("Display Mode", vid_fullscreen, fullscreenopts, fullscreenvalues, info->dispmode, vid_fullscreen.description),
 #endif
 			MB_COMBOCVAR("MSAA", vid_multisample, aaopts, aavalues, NULL),
