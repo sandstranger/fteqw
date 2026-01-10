@@ -152,98 +152,108 @@ int max_frame;
 /* -------------------------------------------------------------------------- */
 static void apply_vector_2x2(roq_info *ri, int x, int y, roq_cell_rgba *cell)
 {
-	// place 2x2 vector codeword in framebuffer
+    if (!ri || !ri->rgba || !cell) return;
+    uint8_t *base = ri->rgba[0];
+    if (!base) return;
 
-	int idxa = (y * ri->width) + x;
-	int idxb = 0;
+    // bounds check: 2x2 block must fit
+    if (x < 0 || y < 0) return;
+    if (x + 1 >= ri->width || y + 1 >= ri->height) return;
 
-	int *ptra = (int*) ri->rgba[0][idxa];
-	int *ptrb = (int*) &cell->p[idxb];
+    const int pixel_bytes = 4;
+    const int row_bytes = ri->width * pixel_bytes;
 
-	ptra[0] = ptrb[0];
-	ptra[1] = ptrb[1];
-	ptra += ri->width;
-	ptra[0] = ptrb[2];
-	ptra[1] = ptrb[3];
+    uint8_t *dst = base + (y * ri->width + x) * pixel_bytes;
+    uint8_t *src = (uint8_t *)&cell->p[0];
+
+    memcpy(dst + 0 * pixel_bytes, src + 0 * pixel_bytes, pixel_bytes);
+    memcpy(dst + 1 * pixel_bytes, src + 1 * pixel_bytes, pixel_bytes);
+
+    dst += row_bytes;
+    memcpy(dst + 0 * pixel_bytes, src + 2 * pixel_bytes, pixel_bytes);
+    memcpy(dst + 1 * pixel_bytes, src + 3 * pixel_bytes, pixel_bytes);
 }
 
 /* -------------------------------------------------------------------------- */
+
 static void apply_vector_4x4(roq_info *ri, int x, int y, roq_cell_rgba *cell)
 {
-	// upsample 2x2 vector codeword to 4x4 and place in framebuffer
+    if (!ri || !ri->rgba || !cell) return;
+    uint8_t *base = ri->rgba[0];
+    if (!base) return;
 
-	int idxa = (y * ri->width) + x;
-	int idxb = 0;
+    if (x < 0 || y < 0) return;
+    if (x + 3 >= ri->width || y + 3 >= ri->height) return;
 
-	int *ptra = (int*) ri->rgba[0][idxa];
-	int *ptrb = (int*) &cell->p[idxb];
+    const int pixel_bytes = 4;
+    const int row_bytes = ri->width * pixel_bytes;
 
-	int i;
-	for(i = 0; i < 4; i++) {
-		ptra[0] = ptrb[0];
-		ptra[1] = ptrb[0];
-		ptra[2] = ptrb[1];
-		ptra[3] = ptrb[1];
+    uint8_t *dst = base + (y * ri->width + x) * pixel_bytes;
+    uint8_t *src = (uint8_t *)&cell->p[0];
 
-		ptra += ri->width;
-		if(i & 0x1) { // increase src pointer only every second dest line
-			ptrb += 2;
-		}
-	}
+    for (int row = 0; row < 4; ++row) {
+        int pair_index = (row >> 1) * 2;
+        memcpy(dst + 0 * pixel_bytes, src + (pair_index + 0) * pixel_bytes, pixel_bytes);
+        memcpy(dst + 1 * pixel_bytes, src + (pair_index + 0) * pixel_bytes, pixel_bytes);
+        memcpy(dst + 2 * pixel_bytes, src + (pair_index + 1) * pixel_bytes, pixel_bytes);
+        memcpy(dst + 3 * pixel_bytes, src + (pair_index + 1) * pixel_bytes, pixel_bytes);
+
+        dst += row_bytes;
+    }
 }
-
 
 /* -------------------------------------------------------------------------- */
 static void apply_motion_4x4(roq_info *ri, int x, int y, unsigned char mv, char mean_x, char mean_y)
 {
-	int mx = x + 8 - (mv >> 4) - mean_x;
-	int my = y + 8 - (mv & 0xf) - mean_y;
-	
-	int idxa = (y * ri->width) + x;
-	int idxb = (my * ri->width) + mx;
+    int mx = x + 8 - (mv >> 4) - mean_x;
+    int my = y + 8 - (mv & 0xf) - mean_y;
 
-	int *ptra = (int*) ri->rgba[0][idxa];
-	int *ptrb = (int*) ri->rgba[1][idxb];
-	
-	int i;
-	for(i = 0; i < 4; i++) {
-		ptra[0] = ptrb[0];
-		ptra[1] = ptrb[1];
-		ptra[2] = ptrb[2];
-		ptra[3] = ptrb[3];
+    int idxa = (y * ri->width) + x;
+    int idxb = (my * ri->width) + mx;
 
-		ptra += ri->width;
-		ptrb += ri->width;
-	}
+    unsigned char *base_a = ri->rgba[0];
+    unsigned char *base_b = ri->rgba[1];
+
+    if (idxa < 0 || idxb < 0) return;
+    if (idxa + 3 >= ri->width * ri->height) return;
+    if (idxb + 3 >= ri->width * ri->height) return;
+
+    unsigned char *ptra = base_a + idxa * 4;
+    unsigned char *ptrb = base_b + idxb * 4;
+
+    for (int i = 0; i < 4; ++i) {
+        memcpy(ptra, ptrb, 4);
+        ptra += ri->width * 4;
+        ptrb += ri->width * 4;
+    }
 }
-
 
 /* -------------------------------------------------------------------------- */
 static void apply_motion_8x8(roq_info *ri, int x, int y, unsigned char mv, char mean_x, char mean_y)
 {
-	int mx = x + 8 - (mv >> 4) - mean_x;
-	int my = y + 8 - (mv & 0xf) - mean_y;
+    if (!ri || !ri->rgba) return;
+    uint8_t *base_a = ri->rgba[0];
+    uint8_t *base_b = ri->rgba[1];
+    if (!base_a || !base_b) return;
 
-	int idxa = (y * ri->width) + x;
-	int idxb = (my * ri->width) + mx;
-	
-	int *ptra = (int*) ri->rgba[0][idxa];
-	int *ptrb = (int*) ri->rgba[1][idxb];
+    int mx = x + 8 - (mv >> 4) - mean_x;
+    int my = y + 8 - (mv & 0xf) - mean_y;
 
-	int i;
-	for(i = 0; i < 8; i++) {
-		ptra[0] = ptrb[0];
-		ptra[1] = ptrb[1];
-		ptra[2] = ptrb[2];
-		ptra[3] = ptrb[3];
-		ptra[4] = ptrb[4];
-		ptra[5] = ptrb[5];
-		ptra[6] = ptrb[6];
-		ptra[7] = ptrb[7];
+    if (x < 0 || y < 0 || mx < 0 || my < 0) return;
+    if (x + 7 >= ri->width || y + 7 >= ri->height) return;
+    if (mx + 7 >= ri->width || my + 7 >= ri->height) return;
 
-		ptra += ri->width;
-		ptrb += ri->width;
-	}
+    const int pixel_bytes = 4;
+    const int row_bytes = ri->width * pixel_bytes;
+
+    uint8_t *ptra = base_a + (y * ri->width + x) * pixel_bytes;
+    uint8_t *ptrb = base_b + (my * ri->width + mx) * pixel_bytes;
+
+    for (int i = 0; i < 8; ++i) {
+        memcpy(ptra, ptrb, 8 * pixel_bytes);
+        ptra += row_bytes;
+        ptrb += row_bytes;
+    }
 }
 
 
