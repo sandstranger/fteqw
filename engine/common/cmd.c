@@ -928,11 +928,48 @@ static void Cmd_Exec_f (void)
 
 				"bind mouse2 +jump\n"
 				"bind mouse3 +forward\n" //mneh
-
 				"bind x +lookup\n"	//moved to x instead of a
+                "bind		E        	invuse\n"
+                "bind		F        	impulse 13\n"
+                "bind		MWHEELUP    impulse 10\n"
+                "bind		F1          +infoplaque\n"
+                "bind		[           invleft\n"
+                "bind		]           invright\n"
+                "bind		I           impulse 100\n"
+                "bind		O           impulse 101\n"
+                "bind		P           impulse 102\n"
+                "bind		G           impulse 103\n"
+                "bind		H           impulse 104\n"
+                "bind		J           impulse 105\n"
+                "bind		K           impulse 106\n"
+                "bind		L           impulse 107\n"
+                "bind		X           impulse 109\n"
+                "bind		V           impulse 110\n"
+                "bind		B           impulse 111\n"
+                "bind		N           impulse 112\n"
+                "bind		M           impulse 113\n"
+                "bind		U           impulse 114\n"
+                "bind		SPACE       +jump\n"
+                "bind		T           +voip\n"
 				"cl_forwardspeed 400\n" //hexen2's autorun state.
 			, s);
 		}
+#endif
+#if ANDROID
+        else {
+            s = va(
+                    "%s\n"
+                    "bind		MWHEELUP	cmd weapnext\n"
+                    "bind		MWHEELDOWN	cmd weapprev\n"
+                    "bind		I        	cmd inven\n"
+                    "bind		B        	cmd invdrop\n"
+                    "bind		M        	cmd invuse\n"
+                    "bind		[        	cmd invprev\n"
+                    "bind		]        	cmd invnext\n"
+                    "bind		H        	cmd help\n",
+                    s);
+
+        }
 #endif
 #endif
 	}

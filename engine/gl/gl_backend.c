@@ -360,6 +360,9 @@ static void GLBE_PolyOffsetShadowMap(void)
 void GL_TexEnv(GLenum mode)
 {
 #ifndef FORCESTATE
+    if (shaderstate.currenttmu < 0 || shaderstate.currenttmu >= SHADER_TMU_MAX) {
+        return;
+    }
 	if (mode != shaderstate.texenvmode[shaderstate.currenttmu])
 #endif
 	{

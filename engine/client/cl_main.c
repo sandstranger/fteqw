@@ -100,7 +100,7 @@ cvar_t	cl_splitscreen = CVARD("cl_splitscreen", "0", "Enables splitscreen suppor
 
 cvar_t	lookspring = CVARFD("lookspring","0", CVAR_ARCHIVE, "Recentre the camera when the mouse-look is released.");
 cvar_t	lookstrafe = CVARFD("lookstrafe","0", CVAR_ARCHIVE, "Mouselook enables mouse strafing.");
-cvar_t	sensitivity = CVARF("sensitivity","10", CVAR_ARCHIVE);
+cvar_t	sensitivity = CVARF("sensitivity","20", CVAR_ARCHIVE);
 
 cvar_t cl_staticsounds = CVARF("cl_staticsounds", "1", CVAR_ARCHIVE);
 

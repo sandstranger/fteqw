@@ -446,6 +446,9 @@ void R_RenderDlights (void)
 			else
 				method = r_coronas_occlusion.ival;
 
+#ifdef __ANDROID__
+            method = 2;
+#endif
 			switch(method)
 			{
 			case 0:

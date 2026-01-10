@@ -549,7 +549,11 @@ void GLDraw_Init (void)
 	if (gl_config.gles && gl_config.glversion < 3.0)
 		r_softwarebanding = false;
 
-	GL_SetupFormats();
+#ifdef __ANDROID__ // EMILE. Fix corrupt 2D textures on some devices
+    gl_load24bit.ival = 1;
+#endif
+
+    GL_SetupFormats();
 
 	R2D_Init();
 
