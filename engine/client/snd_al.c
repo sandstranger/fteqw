@@ -1253,22 +1253,21 @@ static void S_Info (void)
 */
 
 #if ANDROID
-void MuteAllAudio() {
+static void SetAudioVolume(float audioVolume) {
     if (sndcardinfo!= nullptr && sndcardinfo->handle!= nullptr) {
         const oalinfo_t *info = (oalinfo_t*) sndcardinfo->handle;
         if (info->OpenAL_Context!= nullptr) {
-            alListenerf(AL_GAIN, 0.0f);
+            alListenerf(AL_GAIN, audioVolume);
         }
     }
 }
 
+void MuteAllAudio() {
+    SetAudioVolume(0.0f);
+}
+
 void ResumeAudio() {
-    if (sndcardinfo!= nullptr && sndcardinfo->handle!= nullptr) {
-        const oalinfo_t *info = (oalinfo_t*) sndcardinfo->handle;
-        if (info->OpenAL_Context!= nullptr) {
-            alListenerf(AL_GAIN, 1.0f);
-        }
-    }
+    SetAudioVolume(1.0f);
 }
 #endif
 
