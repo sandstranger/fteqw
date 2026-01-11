@@ -1361,7 +1361,7 @@ void R2D_Console_Resize(void)
 	cheight = vid_conheight.value;
 
 #ifdef ANDROID
-    xratio = 2.7f;
+    xratio = 3.0f;
 #else
 	xratio = vid_conautoscale.value;
 #endif
