@@ -2863,7 +2863,7 @@ union programhandle_u GLSlang_CreateProgram(program_t *prog, const char *name, i
 bool useGLes2_0Version(){
     if (!libGLesVersion){
         libGLesVersion = getenv("LIBGL_ES");
-        useGLES2_0 = strcmp(getenv("LIBGL_ES"), "2") == 0;
+        useGLES2_0 = strcmp(libGLesVersion, "2") == 0;
     }
     return useGLES2_0;
 }
