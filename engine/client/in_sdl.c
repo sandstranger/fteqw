@@ -1909,6 +1909,12 @@ void Sys_SendKeyEvents(void)
 #else
 		int which;
 
+#if ANDROID
+        if (event.type == SDL_APP_DIDENTERFOREGROUND && activityOrientationChangerInstance!= nullptr){
+            activityOrientationChangerInstance();
+        }
+#endif
+
 		switch(event.type)
 		{
 #if SDL_VERSION_ATLEAST(2,0,0)
@@ -1917,9 +1923,6 @@ void Sys_SendKeyEvents(void)
                 extern void ResumeAudio();
                 vid.activeapp = true;
                 ResumeAudio();
-                if (activityOrientationChangerInstance!= nullptr){
-                    activityOrientationChangerInstance();
-                }
                 break;
 
             case SDL_APP_WILLENTERBACKGROUND :
