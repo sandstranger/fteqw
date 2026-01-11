@@ -1918,19 +1918,6 @@ void Sys_SendKeyEvents(void)
 		switch(event.type)
 		{
 #if SDL_VERSION_ATLEAST(2,0,0)
-#if ANDROID
-            case SDL_APP_WILLENTERFOREGROUND:
-                extern void ResumeAudio();
-                vid.activeapp = true;
-                ResumeAudio();
-                break;
-
-            case SDL_APP_WILLENTERBACKGROUND :
-                extern void MuteAllAudio();
-                vid.activeapp = false;
-                MuteAllAudio();
-                break;
-#endif
 		case SDL_WINDOWEVENT:
 			switch(event.window.event)
 			{

@@ -2141,11 +2141,18 @@ vfsfile_t *Sys_ForkServer(void)
 #endif
 
 #if ANDROID
+extern void ResumeAudio();
+extern void MuteAllAudio();
+
 __attribute__((used)) __attribute__((visibility("default")))
 void resumeSound() {
+    ResumeAudio();
+    vid.activeapp = true;
 }
 __attribute__((used)) __attribute__((visibility("default")))
 void pauseSound() {
+    MuteAllAudio();
+    vid.activeapp = false;
 }
 __attribute__((used)) __attribute__((visibility("default")))
 bool needToShowScreenControls() {
