@@ -1147,9 +1147,9 @@ static void OpenAL_ChannelUpdate(soundcardinfo_t *sc, channel_t *chan, chanupdat
 
 #ifdef USEEFX
 		if (chan->flags & CF_NOREVERB)	//don't do the underwater thing on static sounds. it sounds like arse with all those sources.
-			palSource3i(src, AL_AUXILIARY_SEND_FILTER, 0, 0, AL_FILTER_NULL);
+			alSource3i(src, AL_AUXILIARY_SEND_FILTER, 0, 0, AL_FILTER_NULL);
 		else
-			palSource3i(src, AL_AUXILIARY_SEND_FILTER, oali->effectslot, 0, AL_FILTER_NULL);
+			alSource3i(src, AL_AUXILIARY_SEND_FILTER, oali->effectslot, 0, AL_FILTER_NULL);
 #endif
 
 		palSourcei(src, AL_LOOPING, (!stream && ((chan->flags & CF_FORCELOOP)||(sfx->loopstart>=0&&!stream)))?AL_TRUE:AL_FALSE);
@@ -1254,11 +1254,21 @@ static void S_Info (void)
 
 #if ANDROID
 void MuteAllAudio() {
-    alListenerf(AL_GAIN, 0.0f);
+    if (sndcardinfo!= nullptr && sndcardinfo->handle!= nullptr) {
+        const oalinfo_t *info = (oalinfo_t*) sndcardinfo->handle;
+        if (info->OpenAL_Context!= nullptr) {
+            alListenerf(AL_GAIN, 0.0f);
+        }
+    }
 }
 
 void ResumeAudio() {
-    alListenerf(AL_GAIN, 1.0f);
+    if (sndcardinfo!= nullptr && sndcardinfo->handle!= nullptr) {
+        const oalinfo_t *info = (oalinfo_t*) sndcardinfo->handle;
+        if (info->OpenAL_Context!= nullptr) {
+            alListenerf(AL_GAIN, 1.0f);
+        }
+    }
 }
 #endif
 
