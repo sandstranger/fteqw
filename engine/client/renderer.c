@@ -1084,12 +1084,8 @@ void Renderer_Start(void)
 	}
 	if (!currentrendererstate.renderer)
 	{
-#ifndef ANDROID
         //we still failed. Try again, but use the default renderer.
 		Cvar_Set(&vid_renderer, "");
-#else
-        Cvar_Set(&vid_renderer, getenv("RENDER_TYPE"));
-#endif
 		Cmd_ExecuteString("vid_restart\n", RESTRICT_LOCAL);
 	}
 	if (!currentrendererstate.renderer)
