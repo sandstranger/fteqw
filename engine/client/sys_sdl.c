@@ -2145,12 +2145,12 @@ extern void ResumeAudio();
 extern void MuteAllAudio();
 
 __attribute__((used)) __attribute__((visibility("default")))
-void resumeSound() {
+void onNativeResume() {
     ResumeAudio();
     vid.activeapp = true;
 }
 __attribute__((used)) __attribute__((visibility("default")))
-void pauseSound() {
+void onNativePause() {
     MuteAllAudio();
     vid.activeapp = false;
 }
