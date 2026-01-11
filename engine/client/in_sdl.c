@@ -25,9 +25,22 @@ qboolean mouseactive;
 extern qboolean mouseusedforgui;
 extern qboolean vid_isfullscreen;
 
+#if ANDROID
+static bool controlsWereReinit = false;
+typedef void (*forceLandScapeActivityOrientationDelegate)();
+static forceLandScapeActivityOrientationDelegate activityOrientationChangerInstance = nullptr;
+#endif
+
 #if SDL_MAJOR_VERSION > 1 || (SDL_MAJOR_VERSION == 1 && SDL_MINOR_VERSION >= 3)
 #define HAVE_SDL_TEXTINPUT
 cvar_t sys_osk = CVARD("sys_osk", "0", "Enables support for text input. This will be ignored when the console has focus, but gamecode may end up with composition boxes appearing.");
+#endif
+
+#if ANDROID
+__attribute__((used)) __attribute__((visibility("default")))
+void registerForceLandscapeActivityOrientationCallback (forceLandScapeActivityOrientationDelegate instance) {
+    activityOrientationChangerInstance = instance;
+}
 #endif
 
 void IN_ActivateMouse(void)
@@ -1895,6 +1908,7 @@ void Sys_SendKeyEvents(void)
 		SDL_AppEvent(NULL, &event);
 #else
 		int which;
+
 		switch(event.type)
 		{
 #if SDL_VERSION_ATLEAST(2,0,0)
@@ -1903,6 +1917,9 @@ void Sys_SendKeyEvents(void)
                 extern void ResumeAudio();
                 vid.activeapp = true;
                 ResumeAudio();
+                if (activityOrientationChangerInstance!= nullptr){
+                    activityOrientationChangerInstance();
+                }
                 break;
 
             case SDL_APP_WILLENTERBACKGROUND :
@@ -1949,7 +1966,6 @@ void Sys_SendKeyEvents(void)
 				vid.activeapp = false;
 				break;
 #endif
-
                 case SDL_WINDOWEVENT_CLOSE:
 				Cbuf_AddText("quit prompt\n", RESTRICT_LOCAL);
 				break;
@@ -2209,10 +2225,6 @@ void Sys_SendKeyEvents(void)
 		}
 	}
 }
-
-#if ANDROID
-static bool controlsWereReinit = false;
-#endif
 
 void INS_Shutdown (void)
 {
