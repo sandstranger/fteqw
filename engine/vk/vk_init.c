@@ -7,17 +7,21 @@
 
 #include "vr.h"
 
+#ifndef ANDROID
 extern qboolean vid_isfullscreen;
+#else
+static qboolean vid_isfullscreen = true;
+#endif
 
-cvar_t vk_stagingbuffers						= CVARFD ("vk_stagingbuffers",			"", CVAR_RENDERERLATCH, "Configures which dynamic buffers are copied into gpu memory for rendering, instead of reading from shared memory. Empty for default settings.\nAccepted chars are u(niform), e(lements), v(ertex), 0(none).");
-static cvar_t vk_submissionthread				= CVARD	("vk_submissionthread",			"", "Execute submits+presents on a thread dedicated to executing them. This may be a significant speedup on certain drivers.");
+cvar_t vk_stagingbuffers						= CVARFD ("vk_stagingbuffers",			"uev", CVAR_RENDERERLATCH, "Configures which dynamic buffers are copied into gpu memory for rendering, instead of reading from shared memory. Empty for default settings.\nAccepted chars are u(niform), e(lements), v(ertex), 0(none).");
+static cvar_t vk_submissionthread				= CVARD	("vk_submissionthread",			"1", "Execute submits+presents on a thread dedicated to executing them. This may be a significant speedup on certain drivers.");
 static cvar_t vk_debug							= CVARFD("vk_debug",					"0", CVAR_VIDEOLATCH, "Register a debug handler to display driver/layer messages. 2 enables the standard validation layers.");
-static cvar_t vk_dualqueue						= CVARFD("vk_dualqueue",				"", CVAR_VIDEOLATCH, "Attempt to use a separate queue for presentation. Blank for default.");
+static cvar_t vk_dualqueue						= CVARFD("vk_dualqueue",				"0", CVAR_VIDEOLATCH, "Attempt to use a separate queue for presentation. Blank for default.");
 static cvar_t vk_busywait						= CVARD ("vk_busywait",					"1", "Force busy waiting until the GPU finishes doing its thing.");
-static cvar_t vk_waitfence						= CVARD ("vk_waitfence",				"", "Waits on fences, instead of semaphores. This is more likely to result in gpu stalls while the cpu waits.");
+static cvar_t vk_waitfence						= CVARD ("vk_waitfence",				"0", "Waits on fences, instead of semaphores. This is more likely to result in gpu stalls while the cpu waits.");
 static cvar_t vk_usememorypools					= CVARFD("vk_usememorypools",			"1",	CVAR_VIDEOLATCH, "Allocates memory pools for sub allocations. Vulkan has a limit to the number of memory allocations allowed so this should always be enabled, however at this time FTE is unable to reclaim pool memory, and would require periodic vid_restarts to flush them.");
 static cvar_t vk_khr_get_memory_requirements2	= CVARFD("vk_khr_get_memory_requirements2", "", CVAR_VIDEOLATCH, "Enable extended memory info querires");
-static cvar_t vk_khr_dedicated_allocation		= CVARFD("vk_khr_dedicated_allocation",	"", CVAR_VIDEOLATCH, "Flag vulkan memory allocations as dedicated, where applicable.");
+static cvar_t vk_khr_dedicated_allocation		= CVARFD("vk_khr_dedicated_allocation",	"1", CVAR_VIDEOLATCH, "Flag vulkan memory allocations as dedicated, where applicable.");
 static cvar_t vk_khr_push_descriptor			= CVARFD("vk_khr_push_descriptor",		"", CVAR_VIDEOLATCH, "Enables better descriptor streaming.");
 static cvar_t vk_amd_rasterization_order		= CVARFD("vk_amd_rasterization_order",	"",	CVAR_VIDEOLATCH, "Enables the use of relaxed rasterization ordering, for a small speedup at the minor risk of a little zfighting.");
 #ifdef VK_KHR_fragment_shading_rate

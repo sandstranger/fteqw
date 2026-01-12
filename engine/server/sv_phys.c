@@ -2177,6 +2177,10 @@ SV_RunEntity
 */
 void WPhys_RunEntity (world_t *w, wedict_t *ent)
 {
+    if (!ent || !w){
+        return;
+    }
+
 #ifdef HEXEN2
 	wedict_t	*movechain;
 	vec3_t	initial_origin = {0},initial_angle = {0};
@@ -2185,6 +2189,7 @@ void WPhys_RunEntity (world_t *w, wedict_t *ent)
 
 #ifndef CLIENTONLY
 	edict_t *svent = (edict_t*)ent;
+
 	if (ent->entnum > 0 && ent->entnum <= sv.allocated_client_slots && w == &sv.world)
 	{	//a client woo.
 		qboolean readyforjump = false;
@@ -2389,7 +2394,7 @@ void WPhys_RunNewmis (world_t *w)
 {
 	wedict_t	*ent;
 
-	if (!w->g.newmis)	//newmis variable is not exported.
+	if (!w|| !w->g.newmis)	//newmis variable is not exported.
 		return;
 
 	if (!sv_gameplayfix_multiplethinks.ival)
@@ -2398,6 +2403,11 @@ void WPhys_RunNewmis (world_t *w)
 	if (!*w->g.newmis)
 		return;
 	ent = PROG_TO_WEDICT(w->progs, *w->g.newmis);
+
+    if (!ent){
+        return;
+    }
+
 	host_frametime = 0.05;
 	*w->g.newmis = 0;
 
@@ -2453,6 +2463,10 @@ Run an individual physics frame. This might be run multiple times in one frame i
 */
 void World_Physics_Frame(world_t *w)
 {
+    if (!w){
+        return;
+    }
+
 	int i;
 	qboolean retouch;
 	wedict_t *ent;
@@ -2471,11 +2485,11 @@ void World_Physics_Frame(world_t *w)
 		for (i=0 ; i<w->num_edicts ; i++)
 		{
 			ent = (wedict_t*)EDICT_NUM_PB(w->progs, i);
-			if (ED_ISFREE(ent))
+			if (ED_ISFREE(ent) || !ent)
 				continue;
 
-			WPhys_RunThink (w, ent);
-		}
+            WPhys_RunThink (w, ent);
+        }
 		return;
 	}
 	/*physics mode 2 = normal movetypes*/
@@ -2489,7 +2503,7 @@ void World_Physics_Frame(world_t *w)
 	for (i=0 ; i<w->num_edicts ; i++)
 	{
 		ent = (wedict_t*)EDICT_NUM_PB(w->progs, i);
-		if (ED_ISFREE(ent))
+		if (ED_ISFREE(ent) || !ent)
 			continue;
 
 		if (retouch)
