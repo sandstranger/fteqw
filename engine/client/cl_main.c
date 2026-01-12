@@ -3024,7 +3024,7 @@ void CL_PakDownloads(int mode)
 	char *s = cl.serverpackhashes;
 	int i;
 
-	if (!cl.serverpakschanged || !mode)
+	if (!cl.serverpakschanged || !mode || !cl.serverpacknames)
 		return;
 
 	Cmd_TokenizeString(cl.serverpacknames, false, false);

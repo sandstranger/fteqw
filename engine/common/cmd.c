@@ -2028,6 +2028,9 @@ Parses the given string into command line tokens, stopping at the \n
 */
 const char *Cmd_TokenizeString (const char *text, qboolean expandmacros, qboolean qctokenize)
 {
+    if (!text) {
+        return "";
+    }
 	int		i;
 	const char *args = NULL;
 
