@@ -7690,18 +7690,24 @@ void CL_ExecInitialConfigs(char *resetcommand, qboolean fullvidrestart)
 #endif
 
 	def = COM_FDepthFile("default.cfg", true);	//q2/q3/tc
-#ifdef QUAKETC
-	Cbuf_AddText ("exec default.cfg\n", RESTRICT_LOCAL);
-	if (COM_FDepthFile ("config.cfg", true) <= def)
-		Cbuf_AddText ("exec config.cfg\n", RESTRICT_LOCAL);
-	if (COM_FCheckExists ("autoexec.cfg"))
-		Cbuf_AddText ("exec autoexec.cfg\n", RESTRICT_LOCAL);
+#if ANDROID
+    if (def!=FDEPTH_MISSING) {
+        Cbuf_AddText("exec autoexec.cfg\n", RESTRICT_LOCAL);
+    }
+
+    Cbuf_AddText ("exec default.cfg\n", RESTRICT_LOCAL);
+
+    if (fs_manifest->mainconfig && fs_manifest->mainconfig[0])
+    {
+        char cmd[1024];
+        snprintf(cmd, sizeof(cmd), "exec %s\n", fs_manifest->mainconfig);
+        Cbuf_AddText (cmd, RESTRICT_LOCAL);
+    }
 #else
-	//who should we imitate?
+    //who should we imitate?
 	qrc = COM_FDepthFile("quake.rc", true);	//q1
 	hrc = COM_FDepthFile("hexen.rc", true);	//h2
 
-#ifndef ANDROID
 	if (qrc <= def && qrc <= hrc && qrc!=FDEPTH_MISSING)
 	{
 		Cbuf_AddText ("exec quake.rc\n", RESTRICT_LOCAL);
@@ -7725,21 +7731,6 @@ void CL_ExecInitialConfigs(char *resetcommand, qboolean fullvidrestart)
 		if (def!=FDEPTH_MISSING)
 			Cbuf_AddText ("exec autoexec.cfg\n", RESTRICT_LOCAL);
 	}
-
-#else
-    if (def!=FDEPTH_MISSING) {
-        Cbuf_AddText("exec autoexec.cfg\n", RESTRICT_LOCAL);
-    }
-
-    Cbuf_AddText ("exec default.cfg\n", RESTRICT_LOCAL);
-
-    if (fs_manifest->mainconfig && fs_manifest->mainconfig[0])
-    {
-        char cmd[1024];
-        snprintf(cmd, sizeof(cmd), "exec %s\n", fs_manifest->mainconfig);
-        Cbuf_AddText (cmd, RESTRICT_LOCAL);
-    }
-#endif
 #endif
 #ifdef QUAKESPYAPI
 	if (COM_FCheckExists ("frontend.cfg"))
