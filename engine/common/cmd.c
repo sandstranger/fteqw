@@ -715,7 +715,7 @@ static const char *replacementq1binds =
 	"bind		F10	menu_quit\n"
 //	"bind		F11	+zoom\n"
 	"bind		F12	screenshot\n"
-
+    "seta sensitivity \"12.0\"\n"
 	"bind		volup		\"if $volume < 0.9 then inc volume 0.1 else if $volume < 1.0 then set volume 1\"\n"
 	"bind		voldown		\"inc volume -0.1; if $volume < 0 then set volume 0\"\n"
 	;
@@ -732,6 +732,7 @@ static const char *replacementq2binds =
         "bind		[        	cmd invprev\n"
         "bind		]        	cmd invnext\n"
         "bind		ENTER		+attack\n"
+        "seta sensitivity \"12.0\"\n"
         "bind		F1        	cmd help\n";
 
 static const char *replacementhexen2binds =
@@ -773,10 +774,12 @@ static const char *replacementhexen2binds =
         "bind		U           impulse 114\n"
         "bind		SPACE       +jump\n"
         "bind		V           +voip\n"
+        "seta sensitivity \"12.0\"\n"
         "cl_forwardspeed 400\n";
 
 static const char *replacementq3binds =
         "%s\n"
+        "seta sensitivity \"12.0\"\n"
         "bind		ENTER		+attack\n";
 
 static const char *defaulttouchcfg =
@@ -835,7 +838,7 @@ static void Cmd_Exec_f (void)
 		{
 			//fte writes to a different config file from that specified by the quake.rc, to avoid conflicts.
 			//so make sure that fte's settings override those from whatever other engine that wrote the legacy config.cfg file.
-			if (!strcmp(name, "config.cfg") || !strcmp(name, "q3config.cfg"))
+            if (!strcmp(name, "config.cfg") || !strcmp(name, "q3config.cfg"))
 			{
 				int cfgdepth = COM_FDepthFile(name, true);
 				int defdepth = COM_FDepthFile("default.cfg", true);
@@ -884,6 +887,12 @@ static void Cmd_Exec_f (void)
 		return;
 	}
 
+#if ANDROID
+    if (strcmp(name,"config.cfg") == 0){
+        return;
+    }
+#endif
+
 	if (FS_FLocateFile(name, FSLF_IFFOUND|FSLF_IGNOREPURE, &loc) || FS_FLocateFile(va("%s.cfg", name), FSLF_IFFOUND, &loc))
 	{
 		file = FS_OpenReadLocation(name, &loc);
@@ -904,23 +913,7 @@ static void Cmd_Exec_f (void)
 #if defined(HAVE_LEGACY) && defined(HAVE_CLIENT)
 	else if (!strcmp(name, "default.cfg"))	//the q1 rerelease lacks a default.cfg (which I suppose is kinda handy, but oh well)
 	{
-#if ANDROID
-        const char *activeGame = getenv("ACTIVE_GAME");
-        if (strcmp(activeGame,"Quake") == 0) {
-            f = Z_StrDup(replacementq1binds);
-        }
-        else if ( strcmp(activeGame,"Hexen2") == 0){
-            f = Z_StrDup(replacementhexen2binds);
-        }
-        else if (strcmp(activeGame,"Quake2") == 0){
-            f = Z_StrDup(replacementq2binds);
-        }
-        else if (strcmp(activeGame,"Quake3") == 0){
-            f = Z_StrDup(replacementq3binds);
-        }
-#else
         f = Z_StrDup(replacementq1binds);
-#endif
 		untrusted = false;
 		l = 0;
 	}
@@ -990,25 +983,20 @@ static void Cmd_Exec_f (void)
 		if (fs_manifest->defaultoverrides)
 			Cbuf_InsertText (fs_manifest->defaultoverrides, level, false);
 
-#if ANDROID
-        const char *activeGame = getenv("ACTIVE_GAME");
-#else
-        const char *activeGame = "";
-#endif
 #if defined(HAVE_LEGACY) && defined(HAVE_CLIENT)
-		if (strcmp(activeGame,"Quake") == 0 || (l == 1914 && CalcHashInt(&hash_md4, f, l) == 0x2d7b72b9))
+        const int activeGame = M_GameType();
+        if (activeGame == MGT_QUAKE1 || (l == 1914 && CalcHashInt(&hash_md4, f, l) == 0x2d7b72b9))
 			s = (char*)replacementq1binds;
 #ifdef HEXEN2
-		else if ( (strcmp(activeGame,"Hexen2")) == 0 || (l == 1875 && CalcHashInt(&hash_md4, f, l) == 0x27b4d813))
+		else if (activeGame == MGT_HEXEN2 || (l == 1875 && CalcHashInt(&hash_md4, f, l) == 0x27b4d813))
 		{	//hexen2 has weird stuff in there. just give it wasd.
 			s = va( replacementhexen2binds, s);
 		}
 #endif
-        else if (strcmp(activeGame,"Quake2") == 0) {
+        else if (activeGame == MGT_QUAKE2) {
             s = va(replacementq2binds,s);
-
         }
-        else if (strcmp(activeGame,"Quake3") == 0){
+        else{
             s = va(replacementq3binds,s);
         }
 #endif

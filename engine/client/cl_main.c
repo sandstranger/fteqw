@@ -100,7 +100,7 @@ cvar_t	cl_splitscreen = CVARD("cl_splitscreen", "0", "Enables splitscreen suppor
 
 cvar_t	lookspring = CVARFD("lookspring","0", CVAR_ARCHIVE, "Recentre the camera when the mouse-look is released.");
 cvar_t	lookstrafe = CVARFD("lookstrafe","0", CVAR_ARCHIVE, "Mouselook enables mouse strafing.");
-cvar_t	sensitivity = CVARF("sensitivity","20", CVAR_ARCHIVE);
+cvar_t	sensitivity = CVARF("sensitivity","12", CVAR_ARCHIVE);
 
 cvar_t cl_staticsounds = CVARF("cl_staticsounds", "1", CVAR_ARCHIVE);
 
@@ -7701,6 +7701,7 @@ void CL_ExecInitialConfigs(char *resetcommand, qboolean fullvidrestart)
 	qrc = COM_FDepthFile("quake.rc", true);	//q1
 	hrc = COM_FDepthFile("hexen.rc", true);	//h2
 
+#ifndef ANDROID
 	if (qrc <= def && qrc <= hrc && qrc!=FDEPTH_MISSING)
 	{
 		Cbuf_AddText ("exec quake.rc\n", RESTRICT_LOCAL);
@@ -7724,6 +7725,21 @@ void CL_ExecInitialConfigs(char *resetcommand, qboolean fullvidrestart)
 		if (def!=FDEPTH_MISSING)
 			Cbuf_AddText ("exec autoexec.cfg\n", RESTRICT_LOCAL);
 	}
+
+#else
+    if (def!=FDEPTH_MISSING) {
+        Cbuf_AddText("exec autoexec.cfg\n", RESTRICT_LOCAL);
+    }
+
+    Cbuf_AddText ("exec default.cfg\n", RESTRICT_LOCAL);
+
+    if (fs_manifest->mainconfig && fs_manifest->mainconfig[0])
+    {
+        char cmd[1024];
+        snprintf(cmd, sizeof(cmd), "exec %s\n", fs_manifest->mainconfig);
+        Cbuf_AddText (cmd, RESTRICT_LOCAL);
+    }
+#endif
 #endif
 #ifdef QUAKESPYAPI
 	if (COM_FCheckExists ("frontend.cfg"))
