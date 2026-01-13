@@ -719,6 +719,66 @@ static const char *replacementq1binds =
 	"bind		volup		\"if $volume < 0.9 then inc volume 0.1 else if $volume < 1.0 then set volume 1\"\n"
 	"bind		voldown		\"inc volume -0.1; if $volume < 0 then set volume 0\"\n"
 	;
+
+static const char *replacementq2binds =
+        "%s\n"
+        "bind		MWHEELUP	cmd weapnext\n"
+        "bind		MWHEELDOWN	cmd weapprev\n"
+        "bind		I        	cmd inven\n"
+        "bind		С        	+movedown\n"
+        "bind		SPACE       +moveup\n"
+        "bind		B        	cmd invdrop\n"
+        "bind		E        	cmd invuse\n"
+        "bind		[        	cmd invprev\n"
+        "bind		]        	cmd invnext\n"
+        "bind		ENTER		+attack\n"
+        "bind		F1        	cmd help\n";
+
+static const char *replacementhexen2binds =
+        "%s\n"
+        "bind w +forward\n"
+        "bind a +moveleft\n"
+        "bind s +back\n"
+        "bind d +moveright\n"
+
+        "bind		ENTER		+attack\n"
+        "bind mouse3 +forward\n" //mneh
+        "bind x +lookup\n"	//moved to x instead of a
+        "bind		E        	invuse\n"
+        "bind		B        	impulse 44\n"
+        "bind		Q        	+moveup\n"
+        "bind		Z        	+movedown\n"
+        "bind		F2        	+showdm\n"
+        "bind		C        	+crouch\n"
+        "bind		F        	impulse 13\n"
+        "bind		MWHEELUP    impulse 10\n"
+        "bind		F1          +infoplaque\n"
+        "bind		[           invleft\n"
+        "bind		]           invright\n"
+        "bind		I           +showinfo\n"
+        "bind		F3           impulse 100\n"
+        "bind		O           impulse 101\n"
+        "bind		P           impulse 102\n"
+        "bind		G           impulse 103\n"
+        "bind		H           impulse 104\n"
+        "bind		J           impulse 105\n"
+        "bind		K           impulse 106\n"
+        "bind		L           impulse 107\n"
+        "bind		F6          impulse 108\n"
+        "bind		R           impulse 109\n"
+        "bind		T           impulse 110\n"
+        "bind		F4          impulse 111\n"
+        "bind		N           impulse 112\n"
+        "bind		M           impulse 113\n"
+        "bind		U           impulse 114\n"
+        "bind		SPACE       +jump\n"
+        "bind		V           +voip\n"
+        "cl_forwardspeed 400\n";
+
+static const char *replacementq3binds =
+        "%s\n"
+        "bind		ENTER		+attack\n";
+
 static const char *defaulttouchcfg =
 	"showpic_removeall\n"
 //	"sv_aim 0.90\n" //quake style, avoid needing to pitch too much
@@ -844,7 +904,23 @@ static void Cmd_Exec_f (void)
 #if defined(HAVE_LEGACY) && defined(HAVE_CLIENT)
 	else if (!strcmp(name, "default.cfg"))	//the q1 rerelease lacks a default.cfg (which I suppose is kinda handy, but oh well)
 	{
-		f = Z_StrDup(replacementq1binds);
+#if ANDROID
+        const char *activeGame = getenv("ACTIVE_GAME");
+        if (strcmp(activeGame,"Quake") == 0) {
+            f = Z_StrDup(replacementq1binds);
+        }
+        else if ( strcmp(activeGame,"Hexen2") == 0){
+            f = Z_StrDup(replacementhexen2binds);
+        }
+        else if (strcmp(activeGame,"Quake2") == 0){
+            f = Z_StrDup(replacementq2binds);
+        }
+        else if (strcmp(activeGame,"Quake3") == 0){
+            f = Z_StrDup(replacementq3binds);
+        }
+#else
+        f = Z_StrDup(replacementq1binds);
+#endif
 		untrusted = false;
 		l = 0;
 	}
@@ -925,74 +1001,16 @@ static void Cmd_Exec_f (void)
 #ifdef HEXEN2
 		else if ( (strcmp(activeGame,"Hexen2")) == 0 || (l == 1875 && CalcHashInt(&hash_md4, f, l) == 0x27b4d813))
 		{	//hexen2 has weird stuff in there. just give it wasd.
-			s = va(
-				"%s\n"
-				"bind w +forward\n"
-				"bind a +moveleft\n"
-				"bind s +back\n"
-				"bind d +moveright\n"
-
-                "bind		ENTER		+attack\n"
-                "bind mouse3 +forward\n" //mneh
-				"bind x +lookup\n"	//moved to x instead of a
-                "bind		E        	invuse\n"
-                "bind		B        	impulse 44\n"
-                "bind		Q        	+moveup\n"
-                "bind		Z        	+movedown\n"
-                "bind		F2        	+showdm\n"
-                "bind		C        	+crouch\n"
-                "bind		F        	impulse 13\n"
-                "bind		MWHEELUP    impulse 10\n"
-                "bind		F1          +infoplaque\n"
-                "bind		[           invleft\n"
-                "bind		]           invright\n"
-                "bind		I           +showinfo\n"
-                "bind		F3           impulse 100\n"
-                "bind		O           impulse 101\n"
-                "bind		P           impulse 102\n"
-                "bind		G           impulse 103\n"
-                "bind		H           impulse 104\n"
-                "bind		J           impulse 105\n"
-                "bind		K           impulse 106\n"
-                "bind		L           impulse 107\n"
-                "bind		F6          impulse 108\n"
-                "bind		R           impulse 109\n"
-                "bind		T           impulse 110\n"
-                "bind		F4          impulse 111\n"
-                "bind		N           impulse 112\n"
-                "bind		M           impulse 113\n"
-                "bind		U           impulse 114\n"
-                "bind		SPACE       +jump\n"
-                "bind		V           +voip\n"
-				"cl_forwardspeed 400\n" //hexen2's autorun state.
-			, s);
+			s = va( replacementhexen2binds, s);
 		}
 #endif
-#if ANDROID
         else if (strcmp(activeGame,"Quake2") == 0) {
-            s = va(
-                    "%s\n"
-                    "bind		MWHEELUP	cmd weapnext\n"
-                    "bind		MWHEELDOWN	cmd weapprev\n"
-                    "bind		I        	cmd inven\n"
-                    "bind		С        	+movedown\n"
-                    "bind		SPACE       +moveup\n"
-                    "bind		B        	cmd invdrop\n"
-                    "bind		E        	cmd invuse\n"
-                    "bind		[        	cmd invprev\n"
-                    "bind		]        	cmd invnext\n"
-                    "bind		ENTER		+attack\n"
-                    "bind		F1        	cmd help\n",
-                    s);
+            s = va(replacementq2binds,s);
 
         }
         else if (strcmp(activeGame,"Quake3") == 0){
-            s = va(
-                    "%s\n"
-                    "bind		ENTER		+attack\n",
-                    s);
+            s = va(replacementq3binds,s);
         }
-#endif
 #endif
 	}
 #ifndef QUAKETC
