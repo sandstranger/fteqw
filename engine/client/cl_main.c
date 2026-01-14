@@ -7691,11 +7691,17 @@ void CL_ExecInitialConfigs(char *resetcommand, qboolean fullvidrestart)
 
 	def = COM_FDepthFile("default.cfg", true);	//q2/q3/tc
 #if ANDROID
+    Cbuf_AddText ("exec default.cfg\n", RESTRICT_LOCAL);
+    int q3cfg = COM_FDepthFile ("q3config.cfg", true);
+
+    if (q3cfg <= def && q3cfg!=FDEPTH_MISSING)
+        Cbuf_AddText ("exec q3config.cfg\n", RESTRICT_LOCAL);
+    else //if (cfg <= def && cfg!=0x7fffffff)
+        Cbuf_AddText ("exec config.cfg\n", RESTRICT_LOCAL);
+
     if (def!=FDEPTH_MISSING) {
         Cbuf_AddText("exec autoexec.cfg\n", RESTRICT_LOCAL);
     }
-
-    Cbuf_AddText ("exec default.cfg\n", RESTRICT_LOCAL);
 
     if (fs_manifest->mainconfig && fs_manifest->mainconfig[0])
     {
