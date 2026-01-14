@@ -780,8 +780,8 @@ static const char *replacementhexen2binds =
 static const char *replacementq3binds =
         "%s\n"
         "seta sensitivity \"12.0\"\n"
+        "bind       e           +button2\n"
         "bind		ENTER		+attack\n";
-
 static const char *defaulttouchcfg =
 	"showpic_removeall\n"
 //	"sv_aim 0.90\n" //quake style, avoid needing to pitch too much

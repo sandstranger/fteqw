@@ -377,7 +377,7 @@ void M_Menu_Options_f (void)
 		MB_COMBOCVAR("View Projection", r_projection, projections, projectionvalues, NULL),
 		MB_COMBOCVAR("FOV Mode", scr_fov_mode, fovmodes, fovmodevalues, NULL),
 		MB_SLIDER("Field of View", scr_fov, 70, 360, 5, NULL),
-		MB_SLIDER("Mouse Speed", sensitivity, 1, 20, 0.2, NULL),
+		MB_SLIDER("Mouse Speed", sensitivity, 1, 25, 0.2, NULL),
 		MB_SLIDER("Crosshair", crosshair, 0, 22, 1, NULL), // move this to hud setup?
 		MB_CHECKBOXFUNC("Always Run", M_Options_AlwaysRun, 0, "Set movement to run at fastest speed by default."),
 		MB_CHECKBOXFUNC("Invert Mouse", M_Options_InvertMouse, 0, "Invert vertical mouse movement."),
