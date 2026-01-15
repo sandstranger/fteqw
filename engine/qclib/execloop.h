@@ -37,7 +37,7 @@
 
 
 
-#define QCFAULT return (prinst.pr_xstatement=(st-pr_statements)-1),PR_HandleFault
+#define QCFAULT(...) do { return 0; } while(0)
 #define EVAL_FLOATISTRUE(ev) ((ev)->_int & 0x7fffffff) //mask away sign bit. This avoids using denormalized floats.
 
 #define A_RSHIFT_I(x,y) ((x < 0) ? ~(~(x) >> (y)) : ((x) >> (y)))	//C leaves it undefined whether signed rshift is arithmatic or logical. gcc should be smart enough to fold this to the proper signed instruction at least on x86.

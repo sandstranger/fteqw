@@ -21,7 +21,7 @@
 #define HunkAlloc BADGDFG sdfhhsf FHS
 
 
-#define Host_Error Sys_Error
+#define Host_Error(...) Sys_Printf(__VA_ARGS__)
 
 // I put the following here to resolve "undefined reference to `__imp__vsnprintf'" with MinGW64 ~ Moodles
 #if 0//def _WIN32
