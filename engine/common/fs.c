@@ -47,7 +47,7 @@ static char *vidfilenames[] =	//list of filenames to check to see if graphics st
 #define QUAKESPASMSUCKS "set mod_h2holey_bugged 1\n"
 #define QUAKEOVERRIDES "set sv_listen_nq 2\nset v_gammainverted 1\nset cl_download_mapsrc \"https://maps.quakeworld.nu/all/\"\nset con_stayhidden 0\nset allow_download_pakcontents 2\nset allow_download_refpackages 0\nset r_meshpitch -1\nr_sprite_backfacing 1\nset sv_bigcoords \"\"\nmap_autoopenportals 1\n"  "sv_port "STRINGIFY(PORT_QWSERVER)" "STRINGIFY(PORT_NQSERVER)"\n" ZFIXHACK EZQUAKECOMPETITIVE QUAKESPASMSUCKS
 #define QCFG "plug_load ffmpeg;plug_load bullet\n" "//schemes quake qw\n"   QUAKEOVERRIDES "set com_parseutf8 0\n" QRPCOMPAT
-#define EZCFG "plug_load ffmpeg;plug_load bullet\n" "//mainconfig config\n" QCFG "fps_preset fast\n"
+#define EZCFG "//mainconfig config\n" QCFG "fps_preset fast\n"
 #define KEXCFG "plug_load ffmpeg;plug_load bullet\n" "//schemes quake_r2\n" QUAKEOVERRIDES "set com_parseutf8 1\nset campaign 0\nset net_enable_dtls 1\nset sv_mintic 0.016666667\nset sv_maxtic $sv_mintic\nset cl_netfps 60\n"
 /*NetQuake reconfiguration, to make certain people feel more at home...*/
 #define NQCFG "plug_load ffmpeg;plug_load bullet\n" "//disablehomedir 1\n//mainconfig ftenq\n" QCFG "cfg_save_auto 1\nfps_preset nq\nset cl_loopbackprotocol auto\ncl_sbar 1\nset plug_sbar 0\nset sv_port "STRINGIFY(PORT_NQSERVER)"\ncl_defaultport "STRINGIFY(PORT_NQSERVER)"\nset m_preset_chosen 1\nset vid_wait 1\nset cl_demoreel 1\n"
