@@ -50,7 +50,7 @@ static char *vidfilenames[] =	//list of filenames to check to see if graphics st
 #define EZCFG "//mainconfig config\n" QCFG "fps_preset fast\n"
 #define KEXCFG "plug_load ffmpeg;plug_load bullet\n" "//schemes quake_r2\n" QUAKEOVERRIDES "set com_parseutf8 1\nset campaign 0\nset net_enable_dtls 1\nset sv_mintic 0.016666667\nset sv_maxtic $sv_mintic\nset cl_netfps 60\n"
 /*NetQuake reconfiguration, to make certain people feel more at home...*/
-#define NQCFG "plug_load ffmpeg;plug_load bullet\n" "//disablehomedir 1\n//mainconfig ftenq\n" QCFG "cfg_save_auto 1\nfps_preset nq\nset cl_loopbackprotocol auto\ncl_sbar 1\nset plug_sbar 0\nset sv_port "STRINGIFY(PORT_NQSERVER)"\ncl_defaultport "STRINGIFY(PORT_NQSERVER)"\nset m_preset_chosen 1\nset vid_wait 1\nset cl_demoreel 1\n"
+#define NQCFG "//disablehomedir 1\n//mainconfig ftenq\n" QCFG "cfg_save_auto 1\nfps_preset nq\nset cl_loopbackprotocol auto\ncl_sbar 1\nset plug_sbar 0\nset sv_port "STRINGIFY(PORT_NQSERVER)"\ncl_defaultport "STRINGIFY(PORT_NQSERVER)"\nset m_preset_chosen 1\nset vid_wait 1\nset cl_demoreel 1\n"
 #define SPASMCFG NQCFG "fps_preset builtin_spasm\nset cl_demoreel 0\ncl_sbar 2\nset gl_load24bit 1\n"
 #define FITZCFG NQCFG "fps_preset builtin_spasm\ncl_sbar 2\nset gl_load24bit 1\n"
 #define TENEBRAECFG NQCFG "fps_preset builtin_tenebrae\n"
