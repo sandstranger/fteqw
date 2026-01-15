@@ -1730,7 +1730,11 @@ static ALuint OpenAL_LoadEffect(const struct reverbproperties_s *reverb)
 #endif
 
 #ifdef HAVE_MIXER
+#if ANDROID
+#define CHUNKSAMPLES 4096
+#else
 #define CHUNKSAMPLES 1024
+#endif
 static void *OAQM_LockBuffer (soundcardinfo_t *sc, unsigned int *sampidx)
 {
 	oalinfo_t *oali = sc->handle;
@@ -1883,12 +1887,8 @@ static qboolean QDECL OpenAL_InitCard2(soundcardinfo_t *sc, const char *devname,
 		sc->GetDMAPos	= OAQM_GetDMAPos;
 		sc->Submit		= OAQM_Submit;
 
-		sc->sn.numchannels = bound(1, sc->sn.numchannels, 2);
-#if ANDROID
-        sc->sn.samples = sc->sn.speed*sc->sn.numchannels;
-#else
-		sc->sn.samples = CHUNKSAMPLES*sc->sn.numchannels;
-#endif
+        sc->sn.numchannels = bound(1, sc->sn.numchannels, 2);
+        sc->sn.samples = CHUNKSAMPLES*sc->sn.numchannels;
 #ifdef MIXER_F32
 		if (sc->sn.samplebytes == 4 && oali->canfloataudio)
 		{
