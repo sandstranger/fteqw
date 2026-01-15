@@ -700,8 +700,8 @@ static const char *replacementq1binds =
 	"bind		6			impulse 6\n"
 	"bind		7			impulse 7\n"
 	"bind		8			impulse 8\n"
-//	"bind		9			impulse 9\n"
-//	"bind		0			impulse 10\n"
+	"bind		9			impulse 10\n"
+	"bind		0			impulse 0\n"
 
 //	"bind		F1	help\n"
 	"bind		F2	menu_save\n"
@@ -713,7 +713,7 @@ static const char *replacementq1binds =
 //	"bind		F8
 	"bind		F9	load quick\n"
 	"bind		F10	menu_quit\n"
-//	"bind		F11	+zoom\n"
+	"bind		F11	        \"zoom_in\"\n"
 	"bind		F12	screenshot\n"
     "seta sensitivity \"12.0\"\n"
 	"bind		volup		\"if $volume < 0.9 then inc volume 0.1 else if $volume < 1.0 then set volume 1\"\n"
