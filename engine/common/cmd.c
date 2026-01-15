@@ -887,7 +887,13 @@ static void Cmd_Exec_f (void)
 		return;
 	}
 
-	if (FS_FLocateFile(name, FSLF_IFFOUND|FSLF_IGNOREPURE, &loc) || FS_FLocateFile(va("%s.cfg", name), FSLF_IFFOUND, &loc))
+#if ANDROID
+    if (strcmp(name,"config.cfg") == 0 || strcmp(name,"q3config.cfg") == 0){
+        return;
+    }
+#endif
+
+    if (FS_FLocateFile(name, FSLF_IFFOUND|FSLF_IGNOREPURE, &loc) || FS_FLocateFile(va("%s.cfg", name), FSLF_IFFOUND, &loc))
 	{
 		file = FS_OpenReadLocation(name, &loc);
 		if (!file)

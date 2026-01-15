@@ -7690,20 +7690,6 @@ void CL_ExecInitialConfigs(char *resetcommand, qboolean fullvidrestart)
 #endif
 
 	def = COM_FDepthFile("default.cfg", true);	//q2/q3/tc
-#if ANDROID
-    Cbuf_AddText ("exec default.cfg\n", RESTRICT_LOCAL);
-
-    if (def!=FDEPTH_MISSING) {
-        Cbuf_AddText("exec autoexec.cfg\n", RESTRICT_LOCAL);
-    }
-
-    if (fs_manifest->mainconfig && fs_manifest->mainconfig[0])
-    {
-        char cmd[1024];
-        snprintf(cmd, sizeof(cmd), "exec %s\n", fs_manifest->mainconfig);
-        Cbuf_AddText (cmd, RESTRICT_LOCAL);
-    }
-#else
     //who should we imitate?
 	qrc = COM_FDepthFile("quake.rc", true);	//q1
 	hrc = COM_FDepthFile("hexen.rc", true);	//h2
@@ -7731,7 +7717,14 @@ void CL_ExecInitialConfigs(char *resetcommand, qboolean fullvidrestart)
 		if (def!=FDEPTH_MISSING)
 			Cbuf_AddText ("exec autoexec.cfg\n", RESTRICT_LOCAL);
 	}
-#endif
+
+    if (fs_manifest->mainconfig && fs_manifest->mainconfig[0])
+    {
+        char cmd[1024];
+        snprintf(cmd, sizeof(cmd), "exec %s\n", fs_manifest->mainconfig);
+        Cbuf_AddText (cmd, RESTRICT_LOCAL);
+    }
+
 #ifdef QUAKESPYAPI
 	if (COM_FCheckExists ("frontend.cfg"))
 		Cbuf_AddText ("exec frontend.cfg\n", RESTRICT_LOCAL);

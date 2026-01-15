@@ -1731,7 +1731,7 @@ static ALuint OpenAL_LoadEffect(const struct reverbproperties_s *reverb)
 
 #ifdef HAVE_MIXER
 #if ANDROID
-#define CHUNKSAMPLES 4096
+#define CHUNKSAMPLES 6144
 #else
 #define CHUNKSAMPLES 1024
 #endif

@@ -1918,12 +1918,13 @@ void R2D_DrawCrosshair(void)
 	float sx, sy, sizex, sizey;
 
 	float size;
+    const int crosshair_value = crosshair.ival;
 
-	if (crosshair.ival < 1)
+	if (crosshair_value == 0)
 		return;
 
 	// old style
-	if (crosshair.ival == 1 && !crosshairimage.string[0])
+	if (crosshair_value == 1 || crosshair_value < 0 && !crosshairimage.string[0])
 	{
 		// adjust console crosshair scale to match default
 		size = crosshairsize.value;
