@@ -733,6 +733,9 @@ static const char *replacementq2binds =
         "bind		[        	cmd invprev\n"
         "bind		]        	cmd invnext\n"
         "bind		ENTER		+attack\n"
+        "bind		F11	        \"zoom_in\"\n"
+        "alias zoom_in \"fov 90;wait;fov 70;wait;fov 50;wait;fov 30;wait;fov 10;wait;fov 5;bind F11 zoom_out\"\n"
+        "alias zoom_out \"fov 5;wait;fov 10;wait;fov 30;wait;fov 50;wait;fov 70;wait;fov 90;bind F11 zoom_in\"\n"
         "seta sensitivity \"12.0\"\n"
         "bind		F1        	cmd help\n";
 
@@ -776,12 +779,18 @@ static const char *replacementhexen2binds =
         "bind		SPACE       +jump\n"
         "bind		V           +voip\n"
         "seta sensitivity \"12.0\"\n"
+        "bind		F11	        \"zoom_in\"\n"
+        "alias zoom_in \"fov 90;wait;fov 70;wait;fov 50;wait;fov 30;wait;fov 10;wait;fov 5;bind F11 zoom_out\"\n"
+        "alias zoom_out \"fov 5;wait;fov 10;wait;fov 30;wait;fov 50;wait;fov 70;wait;fov 90;bind F11 zoom_in\"\n"
         "cl_forwardspeed 400\n";
 
 static const char *replacementq3binds =
         "%s\n"
         "seta sensitivity \"12.0\"\n"
         "bind       e           +button2\n"
+        "bind		F11	        \"zoom_in\"\n"
+        "alias zoom_in \"fov 90;wait;fov 70;wait;fov 50;wait;fov 30;wait;fov 10;wait;fov 5;bind F11 zoom_out\"\n"
+        "alias zoom_out \"fov 5;wait;fov 10;wait;fov 30;wait;fov 50;wait;fov 70;wait;fov 90;bind F11 zoom_in\"\n"
         "bind		ENTER		+attack\n";
 static const char *defaulttouchcfg =
 	"showpic_removeall\n"
@@ -1010,9 +1019,9 @@ static void Cmd_Exec_f (void)
 #if defined(HAVE_LEGACY) && defined(HAVE_CLIENT)
         const int activeGame = M_GameType();
         RemoveLine("seta sensitivity",s);
+        RemoveLine("alias zoom_in",s);
+        RemoveLine("alias zoom_out",s);
         if (activeGame == MGT_QUAKE1 || (l == 1914 && CalcHashInt(&hash_md4, f, l) == 0x2d7b72b9)) {
-            RemoveLine("alias zoom_in",s);
-            RemoveLine("alias zoom_out",s);
             s = va( replacementq1binds, s);
         }
 #ifdef HEXEN2
