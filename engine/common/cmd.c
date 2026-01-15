@@ -655,8 +655,7 @@ void Cmd_StuffCmds (void)
 
 #if defined(HAVE_LEGACY) && defined(HAVE_CLIENT)
 static const char *replacementq1binds =
-	"unbindall\n"
-
+    "%s\n"
 	"bind		`			toggleconsole\n"
 	"bind		w			+forward\n"
 	"bind		s			+back\n"
@@ -715,6 +714,8 @@ static const char *replacementq1binds =
 	"bind		F10	menu_quit\n"
 	"bind		F11	        \"zoom_in\"\n"
 	"bind		F12	screenshot\n"
+    "alias zoom_in \"fov 90;wait;fov 70;wait;fov 50;wait;fov 30;wait;fov 10;wait;fov 5;bind F11 zoom_out\"\n"
+    "alias zoom_out \"fov 5;wait;fov 10;wait;fov 30;wait;fov 50;wait;fov 70;wait;fov 90;bind F11 zoom_in\"\n"
     "seta sensitivity \"12.0\"\n"
 	"bind		volup		\"if $volume < 0.9 then inc volume 0.1 else if $volume < 1.0 then set volume 1\"\n"
 	"bind		voldown		\"inc volume -0.1; if $volume < 0 then set volume 0\"\n"
@@ -797,6 +798,29 @@ static const char *defaulttouchcfg =
 	"showpic touch_menu.tga			menu	-32		0	tr	32	32	togglemenu 10\n"
 	;
 #endif
+
+static void RemoveLine(const char* string_to_remove, char *s)
+{
+    char *p = s;
+    const size_t string_to_remove_length = strlen(string_to_remove);
+
+    while (p && *p)
+    {
+        if ((p == s || p[-1] == '\n') &&
+            strncmp(p, string_to_remove, string_to_remove_length) == 0)
+        {
+            char *end = strchr(p, '\n');
+            if (end)
+                memmove(p, end + 1, strlen(end + 1) + 1);
+            else
+                *p = '\0';
+            return;
+        }
+
+        p = strchr(p, '\n');
+        if (p) p++;
+    }
+}
 
 /*
 ===============
@@ -985,8 +1009,12 @@ static void Cmd_Exec_f (void)
 
 #if defined(HAVE_LEGACY) && defined(HAVE_CLIENT)
         const int activeGame = M_GameType();
-        if (activeGame == MGT_QUAKE1 || (l == 1914 && CalcHashInt(&hash_md4, f, l) == 0x2d7b72b9))
-			s = (char*)replacementq1binds;
+        RemoveLine("seta sensitivity",s);
+        if (activeGame == MGT_QUAKE1 || (l == 1914 && CalcHashInt(&hash_md4, f, l) == 0x2d7b72b9)) {
+            RemoveLine("alias zoom_in",s);
+            RemoveLine("alias zoom_out",s);
+            s = va( replacementq1binds, s);
+        }
 #ifdef HEXEN2
 		else if (activeGame == MGT_HEXEN2 || (l == 1875 && CalcHashInt(&hash_md4, f, l) == 0x27b4d813))
 		{	//hexen2 has weird stuff in there. just give it wasd.
