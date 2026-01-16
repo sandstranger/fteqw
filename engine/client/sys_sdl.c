@@ -1422,6 +1422,22 @@ void Sys_CloseTerminal (void)
 }
 #endif
 
+#if ANDROID
+static char *g_pathToHomeDirectory = nullptr;
+static char *g_pathToBaseGameDirectory = nullptr;
+char *g_dllDefaultPath= nullptr;
+char *g_pathToSDLControllerDB = nullptr;
+
+static void freeChars(char **targetChars)
+{
+    if (targetChars && *targetChars)
+    {
+        free(*targetChars);
+        *targetChars = nullptr;
+    }
+}
+#endif
+
 #if SDL_VERSION_ATLEAST(3,0,0)
 #define SDL_MAIN_USE_CALLBACKS
 #include <SDL3/SDL_main.h>
@@ -1456,9 +1472,9 @@ int QDECL main(int argc, char **argv)
 	parms.binarydir = SDL_GetBasePath();
 #else
     const char *pathToHomeDirectory = getenv("PATH_TO_HOME_DIRECTORY");
-    parms.basedir = getenv("PATH_TO_BASE_DIRECTORY");
-    parms.binarydir = pathToHomeDirectory;
-    chdir(pathToHomeDirectory);
+    parms.basedir = g_pathToBaseGameDirectory;
+    parms.binarydir = g_pathToHomeDirectory;
+    chdir(g_pathToHomeDirectory);
 #endif
 	parms.argc = argc;
 	parms.argv = (const char**)argv;
@@ -1568,6 +1584,13 @@ SDL_AppResult SDL_AppIterate(void *appstate)
 }
 #else
 	}
+
+#if ANDROID
+    freeChars(&g_pathToHomeDirectory);
+    freeChars(&g_pathToBaseGameDirectory);
+    freeChars(&g_pathToSDLControllerDB);
+    freeChars(&g_dllDefaultPath);
+#endif
 
 	return 0;
 }
@@ -2161,5 +2184,21 @@ bool needToShowScreenControls() {
 __attribute__((used)) __attribute__((visibility("default")))
 bool needToInvokeMouseButtonsEvents(){
     return !needToShowScreenControls();
+}
+__attribute__((used)) __attribute__((visibility("default")))
+void setPathsToResources (const char *pathToHomeDirectory, const char *pathToBaseDirectory,
+                          const char *dllDefaultPath) {
+    freeChars(&g_pathToHomeDirectory);
+    freeChars(&g_pathToBaseGameDirectory);
+    freeChars(&g_dllDefaultPath);
+    g_pathToHomeDirectory = strdup(pathToHomeDirectory);
+    g_pathToBaseGameDirectory = strdup(pathToBaseDirectory);
+    g_dllDefaultPath = strdup(dllDefaultPath);
+}
+
+__attribute__((used)) __attribute__((visibility("default")))
+void setPathToSDLControllerDB (const char *pathToSDLControllerDB){
+    freeChars(&g_pathToSDLControllerDB);
+    g_pathToSDLControllerDB = strdup(pathToSDLControllerDB);
 }
 #endif

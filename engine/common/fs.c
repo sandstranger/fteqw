@@ -2735,9 +2735,9 @@ char * Sys_MakeDLLPath(const char *libname, char path[], int max_length)
         snprintf(dllName + strlen(dllName), HARM_MAX_OSPATH - 1 - strlen(dllName), ".so");
 
     memset(path, 0, max_length);
-    const char * dllDefaultPath = getenv("DLL_DEFAULT_PATH");
-    if(dllDefaultPath && dllDefaultPath[0])
-        snprintf(path, max_length - 1, "%s/%s", dllDefaultPath, dllName);
+    extern char * g_dllDefaultPath;
+    if(g_dllDefaultPath && g_dllDefaultPath[0])
+        snprintf(path, max_length - 1, "%s/%s", g_dllDefaultPath, dllName);
     else
         snprintf(path, max_length - 1, "%s", dllName);
     return path;

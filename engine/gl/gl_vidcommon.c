@@ -33,8 +33,7 @@ extern cvar_t	gl_immutable_textures;
 extern cvar_t	gl_immutable_buffers;
 
 #if ANDROID
-static char * libGLesVersion = nullptr;
-static bool useGLES2_0 = false;
+static bool g_useGLES2_0 = false;
 #endif
 
 #ifndef GL_STATIC
@@ -2860,12 +2859,13 @@ union programhandle_u GLSlang_CreateProgram(program_t *prog, const char *name, i
 }
 
 #if ANDROID
+__attribute__((used)) __attribute__((visibility("default")))
+void setUseGLES2_0State (const bool useGLES2_0){
+    g_useGLES2_0 = useGLES2_0;
+}
+
 bool useGLes2_0Version(){
-    if (!libGLesVersion){
-        libGLesVersion = getenv("LIBGL_ES");
-        useGLES2_0 = strcmp(libGLesVersion, "2") == 0;
-    }
-    return useGLES2_0;
+    return g_useGLES2_0;
 }
 #endif
 
