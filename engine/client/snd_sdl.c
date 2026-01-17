@@ -246,10 +246,6 @@ static qboolean QDECL SDL_InitCard(soundcardinfo_t *sc, const char *devicename)
 	desired.userdata = sc;
 	memcpy(&obtained, &desired, sizeof(obtained));
 
-#ifdef __ANDROID__
-    desired.samples = 1024;
-#endif
-
 #if SDL_MAJOR_VERSION >= 2
 	desired.format = AUDIO_F32SYS;	//most modern audio APIs favour float audio nowadays.
 	sc->audio_fd = SDL_OpenAudioDevice(devicename, false, &desired, &obtained, (sndcardinfo?0:SDL_AUDIO_ALLOW_FREQUENCY_CHANGE) | SDL_AUDIO_ALLOW_CHANNELS_CHANGE | SDL_AUDIO_ALLOW_FORMAT_CHANGE);
