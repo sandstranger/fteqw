@@ -1176,9 +1176,8 @@ void VARGS Con_SafePrintf (const char *fmt, ...)
 
 #if ANDROID
     SDL_Log("%s", msg);
-#else
-    Con_Printf ("%s", msg);
 #endif
+    Con_Printf ("%s", msg);
 }
 
 void VARGS Con_TPrintf (translation_t text, ...)
@@ -1193,9 +1192,8 @@ void VARGS Con_TPrintf (translation_t text, ...)
 
 #if ANDROID
     SDL_Log("%s", msg);
-#else
-    Con_Printf ("%s", msg);
 #endif
+    Con_Printf ("%s", msg);
 }
 
 void VARGS Con_SafeTPrintf (translation_t text, ...)
