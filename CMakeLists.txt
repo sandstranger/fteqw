@@ -120,7 +120,11 @@ ENDIF()
 endif ()
 
 if (ANDROID)
-    add_compile_options(-Xclang -disable-llvm-passes -fno-lto)
+    if (${ANDROID_ABI} STREQUAL "armeabi-v7a")
+        add_compile_options(-O0 -fno-lto)
+    else ()
+        add_compile_options(-Xclang -disable-llvm-passes -fno-lto)
+    endif ()
 endif ()
 
 # Added these to solve some build issues I ran into - Brad

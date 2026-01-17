@@ -21,6 +21,9 @@ Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
 
 #include "quakedef.h"
 #include "shader.h"
+#if ANDROID
+#include "SDL_log.h"
+#endif
 
 console_t	*con_head;			// first console in the list
 console_t	*con_curwindow;		// the (window) console that's currently got focus.
@@ -1171,8 +1174,11 @@ void VARGS Con_SafePrintf (const char *fmt, ...)
 	vsnprintf (msg,sizeof(msg)-1, fmt,argptr);
 	va_end (argptr);
 
-// write it to the scrollable buffer
-	Con_Printf ("%s", msg);
+#if ANDROID
+    SDL_Log("%s", msg);
+#else
+    Con_Printf ("%s", msg);
+#endif
 }
 
 void VARGS Con_TPrintf (translation_t text, ...)
@@ -1185,8 +1191,11 @@ void VARGS Con_TPrintf (translation_t text, ...)
 	vsnprintf (msg,sizeof(msg), fmt,argptr);
 	va_end (argptr);
 
-// write it to the scrollable buffer
-	Con_Printf ("%s", msg);
+#if ANDROID
+    SDL_Log("%s", msg);
+#else
+    Con_Printf ("%s", msg);
+#endif
 }
 
 void VARGS Con_SafeTPrintf (translation_t text, ...)

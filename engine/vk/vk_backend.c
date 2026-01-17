@@ -357,8 +357,11 @@ static float VK_ShaderReadArgument(const char *arglist, const char *arg, char ty
 					while (*var == ' ' || *var == '\t' || *var == ',')
 						var++;
 
-					if (type == 'F')
-						((float*)out)[i] = BigFloat(strtod(var, (char**)&var));
+					if (type == 'F') {
+                        float v = (float) strtod(var, (char **) &var);
+                        v = BigFloat(v);
+                        memcpy((char *) out + i * sizeof(float), &v, sizeof(float));
+                    }
 					else
 						((int*)out)[i] = BigLong(strtol(var, (char**)&var, 0));
 					if (!var)
@@ -580,7 +583,10 @@ qboolean VK_LoadBlob(program_t *prog, void *blobdata, const char *name)
 
 	info.flags = 0;
 	info.codeSize = blob->fraglength;
-	info.pCode = (uint32_t*)((char*)blob+blob->fragoffset);
+    uint32_t temp;
+    memcpy(&temp, (char*)blob + blob->fragoffset, sizeof(temp));
+    info.pCode = malloc(blob->fraglength);
+    memcpy(info.pCode, (char*)blob + blob->fragoffset, blob->fraglength);
 	VkAssert(vkCreateShaderModule(vk.device, &info, vkallocationcb, &frag));
 	DebugSetName(VK_OBJECT_TYPE_SHADER_MODULE, (uint64_t)frag, name);
 
@@ -3830,7 +3836,6 @@ void *VKBE_CreateStagingBuffer(struct stagingbuf *n, size_t size, VkBufferUsageF
 		Sys_Error("Unable to allocate buffer memory");
 
 	VkAssert(vkAllocateMemory(vk.device, &memAllocInfo, vkallocationcb, &n->mem.memory));
-	DebugSetName(VK_OBJECT_TYPE_DEVICE_MEMORY, (uint64_t)n->mem.memory, "VKBE_CreateStagingBuffer");
 	VkAssert(vkBindBufferMemory(vk.device, n->buf, n->mem.memory, n->mem.offset));
 	VkAssert(vkMapMemory(vk.device, n->mem.memory, 0, n->size, 0, &ptr));
 

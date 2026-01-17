@@ -268,8 +268,14 @@ void InsertLinkAfter (link_t *l, link_t *after);
 	#define bigendian		false
 
 	#define LittleShort(x)	((short)(x))
-	#define LittleLong(x)	((int)(x))
-	#define LittleI64(x)	((qint64_t)(x))
+    #define LittleLong(x) \
+    __builtin_choose_expr( \
+        __builtin_types_compatible_p(__typeof__(x), int16_t) || \
+        __builtin_types_compatible_p(__typeof__(x), short), \
+        LittleLong_safe_int16((int16_t)(x)), \
+        LittleLong_safe_int((int)(x)) \
+    )
+    #define LittleI64(x)	((qint64_t)(x))
 	#define LittleFloat(x)	((float)(x))
 
 	#define BigShort(x)		(ShortSwap(x))
@@ -305,6 +311,8 @@ short		ShortSwap	(short l);
 int			LongSwap	(int l);
 qint64_t    I64Swap		(qint64_t l);
 float		FloatSwap	(float f);
+int LittleLong_safe_int(int v);
+int LittleLong_safe_int16(int16_t v);
 
 void COM_CharBias (signed char *c, int size);
 void COM_SwapLittleShortBlock (short *s, int size);

@@ -315,22 +315,26 @@ qint64_t    I64Swap		(qint64_t l)
 			((l<<40)&0x00ff000000000000)|
 			((l<<56)&0xff00000000000000);
 }
-float FloatSwap (float f)
+
+float FloatSwap(float f)
 {
-	union
-	{
-		float	f;
-		qbyte	b[4];
-	} dat1, dat2;
-
-
-	dat1.f = f;
-	dat2.b[0] = dat1.b[3];
-	dat2.b[1] = dat1.b[2];
-	dat2.b[2] = dat1.b[1];
-	dat2.b[3] = dat1.b[0];
-	return dat2.f;
+    uint32_t u;
+    memcpy(&u, &f, sizeof(u));
+    u = __builtin_bswap32(u);
+    memcpy(&f, &u, sizeof(f));
+    return f;
 }
+
+int LittleLong_safe_int(int v)
+{
+    return v;
+}
+
+int LittleLong_safe_int16(int16_t v)
+{
+    return (int)v;
+}
+
 // end common.c
 
 #ifdef __cplusplus

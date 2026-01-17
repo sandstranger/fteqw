@@ -3485,7 +3485,11 @@ qboolean GL_Init(rendererstate_t *info, void *(*getglfunction) (char *name))
 	gl_renderer = qglGetString (GL_RENDERER);
 	Con_SafePrintf ("GL_RENDERER: %s\n", gl_renderer);
 
-	gl_version = qglGetString (GL_VERSION);
+#ifndef ANDROID
+    gl_version =  qglGetString (GL_VERSION);
+#else
+    gl_version = useGLes2_0Version() ? "OpenGL ES 2.0" : qglGetString (GL_VERSION);
+#endif
 	Con_SafePrintf ("GL_VERSION: %s\n", gl_version);
 
 	memset(&sh_config, 0, sizeof(sh_config));
