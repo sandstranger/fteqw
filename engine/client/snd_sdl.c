@@ -247,11 +247,7 @@ static qboolean QDECL SDL_InitCard(soundcardinfo_t *sc, const char *devicename)
 	memcpy(&obtained, &desired, sizeof(obtained));
 
 #ifdef __ANDROID__
-    if (AUDIO_OVERRIDE_FREQ != 0)
-        desired.freq = AUDIO_OVERRIDE_FREQ;
-
-    if (AUDIO_OVERRIDE_SAMPLES != 0)
-        desired.samples = AUDIO_OVERRIDE_SAMPLES;
+    desired.samples = 1024;
 #endif
 
 #if SDL_MAJOR_VERSION >= 2
