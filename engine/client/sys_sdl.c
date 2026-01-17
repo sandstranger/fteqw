@@ -2164,17 +2164,12 @@ vfsfile_t *Sys_ForkServer(void)
 #endif
 
 #if ANDROID
-extern void ResumeAudio();
-extern void MuteAllAudio();
-
 __attribute__((used)) __attribute__((visibility("default")))
 void onNativeResume() {
-    ResumeAudio();
     vid.activeapp = true;
 }
 __attribute__((used)) __attribute__((visibility("default")))
 void onNativePause() {
-    MuteAllAudio();
     vid.activeapp = false;
 }
 __attribute__((used)) __attribute__((visibility("default")))
