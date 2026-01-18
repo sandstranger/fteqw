@@ -2997,10 +2997,12 @@ void SV_UpdateToReliableMessages (void)
 				}
 			}
 
-			if (host_client->dp_ping)
-				*host_client->dp_ping = SV_CalcPing (host_client, false);
-			if (host_client->dp_pl)
-				*host_client->dp_pl = host_client->lossage;
+            if (host_client) {
+                if (host_client->dp_ping)
+                    *host_client->dp_ping = SV_CalcPing(host_client, false);
+                if (host_client->dp_pl)
+                    *host_client->dp_pl = host_client->lossage;
+            }
 #endif
 
 #ifdef PEXT_VIEW2
