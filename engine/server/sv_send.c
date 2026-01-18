@@ -2983,267 +2983,247 @@ void SV_UpdateToReliableMessages (void)
 // check for changes to be sent over the reliable streams to all clients
 	for (i=0, host_client = svs.clients ; i<svs.allocated_client_slots ; i++, host_client++)
 	{
-		if ((svs.gametype == GT_Q1QVM || svs.gametype == GT_PROGS) && host_client->state == cs_spawned)
-		{
+		if ((svs.gametype == GT_Q1QVM || svs.gametype == GT_PROGS) && host_client->state == cs_spawned) {
 #ifdef HAVE_LEGACY
-			//DP_SV_CLIENTCOLORS
-			if (host_client->edict->xv->clientcolors != host_client->playercolor)
-			{
-				InfoBuf_SetValueForKey(&host_client->userinfo, "topcolor", va("%i", (int)host_client->edict->xv->clientcolors/16));
-				InfoBuf_SetValueForKey(&host_client->userinfo, "bottomcolor", va("%i", (int)host_client->edict->xv->clientcolors&15));
-				{
-					SV_ExtractFromUserinfo (host_client, true);	//this will take care of nq for us anyway.
-					SV_BroadcastUserinfoChange(host_client, true, "*bothcolours", NULL);
-				}
-			}
+            //DP_SV_CLIENTCOLORS
+            if (host_client->edict->xv->clientcolors != host_client->playercolor) {
+                InfoBuf_SetValueForKey(&host_client->userinfo, "topcolor",
+                                       va("%i", (int) host_client->edict->xv->clientcolors / 16));
+                InfoBuf_SetValueForKey(&host_client->userinfo, "bottomcolor",
+                                       va("%i", (int) host_client->edict->xv->clientcolors & 15));
+                {
+                    SV_ExtractFromUserinfo(host_client,
+                                           true);    //this will take care of nq for us anyway.
+                    SV_BroadcastUserinfoChange(host_client, true, "*bothcolours", NULL);
+                }
+            }
 
             if (host_client) {
                 if (host_client->dp_ping)
                     *host_client->dp_ping = SV_CalcPing(host_client, false);
                 if (host_client->dp_pl)
                     *host_client->dp_pl = host_client->lossage;
-            }
 #endif
 
 #ifdef PEXT_VIEW2
-			j = PROG_TO_EDICTINDEX(svprogfuncs, host_client->edict->xv->clientcamera);
-			if (j)
-			{
-				if ((unsigned int)j >= svprogfuncs->edicttable_length)
-					j = i+1;
-				if (j != host_client->clientcamera)
-				{
-					if (host_client->fteprotocolextensions & PEXT_VIEW2)
-					{
-						ClientReliableWrite_Begin(host_client, svc_setview, 4);
-						ClientReliableWrite_Entity(host_client, j);
-					}
-					if (j == i+1)
-						j = 0;	//self.
-					host_client->viewent = j;
-				}
-			}
+                j = PROG_TO_EDICTINDEX(svprogfuncs, host_client->edict->xv->clientcamera);
+                if (j) {
+                    if ((unsigned int) j >= svprogfuncs->edicttable_length)
+                        j = i + 1;
+                    if (j != host_client->clientcamera) {
+                        if (host_client->fteprotocolextensions & PEXT_VIEW2) {
+                            ClientReliableWrite_Begin(host_client, svc_setview, 4);
+                            ClientReliableWrite_Entity(host_client, j);
+                        }
+                        if (j == i + 1)
+                            j = 0;    //self.
+                        host_client->viewent = j;
+                    }
+                }
 #endif
 
-			name = PR_GetString(svprogfuncs, host_client->edict->v->netname);
-#ifndef QCGC	//this optimisation doesn't really work with a QC instead of static string management
-			if (name != host_client->name)
+                name = PR_GetString(svprogfuncs, host_client->edict->v->netname);
+#ifndef QCGC    //this optimisation doesn't really work with a QC instead of static string management
+                if (name != host_client->name)
 #endif
-			{
-				if (strcmp(host_client->name, name))
-				{
-					char oname[80];
-					Q_strncpyz(oname, host_client->name, sizeof(oname));
+                {
+                    if (strcmp(host_client->name, name)) {
+                        char oname[80];
+                        Q_strncpyz(oname, host_client->name, sizeof(oname));
 
-					Con_DPrintf("Client %s programatically renamed to %s\n", host_client->name, name);
-					InfoBuf_SetValueForKey(&host_client->userinfo, "name", name);
-					SV_ExtractFromUserinfo (host_client, true);
+                        Con_DPrintf("Client %s programatically renamed to %s\n", host_client->name,
+                                    name);
+                        InfoBuf_SetValueForKey(&host_client->userinfo, "name", name);
+                        SV_ExtractFromUserinfo(host_client, true);
 
-					if (strcmp(oname, host_client->name))
-					{
-						SV_BroadcastUserinfoChange(host_client, true, "name", host_client->name);
-					}
+                        if (strcmp(oname, host_client->name)) {
+                            SV_BroadcastUserinfoChange(host_client, true, "name",
+                                                       host_client->name);
+                        }
 
 #ifdef QCGC
-					//if it got rejected/mangled, make sure the qc properly sees the current value.
-					svprogfuncs->SetStringField(svprogfuncs, host_client->edict, &host_client->edict->v->netname, host_client->name, true);
+                        //if it got rejected/mangled, make sure the qc properly sees the current value.
+                        svprogfuncs->SetStringField(svprogfuncs, host_client->edict,
+                                                    &host_client->edict->v->netname,
+                                                    host_client->name, true);
 #endif
-				}
+                    }
 #ifndef QCGC
-				svprogfuncs->SetStringField(svprogfuncs, host_client->edict, &host_client->edict->v->netname, host_client->name, true);
+                    svprogfuncs->SetStringField(svprogfuncs, host_client->edict, &host_client->edict->v->netname, host_client->name, true);
 #endif
-			}
-		}
+                }
+            }
 
-		if (host_client->state != cs_spawned)
-		{
-			if (!host_client->state && host_client->name && host_client->name[0])	//if this is a writebyte bot
-			{
-				if (host_client->old_frags != (int)host_client->edict->v->frags)
-				{
-					for (j=0, client = svs.clients ; j<svs.allocated_client_slots ; j++, client++)
-					{
-						if (client->state < cs_connected)
-							continue;
-						ClientReliableWrite_Begin(client, svc_updatefrags, 4);
-						ClientReliableWrite_Byte(client, i);
+            if (host_client->state != cs_spawned) {
+                if (!host_client->state && host_client->name &&
+                    host_client->name[0])    //if this is a writebyte bot
+                {
+                    if (host_client->old_frags != (int) host_client->edict->v->frags) {
+                        for (j = 0, client = svs.clients;
+                             j < svs.allocated_client_slots; j++, client++) {
+                            if (client->state < cs_connected)
+                                continue;
+                            ClientReliableWrite_Begin(client, svc_updatefrags, 4);
+                            ClientReliableWrite_Byte(client, i);
 #ifdef NQPROT
-						if (ISNQCLIENT(client) && host_client->spectator == 1)
-							ClientReliableWrite_Short(client, -999);
-						else
+                            if (ISNQCLIENT(client) && host_client->spectator == 1)
+                                ClientReliableWrite_Short(client, -999);
+                            else
 #endif
-							ClientReliableWrite_Short(client, host_client->edict->v->frags);
-					}
+                                ClientReliableWrite_Short(client, host_client->edict->v->frags);
+                        }
 
 #ifdef MVD_RECORDING
-					if (sv.mvdrecording)
-					{
-						sizebuf_t *msg = MVDWrite_Begin(dem_all, 0, 4);
-						MSG_WriteByte(msg, svc_updatefrags);
-						MSG_WriteByte(msg, i);
-						MSG_WriteShort(msg, host_client->edict->v->frags);
-					}
+                        if (sv.mvdrecording) {
+                            sizebuf_t *msg = MVDWrite_Begin(dem_all, 0, 4);
+                            MSG_WriteByte(msg, svc_updatefrags);
+                            MSG_WriteByte(msg, i);
+                            MSG_WriteShort(msg, host_client->edict->v->frags);
+                        }
 #endif
 
-					host_client->old_frags = host_client->edict->v->frags;
-				}
-			}
-			continue;
-		}
-		if (svs.gametype == GT_PROGS || svs.gametype == GT_Q1QVM)
-		{
-			ent = host_client->edict;
+                        host_client->old_frags = host_client->edict->v->frags;
+                    }
+                }
+                continue;
+            }
+            if (svs.gametype == GT_PROGS || svs.gametype == GT_Q1QVM) {
+                ent = host_client->edict;
 
-			curfrags = host_client->edict->v->frags;
-			curgrav = ent->xv->gravity*sv_gravity.value;
-			curspeed = ent->xv->maxspeed;
-			if (progstype != PROG_QW)
-			{
-				if (!curgrav)
-					curgrav = sv_gravity.value;
-				if (!curspeed)
-					curspeed = sv_maxspeed.value;
-			}
+                curfrags = host_client->edict->v->frags;
+                curgrav = ent->xv->gravity * sv_gravity.value;
+                curspeed = ent->xv->maxspeed;
+                if (progstype != PROG_QW) {
+                    if (!curgrav)
+                        curgrav = sv_gravity.value;
+                    if (!curspeed)
+                        curspeed = sv_maxspeed.value;
+                }
 #ifdef HEXEN2
-			if (ent->xv->hasted)
-				curspeed*=ent->xv->hasted;
+                if (ent->xv->hasted)
+                    curspeed *= ent->xv->hasted;
 #endif
-		}
-		else
-		{
-			curgrav = sv_gravity.value;
-			curspeed = sv_maxspeed.value;
-			curfrags = 0;
-		}
-#ifdef SVCHAT	//enforce a no moving time when chatting. Prevent client prediction going mad.
-		if (host_client->chat.active)
-			curspeed = 0;
+            } else {
+                curgrav = sv_gravity.value;
+                curspeed = sv_maxspeed.value;
+                curfrags = 0;
+            }
+#ifdef SVCHAT    //enforce a no moving time when chatting. Prevent client prediction going mad.
+            if (host_client->chat.active)
+                curspeed = 0;
 #endif
 
-		if (!ISQ2CLIENT(host_client))
-		{
-			if (host_client->sendinfo)
-			{
-				host_client->sendinfo = false;
-				SV_FullClientUpdate (host_client, NULL);
-			}
+            if (!ISQ2CLIENT(host_client)) {
+                if (host_client->sendinfo) {
+                    host_client->sendinfo = false;
+                    SV_FullClientUpdate(host_client, NULL);
+                }
 
-			if (host_client->qex && sendpings)
-			{
-				sizebuf_t *m;
-				for (j=0, client = svs.clients ; j<svs.allocated_client_slots && j < host_client->max_net_clients; j++, client++)
-				{
-					if (client->state != cs_spawned)
-						continue;
+                if (host_client->qex && sendpings) {
+                    sizebuf_t *m;
+                    for (j = 0, client = svs.clients; j < svs.allocated_client_slots && j <
+                                                                                        host_client->max_net_clients; j++, client++) {
+                        if (client->state != cs_spawned)
+                            continue;
 
-					m = ClientReliable_StartWrite(host_client, 64);
-					MSG_WriteByte(m, svcqex_updateping);
-					MSG_WriteByte(m, j);
-					MSG_WriteSignedQEX(m, SV_CalcPing(client, false));
-					ClientReliable_FinishWrite(host_client);
+                        m = ClientReliable_StartWrite(host_client, 64);
+                        MSG_WriteByte(m, svcqex_updateping);
+                        MSG_WriteByte(m, j);
+                        MSG_WriteSignedQEX(m, SV_CalcPing(client, false));
+                        ClientReliable_FinishWrite(host_client);
 
-					if (coop.ival)
-					{
-						m = ClientReliable_StartWrite(host_client, 64);
-						MSG_WriteByte(m, svcqex_updateplinfo);
-						MSG_WriteByte(m, j);
-						MSG_WriteSignedQEX(m, client->edict->v->health);
-						MSG_WriteSignedQEX(m, client->edict->v->armorvalue);
-						ClientReliable_FinishWrite(host_client);
-					}
-				}
-			}
+                        if (coop.ival) {
+                            m = ClientReliable_StartWrite(host_client, 64);
+                            MSG_WriteByte(m, svcqex_updateplinfo);
+                            MSG_WriteByte(m, j);
+                            MSG_WriteSignedQEX(m, client->edict->v->health);
+                            MSG_WriteSignedQEX(m, client->edict->v->armorvalue);
+                            ClientReliable_FinishWrite(host_client);
+                        }
+                    }
+                }
 
-			if (host_client->old_frags != curfrags)
-			{
-				for (j=0, client = svs.clients ; j<sv.allocated_client_slots ; j++, client++)
-				{
-					if (client->state < cs_connected)
-						continue;
-					if (client->controller)
-						continue;
-					switch(client->protocol)
-					{
-					case SCP_BAD:	//bots
-					case SCP_QUAKE2:
-					case SCP_QUAKE2EX:
-					case SCP_QUAKE3:
-						break;
-					default:
-						ClientReliableWrite_Begin(client, svc_updatefrags, 4);
-						ClientReliableWrite_Byte(client, i);
+                if (host_client->old_frags != curfrags) {
+                    for (j = 0, client = svs.clients;
+                         j < sv.allocated_client_slots; j++, client++) {
+                        if (client->state < cs_connected)
+                            continue;
+                        if (client->controller)
+                            continue;
+                        switch (client->protocol) {
+                            case SCP_BAD:    //bots
+                            case SCP_QUAKE2:
+                            case SCP_QUAKE2EX:
+                            case SCP_QUAKE3:
+                                break;
+                            default:
+                                ClientReliableWrite_Begin(client, svc_updatefrags, 4);
+                                ClientReliableWrite_Byte(client, i);
 #ifdef NQPROT
-						if (ISNQCLIENT(client) && host_client->spectator == 1)
-							ClientReliableWrite_Short(client, -999);
-						else
+                                if (ISNQCLIENT(client) && host_client->spectator == 1)
+                                    ClientReliableWrite_Short(client, -999);
+                                else
 #endif
-							ClientReliableWrite_Short(client, curfrags);
-						break;
-					}
-				}
+                                    ClientReliableWrite_Short(client, curfrags);
+                                break;
+                        }
+                    }
 
 #ifdef MVD_RECORDING
-				if (sv.mvdrecording)
-				{
-					sizebuf_t *msg = MVDWrite_Begin(dem_all, 0, 4);
-					MSG_WriteByte(msg, svc_updatefrags);
-					MSG_WriteByte(msg, i);
-					MSG_WriteShort(msg, curfrags);
-				}
+                    if (sv.mvdrecording) {
+                        sizebuf_t *msg = MVDWrite_Begin(dem_all, 0, 4);
+                        MSG_WriteByte(msg, svc_updatefrags);
+                        MSG_WriteByte(msg, i);
+                        MSG_WriteShort(msg, curfrags);
+                    }
 #endif
 
-				host_client->old_frags = curfrags;
-			}
+                    host_client->old_frags = curfrags;
+                }
 
-			{
-				if (host_client->entgravity != curgrav)
-				{
-					if (ISQWCLIENT(host_client))
-					{
-						sp = SV_SplitClientDest(host_client, svc_entgravity, 5);
-						ClientReliableWrite_Float(sp, curgrav/movevars.gravity);	//lie to the client in a cunning way
-					}
-					host_client->entgravity = curgrav;
-				}
+                {
+                    if (host_client->entgravity != curgrav) {
+                        if (ISQWCLIENT(host_client)) {
+                            sp = SV_SplitClientDest(host_client, svc_entgravity, 5);
+                            ClientReliableWrite_Float(sp, curgrav /
+                                                          movevars.gravity);    //lie to the client in a cunning way
+                        }
+                        host_client->entgravity = curgrav;
+                    }
 
-				if (host_client->maxspeed != curspeed)
-				{	//MSVC can really suck at times (optimiser bug)
-					if (ISQWCLIENT(host_client))
-					{
-						if (host_client->controller)
-						{	//this is a slave client.
-							//find the right number and send.
-							int pnum = 0;
-							client_t *sp;
-							for (sp = host_client->controller; sp; sp = sp->controlled)
-							{
-								if (sp == host_client)
-									break;
-								pnum++;
-							}
-							sp = host_client->controller;
+                    if (host_client->maxspeed !=
+                        curspeed) {    //MSVC can really suck at times (optimiser bug)
+                        if (ISQWCLIENT(host_client)) {
+                            if (host_client->controller) {    //this is a slave client.
+                                //find the right number and send.
+                                int pnum = 0;
+                                client_t *sp;
+                                for (sp = host_client->controller; sp; sp = sp->controlled) {
+                                    if (sp == host_client)
+                                        break;
+                                    pnum++;
+                                }
+                                sp = host_client->controller;
 
-							ClientReliableWrite_Begin (sp, svcfte_choosesplitclient, 7);
-							ClientReliableWrite_Byte (sp, pnum);
-							ClientReliableWrite_Byte (sp, svc_maxspeed);
-							ClientReliableWrite_Float(sp, curspeed);
-						}
-						else
-						{
-							ClientReliableWrite_Begin(host_client, svc_maxspeed, 5);
-							ClientReliableWrite_Float(host_client, curspeed);
-						}
-					}
-					host_client->maxspeed = curspeed;
-				}
-			}
-		}
+                                ClientReliableWrite_Begin(sp, svcfte_choosesplitclient, 7);
+                                ClientReliableWrite_Byte(sp, pnum);
+                                ClientReliableWrite_Byte(sp, svc_maxspeed);
+                                ClientReliableWrite_Float(sp, curspeed);
+                            } else {
+                                ClientReliableWrite_Begin(host_client, svc_maxspeed, 5);
+                                ClientReliableWrite_Float(host_client, curspeed);
+                            }
+                        }
+                        host_client->maxspeed = curspeed;
+                    }
+                }
+            }
 
-		while (host_client->infosync.numkeys)
-		{
-			if (!SV_SyncInfoBuf(host_client))
-				break;
-		}
+            while (host_client->infosync.numkeys) {
+                if (!SV_SyncInfoBuf(host_client))
+                    break;
+            }
+        }
 	}
 
 #ifdef MVD_RECORDING
