@@ -8593,7 +8593,8 @@ void R_RemapShader(const char *sourcename, const char *destname, float timeoffse
 					n = Hash_Get(&shader_active_hash, cleandstname);
 
 					// if one of our shaders is made for lightmaps, check through the rest until we find one more suitable
-					if ((n->usageflags ^ o->usageflags) & SUF_LIGHTMAP)
+					if (n && n->usageflags && o && o->usageflags &&
+                    (n->usageflags ^ o->usageflags) & SUF_LIGHTMAP)
 					{
 						shader_t *n_f = n;
 						while (n)
