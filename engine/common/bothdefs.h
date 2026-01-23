@@ -339,6 +339,7 @@ Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
 #ifdef ANDROID
     #define GLESONLY
     #define NO_GNUTLS
+    #undef VKQUAKE
     #undef AVAIL_OPENAL
 #endif
 #if (defined(_MSC_VER) && (_MSC_VER < 1500)) || defined(FTE_SDL)
