@@ -2229,67 +2229,60 @@ PVS type stuff
 Mod_DecompressVis
 ===================
 */
-static qbyte *Q1BSP_DecompressVis (qbyte *in, model_t *model, qbyte *decompressed, unsigned int buffersize, qboolean merge)
+static qbyte *Q1BSP_DecompressVis(qbyte *in, model_t *model,
+                                  qbyte *decompressed,
+                                  unsigned int buffersize,
+                                  qboolean merge)
 {
-	int		c;
-	qbyte	*out;
-	int		row;
+    int     c;
+    qbyte   *out;
+    int     row;
 
-	row = (model->numclusters+7)>>3;
-	out = decompressed;
+    row = (model->numclusters + 7) >> 3;
+    if (buffersize < row)
+        row = buffersize;
 
-	if (buffersize < row)
-		row = buffersize;
+    out = decompressed;
 
-	if (!in)
-	{	// no vis info, so make all visible
-		while (row)
-		{
-			*out++ = 0xff;
-			row--;
-		}
-		return decompressed;
-	}
+    if (!in)
+    {
+        memset(out, 0xFF, row);
+        return decompressed;
+    }
 
-	if (merge)
-	{
-		do
-		{
-			if (*in)
-			{
-				*out++ |= *in++;
-				continue;
-			}
-			out += in[1];
-			in += 2;
-		} while (out - decompressed < row);
-	}
-	else
-	{
-		do
-		{
-			if (*in)
-			{
-				*out++ = *in++;
-				continue;
-			}
+    while (out - decompressed < row)
+    {
+        if (!*in)
+        {
+            c = in[1];
+            in += 2;
 
-			c = in[1];
-			in += 2;
-			if ((out - decompressed) + c > row)
-			{
-				c = row - (out - decompressed);
-				Con_DPrintf ("warning: Vis decompression overrun\n");
-			}
-			while (c)
-			{
-				*out++ = 0;
-				c--;
-			}
-		} while (out - decompressed < row);
-	}
+            if (c <= 0)
+                break;
 
-	return decompressed;
+            if ((out - decompressed) + c > row)
+            {
+                c = row - (out - decompressed);
+                Con_DPrintf("warning: VIS overrun (zero run)\n");
+            }
+
+            if (!merge)
+                memset(out, 0, c);
+
+            out += c;
+            continue;
+        }
+
+        if (merge)
+            *out |= *in;
+        else
+            *out = *in;
+
+        out++;
+        in++;
+    }
+
+    return decompressed;
 }
 
 static pvsbuffer_t	mod_novis;
@@ -2304,37 +2297,84 @@ void Q1BSP_Shutdown(void)
 }
 
 //pvs is 1-based. clusters are 0-based. otherwise, q1bsp has a 1:1 mapping.
-static qbyte *Q1BSP_ClusterPVS (model_t *model, int cluster, pvsbuffer_t *buffer, pvsmerge_t merge)
+static qbyte *Q1BSP_ClusterPVS(model_t *model, int cluster,
+                               pvsbuffer_t *buffer, pvsmerge_t merge)
 {
-	if (cluster == -1)
-	{
-		if (merge == PVM_FAST)
-		{
-			if (mod_novis.buffersize < model->pvsbytes)
-			{
-				mod_novis.buffer = BZ_Realloc(mod_novis.buffer, mod_novis.buffersize=model->pvsbytes);
-				memset(mod_novis.buffer, 0xff, mod_novis.buffersize);
-			}
-			return mod_novis.buffer;
-		}
-		if (buffer->buffersize < model->pvsbytes)
-			buffer->buffer = BZ_Realloc(buffer->buffer, buffer->buffersize=model->pvsbytes);
-		memset(buffer->buffer, 0xff, model->pvsbytes);
-		return buffer->buffer;
-	}
+    unsigned int row = model->pvsbytes;
 
-	if (merge == PVM_FAST && model->pvs)
-		return model->pvs + cluster * model->pvsbytes;
+    if (cluster == -1)
+    {
+        if (merge == PVM_FAST)
+        {
+            if (mod_novis.buffersize < row)
+            {
+                void *tmp = BZ_Realloc(mod_novis.buffer, row);
+                if (!tmp)
+                    Sys_Error("PVS realloc failed");
 
-	cluster++;
+                mod_novis.buffer = tmp;
+                mod_novis.buffersize = row;
+                memset(mod_novis.buffer, 0xFF, row);
+            }
+            return mod_novis.buffer;
+        }
 
-	if (!buffer)
-		buffer = &mod_tempvis;
+        if (!buffer)
+            buffer = &mod_tempvis;
 
-	if (buffer->buffersize < model->pvsbytes)
-		buffer->buffer = BZ_Realloc(buffer->buffer, buffer->buffersize=model->pvsbytes);
+        if (buffer->buffersize < row)
+        {
+            void *tmp = BZ_Realloc(buffer->buffer, row);
+            if (!tmp)
+                Sys_Error("PVS realloc failed");
 
-	return Q1BSP_DecompressVis (model->leafs[cluster].compressed_vis, model, buffer->buffer, buffer->buffersize, merge==PVM_MERGE);
+            buffer->buffer = tmp;
+            buffer->buffersize = row;
+        }
+
+        memset(buffer->buffer, 0xFF, row);
+        return buffer->buffer;
+    }
+
+    if (merge == PVM_FAST && model->pvs)
+    {
+        if (cluster < 0 || cluster >= model->numclusters)
+            return mod_novis.buffer; // fallback
+
+        return model->pvs + cluster * row;
+    }
+
+    if (!buffer)
+        buffer = &mod_tempvis;
+
+    if (buffer->buffersize < row)
+    {
+        void *tmp = BZ_Realloc(buffer->buffer, row);
+        if (!tmp)
+            Sys_Error("PVS realloc failed");
+
+        buffer->buffer = tmp;
+        buffer->buffersize = row;
+    }
+
+    if (merge == PVM_MERGE)
+        memset(buffer->buffer, 0, row);
+
+    cluster++;
+
+    if (cluster < 0 || cluster >= model->numleafs)
+    {
+        memset(buffer->buffer, 0xFF, row);
+        return buffer->buffer;
+    }
+
+    return Q1BSP_DecompressVis(
+            model->leafs[cluster].compressed_vis,
+            model,
+            buffer->buffer,
+            buffer->buffersize,
+            merge == PVM_MERGE
+    );
 }
 
 static qbyte *Q1BSP_ClusterPHS (model_t *model, int cluster, pvsbuffer_t *buffer)
