@@ -856,11 +856,22 @@ Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
 		#define strnicmp _strnicmp
 	#else
 		//Posix
-		#define stricmp strcasecmp
-		#define strnicmp strncasecmp
+		#define stricmp Q_strcasecmp
+		#define strnicmp Q_strncasecmp
 	#endif
 #endif
 
+#if defined(IQMTOOL) || defined(WEBSVONLY) || defined(FTEPLUGIN)
+	#ifdef _WIN32
+		//Windows-specific...
+		#define Q_strcasecmp _stricmp
+		#define Q_strncasecmp _strnicmp
+	#else
+		//Posix
+		#define Q_strcasecmp strcasecmp
+		#define Q_strncasecmp strncasecmp
+	#endif
+#endif
 
 // !!! if this is changed, it must be changed in d_ifacea.h too !!!
 #define CACHE_SIZE	32		// used to align key data structures

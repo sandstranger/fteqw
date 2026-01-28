@@ -76,45 +76,6 @@ static void Q_StrCat(char **ptr, const char *append)
 	*ptr = newptr;
 }
 
-//case comparisons are specific to ascii only, so this should be 'safe' for utf-8 strings too.
-int Q_strncasecmp (const char *s1, const char *s2, int n)
-{
-	int		c1, c2;
-
-	while (1)
-	{
-		c1 = *s1++;
-		c2 = *s2++;
-
-		if (!n--)
-			return 0;		// strings are equal until end point
-
-		if (c1 != c2)
-		{
-			if (c1 >= 'a' && c1 <= 'z')
-				c1 -= ('a' - 'A');
-			if (c2 >= 'a' && c2 <= 'z')
-				c2 -= ('a' - 'A');
-			if (c1 != c2)
-			{	// strings not equal
-				if (c1 > c2)
-					return 1;		// strings not equal
-				return -1;
-			}
-		}
-		if (!c1)
-			return 0;		// strings are equal
-//		s1++;
-//		s2++;
-	}
-
-	return -1;
-}
-int Q_strcasecmp (const char *s1, const char *s2)
-{
-	return Q_strncasecmp (s1, s2, 0x7fffffff);
-}
-
 static qboolean VMT_ReadVMT(const char *materialname, vmtstate_t *st);	//this is made more complicated on account of includes allowing recursion
 static char *VMT_ParseBlock(const char *fname, vmtstate_t *st, char *line)
 {	//assumes the open { was already parsed, but will parse the close.
