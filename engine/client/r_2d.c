@@ -79,6 +79,15 @@ static void QDECL R2D_Crosshair_Callback(struct cvar_s *var, char *oldvalue);
 static void QDECL R2D_CrosshairImage_Callback(struct cvar_s *var, char *oldvalue);
 static void QDECL R2D_CrosshairColor_Callback(struct cvar_s *var, char *oldvalue);
 
+#if ANDROID
+static float g_uiScale = 3.5f;
+
+__attribute__((used)) __attribute__((visibility("default")))
+void setUIScale(float uiScale){
+    g_uiScale = uiScale
+}
+#endif
+
 void (*R2D_Flush)(void);
 
 //We need this for minor things though, so we'll just use the slow accurate method.
@@ -1361,7 +1370,7 @@ void R2D_Console_Resize(void)
 	cheight = vid_conheight.value;
 
 #ifdef ANDROID
-    xratio = 3.5f;
+    xratio = g_uiScale;
 #else
 	xratio = vid_conautoscale.value;
 #endif
