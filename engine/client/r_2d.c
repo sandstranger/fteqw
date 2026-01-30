@@ -84,7 +84,7 @@ static float g_uiScale = 3.5f;
 
 __attribute__((used)) __attribute__((visibility("default")))
 void setUIScale(float uiScale){
-    g_uiScale = uiScale
+    g_uiScale = uiScale;
 }
 #endif
 
