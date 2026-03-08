@@ -120,6 +120,7 @@ ENDIF()
 endif ()
 
 if (ANDROID)
+    include_directories(${OGG_INCLUDE_DIR})
     if (${ANDROID_ABI} STREQUAL "armeabi-v7a")
         add_compile_options(-O0 -fno-lto)
     else ()
