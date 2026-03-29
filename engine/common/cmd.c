@@ -656,6 +656,7 @@ void Cmd_StuffCmds (void)
 #if defined(HAVE_LEGACY) && defined(HAVE_CLIENT)
 static const char *replacementq1binds =
     "%s\n"
+	"unbindall\n"
 	"bind		`			toggleconsole\n"
 	"bind		w			+forward\n"
 	"bind		s			+back\n"
