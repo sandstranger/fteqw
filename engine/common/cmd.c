@@ -1022,7 +1022,7 @@ static void Cmd_Exec_f (void)
         RemoveLine("alias zoom_in",s);
         RemoveLine("alias zoom_out",s);
         if (activeGame == MGT_QUAKE1 || (l == 1914 && CalcHashInt(&hash_md4, f, l) == 0x2d7b72b9)) {
-            s = va("%s\n%s", s, replacementq1binds);
+            s = (char*) replacementq1binds;
 		}
 #ifdef HEXEN2
 		else if (activeGame == MGT_HEXEN2 || (l == 1875 && CalcHashInt(&hash_md4, f, l) == 0x27b4d813))
