@@ -1320,7 +1320,7 @@ else()
 			plugins/plugin.c
 			plugins/net_ssl_openssl.c
 		)
-		TARGET_INCLUDE_DIRECTORIES(plug_openssl PRIVATE ${OPENSSL_INCLUDE_DIR})
+		TARGET_INCLUDE_DIRECTORIES(plug_openssl PRIVATE ${OpenSSL_INCLUDE_DIR})
 		SET_TARGET_PROPERTIES(plug_openssl PROPERTIES COMPILE_DEFINITIONS "FTEPLUGIN;${FTE_LIB_DEFINES}")
 		TARGET_LINK_LIBRARIES(plug_openssl ${SYS_LIBS} ${OpenSSL_LIBRARY})
 		EMBED_PLUGIN_META(openssl "OpenSSL" "Provides OpenSSL support for dtls/tls/https support. The crypto library that is actually used is controlled via the tls_provider cvar.")
