@@ -1275,6 +1275,7 @@ IF(FTE_PLUG_QI)
 	EMBED_PLUGIN_META(qi "Quaddicted Map Database" "Provides easy access to the quaddicted map database. Once installed you can use eg 'map qi_dopa:start' to begin playing dopa, or load it via the menus.")
 ENDIF()
 
+if (NOT ANDROID)
 SET(FTE_PLUG_OPENSSL false CACHE BOOL "Compile OpenSSL.")
 IF(FTE_PLUG_OPENSSL)
 	#the openssl license is incompatible with the GPL, so while we have code to use it distributing the binaries built with it is not a (legal) option.
@@ -1311,7 +1312,19 @@ IF(FTE_PLUG_OPENSSL)
 		EMBED_PLUGIN_META(openssl "OpenSSL" "Provides OpenSSL support for dtls/tls/https support. The crypto library that is actually used is controlled via the tls_provider cvar.")
 	ENDIF()
 ENDIF()
-
+else()
+	SET(OPENSSL_USE_STATIC_LIBS true CACHE BOOL "Link openssl statically.") #usually as an .so though. :/)
+	MESSAGE(WARNING "Using openssl. Resulting plugin must be licensed as GPLv3.")
+	SET(FTE_LIB_DEFINES ${FTE_LIB_DEFINES})
+		ADD_LIBRARY(plug_openssl MODULE
+			plugins/plugin.c
+			plugins/net_ssl_openssl.c
+		)
+		TARGET_INCLUDE_DIRECTORIES(plug_openssl PRIVATE ${OPENSSL_INCLUDE_DIR})
+		SET_TARGET_PROPERTIES(plug_openssl PROPERTIES COMPILE_DEFINITIONS "FTEPLUGIN;${FTE_LIB_DEFINES}")
+		TARGET_LINK_LIBRARIES(plug_openssl ${SYS_LIBS} ${OpenSSL_LIBRARY})
+		EMBED_PLUGIN_META(openssl "OpenSSL" "Provides OpenSSL support for dtls/tls/https support. The crypto library that is actually used is controlled via the tls_provider cvar.")
+endif()
 #SET(FTE_PLUG_GNUTLS true CACHE BOOL "Compile GnuTLS Library.")
 #IF(FTE_PLUG_GNUTLS)
 #	FIND_PACKAGE(GnuTLS)
