@@ -33,6 +33,8 @@ void SVQ2_UnloadGame (void)
 		Sys_CloseLibrary(q2gamedll);
 	q2gamedll = NULL;
 }
+#include "SDL_log.h"
+
 void *SVQ2_GetGameAPI (void *parms)
 {
 	void *(VARGS *GetGameAPI)(void *);
@@ -85,6 +87,15 @@ void *SVQ2_GetGameAPI (void *parms)
 	{
 		for (o = 0; gamename[o]; o++)
 		{
+#ifdef ANDROID //karin: load q2game
+			if (o == 0)
+			{
+				extern char *Sys_MakeDLLPath(const char *libname, char path[], int max_length);
+				char dllName[MAX_OSPATH];
+				Sys_MakeDLLPath(gamename[o], dllName, MAX_OSPATH);
+				Q_snprintfz(name, sizeof(name), "%s", dllName);
+			}
+#else
 			if (o == 0)
 			{	//nice and specific
 				if (!host_parms.binarydir)
@@ -109,15 +120,6 @@ void *SVQ2_GetGameAPI (void *parms)
 					continue;
 				Q_snprintfz(name, sizeof(name), "%slibgame_%s"ARCH_DL_POSTFIX, host_parms.binarydir, gamepath);
 			}
-#ifdef ANDROID //karin: load q2game
-			else if (o == 5)
-			{
-                extern char *Sys_MakeDLLPath(const char *libname, char path[], int max_length);
-                char dllName[MAX_OSPATH];
-                Sys_MakeDLLPath(gamename[o], dllName, MAX_OSPATH);
-                Q_snprintfz(name, sizeof(name), "%s", dllName);
-            }
-#endif
 			else if (*gamename[o] == '/')
 			{	//system path. o.O
 				if (!com_gamedirnativecode.ival)	//just in case they match.
@@ -130,7 +132,7 @@ void *SVQ2_GetGameAPI (void *parms)
 					continue;
 				Q_snprintfz(name, sizeof(name), "%s%s", syspath, gamename[o]);
 			}
-
+#endif
 			q2gamedll = Sys_LoadLibrary(name, funcs);
 			if (q2gamedll)
 			{
