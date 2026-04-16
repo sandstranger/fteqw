@@ -8,6 +8,20 @@ qboolean SVQ2_InitGameProgs(void)
 	return false;
 }
 #else
+
+#if ANDROID
+static const char *gamename[2] = {"", nullptr};
+
+__attribute__((used)) __attribute__((visibility("default")))
+void setQuake2LibraryName (const char *targetLibraryName){
+	if (gamename[0] && gamename[0][0] != '\0') {
+		free((void*)gamename[0]);
+	}
+	gamename[0] = strdup(targetLibraryName);
+}
+
+#endif
+
 game_export_t	*ge;
 int svq2_maxclients;
 
@@ -33,6 +47,7 @@ void *SVQ2_GetGameAPI (void *parms)
 	char gamepath[MAX_OSPATH];
 	void *iterator;
 	int o;
+#ifndef ANDROID
 	const char *gamename[] = {
 		"",	//binarydir/q2gameCPU_gamedir.ext
 		"",	//homedir/q2gameCPU_gamedir.ext
@@ -60,6 +75,9 @@ void *SVQ2_GetGameAPI (void *parms)
 	Con_DPrintf("Searching for %s\n", gamename[3]);
 #else
 	Con_DPrintf("Searching for %s\n", gamename[2]);
+#endif
+#else
+	void *ret;
 #endif
 
 	iterator = NULL;
