@@ -3509,7 +3509,7 @@ void S_UpdateAmbientSounds (soundcardinfo_t *sc)
 			vol = 255*bgmvolume.value*voicevolumemod;
 			if (!vid.activeapp && !snd_inactive.ival && !(chan->flags & CF_CLI_INACTIVE))
 				vol = 0;
-			vol = bound(0, vol, 255);
+			vol = bound(0, vol, 255 * 8);
 			vol = Media_CrossFade(i-MUSIC_FIRST, vol, (chan->pos>>PITCHSHIFT) / (float)snd_speed);
 			if (vol < 0)
 			{	//cross fading wants to KILL this track now, apparently.
@@ -3529,7 +3529,7 @@ void S_UpdateAmbientSounds (soundcardinfo_t *sc)
 			}
 			else
 			{
-				chan->master_vol = bound(0, vol, 255);
+				chan->master_vol = bound(0, vol, 255 * 8);
 				chan->vol[0] = chan->vol[1] = chan->vol[2] = chan->vol[3] = chan->vol[4] = chan->vol[5] = chan->master_vol;
 				if (sc->ChannelUpdate)
 					sc->ChannelUpdate(sc, chan, changed);
