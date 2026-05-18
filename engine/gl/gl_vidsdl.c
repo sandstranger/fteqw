@@ -517,7 +517,10 @@ static qboolean SDLVID_Init (rendererstate_t *info, unsigned char *palette, r_qr
 		break;
 #endif
 	}
+
+#ifndef ANDROID	
 	flags |= SDL_WINDOW_RESIZABLE;
+#endif
 #if SDL_VERSION_ATLEAST(3,0,0)
 //	flags |= SDL_WINDOW_MOUSE_GRABBED;
 	flags |= SDL_WINDOW_HIGH_PIXEL_DENSITY;
