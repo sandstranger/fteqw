@@ -914,7 +914,7 @@ void GLVID_SwapBuffers (void)
 		break;
 	}
 
-
+#ifndef ANDROID
 	if (!vid_isfullscreen)
 	{
 		if (!in_windowed_mouse.value)
@@ -929,6 +929,12 @@ void GLVID_SwapBuffers (void)
 				IN_DeactivateMouse ();
 		}
 	}
+#else
+	if (!Key_MouseShouldBeFree() && vid.activeapp)
+		IN_ActivateMouse ();
+	else
+		IN_DeactivateMouse ();
+#endif
 }
 
 qboolean GLVID_ApplyGammaRamps (unsigned int gammarampsize, unsigned short *ramps)
