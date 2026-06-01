@@ -91,7 +91,7 @@ static void QDECL R_ClearColour_Changed(struct cvar_s *var, char *oldvalue)
 cvar_t vid_vsync							= CVARAF  ("vid_vsync", "1",
 													   "vid_wait", CVAR_ARCHIVE);
 #else
-cvar_t vid_vsync							= CVARAF  ("vid_vsync", "0",
+cvar_t vid_vsync							= CVARAF  ("vid_vsync", "1",
 													   "vid_wait", CVAR_ARCHIVE);
 #endif
 
