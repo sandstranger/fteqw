@@ -7,10 +7,15 @@
 	#include <SDL_syswm.h>
 #endif
 
+#if ANDROID
+#include "AngleShaderCache.h"
+#endif
+
 #ifdef GLQUAKE
 	#include "glquake.h"
 	#define OPENGL_SDL
 #endif
+
 
 #if SDL_VERSION_ATLEAST(2,0,0)
 	#if SDL_VERSION_ATLEAST(2,0,6)
@@ -693,6 +698,10 @@ static qboolean SDLVID_Init (rendererstate_t *info, unsigned char *palette, r_qr
 			}
 		}
 
+#if ANDROID
+		SDL_GL_MakeCurrent(sdlwindow, sdlcontext);
+		angle_blobcache_install("fteqw");
+#endif
 		srgb = 0;
 		SDL_GL_GetAttribute(SDL_GL_FRAMEBUFFER_SRGB_CAPABLE, &srgb);
 		if (srgb)
