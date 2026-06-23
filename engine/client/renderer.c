@@ -444,7 +444,7 @@ cvar_t gl_specular_fallbackexp				= CVARF  ("gl_specular_fallbackexp", "1", CVAR
 #endif
 
 // The callbacks are not in D3D yet (also ugly way of seperating this)
-cvar_t gl_texture_anisotropic_filtering		= CVARAFCD("gl_texture_anisotropy", "4",
+cvar_t gl_texture_anisotropic_filtering		= CVARAFCD("gl_texture_anisotropy", "2",
 												"gl_texture_anisotropic_filtering"/*old*/, CVAR_ARCHIVE | CVAR_RENDERERCALLBACK,
 												Image_TextureMode_Callback, "Allows for higher quality textures on surfaces that slope away from the camera (like the floor). Set to 16 or something. Only supported with trilinear filtering.");
 cvar_t gl_texturemode						= CVARAFCD("gl_texturemode", "GL_LINEAR_MIPMAP_LINEAR", "r_texturemode"/*q3*/,

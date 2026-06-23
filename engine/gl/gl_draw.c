@@ -163,11 +163,11 @@ void GL_SetupFormats(void)
 			glfmtc(PTI_RGBA5551,(ver>=3)?GL_RGB5_A1:0,			GL_RGBA,				GL_RGBA,				GL_UNSIGNED_SHORT_5_5_5_1,	tc_rgba1);
 		}
 		if (GL_CheckExtension("GL_OES_texture_half_float"))
-			glfmt(PTI_RGBA16F,	(ver>=3)?GL_RGBA16F:0,			GL_RGBA,				GL_RGBA,				GL_HALF_FLOAT_OES);	//not to be confused with GL_HALF_FLOAT[_ARB] which has a different value
+			glfmt(PTI_RGBA16F,	(ver>=3)?GL_RGBA8:0,			GL_RGBA,				GL_RGBA,				GL_UNSIGNED_BYTE);	//not to be confused with GL_HALF_FLOAT[_ARB] which has a different value
 		if (GL_CheckExtension("GL_OES_texture_float"))
 		{
-			glfmt(PTI_RGBA32F,	(ver>=3)?GL_RGBA32F:0,			GL_RGBA,				GL_RGBA,				GL_FLOAT);
-			glfmt(PTI_RGB32F,	(ver>=3)?GL_RGB32F:0,			GL_RGB,					GL_RGB,					GL_FLOAT);
+			glfmt(PTI_RGBA32F,	(ver>=3)?GL_RGBA8:0,			GL_RGBA,				GL_RGBA,				GL_UNSIGNED_BYTE);
+			glfmt(PTI_RGB32F,	(ver>=3)?GL_RGBA8:0,			GL_RGB,					GL_RGB,					GL_UNSIGNED_BYTE);
 		}
 
 		if (GL_CheckExtension("GL_WEBGL_depth_texture"))
@@ -261,12 +261,12 @@ void GL_SetupFormats(void)
 			glfmtc(PTI_RGBA16,		GL_RGBA16,			GL_RGBA,				GL_RGBA,				GL_UNSIGNED_SHORT,	0);
 
 			glfmtc(PTI_R16F,		GL_R16F,			GL_RED,					GL_RED,					GL_HALF_FLOAT,		0);
-			glfmtc(PTI_R32F,		GL_R32F,			GL_RED,					GL_RED,					GL_FLOAT,			0);
+			glfmtc(PTI_R32F,		GL_R16F,			GL_RED,					GL_RED,					GL_HALF_FLOAT,			0);
 
-			glfmtc(PTI_RGBA16F,		GL_RGBA16F,			GL_RGBA,				GL_RGBA,				GL_HALF_FLOAT,		0);
-			glfmtc(PTI_RGBA32F,		GL_RGBA32F,			GL_RGBA,				GL_RGBA,				GL_FLOAT,			0);
+			glfmtc(PTI_RGBA16F,		GL_RGBA8,			GL_RGBA,				GL_RGBA,				GL_UNSIGNED_BYTE,		0);
+			glfmtc(PTI_RGBA32F,		GL_RGBA8,			GL_RGBA,				GL_RGBA,				GL_UNSIGNED_BYTE,			0);
 
-			glfmt(PTI_RGB32F,		GL_RGB32F,			GL_RGB,					GL_RGB,					GL_FLOAT);
+			glfmt(PTI_RGB32F,		GL_RGBA8,			GL_RGB,					GL_RGB,					GL_UNSIGNED_BYTE);
 		}
 		if (ver >= 1.2 && !gl_config_gles)
 		{

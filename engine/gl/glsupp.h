@@ -984,6 +984,7 @@ typedef void (APIENTRY * PFNGLUNLOCKARRAYSEXTPROC) (void);
 #define GL_RGBA8							0x8058
 #define GL_RGB8								0x8051
 #define GL_RGB10_A2							0x8059
+#define GL_RGB16F                           0x881B
 #define GL_RGB5								0x8050	//note: not in gles3. a poor-man's substitute for rgb565
 #define GL_RGBA4							0x8056
 #define GL_RGB5_A1							0x8057
