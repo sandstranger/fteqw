@@ -9,6 +9,7 @@
 
 #if ANDROID
 #include "AngleShaderCache.h"
+#include "SwappyController.h"
 #endif
 
 #ifdef GLQUAKE
@@ -913,7 +914,15 @@ void GLVID_SwapBuffers (void)
 			vid_vsync.modified = false;
 		}
 
+#ifdef ANDROID
+		if (!SwappySwapBuffers())
+		{
+			SDL_GL_SwapWindow(sdlwindow);
+		}
+#else
 		SDL_GL_SwapWindow(sdlwindow);
+#endif
+
 #else
 		SDL_GL_SwapBuffers();
 #endif

@@ -150,6 +150,15 @@ qboolean forcesaveprompt;
 
 extern int			total_loading_size, current_loading_size, loading_stage;
 
+#ifdef ANDROID
+static float gTargetFPS = 60.0f;
+
+__attribute__((used)) __attribute__((visibility("default")))
+void setTargetFPS(const int targetFPS){
+	gTargetFPS = targetFPS;
+}
+#endif
+
 //
 // info mirrors
 //
@@ -7199,6 +7208,10 @@ double Host_Frame (double time)
 	RelightThink();	//think even on idle (which means small walls and a fast cpu can get more surfaces done.
 #endif
 
+#ifdef ANDROID
+    maxfps = gTargetFPS;
+#endif
+
 #ifdef HAVE_SERVER
 	if (sv.state && cls.state != ca_active)
 	{
@@ -7210,17 +7223,20 @@ double Host_Frame (double time)
 		if ((cl_netfps.value>0 || cls.demoplayback || runningindepphys))
 	{	//limit the fps freely, and expect the netfps to cope.
 		maxfpsignoreserver = true;
+#ifndef ANDROID
 		maxfps = cl_maxfps.ival;
+#endif
 	}
 	else
 	{
 		maxfpsignoreserver = false;
+#ifndef ANDROID
 		maxfps = (cl_maxfps.ival>0||cls.protocol!=CP_QUAKEWORLD)?cl_maxfps.value:((cl_netfps.value>0)?cl_netfps.value:cls.maxfps);
 		/*gets buggy at times longer than 250ms (and 0/negative, obviously)*/
 		if (maxfps < 4)
 			maxfps = 4;
+#endif
 	}
-
 	if (vid.isminimized && (maxfps <= 0 || maxfps > 10))
 		maxfps = 10;
 

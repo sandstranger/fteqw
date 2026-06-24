@@ -11,6 +11,7 @@
 	#include <SDL_loadso.h>
 #if ANDROID
     #include "SDL_main.h"
+	#include "SwappyController.h"
 #endif
 #endif
 
@@ -1590,6 +1591,7 @@ SDL_AppResult SDL_AppIterate(void *appstate)
     freeChars(&g_pathToBaseGameDirectory);
     freeChars(&g_pathToSDLControllerDB);
     freeChars(&g_dllDefaultPath);
+	DestroySwappy();
 #endif
 
 	return 0;
