@@ -2295,7 +2295,7 @@ qboolean PM_HandleRedirect(const char *package, /*char *cachename, size_t caches
 	char *sep;
 	package_t *p;
 char *cachename = NULL; size_t cachesize=0;
-	sep = strchr(package, '/');
+	sep = (char*)strchr(package, '/');
 	*cachename = 0;
 	if (!sep)
 		return false;	//no gamedir? that doesn't seem right. tell em to fuck off.
@@ -5562,7 +5562,7 @@ void PM_AddManifestPackages(ftemanifest_t *man, qboolean mayapply)
 		path = pack->path;
 		if (pack->type != mdt_installation)
 		{
-			char *s = strchr(path, '/');
+			char *s = (char*)strchr(path, '/');
 			if (!s)
 			{
 				PM_FreePackage(p);
@@ -5594,7 +5594,7 @@ void PM_AddManifestPackages(ftemanifest_t *man, qboolean mayapply)
 			{
 				char *comma;
 				url+=6;
-				comma = strchr(url, ',');
+				comma = (char*)strchr(url, ',');
 				if (comma)
 				{
 					p->extract = EXTRACT_EXPLICITZIP;
