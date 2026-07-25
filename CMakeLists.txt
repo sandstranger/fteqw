@@ -969,7 +969,7 @@ IF(ANDROID)
 		)
 		SET_TARGET_PROPERTIES(ftedroid PROPERTIES COMPILE_DEFINITIONS "${FTE_LIB_DEFINES};${FTE_DEFINES};${FTE_REVISON}")
 		TARGET_INCLUDE_DIRECTORIES(ftedroid PUBLIC ${FTE_INCLUDES})
-		TARGET_LINK_LIBRARIES(ftedroid ${FTE_LIBS} ${libpng_LIBRARY} AndroidGraphicsLayer)
+		TARGET_LINK_LIBRARIES(ftedroid ${FTE_LIBS} ${libpng_LIBRARY} AndroidGraphicsLayer ${SAFFAL_LIBRARY})
 	ENDIF()
 ELSE()
 	#systems that actually have executables...
