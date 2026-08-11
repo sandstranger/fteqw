@@ -397,6 +397,21 @@ static void	SDLVID_EnumerateVideoModes (const char *driver, const char *output, 
 #endif
 #endif
 
+#ifdef ANDROID
+static int SDLCALL AndroidLifeCycleEventFilter(void*, SDL_Event* event)
+{
+	switch (event->type)
+	{
+		case SDL_APP_WILLENTERBACKGROUND:
+			vid.activeapp = false;
+			break;
+		case SDL_APP_DIDENTERFOREGROUND:
+			vid.activeapp = true;
+			break;
+	}
+	return 1;
+}
+#endif
 
 static qboolean SDLVID_Init (rendererstate_t *info, unsigned char *palette, r_qrenderer_t qrenderer)
 {
@@ -426,6 +441,9 @@ static qboolean SDLVID_Init (rendererstate_t *info, unsigned char *palette, r_qr
 #endif
 #if !defined(FTE_TARGET_WEB) && !SDL_VERSION_ATLEAST(2,0,0)
 	SDL_SetVideoMode(0, 0, 0, 0);	//to get around some SDL bugs
+#endif
+#ifdef ANDROID
+	SDL_AddEventWatch(AndroidLifeCycleEventFilter, nullptr);
 #endif
 
 #if SDL_VERSION_ATLEAST(2,0,0)

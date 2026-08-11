@@ -2168,11 +2168,9 @@ vfsfile_t *Sys_ForkServer(void)
 #if ANDROID
 __attribute__((used)) __attribute__((visibility("default")))
 void onNativeResume() {
-    vid.activeapp = true;
 }
 __attribute__((used)) __attribute__((visibility("default")))
 void onNativePause() {
-    vid.activeapp = false;
 }
 __attribute__((used)) __attribute__((visibility("default")))
 bool needToShowScreenControls() {
