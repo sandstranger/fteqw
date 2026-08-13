@@ -131,6 +131,7 @@ typedef struct plugin_s {
 	qboolean (QDECL *svmsgfunction)(int messagelevel);
 	qboolean (QDECL *chatmsgfunction)(int talkernum, int tpflags);
 	qboolean (QDECL *centerprintfunction)(int clientnum);
+	void (QDECL *fragevent)(int msgtype, int weaponid, int victim, int attacker, int p3);
 	qboolean (QDECL *mayshutdown)(void);	//lets the plugin report when its safe to close it.
 	void (QDECL *shutdown)(void);
 
@@ -401,6 +402,8 @@ qboolean VARGS PlugBI_ExportFunction(const char *name, funcptr_t function)
 		currentplug->chatmsgfunction = function;
 	else if (!strcmp(name, "CenterPrintMessage"))
 		currentplug->centerprintfunction = function;
+	else if (!strcmp(name, "FragEvent"))	//void(int msgtype, int weaponid, int victim, int attacker, int p3) - killfeed/tracker source events, see fragfilemsgtypes_t
+		currentplug->fragevent = function;
 	else if (!strcmp(name, "S_LoadSound"))	//a hook for loading extra types of sound (wav, mp3, ogg, midi, whatever you choose to support)
 		S_RegisterSoundInputPlugin(currentplug, function);
 #endif
@@ -1581,6 +1584,17 @@ qboolean Plug_CenterPrintMessage(const char *buffer, int clientnum)
 	return ret; // true to display message, false to supress
 }
 
+void Plug_FragEvent(int msgtype, int weaponid, int victim, int attacker, int p3)
+{
+	plugin_t *oc = currentplug;
+	for (currentplug = plugs; currentplug; currentplug = currentplug->next)
+	{
+		if (currentplug->fragevent)
+			currentplug->fragevent(msgtype, weaponid, victim, attacker, p3);
+	}
+	currentplug = oc;
+}
+
 void Plug_Close(plugin_t *plug)
 {
 	int i;
@@ -2127,6 +2141,8 @@ static void *QDECL PlugBI_GetEngineInterface(const char *interfacename, size_t s
 			Plug_Draw_RedrawScreen,
 
 			Plug_LocalSound,
+
+			Plug_Draw_GetFragWeaponToken,
 
 			{
 				R_ShaderGetCinematic,

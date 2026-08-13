@@ -300,7 +300,7 @@ static const char *svc_nqstrings[] =
 };
 #endif
 
-extern cvar_t requiredownloads, mod_precache, snd_precache, cl_standardchat, msg_filter, msg_filter_frags, msg_filter_pickups, cl_countpendingpl, cl_download_mapsrc;
+extern cvar_t requiredownloads, mod_precache, snd_precache, cl_standardchat, msg_filter, msg_filter_frags, msg_filter_pickups, cl_countpendingpl, cl_download_mapsrc, con_fragmessages;
 int	oldparsecountmod;
 int	parsecountmod;
 double	parsecounttime;
@@ -6904,7 +6904,14 @@ static void CL_ParsePrint(const char *msg, int level)
 #endif
 #ifdef QUAKEHUD
 					if (!Stats_ParsePickups(printtext) || !msg_filter_pickups.ival)
-						if (!Stats_ParsePrintLine(printtext) || !msg_filter_frags.ival)
+						// ezhud #15 P2 FIX2: Stats_ParsePrintLine() both classifies AND (via
+						// Stats_Evaluate->Plug_FragEvent) is what feeds the ezhud killfeed HUD
+						// element - so it must still be called (and its classification honoured)
+						// even when msg_filter_frags is off, purely to decide whether
+						// con_fragmessages should additionally suppress this line from the
+						// console/notify feed (ezQuake's con_fragmessages semantics: 0 hides
+						// classified obituary lines, independently of msg_filter_frags).
+						if (!Stats_ParsePrintLine(printtext) || (!msg_filter_frags.ival && con_fragmessages.ival))
 #else
 					if (!msg_filter_pickups.ival)
 						if (!msg_filter_frags.ival)

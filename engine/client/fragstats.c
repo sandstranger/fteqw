@@ -80,13 +80,30 @@ typedef struct {
 } fragstats_t;
 
 static void TrackerCallback(struct cvar_s *var, char *oldvalue);
-static cvar_t r_tracker_frags = CVARD("r_tracker_frags", "0", "0: like vanilla quake\n1: shows only your kills/deaths\n2: shows all kills\n");
-static cvar_t r_tracker_time = CVARCD("r_tracker_time", "4", TrackerCallback, "how long it takes for r_tracker messages to start fading\n");
+// ezhud #15 P2 FIX1: renamed the three cvars below off the ezQuake-dialect names
+// that plugins/ezhud/vx_tracker.c registers for its own killfeed HUD element
+// (r_tracker_frags/r_tracker_time/r_tracker_messages). Cvar_Get2() returns a
+// PRE-EXISTING cvar unchanged (ignoring the caller's requested default) when one
+// is already registered, and Stats_Init() below runs (from cl_main.c) before
+// Plug_Initialise() loads the ezhud plugin - so the plugin's r_tracker_frags
+// cvar_t* was silently binding to THIS file's default "0" instead of its own
+// intended "1", making VXTracker_FragEvent's "if (!r_tracker_frags->ival)
+// return;" gate drop every single frag event by default. The tracker HUD
+// element still sized and drew its rect correctly (plain "r_tracker" has no
+// such collision), so it looked live (shown, correctly-sized) while its
+// message queue silently never received anything - zero rows, always.
+// r_tracker_time/r_tracker_messages have the same collision (the latter via
+// r_tracker_lines' alias); r_tracker_time's default happened to already match
+// the plugin's ("4"), so it had no visible symptom, but was still the same
+// bug in kind. This engine feature's own cvar semantics/defaults are
+// unchanged, just exposed under non-colliding names.
+static cvar_t r_tracker_frags = CVARD("cl_tracker_frags", "0", "0: like vanilla quake\n1: shows only your kills/deaths\n2: shows all kills\n");
+static cvar_t r_tracker_time = CVARCD("cl_tracker_time", "4", TrackerCallback, "how long it takes for r_tracker messages to start fading\n");
 static cvar_t r_tracker_fadetime = CVARCD("r_tracker_fadetime", "1", TrackerCallback, "how long it takes for r_tracker messages to fully fade once they start fading\n");
 static cvar_t r_tracker_x = CVARCD("r_tracker_x", "0.5", TrackerCallback, "left position of the r_tracker messages, as a fraction of the screen's width, eg 0.5\n");
 static cvar_t r_tracker_y = CVARCD("r_tracker_y", "0.333", TrackerCallback, "top position of the r_tracker messages, as a fraction of the screen's height, eg 0.333\n");
 static cvar_t r_tracker_w = CVARCD("r_tracker_w", "0.5", TrackerCallback, "width of the r_tracker messages, as a fraction of the screen's width, eg 0.5\n");
-static cvar_t r_tracker_lines = CVARAFCD("r_tracker_lines", "8", "r_tracker_messages", 0, TrackerCallback, "number of r_tracker messages to display\n");
+static cvar_t r_tracker_lines = CVARCD("r_tracker_lines", "8", TrackerCallback, "number of r_tracker messages to display\n");
 static void Tracker_Update(console_t *tracker)
 {
 	tracker->notif_l = tracker->maxlines = max(1,r_tracker_lines.ival);
@@ -184,6 +201,29 @@ qboolean Stats_TrackerImageLoaded(const char *in)
 	if (in)
 		return Font_TrackerValid(unicode_decode(&error, in, &in, true));
 	return false;
+}
+
+// ezhud #15 P2 FIX3: lets a plugin (plugins/ezhud/vx_tracker.c) resolve a
+// FragEvent's numeric weaponid to the same token Stats_FragMessage() (this
+// file, above) already draws for the engine's OWN built-in tracker: the
+// tracker-charset image-glyph string when fragfile.dat loaded one (drawn
+// inline by the normal StringH/Font_Decode path - no separate pic draw call
+// needed by the caller), falling back to the plain text abbreviation
+// otherwise. wid out of range or unknown yields an empty outbuf, which the
+// plugin treats as "no token, fall back to its own numeric placeholder".
+void Stats_GetWeaponToken(int wid, char *outbuf, size_t outsize)
+{
+	struct wt_s *w;
+	if (!outbuf || !outsize)
+		return;
+	*outbuf = 0;
+	if (wid < 0 || wid >= MAX_WEAPONS)
+		return;
+	w = &fragstats.weapontotals[wid];
+	if (Stats_TrackerImageLoaded(w->image))
+		Q_strncpyz(outbuf, w->image, outsize);
+	else if (w->abrev)
+		Q_strncpyz(outbuf, w->abrev, outsize);
 }
 static char *Stats_GenTrackerImageString(char *in)
 {	//images are of the form "foo \sg\ bar \q\"
@@ -333,6 +373,12 @@ void Stats_Evaluate(fragfilemsgtypes_t mt, int wid, int p1, int p2)
 		p1 = p2;
 		p2 = tmp;
 	}
+
+	//forwarded AFTER the ff_frags/ff_tkills swap above, so a plugin always sees
+	//the same "p1 died, p2 killed" convention this function's own switch uses
+	//for every two-componant type (ff_frags/ff_fragedby/ff_tkills/ff_tkilledby) -
+	//forwarding pre-swap would hand ff_frags events reversed victim/attacker.
+	Plug_FragEvent((int)mt, wid, p1, p2, 0);	//forward frag/death/etc event to any registered plugin (e.g. ezhud killfeed tracker)
 
 	u1 = (p1 == (cl.playerview[0].playernum));
 	u2 = (p2 == (cl.playerview[0].playernum));

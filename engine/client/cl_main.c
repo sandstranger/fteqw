@@ -222,6 +222,14 @@ cvar_t	cl_countpendingpl		= CVARD("cl_countpendingpl", "0", "If set to 1, packet
 cvar_t	cl_standardchat			= CVARFD("cl_standardchat", "0", CVAR_ARCHIVE, "Disables auto colour coding in chat messages.");
 cvar_t	msg_filter				= CVARD("msg_filter", "0", "Filter out chat messages: 0=neither. 1=broadcast chat. 2=team chat. 3=all chat.");
 cvar_t	msg_filter_frags		= CVARD("msg_filter_frags", "0", "Prevents frag messages from appearing on the console.");
+// ezhud #15 P2 FIX2: ezQuake-dialect name/semantics (see reference/ezquake/src/cl_parse.c's
+// cl_showFragsMessages="con_fragmessages"): 0 suppresses console/notify output for any print
+// line fragfile.dat classifies as an obituary (CL_ParseServerMessage below), independently of
+// msg_filter_frags (a different, FTE-native "hide frag messages" toggle). Lets the ezhud
+// killfeed HUD element (plugins/ezhud/vx_tracker.c, which reads the SAME cvar name/default for
+// its own "echo tracker lines to console" behaviour) be run as a dedicated killfeed without the
+// raw obituary text duplicating it in the console.
+cvar_t	con_fragmessages		= CVARD("con_fragmessages", "1", "Echo frag/obituary messages (as classified by fragfile.dat) to the console. 0 suppresses them.");
 cvar_t	msg_filter_pickups		= CVARD("msg_filter_pickups", "0", "Prevents pickup messages from appearing on the console. This would normally be filtered by 'msg 1', but nq servers cannot respect that (nor nq mods running in qw servers).");
 cvar_t  cl_standardmsg			= CVARFD("cl_standardmsg", "0", CVAR_ARCHIVE, "Disables auto colour coding in console prints.");
 cvar_t  cl_parsewhitetext		= CVARD("cl_parsewhitetext", "1", "When parsing chat messages, enable support for messages like: red{white}red");
@@ -5922,6 +5930,7 @@ void CL_Init (void)
 	Cvar_Register (&cl_standardchat,				cl_controlgroup);
 	Cvar_Register (&msg_filter,						cl_controlgroup);
 	Cvar_Register (&msg_filter_frags,				cl_controlgroup);
+	Cvar_Register (&con_fragmessages,				cl_controlgroup);
 	Cvar_Register (&cl_standardmsg,					cl_controlgroup);
 	Cvar_Register (&cl_parsewhitetext,				cl_controlgroup);
 	Cvar_Register (&cl_nopext,						cl_controlgroup);

@@ -550,6 +550,7 @@ int M_GameType(void);
 #ifdef PLUGINS
 qboolean	Plug_CenterPrintMessage(const char *buffer, int clientnum);
 qboolean	Plug_ChatMessage(char *buffer, int talkernum, int tpflags);
+void	Plug_FragEvent(int msgtype, int weaponid, int victim, int attacker, int p3);
 void		Plug_Command_f(void);
 int			Plug_ConnectionlessClientPacket(char *buffer, int size);
 qboolean	Plug_ConsoleLink(char *text, char *info, const char *consolename);

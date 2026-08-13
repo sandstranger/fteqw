@@ -1792,6 +1792,7 @@ float Stats_GetLastOwnFrag(int seat, char *res, int reslen);
 void VARGS Stats_Message(char *msg, ...) LIKEPRINTF(1);
 qboolean Stats_ParsePrintLine(const char *line);
 qboolean Stats_ParsePickups(const char *line);
+void Stats_GetWeaponToken(int wid, char *outbuf, size_t outsize);
 void Stats_NewMap(void);
 void Stats_Clear(void);
 void Stats_Init(void);

@@ -850,6 +850,9 @@ void HUD_Init(void)
 	// Register the hud items.
 	CommonDraw_Init();
 
+	// killfeed / tracker (ezhud #15 P2)
+	VXTracker_Init();
+
 	// Sort the elements.
 	HUD_Sort();
 }

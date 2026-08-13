@@ -422,6 +422,13 @@ typedef struct	//for huds and menus alike
 
 	F(void,		LocalSound,		(const char *soundname, int channel, float volume));
 
+	//ezhud #15 P2 FIX3: resolves a fragfile.dat weaponid (from FragEvent, see plugcorefuncs_t's
+	//ExportFunction("FragEvent",...)) to the same token the engine's own tracker draws: the
+	//tracker-charset image-glyph string when fragfile.dat loaded a weapon icon for it (this is a
+	//plain string, drawable inline via StringH/String like any other text - no separate image
+	//draw call needed), or its text abbreviation otherwise. outbuf is empty for an unknown wid.
+	F(void,		GetFragWeaponToken, (int wid, char *outbuf, size_t outsize));
+
 	struct
 	{
 		//basic media poking

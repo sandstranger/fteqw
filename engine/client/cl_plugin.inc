@@ -539,6 +539,20 @@ static void QDECL Plug_LocalSound(const char *soundname, int channel, float volu
 		S_LocalSound2(soundname, channel, volume);
 }
 
+//ezhud #15 P2 FIX3: see plugin.h's GetFragWeaponToken / engine/client/fragstats.c's
+//Stats_GetWeaponToken - lets the ezhud killfeed HUD element (plugins/ezhud/vx_tracker.c) draw
+//weapon icons (when cl_useimagesinfraglog is set) using the exact same token the engine's own
+//built-in tracker already draws for a weaponid, with a text-abbreviation fallback built in.
+static void QDECL Plug_Draw_GetFragWeaponToken(int wid, char *outbuf, size_t outsize)
+{
+#ifdef QUAKEHUD
+	Stats_GetWeaponToken(wid, outbuf, outsize);
+#else
+	if (outbuf && outsize)
+		*outbuf = 0;
+#endif
+}
+
 
 static void QDECL Plug_CL_SetLoadscreenState(qboolean state)
 {

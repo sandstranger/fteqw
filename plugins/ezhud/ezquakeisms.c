@@ -227,17 +227,70 @@ void Draw_AlphaLineRGB(float x1, float y1, float x2, float y2, float width, byte
 	drawfuncs->Colour4f(1, 1, 1, 1);
 }
 
+// ezQuake's 24-bit HUD art conventions: a gfx.wad lump is replaced by
+// textures/wad/<lump>.<ext>, a gfx/*.lmp pic by textures/gfx/<base>.<ext>.
+// FTE's material system has its own override paths and knows nothing of
+// these, so a player's HUD art pack mounted fine and then rendered stock.
+// Honour the convention here: if a replacement file exists, upload its bytes
+// over the engine's own texture name before the shader loads. This runs at
+// init time only (HUD_InitSbarImages, vid restarts, and the group-pic
+// OnChange) — never per frame.
+static qhandle_t EZHud_LoadReplaceable(const char *ftename, const char *base)
+{
+	static const char *dirs[] = {"textures/wad", "textures/gfx"};
+	static const char *exts[] = {"png", "tga", "jpg"};
+	char path[MAX_QPATH];
+	int d, e, size;
+	qhandle_t f, ret;
+	void *data;
+
+	for (d = 0; d < 2; d++)
+	{
+		for (e = 0; e < 3; e++)
+		{
+			Q_snprintf(path, sizeof(path), "%s/%s.%s", dirs[d], base, exts[e]);
+			size = filefuncs->Open(path, &f, 1);
+			if (size < 0)
+				continue;
+			ret = 0;
+			if (size > 0)
+			{
+				data = malloc(size);
+				if (data && filefuncs->Read(f, data, size) == size)
+					ret = drawfuncs->LoadImageData(ftename, path, data, size);
+				free(data);
+			}
+			filefuncs->Close(f);
+			if (ret)
+				return ret;
+		}
+	}
+	return drawfuncs->LoadImage(ftename);
+}
+
 mpic_t *Draw_CachePicSafe(const char *name, qbool crash, qbool ignorewad)
 {
+	char base[MAX_QPATH];
+	char *dot;
 	if (!*name)
 		return NULL;
+	// gfx/foo.lmp (or gfx/foo) may have a textures/gfx/foo.png replacement;
+	// the lookup wants the bare base name.
+	if (!strncmp(name, "gfx/", 4))
+	{
+		Q_strncpyz(base, name+4, sizeof(base));
+		dot = strrchr(base, '.');
+		if (dot)
+			*dot = 0;
+		return (mpic_t*)(qintptr_t)EZHud_LoadReplaceable(name, base);
+	}
 	return (mpic_t*)(qintptr_t)drawfuncs->LoadImage(name);
 }
 mpic_t *Draw_CacheWadPic(const char *name)
 {
 	char ftename[MAX_QPATH];
 	Q_snprintf(ftename, sizeof(ftename), "gfx/%s", name);
-	return (mpic_t*)(qintptr_t)drawfuncs->LoadImage(ftename);
+	return (mpic_t*)(qintptr_t)EZHud_LoadReplaceable(ftename, name);
 }
 
 mpic_t *SCR_LoadCursorImage(char *cursorimage)
@@ -696,8 +749,25 @@ int EZHud_Draw(int seat, float viewx, float viewy, float viewwidth, float viewhe
 	////cls.trueframetime;
 
 	host_screenupdatecount++;
+
+	// scr_newhud drives classic/new/both, per engine/common/plugin.c:1483-1487
+	// (`if (!(ret & 1)) ... Sbar_Draw(pv);` runs whenever our SbarBase
+	// callback's return value doesn't have bit 1 set):
+	//   0 -> classic only: skip HUD_Draw, return 0 so the engine runs
+	//        Sbar_Draw for us. sb_lines was already computed above so
+	//        SCR_TileClear(sb_lines) still clears the right area.
+	//   1 -> new only (default/current behaviour): draw the ezhud and
+	//        return 1 so the engine does NOT also draw the classic bar.
+	//   2 -> both: draw the ezhud AND return 0 so the engine also runs
+	//        Sbar_Draw underneath/alongside it.
+	if (!scr_newHud || scr_newHud->value == 0)
+		return 0;
+
 	HUD_Draw();
-	return true;
+
+	if (scr_newHud->value == 2)
+		return 0;
+	return 1;
 }
 
 unsigned int keydown[K_MAX];
