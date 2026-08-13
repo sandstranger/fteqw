@@ -541,6 +541,10 @@ SET(FTE_COMMON_FILES
 	engine/common/fs_stdio.c
 	engine/common/fs_xz.c
 	engine/common/fs_zip.c
+	engine/common/fs_lzma.c
+	engine/common/blake2b.c
+	engine/common/qkupdate.c
+	engine/common/LzmaDec.c
 	engine/common/gl_q2bsp.c
 	engine/common/huff.c
 	engine/common/log.c
@@ -1358,6 +1362,7 @@ IF(FTE_PLUG_EZHUD)
 		plugins/ezhud/hud.c
 		plugins/ezhud/hud_common.c
 		plugins/ezhud/hud_editor.c
+		plugins/ezhud/vx_tracker.c
 	)
 	SET_TARGET_PROPERTIES(plug_ezhud PROPERTIES COMPILE_DEFINITIONS "FTEPLUGIN;${FTE_LIB_DEFINES}")
 	TARGET_LINK_LIBRARIES(plug_ezhud ${SYS_LIBS})
@@ -1434,6 +1439,7 @@ IF(FTE_PLUG_HL2)
 		plugins/hl2/mod_hl2.c
 		plugins/hl2/mod_vbsp.c
 		plugins/hl2/mat_vmt.c
+		plugins/hl2/LzmaDec.c
 	)
 	SET_TARGET_PROPERTIES(plug_hl2 PROPERTIES COMPILE_DEFINITIONS "FTEPLUGIN;MULTITHREAD;${FTE_LIB_DEFINES}")
 	TARGET_LINK_LIBRARIES(plug_hl2 ${SYS_LIBS} ${ZLIB_LIBRARIES})

@@ -268,6 +268,22 @@ static qhandle_t EZHud_LoadReplaceable(const char *ftename, const char *base)
 	return drawfuncs->LoadImage(ftename);
 }
 
+static void QDECL strncpyz(char *d, const char *s, int n)
+{
+	int i;
+	n--;
+	if (n < 0)
+		return;	//this could be an error
+
+	for (i=0; *s; i++)
+	{
+		if (i == n)
+			break;
+		*d++ = *s++;
+	}
+	*d='\0';
+}
+
 mpic_t *Draw_CachePicSafe(const char *name, qbool crash, qbool ignorewad)
 {
 	char base[MAX_QPATH];
@@ -278,7 +294,7 @@ mpic_t *Draw_CachePicSafe(const char *name, qbool crash, qbool ignorewad)
 	// the lookup wants the bare base name.
 	if (!strncmp(name, "gfx/", 4))
 	{
-		Q_strncpyz(base, name+4, sizeof(base));
+		strncpyz(base, name+4, sizeof(base));
 		dot = strrchr(base, '.');
 		if (dot)
 			*dot = 0;
