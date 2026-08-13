@@ -1,103 +1,196 @@
-# [FTEQW](https://fteqw.org)
+# ftequakers
 
-![FTEQW Logo](engine/client/fte_eukara.ico)
+A personal fork of [FTEQW](https://fteqw.org) with a small set of engine
+changes made for my own mod/project. It is standard FTEQW plus the
+additions listed below — nothing has been removed.
 
-Powerful engine for playing and modding idTech based games.
+- Upstream: [fte-team/fteqw](https://github.com/fte-team/fteqw)
 
-# What is FTEQW?
+## What's changed from upstream
 
-FTEQW is an advanced and portable Quake engine. It supports multiple games running on idTech, plus its own set of games that developers have created.
+The new cvars, render flags, and builtins are opt-in — they default to the
+original engine behaviour, so a stock setup is unchanged. The added map-format
+support and bug fixes don't alter stock Quake content either; they only apply
+when you load those maps or would otherwise have hit those bugs.
 
-Due to the vast amount of supported formats, features, and innovations inside the engine and its very own QuakeC compiler (FTEQCC), it's very much considered the swiss-army knife of Quake engines.
+### Gameplay & physics
 
-### Highlights:
+- **`SOLID_PHYSICS_TRIMESH` collision** — players collide against a
+  prop's actual triangle mesh instead of its bounding box, on both the
+  server and the client-side predictor (alias/IQM/MD3 props that expose
+  NativeTrace).
+- **Box3D physics plugin (`fteplug_box3d`)** — a second rigid-body backend
+  alongside ODE, using [Box3D](https://box2d.org/posts/2026/06/announcing-box3d/)
+  (Erin Catto's C fork of Box2D). It has a **multicore** internal solver,
+  handles **concave props** by attaching one convex hull per convex-decomposition
+  piece to a body (`.acd` sidecars or the runtime decomposition), and supports the
+  gravity-gun "black hole" force. Load it with `plug_load box3d` (it registers as
+  the physics engine like ODE). Tuned by `physics_box3d_*` cvars: `unitscale`
+  (Quake-units-per-metre, so Box3D's metre-tuned tolerances fit — this is required),
+  `threads` (worker count), `substeps`, `decomp` / `maxpieces` (concave detail vs
+  cost), `debug`. Builds against the prebuilt pure-C `libbox3d.a` — no extra runtime
+  DLLs. Skeletal ragdolls and prop `.touch` events are not yet wired (ODE covers those).
+- **Half-Life model aim poses** — bone controllers (`.bonecontrol1..5`)
+  and the aim subblend are fed into the server framestate, so HL models
+  drive their torso/arm aim poses correctly.
+- **`ED_ParseUnknownEpair`** — optional QC hook
+  `void(string key, string value)` letting gamecode absorb arbitrary
+  mapper keyvalues (e.g. `multi_manager` `<target>=<delay>` pairs)
+  instead of warning about unknown fields.
 
-- Single & multi-player support
-- Supports multiple games
-- Vast amount of map, model, & image formats are supported
-- Advanced console, with descriptions & autocompletion
-- Plugin support, enabling use of FFMPEG, Bullet/ODE physics & more
-- Extensive suite of QuakeC/entity debugging features
-- Deep integration with FTEQCC (fork of QuakeC created for FTEQW), which can even be executed in-game
-- Support for split-screen local multiplayer
-- Voice-chat via Opus & Speex
-- Support for hundreds of players on a single server
-- Works on Windows, Linux, OpenBSD... & more
-- New features are added all the time in cooperation with modders
+### Rendering
 
-# Contributions
+- **`RF_XFLIP`** (CSQC render flag, 128) — horizontally mirrors an
+  entity, intended for left-handed viewmodels; flips projection X and
+  cull winding so backface culling stays correct.
+- **`r_viewmodel_maxlight`** — per-channel ceiling on the first-person
+  viewmodel's light so a bright floor (lava, white tile) doesn't blow
+  the gun out. `0` = off (engine default); try `96..160`.
+- **Half-Life `.mdl` normalmaps** — loads an optional `<model>_norm`
+  texture as a whole-model bumpmap, used by the defaultskin GLSL `#BUMP`
+  path when a per-pixel light direction is available.
+- **`r_wateralpha_extendpvs`** — opt-in transparent-water PVS extension
+  for legacy maps (vanilla GoldSrc / classic vis) so underwater geometry
+  shows through transparent water at a distance. Leave `0` for maps
+  compiled with modern transparent-water vis.
+- **Crepuscular god-ray fixes** — the sun-shaft (crepuscular) pass now
+  aligns correctly at `r_renderscale` > 1, excludes the first-person
+  viewmodel from the occluder mask (so the gun's silhouette no longer
+  smears rays from screen-centre), and depth-gates the additive composite
+  so near geometry — including the gun — cleanly blocks the rays instead of
+  letting them bleed over it.
 
-Contributions and help is always welcomed.
+### System & performance (Windows)
 
-### Guidelines:
+- **`sys_framepacing`** — high-precision `cl_maxfps` pacing. The engine's
+  own (drift-corrected) limiter still decides when each frame is due; this
+  makes the wait land on that target accurately. `0` = vanilla `Sleep()`;
+  `1` = NtSetTimerResolution + high-res waitable timer + spin; `2` = (1) +
+  DXGI frame-latency wait on D3D11; `3` = (2) + absolute-grid anchor
+  (renderer-agnostic). `sys_framepacing_stats` reports what it's doing.
+- **`cl_debug_spikes`** — logs a per-stage timing breakdown whenever a
+  client frame exceeds `cl_debug_spike_ms` (default 2 ms), to pin a
+  hitch to a specific stage.
 
-- Be kind and respectful
-- GPL2 licensed contributions are preferred, but plugins can be different but GPL-compatbile licenses
-- This codebase follows USA/EU/UK copyright laws
-- Always give credit from other codebases and make sure licenses are compatible
-- Test your changes and ensure nothing else has been broken (games, plugins, formats, etc)
+### Menu / UI
 
-# Reporting Issues
+- **`localcmd_local`** (menu builtin) — injects a command at trusted
+  (LOCAL) level rather than INSECURE, so menu sliders can set
+  `NOTFROMSERVER` cvars (`sys_highpriority`, `sys_framepacing`, ...).
+  Menu-only by design.
 
-Bug reports are welcomed! :)
+### Source / Half-Life 2 maps
 
-### Required Information:
+- **Loads Valve Source (`.bsp`) maps** — Half-Life 2 and Counter-Strike: Source
+  levels, with their skyboxes (including HDR skies), textures and materials,
+  water, and props (which are distance- and visibility-culled). A large share of
+  the work went into *not crashing* on big, complex maps such as `d1_canals`,
+  and into silencing the flood of harmless warnings those maps print.
 
-- Your system information such as your **Operating System** and **Hardware** (GPU/CPU)
-- If the binary is pre-built (e.g. from fteqw.org) or if it was built manually
-- What version of FTEQW you're using (type `version` in console)
-- If it is a supported game/mod/plugin/etc you're having issues with, then provide the version info for it, and tell us how it should be behaving
-- Make sure you have read the included documentation and ensure you have done everything right
-- Remember to double check the problem hasn't already been reported
-- Screenshots and/or video are generally desired if it is a visual malfunction
+### Call of Duty maps
 
-**Windows Users**
+- **Loads Call of Duty 1 & 2 (`.bsp` / `.d3dbsp`) maps** — including the models
+  placed around the level (rocks, foliage, props) at the correct scale. A bug
+  that made large maps take minutes to load is fixed.
 
-Please make sure you have not renamed your executable, `fteqw.exe`, to be `winquake.exe` or `glquake.exe` as Windows attempts compatability fixes that are not required for FTEQW and will cause problems.
+### Using content from your installed games
 
-# Documentation
+- **Mounts content straight from your installed Steam games** — Half-Life,
+  Counter-Strike 1.6, Half-Life 2, Counter-Strike: Source, and Call of Duty —
+  on demand and at low priority, so it fills in missing assets without ever
+  overriding your own files. The menu lists maps from those games (from an
+  offline index), and when two games share a map name (e.g. `de_dust2`) it loads
+  the correct copy.
 
-Please see the `documentation` folder inside the repo for building, using the engine, tools, and more.
+### Dedicated server & multiplayer
 
-The `specs` folder is for more advanced users seeking QuakeC and idTech file format related information or examples.
+- **Dedicated (windowless) servers can host Source and CoD maps** — they used to
+  crash the instant such a map loaded.
+- **A batch of connection fixes:** no instant crash when a second player joins;
+  no "map does not match" kick when you join a server hosting a map you also own
+  under a different game; water renders correctly the moment you connect (instead
+  of see-through until you change a setting); and `+connect` / `+map` launch
+  options take you straight into the game instead of the menu backdrop.
 
-# Contact
+### Weather & effects
 
-### Matrix
+- **Rain that splashes** on water surfaces and on physics props, with optional
+  ripple rings and a per-frame cap so heavy weather stays cheap.
+- **`func_fogvolume` fog volumes** — bounded, per-brush-entity fog for Q1
+  (idBSP) and Half-Life maps, which have no Q3 fog lump. A mapper places a
+  `func_fogvolume` brush and the render path applies its fog only inside that
+  volume.
 
-https://matrix.to/#/#fte:matrix.org
+### Smaller fixes & cleanup
 
-### IRC
+- A real **`flushshaders`** console command (reloads shaders without a full
+  video restart); console history kept inside the game folder instead of the
+  install root; comment-aware config parsing; and the bundled ODE physics plugin
+  is statically linked, so it needs no loose runtime DLLs alongside it.
 
-**Server:** irc.quakenet.org
+## Building
 
-**Channel:** #fte
+Built with MSYS2 **UCRT64** (gcc). Open the *MSYS2 UCRT64* shell and run from
+`engine/`:
 
-### Forums
+```sh
+# Engine: client fteqw64.exe + dedicated server fteqwsv64.exe
+make clean m-rel sv-rel FTE_TARGET=win64 \
+    CFLAGS="-O3 -march=x86-64-v3 -flto=14" \
+    LDFLAGS="-static -flto=14" \
+    OPTIM_RELEASE="-O3" \
+    CC=gcc CXX=g++ PKGCONFIG=pkg-config -j14
+```
 
-**[Spike](https://forums.insideqc.com/memberlist.php?mode=viewprofile&u=26)** and **[eukara](https://forums.insideqc.com/memberlist.php?mode=viewprofile&u=949)** can be found on [insideqc.com](https://forums.insideqc.com/)
+`-march=x86-64-v3` enables AVX2/FMA codegen engine-wide. **It requires a
+Haswell-era (2013+) CPU and will SIGILL on anything older** — there is no
+runtime fallback. Drop back to `-march=x86-64-v2` if you need to run on
+pre-AVX2 hardware.
 
-### Discord
+Drop `clean` for a fast incremental rebuild after a small change (only the
+touched files recompile, then it relinks).
 
-https://discord.gg/p2ag7x6Ca6
+```sh
+# Plugins: cod + hl2 asset loaders AND the physics plugins (ode + box3d). Build
+# from THIS tree so the ABI matches the exe. The physics entries and `-k` are
+# both required — see the notes below.
+make plugins-rel FTE_TARGET=win64 NATIVE_PLUGINS="cod hl2 ode box3d" CC=gcc CXX=g++ -k
+```
 
-# Credits
+Two gotchas this command works around:
 
-Please see the `Credits.md` file.
+- **List the physics plugins explicitly.** `ode` and `box3d` are both commented
+  out of the Makefile's default plugin set, so `NATIVE_PLUGINS="cod hl2"` builds
+  *no physics plugin* and phys props silently break. (The old `PLUGINS_STATIC="ode"`
+  token this README used to show did nothing — it is not a real Makefile variable.)
+- **Keep `-k`.** Each plugin's last build step embeds a metadata zip via the
+  `zip` tool, which isn't in the UCRT64 shell, so every plugin ends with
+  `zip: command not found` / `Error 127`. That step is **harmless** — the DLL is
+  fully linked *before* it, and the metazip is only plugin-manager cosmetics the
+  engine never reads — but **without `-k` it aborts the make after the first
+  plugin** (that is why `"cod hl2"` only ever produced `cod`). With `-k`, make
+  keeps going and builds them all despite the expected non-zero exit. ODE links
+  the prebuilt static `libode.a` under `engine/libs-x86_64-w64-mingw32/`; box3d
+  links the prebuilt pure-C `libbox3d.a` (`BOX3D_BASE` in the Makefile) — no
+  libstdc++, no runtime DLLs.
 
-# License
+The DLLs land in **`engine/release/`**. Copy all four — `fteplug_cod_x64.dll`,
+`fteplug_hl2_x64.dll`, `fteplug_ode_x64.dll`, `fteplug_box3d_x64.dll` — next to the
+executable, and **redeploy them every time you rebuild the engine**: a plugin built
+against an older exe fails to load with `Couldn't load plugin <name>`. The ODE and
+box3d plugins are statically linked, so they need no `libwinpthread-1.dll` /
+`libgcc_s_seh-1.dll` / `libstdc++-6.dll` beside them — but a *non-static* build will
+fail to load once those runtime DLLs are gone. See the `documentation` folder for more.
 
-Copyright (c) 2004-2025 FTE's team and its contributors
-Quake source (c) 1999 id Software
+## Based on FTEQW — credits & license
 
-FTEQW is supplied to you under the terms of the same license as the
-original Quake sources, the GNU General Public License Version 2.
-Please read the `LICENSE` file for details.
+All credit for the engine goes to the FTE team and contributors. FTEQW
+is licensed under the GNU General Public License v2.
 
-# Download
+    Copyright (c) 2004-2025 FTE's team and its contributors
+    Quake source (c) 1999 id Software
 
-The latest source & binaries are always available at:
-
-[fteqw.org](https://fteqw.org)
-
-[fteqcc.org](https://fteqcc.org)
+See `LICENSE` for the full terms and `Credits.md` for contributors. The
+original upstream README — highlights, contact links, issue-reporting
+guidance — is preserved in this repository's git history and at
+[fteqw.org](https://fteqw.org).

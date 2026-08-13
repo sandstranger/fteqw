@@ -26,12 +26,20 @@ extern cvar_t r_wireframe;
 extern cvar_t r_outline;
 extern cvar_t r_outline_width;
 extern cvar_t r_refract_fbo;
+extern cvar_t gl_line_width;				//nettest: CSQC debug wireframe line width (3D scene polys / R_DB_Poly)
+extern cvar_t gl_2dline_width;				//nettest: 2D drawline width (hit-marker reticle / dummybatch)
+extern void R_DB_Poly(batch_t *batch);			//nettest: gl_alias.c scenetris builder; tags CSQC debug-line batches
+#ifndef GL_ALIASED_LINE_WIDTH_RANGE
+#define GL_ALIASED_LINE_WIDTH_RANGE 0x846E
+#endif
+static float gl_maxlinewidth = 8;			//nettest: GL_ALIASED_LINE_WIDTH_RANGE[1], cached in GLBE_Init
 
 extern texid_t missing_texture;
 extern texid_t missing_texture_gloss;
 extern texid_t missing_texture_normal;
 extern texid_t scenepp_postproc_cube;
 extern texid_t r_whiteimage;
+extern texid_t r_blackimage;	//nettest: SUNVIS fallback — black = zero sun occlusion = shadows behave as before
 
 #ifdef GLQUAKE
 static texid_t shadowmap[3];
@@ -209,10 +217,21 @@ static struct {
 		vec4_t lightshadowmapproj;
 	};
 
+	//nettest P110: per-slot fake-shadow projections.  Snapshots of lightprojmatrix taken as gl_shadow.c
+	//walks the atlas slots, so each slot's consumption matrix is BY CONSTRUCTION the same matrix the
+	//legacy single path uses (built in GLBE_SelectDLight's ORTHO branch, r_shadows_bias already baked
+	//into [14]) -- it cannot drift out of agreement with the shader.
+	float fakeshadowmatrix[MAX_FAKESHADOW_SLOTS][16];
+	vec4_t fakeshadowcell[MAX_FAKESHADOW_SLOTS];
+	vec4_t fakeshadowinfo[MAX_FAKESHADOW_SLOTS];	//nettest: per-slot metadata (x = sun-suppression for lamp cells)
+	int fakeshadowcount;
+
 	int wbatch;
 	int maxwbatches;
 	batch_t *wbatches;
 } shaderstate;
+
+static texnums_t r_nulltexnums;	//nettest: zeroed fallback for shaderstate.curtexnums when a shader is registered-but-not-yet-generated (defaulttextures==NULL, e.g. a Source prop's GLSL material on first frame). TEXLOADED() on all-zero texids is false, so every downstream deref (BE_RenderMeshProgram/DrawPass) safely binds nothing instead of NULL-faulting.
 
 #ifdef _DEBUG
 #define DRAWCALL(f) if (sh_config.showbatches) BE_PrintDrawCall(f)
@@ -1085,6 +1104,88 @@ void GLBE_SetupForShadowMap(dlight_t *dl, int texwidth, int texheight, float sha
 	shaderstate.lightshadowmapscale[1] = 1.0/texheight;
 }
 
+//nettest P110 --------------------------------------------------------------------------------------
+//Multi-direction fake shadows.  gl_shadow.c renders N model-only depth passes into cells of ONE texture,
+//each from a different dominant-light direction, and records each pass's projection here for the forward
+//pass to consume.  Slot 0 is always the sun, so N=1 is exactly the legacy behaviour.
+void GLBE_SetFakeShadowCount(int count)
+{
+	shaderstate.fakeshadowcount = bound(1, count, MAX_FAKESHADOW_SLOTS);
+}
+
+//nettest P114b: force the NEXT GLBE_SelectEntity to re-copy r_refdef.m_projection_std into the cached
+//shaderstate.projectionmatrix.  The fake-shadow ATLAS (Sh_GenerateCascadeAtlas / Sh_GenerateFakeShadowsAtlas)
+//renders N cells with a DIFFERENT ortho projection each, inside ONE Begin/End pair.  But GLBE_SelectEntity
+//only refreshes the cached projection when the entity's DEPTHHACK/XFLIP flags change -- which they never do
+//for world/prop casters -- so cells 1..N-1 rendered their caster depth with CELL 0's projection while the
+//shader sampled each with its own matrix.  For cascades that magnified every caster's shadow by
+//radius(s)/radius(0) (3x, 9x, ...): one prop cast three shadows at three sizes.  Same value that
+//GLBE_BeginShadowMap/EndShadowMap already use to invalidate; call this once per cell before its render.
+void GLBE_FlushProjection(void)
+{
+	shaderstate.usingweaponviewmatrix = -1;
+}
+
+//Snapshot the projection GLBE_SelectDLight just built for this slot.  Deliberately a COPY rather than a
+//rebuild: the ORTHO branch of GLBE_SelectDLight already pairs Matrix4x4_CM_Orthographic with
+//ModelViewMatrixFromAxis(axis[0], axis[2], axis[1]) -- the "FAKESHADOWS xyz convention" -- and bakes the
+//Patch-96 world-constant r_shadows_bias into [14].  Reproducing that math here is exactly how Patch 93's
+//spot-slot attempt came out mirrored and tiny; copying makes disagreement impossible.
+void GLBE_CaptureFakeShadowSlot(int slot, const vec4_t cell)
+{
+	if ((unsigned)slot >= MAX_FAKESHADOW_SLOTS)
+		return;
+	memcpy(shaderstate.fakeshadowmatrix[slot], shaderstate.lightprojmatrix, sizeof(shaderstate.lightprojmatrix));
+	Vector4Copy(cell, shaderstate.fakeshadowcell[slot]);
+}
+
+//nettest Phase-1: capture an EXPLICIT projection for this slot instead of copying the one GLBE_SelectDLight
+//built.  The PERSPECTIVE (spot) prop-shadow cells render via Sh_GenShadowFace's face-4 view
+//(LightMatrixFromAxis(axis[2],axis[1],-axis[0])), but GLBE_SelectDLight's SPOT branch builds a DIFFERENT
+//convention (ModelViewMatrixFromAxis(axis[0],axis[1],axis[2]) = xy transposed vs face-4) -- copying that
+//would mismatch the rendered depth (the P93 "mirrored/tiny" trap).  The caller instead passes the transform
+//it ACTUALLY rendered with, r_refdef.m_projection_std * r_refdef.m_view, which is correct for ANY projection
+//by construction (the shader reproduces exactly the clip-space the depth was written in).
+void GLBE_CaptureFakeShadowSlotMatrix(int slot, const float *matrix, const vec4_t cell)
+{
+	if ((unsigned)slot >= MAX_FAKESHADOW_SLOTS)
+		return;
+	memcpy(shaderstate.fakeshadowmatrix[slot], matrix, sizeof(shaderstate.fakeshadowmatrix[slot]));
+	Vector4Copy(cell, shaderstate.fakeshadowcell[slot]);
+}
+
+//nettest: the fake-shadow atlas texture (r_shadows_propshadows_showatlas debug view samples it).
+texid_t GLBE_GetFakeShadowAtlasTexture(void)
+{
+	return shadowmap[2];
+}
+
+//An unused slot must not keep LAST frame's matrix, or receivers would project into a cell that now holds
+//a different direction's depth.  Identity with a huge z translation puts every fragment past the far
+//plane, so the shader's `fd < 1.0` box test rejects the slot outright and it costs no taps.
+void GLBE_ClearFakeShadowSlot(int slot, const vec4_t cell)
+{
+	if ((unsigned)slot >= MAX_FAKESHADOW_SLOTS)
+		return;
+	Matrix4x4_Identity(shaderstate.fakeshadowmatrix[slot]);
+	shaderstate.fakeshadowmatrix[slot][14] = 1e9f;
+	Vector4Copy(cell, shaderstate.fakeshadowcell[slot]);
+	Vector4Set(shaderstate.fakeshadowinfo[slot], 0, 0, 0, 0);	//dead cells must not suppress (or un-suppress) anything
+}
+
+//nettest: per-slot metadata for the PERSPECTIVE lamp cells (l_fakeshadowinfo).  x = sun-suppression
+//factor: how much a sun-visible receiving pixel washes this lamp's shadow out (the lamp-vs-sun
+//brightness ratio, computed by Sh_GeneratePropShadowsAtlas; 0 on maps with no SUNVIS bake, which keeps
+//the feature inert there -- the sampler fallback reads "fully sunlit" everywhere on those maps and would
+//otherwise erase every lamp shadow).  yzw reserved.
+void GLBE_SetFakeShadowSlotInfo(int slot, const vec4_t info)
+{
+	if ((unsigned)slot >= MAX_FAKESHADOW_SLOTS)
+		return;
+	Vector4Copy(info, shaderstate.fakeshadowinfo[slot]);
+}
+//---------------------------------------------------------------------------------------------------
+
 int GLBE_BeginRenderBuffer_DepthOnly(texid_t depthtexture);
 qboolean GLBE_BeginShadowMap(int id, int w, int h, uploadfmt_t encoding, int *restorefbo)
 {
@@ -1101,6 +1202,12 @@ qboolean GLBE_BeginShadowMap(int id, int w, int h, uploadfmt_t encoding, int *re
 		tex->height = h;
 		tex->format = encoding;
 		qglGenTextures(1, &tex->num);
+		//nettest: the FBO attach below is cached BY TEXTURE NAME (shadow_fbo_depth_num) -- but GL recycles
+		//names, so the gen above typically returns the name the destroy just freed.  The stale cache then
+		//SKIPPED the re-attach while the deletion had already detached the old image, leaving the FBO with
+		//no depth attachment: every depth render+clear got dropped, the atlas stayed undefined, and every
+		//shadow test read "in shadow" -- the whole world went dark on any LIVE r_shadows_res change.
+		shadow_fbo_depth_num = 0;
 		GL_MTBind(0, GL_TEXTURE_2D, tex);
 #ifdef SHADOWDBG_COLOURNOTDEPTH
 		qglTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, w, h, 0, GL_RGBA, GL_UNSIGNED_BYTE, NULL);
@@ -1135,6 +1242,25 @@ qboolean GLBE_BeginShadowMap(int id, int w, int h, uploadfmt_t encoding, int *re
 
 	/*set framebuffer*/
 	*restorefbo = GLBE_BeginRenderBuffer_DepthOnly(shaderstate.curshadowmap);
+
+	//nettest: an incomplete shadow FBO silently drops every depth render+clear and the whole world reads
+	//as "in shadow" (dark) -- make it LOUD instead, and fail properly so the caller disables the feature
+	//for the frame rather than sampling an undefined atlas.
+	if (qglCheckFramebufferStatusEXT)
+	{
+		GLenum fbstatus = qglCheckFramebufferStatusEXT(GL_FRAMEBUFFER_EXT);
+		if (fbstatus != GL_FRAMEBUFFER_COMPLETE_EXT)
+		{
+			static float lastwarn;
+			if (realtime > lastwarn + 5)
+			{
+				lastwarn = realtime;
+				Con_Printf(CON_WARNING "GLBE_BeginShadowMap: %ix%i depth fbo incomplete (0x%x) -- shadows disabled this frame\n", w, h, fbstatus);
+			}
+			GLBE_FBO_Pop(*restorefbo);
+			return false;
+		}
+	}
 
 	shaderstate.usingweaponviewmatrix = -1;		//make sure the projection matrix is updated.
 
@@ -1280,7 +1406,7 @@ static void Shader_BindTextureForPass(int tmu, const shaderpass_t *pass)
 			t = r_nulltex;
 		break;
 	case T_GEN_FULLBRIGHT:
-		t = shaderstate.curtexnums->fullbright;
+		t = (shaderstate.curtexnums && TEXLOADED(shaderstate.curtexnums->fullbright)) ? shaderstate.curtexnums->fullbright : r_nulltex;	//nettest: guard the curtexnums deref like every other T_GEN_* case — an unresolved Source material/prop skin on frame 1 has curtexnums==NULL and crashed here
 		break;
 	case T_GEN_REFLECTCUBE:
 		if (shaderstate.curtexnums && TEXLOADED(shaderstate.curtexnums->reflectcube))
@@ -1611,6 +1737,18 @@ void GLBE_Init(void)
 	else
 #endif
 		qglGetIntegerv(GL_STENCIL_BITS, &sh_config.stencilbits);
+
+	{	//nettest: cache the driver's max aliased line width so gl_line_width can be clamped, and warn if the driver/profile pins it to 1px
+		float lwrange[2] = {1, 1};
+		if (qglGetFloatv)
+			qglGetFloatv(GL_ALIASED_LINE_WIDTH_RANGE, lwrange);
+		if (lwrange[1] >= 1)
+			gl_maxlinewidth = lwrange[1];
+		Con_DPrintf("GL_ALIASED_LINE_WIDTH_RANGE: [%g, %g]\n", lwrange[0], lwrange[1]);
+		if (gl_maxlinewidth <= 1)
+			Con_Printf("note: GL driver/profile clamps line width to 1px; gl_line_width has no effect (use cl_debug_wire_thickness for quad thickness)\n");
+	}
+
 	for (i = 0; i < FTABLE_SIZE; i++)
 	{
 		t = (double)i / (double)FTABLE_SIZE;
@@ -2423,6 +2561,52 @@ static void deformgen(const deformv_t *deformv, int cnt, vecV_t *src, vecV_t *ds
 		}
 		break;
 
+	case DEFORMV_RIPPLE:
+		//nettest: interactive water ripples.  Sum every live expanding-ring source (r_waterripples,
+		//fed by R_AddWaterRipple) as a gaussian-windowed cosine riding an outward-growing wavefront,
+		//and push the vertex up/down in Z on top of whatever the wave deform already did.  Pure Z
+		//(these are up-facing liquid tops), so no normals needed and xy are left untouched.
+		if (src != dst)
+			memcpy(dst, src, sizeof(*src)*cnt);
+		if (r_waterripple_react.value > 0)
+		{
+			float react = r_waterripple_react.value;
+			float now = shaderstate.updatetime;
+			for ( j = 0; j < cnt; j++ )
+			{
+				float disp = 0;
+				for ( k = 0; k < MAX_WATERRIPPLES; k++ )
+				{
+					const waterripple_t *rip = &r_waterripples[k];
+					float age = now - rip->starttime;
+					float front, dx, dy, d2, lo, hi, d, x, env, fade;
+					if (rip->amp <= 0 || age < 0 || age >= rip->lifetime)
+						continue;
+					front = age * rip->speed;
+					dx = src[j][0] - rip->origin[0];
+					dy = src[j][1] - rip->origin[1];
+					d2 = dx*dx + dy*dy;
+					//only vertices near the current ring radius move -- skip the rest before the sqrt
+					lo = front - 3.0f*rip->size;
+					hi = front + 3.0f*rip->size;
+					if (lo < 0)
+						lo = 0;
+					if (d2 > hi*hi || d2 < lo*lo)
+						continue;
+					d = sqrt(d2);
+					x = (d - front) / rip->size;			//offset from the wavefront, in 'size' units
+					if (x < -3.0f || x > 3.0f)
+						continue;
+					env = exp(-x*x);						//gaussian ring band
+					fade = 1.0f - age / rip->lifetime;
+					fade *= fade;							//ease-out over the ripple's life
+					disp += rip->amp * fade * env * cos(x * 3.14159265f);
+				}
+				dst[j][2] += disp * react;
+			}
+		}
+		break;
+
 	case DEFORMV_NORMAL:
 		//normal does not actually move the verts, but it does change the normals array
 		//we don't currently support that.
@@ -3139,6 +3323,18 @@ static void BE_SubmitMeshChain(qboolean usetesselation)
 	else
 		batchtype = (shaderstate.flags & BEF_LINES)?GL_LINES:GL_TRIANGLES;
 
+	if (batchtype == GL_LINES)
+	{	//nettest: scoped line thickness.  CSQC debug overlays build via R_DB_Poly (gl_line_width);
+		//2D drawline — the hit-marker reticle — draws through the dummybatch (gl_2dline_width);
+		//everything else (particle trails, etc.) stays 1px.  glLineWidth is driver-clamped (GLBE_Init).
+		float lw = 1;
+		if (shaderstate.curbatch && shaderstate.curbatch->buildmeshes == R_DB_Poly)
+			lw = bound(1, gl_line_width.value, gl_maxlinewidth);
+		else if (shaderstate.curbatch == &shaderstate.dummybatch)
+			lw = bound(1, gl_2dline_width.value, gl_maxlinewidth);
+		qglLineWidth(lw);
+	}
+
 	if (!shaderstate.streamvbo[0])	//only if we're not forcing vbos elsewhere.
 	{
 		//q3map2 sucks. it splits static meshes randomly rather than with any pvs consistancy, and then splays them out over 1000 different surfaces.
@@ -3725,6 +3921,96 @@ static void BE_Program_Set_Attributes(const program_t *prog, struct programpermu
 		case SP_E_GLOWMOD:
 			qglUniform3fvARB(ph, 1, (GLfloat*)shaderstate.curentity->glowmod);
 			break;
+		//nettest: 1 = this entity must NOT receive the r_shadows 2 fake-sun shadowmap.  TWO sources:
+		//(1) the first-person VIEWMODEL (drawn INSIDE the local player's body, which is rendered into
+		//the fake-sun depth pass while r_shadow_playershadows is on, so the gun was shadowed by its
+		//owner) — gated by r_shadows_viewmodel; (2) any entity carrying RF_NOSHADOWRECV, set from the
+		//CSQCRF_NOSELFSHADOW renderflag (prop_static "Don't self-shadow" spawnflag).  FAKESHADOWS is a
+		//global compile-time define, so this per-entity uniform is the only way the shader can know.
+		//Polarity is FAIL-SAFE: an unbound/unsupported uniform reads 0 = normal receive (never "vanish").
+		case SP_E_NOSHADOWRECV:
+			{
+				extern cvar_t r_shadows_viewmodel;
+				float supp = (shaderstate.curentity->flags & RF_NOSHADOWRECV) ? 1.0f : 0.0f;
+				if ((shaderstate.curentity->flags & RF_WEAPONMODEL) && !r_shadows_viewmodel.ival)
+					supp = 1.0f;
+				qglUniform1fARB(ph, supp);
+			}
+			break;
+		//nettest: 1 = this entity is the LOCAL FIRST-PERSON BODY (cl_fpbody).  The mod draws the
+		//owner's own player model so they can look down and see their legs; the model shader then
+		//dithers away everything above a height band so the head — which sits around the camera,
+		//the eye being at model Z +20 with the crown at +36 — can never clip into view.
+		//A per-entity uniform rather than a shader permutation ON PURPOSE: the body-paint system
+		//binds its own runtime `program defaultskin` shaders per surface, so gating inside the one
+		//shared shader is what makes a painted body fade correctly too, with no shader cross-product.
+		//Polarity is FAIL-SAFE: an unbound/unsupported uniform reads 0 = draw the whole model.
+		case SP_E_FPFADE:
+			qglUniform1fARB(ph, (shaderstate.curentity->flags & RF_FPFADE) ? 1.0f : 0.0f);
+			break;
+		//nettest: PER-ENTITY dominant light direction (WORLD space, pointing TOWARD the light) for the model
+		//sun form-shade in defaultskin.glsl.  Replaces the single global e_fakesundir #define so a prop beside
+		//a lamp shades toward THAT lamp while one in the open shades toward the sun — Source-style dominant
+		//light.  Freshness is free: R_CalcModelLighting's sample is cached per entity and the Patch-105 cache
+		//VALIDATES ON ORIGIN, so a static prop hits forever and a moving one re-samples as it travels.
+		//
+		//The value is reconstructed, NOT stored: gl_alias.c writes e->light_dir as the world direction
+		//PROJECTED onto the entity's orthonormal axes (light_dir[i] = DotProduct(worlddir, e->axis[i])), so
+		//the inverse is simply the axis-weighted sum.  Reconstructing here avoids adding a field to entity_t,
+		//which the prebuilt hl2/cod plugins reach via NewSceneEntity (struct-ABI hazard — see ENGINE_PATCHES).
+		//
+		//FALLBACK to the global sun when there is no per-entity information to be had:
+		//  - no deluxemap (.lux/LIGHTINGDIR) => LightPointValues returns a CONSTANT direction, which would look
+		//    worse than the sun; so un-relit maps keep exactly their current appearance (zero regression).
+		//  - RF_WEAPONMODEL => that branch transforms through the VIEW basis first (gl_alias.c), so the plain
+		//    inverse above does not apply.
+		case SP_E_SUNDIR:
+			{
+				extern cvar_t r_sun_dir;
+				extern qboolean Sh_EntityLampDir(const entity_t *ent, vec3_t out);
+				vec3_t sundir;
+				//Patch 110: the reconstruction moved into R_EntityDominantLightDir (gl_alias.c) so this
+				//uniform and the fake-shadow direction bucketer share ONE implementation -- a prop's
+				//shading direction and its cast-shadow direction cannot disagree.
+				//Patch 120a: if this prop is currently shadowed by a map LAMP, shade it from that lamp's
+				//actual position instead.  The deluxemap reconstruction below only exists on maps built
+				//with `light -bspxlux` (6 of the mod's 29), so everywhere else the "per-prop dominant
+				//light" silently fell back to the global sun -- i.e. a prop indoors was form-shaded by a
+				//sun it cannot see, on top of a lamp shadow pointing the other way.  The lamp direction
+				//needs no bake and is the same light that owns the prop's cast + self shadow, so all
+				//three now agree.
+				//Patch 120c: BLEND, don't switch.  e->lamp is a single int, so the old select swapped the
+				//whole direction vector in one frame -- and defaultskin.glsl maps N.dot.sundir across
+				//r_shadows_sunshade_floor..._ceil (0..2 as shipped), so a model could swing 0x..2x in that
+				//one frame walking through a doorway.  That, not the shadow itself, is what read as a
+				//"hard transition".  Lerping by the same shade fraction the shader uses also settles an
+				//inconsistency: Sh_EntityLampDir keys on e->lamp alone and never on the in-shade verdict,
+				//so a SUNLIT prop merely standing near a lamp was already being form-shaded by that lamp
+				//while casting from the sun.  At shade 0 we are now back on the sun regardless.
+				extern float Sh_EntitySunShade(const entity_t *ent);
+				vec3_t lampdir;
+				float shade = Sh_EntitySunShade(shaderstate.curentity);
+				if (!R_EntityDominantLightDir(shaderstate.curentity, sundir))
+					VectorCopy(r_sun_dir.vec4, sundir);
+				if (shade > 0 && Sh_EntityLampDir(shaderstate.curentity, lampdir))
+				{
+					VectorScale(sundir, 1.0f - shade, sundir);
+					VectorMA(sundir, shade, lampdir, sundir);
+					if (!VectorNormalize(sundir))	//exactly opposed at the midpoint: keep the lamp end
+						VectorCopy(lampdir, sundir);
+				}
+				qglUniform3fvARB(ph, 1, sundir);
+			}
+			break;
+		case SP_E_SUNSHADE:
+			{	//Patch 120c: how far into shade this entity is, 0..1, time-smoothed engine-side.  The
+				//shader fades its SUN form-shade and sun self-shadow by it (and nothing else -- a prop
+				//indoors keeps its lamp shadow at full strength).  Fail-safe: 0 for anything the shadow
+				//system never classified, which is what an unbound uniform reads too.
+				extern float Sh_EntitySunShade(const entity_t *ent);
+				qglUniform1fARB(ph, Sh_EntitySunShade(shaderstate.curentity));
+			}
+			break;
 		case SP_E_ORIGIN:
 			qglUniform3fvARB(ph, 1, (GLfloat*)shaderstate.curentity->origin);
 			break;
@@ -3868,6 +4154,27 @@ static void BE_Program_Set_Attributes(const program_t *prog, struct programpermu
 		case SP_LIGHTSHADOWMAPSCALE:
 			qglUniform2fvARB(ph, 1, shaderstate.lightshadowmapscale);
 			break;
+		//nettest P110: the N fake-shadow slot projections, composed with the model matrix exactly like
+		//SP_LIGHTCUBEMATRIX above (the shaders feed them model-space vertex positions).
+		//Upload ALL slots, not just the live count: the glsl loop bound (FAKESHADOWS_COUNT) is COMPILE
+		//time, so when the live count SHRINKS the program would keep reading LAST frame's matrices for
+		//the vanished cells -- stale shadows flickering in as the budget churns.  The generators clear
+		//dead slots (identity + huge z) every frame; excess array elements are ignored by GL.
+		case SP_FAKESHADOWMATRIX:
+			{
+				float t[MAX_FAKESHADOW_SLOTS*16];
+				int s;
+				for (s = 0; s < MAX_FAKESHADOW_SLOTS; s++)
+					Matrix4_Multiply(shaderstate.fakeshadowmatrix[s], shaderstate.modelmatrix, t + s*16);
+				qglUniformMatrix4fvARB(ph, MAX_FAKESHADOW_SLOTS, false, t);
+			}
+			break;
+		case SP_FAKESHADOWCELL:
+			qglUniform4fvARB(ph, MAX_FAKESHADOW_SLOTS, (GLfloat*)shaderstate.fakeshadowcell);
+			break;
+		case SP_FAKESHADOWINFO:
+			qglUniform4fvARB(ph, MAX_FAKESHADOW_SLOTS, (GLfloat*)shaderstate.fakeshadowinfo);
+			break;
 
 		/*static lighting info*/
 		case SP_E_L_DIR:
@@ -3956,6 +4263,13 @@ static void BE_RenderMeshProgram(const shader_t *shader, const shaderpass_t *pas
 	if (shaderstate.curbatch->lightmap[1] >= 0)
 		perm |= PERMUTATION_LIGHTSTYLES;
 #endif
+	//nettest: baked static-prop per-vertex lighting. Enable the VC (light *= v_colour) permutation
+	//only for a prop entity that resolved a placement record AND actually has its per-instance colour
+	//array bound (gl_alias.c's override sets colours[0]); this keeps it off for ordinary models and for
+	//the count-mismatch case where the override was skipped.
+	if (shaderstate.curbatch->ent && shaderstate.curbatch->ent->vertlightcolors &&
+		(shaderstate.sourcevbo->colours[0].gl.addr || shaderstate.sourcevbo->colours[0].gl.vbo))
+		perm |= PERMUTATION_VC;
 
 	perm &= p->supportedpermutations;
 	permu = p->permu[perm];
@@ -4001,16 +4315,54 @@ static void BE_RenderMeshProgram(const shader_t *shader, const shaderpass_t *pas
 		}
 	}
 #if MAXRLIGHTMAPS > 1
-	if (perm & PERMUTATION_LIGHTSTYLES)
-	{
-		GL_LazyBind(i++, shaderstate.curbatch->lightmap[1]>=0?lightmap[shaderstate.curbatch->lightmap[1]]->lightmap_texture:r_nulltex);
-		GL_LazyBind(i++, shaderstate.curbatch->lightmap[2]>=0?lightmap[shaderstate.curbatch->lightmap[2]]->lightmap_texture:r_nulltex);
-		GL_LazyBind(i++, shaderstate.curbatch->lightmap[3]>=0?lightmap[shaderstate.curbatch->lightmap[3]]->lightmap_texture:r_nulltex);
-		GL_LazyBind(i++, (shaderstate.curbatch->lightmap[1]>=0&&lightmap[shaderstate.curbatch->lightmap[1]]->hasdeluxe)?lightmap[shaderstate.curbatch->lightmap[1]+1]->lightmap_texture:missing_texture_normal);
-		GL_LazyBind(i++, (shaderstate.curbatch->lightmap[2]>=0&&lightmap[shaderstate.curbatch->lightmap[2]]->hasdeluxe)?lightmap[shaderstate.curbatch->lightmap[2]+1]->lightmap_texture:missing_texture_normal);
-		GL_LazyBind(i++, (shaderstate.curbatch->lightmap[3]>=0&&lightmap[shaderstate.curbatch->lightmap[3]]->hasdeluxe)?lightmap[shaderstate.curbatch->lightmap[3]+1]->lightmap_texture:missing_texture_normal);
+	{	//nettest: advance `i` once per DECLARED sampler bit, NOT once per bit we happen to have a
+		//texture for.  GLSlang_ProgAutoFields (gl_vidcommon.c) hands out texture units by walking
+		//sh_defaultsamplers[] with no permutation test at all, so any sampler declared AFTER these
+		//six reads whatever unit this loop leaves it on.
+		//
+		//The old code bound all six inside `if (perm & PERMUTATION_LIGHTSTYLES)` — and on q1bsp
+		//that permutation is NEVER set (gl_model.c forces batch->lightmap[1] = -1 for every batch),
+		//while !!samps =LIGHTSTYLED still declares bits 17-19 program-wide.  So `i` stalled 3-6
+		//units behind the uniform assignment.  That was latent forever because nothing was ever
+		//declared after deluxemap3; s_sunvis is the first sampler that is, and it landed on a unit
+		//the `while (lastpasstmus > i)` sweep below had just cleared to r_nulltex — sampling
+		//(0,0,0,1) on every surface of every map.
+		static const unsigned int lsbits[6] = {
+			1u<<S_LIGHTMAP1, 1u<<S_LIGHTMAP2, 1u<<S_LIGHTMAP3,
+			1u<<S_DELUXEMAP1,1u<<S_DELUXEMAP2,1u<<S_DELUXEMAP3};
+		int n, lm;
+		for (n = 0; n < 6; n++)
+		{
+			if (!(p->defaulttextures & lsbits[n]))
+				continue;	//not declared -> ProgAutoFields skipped it -> we must skip it too
+			lm = (perm & PERMUTATION_LIGHTSTYLES) ? shaderstate.curbatch->lightmap[(n%3)+1] : -1;
+			if (n < 3)
+				GL_LazyBind(i++, lm>=0?lightmap[lm]->lightmap_texture:r_nulltex);
+			else
+				GL_LazyBind(i++, (lm>=0&&lightmap[lm]->hasdeluxe)?lightmap[lm+1]->lightmap_texture:missing_texture_normal);
+		}
 	}
 #endif
+	//nettest (SUNVIS): baked per-luxel sun visibility, sharing lightmap[0]'s atlas coords.
+	//Bound LAST, matching s_sunvis's position at the end of sh_defaultsamplers[] — that table's
+	//order is what GLSlang_ProgAutoFields uses to assign texture units, so the two must agree.
+	//Guarded on the program actually asking for it, or `i` would drift out of step for every
+	//shader that doesn't.  Test `p`, the program being rendered with — NOT
+	//shaderstate.curshader->prog: on the alt-program paths (wireframe, fixed-function emulation,
+	//altshader) curshader is still defaultwall while `p` is something else entirely, and testing
+	//curshader there would bind a spurious extra texture over a unit that program actually uses.
+	//i < SHADER_TMU_MAX is NOT paranoia: GL_LazyBind indexes shaderstate.currenttextures[tmu]
+	//with no bounds check of its own, and defaultwall with every permutation on peaks at exactly
+	//15 of the 16 units — zero headroom. Overflow would corrupt backend state, not fail cleanly.
+	if (p && (p->defaulttextures & (1u<<S_SUNVIS)) && i < SHADER_TMU_MAX)
+	{
+		int svlm = shaderstate.curbatch->lightmap[0];
+		//r_blackimage, not r_whiteimage: the texture holds sun OCCLUSION, so black = fully lit =
+		//shadow at full strength = the pre-SUNVIS behaviour. See the polarity note in
+		//defaultwall.glsl - getting this backwards deletes every shadow in the game.
+		GL_LazyBind(i++, (svlm >= 0 && svlm < numlightmaps && TEXVALID(lightmap[svlm]->sunvis_texture))
+						? lightmap[svlm]->sunvis_texture : r_blackimage);
+	}
 	while (shaderstate.lastpasstmus > i)
 		GL_LazyBind(--shaderstate.lastpasstmus, r_nulltex);
 	shaderstate.lastpasstmus = i;
@@ -4330,6 +4682,13 @@ qboolean GLBE_SelectDLight(dlight_t *dl, vec3_t colour, vec3_t axis[3], unsigned
 		Matrix4x4_CM_ModelViewMatrixFromAxis(view, axis[0], axis[2], axis[1], dl->origin);
 		Matrix4_Multiply(proj, view, shaderstate.lightprojmatrix);
 //		Matrix4x4_CM_LightMatrixFromAxis(shaderstate.lightprojmatrix, axis[0], axis[1], axis[2], dl->origin);
+		{	//nettest: WORLD-CONSTANT contact bias (r_shadows_bias qu; pv[14] = clip-z
+			//translation, 1 qu = 1/radius in ortho NDC).  Replaces pcf.h's old radius-
+			//SCALED 0.015 NDC bias (removed there), which grew to ~15qu at distance
+			//1024 and cut shadows off well before their caster touched the ground.
+			extern cvar_t r_shadows_bias;
+			shaderstate.lightprojmatrix[14] -= r_shadows_bias.value / max(1, dl->radius);
+		}
 	}
 	else if (shaderstate.lightmode & LSHADER_SPOT)
 	{
@@ -4638,6 +4997,13 @@ static void DrawMeshes(void)
 		break;
 #endif
 	case BEM_CREPUSCULAR:
+		//nettest: a first-person viewmodel is drawn with the weapon-view matrix + RF_DEPTHHACK
+		//projection (see :4240), which does NOT map to its on-screen position in this world-space
+		//mask FBO -- so as a crepuscular occluder its silhouette lands at the model origin (screen
+		//centre) instead of the drawn gun.  A weapon overlay shouldn't cast sun shadow-rays anyway,
+		//so skip it here; it still occludes the composited rays via its own opaque pixels.
+		if (shaderstate.curentity && (shaderstate.curentity->flags & RF_DEPTHHACK))
+			break;
 		altshader = shaderstate.curshader->bemoverrides[bemoverride_crepuscular];
 		if (!altshader && (shaderstate.curshader->flags & SHADER_SKY))
 			altshader = shaderstate.crepskyshader;
@@ -4986,7 +5352,21 @@ static void BE_GenTempMeshVBO(vbo_t **vbo, mesh_t *m)
 		shaderstate.dummyvbo.texcoord.gl.vbo = shaderstate.streamvbo[shaderstate.streamid];
 		len += sizeof(*m->st_array) * m->numvertexes;
 
-		//FIXME: lightmaps
+		//nettest: lightmap texcoords (needed by lightmapped poly/scenetris batches, e.g.
+		//per-pixel-lit decals - see r_decal_lightmap). Always set lmcoord[0] (copy or NULL)
+		//to clear any stale pointer from a previous mesh.
+		if (m->lmst_array[0])
+		{
+			memcpy(buffer+len, m->lmst_array[0], sizeof(*m->lmst_array[0]) * m->numvertexes);
+			shaderstate.dummyvbo.lmcoord[0].gl.addr = (void*)len;
+			shaderstate.dummyvbo.lmcoord[0].gl.vbo = shaderstate.streamvbo[shaderstate.streamid];
+			len += sizeof(*m->lmst_array[0]) * m->numvertexes;
+		}
+		else
+		{
+			shaderstate.dummyvbo.lmcoord[0].gl.addr = NULL;
+			shaderstate.dummyvbo.lmcoord[0].gl.vbo = 0;
+		}
 
 		if (m->colors4f_array[0])
 		{
@@ -5094,6 +5474,10 @@ static void BE_GenTempMeshVBO(vbo_t **vbo, mesh_t *m)
 		shaderstate.dummyvbo.coord.gl.addr = m->xyz_array;
 		shaderstate.dummyvbo.coord2.gl.addr = m->xyz2_array;
 		shaderstate.dummyvbo.texcoord.gl.addr = m->st_array;
+		//nettest: lightmap texcoords for lightmapped poly batches (r_decal_lightmap). NULL when
+		//absent so a stale pointer from a previous mesh can't leak in.
+		shaderstate.dummyvbo.lmcoord[0].gl.addr = m->lmst_array[0];
+		shaderstate.dummyvbo.lmcoord[0].gl.vbo = 0;
 		shaderstate.dummyvbo.indicies.gl.addr = m->indexes;
 		shaderstate.dummyvbo.normals.gl.addr = m->normals_array;
 		shaderstate.dummyvbo.svector.gl.addr = m->snormals_array;
@@ -5133,7 +5517,7 @@ void GLBE_DrawMesh_List(shader_t *shader, int nummeshes, mesh_t **meshlist, vbo_
 		else if (shader->numdefaulttextures)
 			shaderstate.curtexnums = shader->defaulttextures + ((int)(shader->defaulttextures_fps * shaderstate.curtime) % shader->numdefaulttextures);
 		else
-			shaderstate.curtexnums = shader->defaulttextures;
+			shaderstate.curtexnums = shader->defaulttextures ? shader->defaulttextures : &r_nulltexnums;	//nettest: guard NULL defaulttextures (registered-but-not-yet-generated shader) — see r_nulltexnums
 
 		while (nummeshes--)
 		{
@@ -5158,7 +5542,7 @@ void GLBE_DrawMesh_List(shader_t *shader, int nummeshes, mesh_t **meshlist, vbo_
 		else if (shader->numdefaulttextures)
 			shaderstate.curtexnums = shader->defaulttextures + ((int)(shader->defaulttextures_fps * shaderstate.curtime) % shader->numdefaulttextures);
 		else
-			shaderstate.curtexnums = shader->defaulttextures;
+			shaderstate.curtexnums = shader->defaulttextures ? shader->defaulttextures : &r_nulltexnums;	//nettest: guard NULL defaulttextures (registered-but-not-yet-generated shader) — see r_nulltexnums
 
 		shaderstate.meshcount = nummeshes;
 		shaderstate.meshes = meshlist;
@@ -5191,6 +5575,8 @@ void GLBE_SubmitBatch(batch_t *batch)
 	}
 
 	sh = batch->shader;
+	if (!sh)	//nettest: the portal/depthmask loops call GLBE_SubmitBatch directly (bypassing the !bs guard on the sortlist path), so a still-NULL shader (e.g. a frame-1 unparsed Source water material) would fault on sh->remapto
+		return;
 	shaderstate.curshader = sh->remapto;
 	shaderstate.flags = batch->flags;
 	if (shaderstate.curentity != batch->ent)
@@ -5201,7 +5587,7 @@ void GLBE_SubmitBatch(batch_t *batch)
 	else if (sh->numdefaulttextures)
 		shaderstate.curtexnums = sh->defaulttextures + ((int)(sh->defaulttextures_fps * shaderstate.curtime) % sh->numdefaulttextures);
 	else
-		shaderstate.curtexnums = sh->defaulttextures;
+		shaderstate.curtexnums = sh->defaulttextures ? sh->defaulttextures : &r_nulltexnums;	//nettest: guard NULL defaulttextures (a Source prop's GLSL material on first frame faults in BE_RenderMeshProgram otherwise) — see r_nulltexnums
 
 	if (0)
 	{
@@ -5601,6 +5987,44 @@ void GLBE_UpdateLightmaps(void)
 		lm = lightmap[lmidx];
 		if (!lm)
 			continue;
+
+		//nettest (SUNVIS): baked sun visibility is STATIC - no styles, no stains, no dlights -
+		//so unlike the lightmap it is uploaded once for the whole page and then never touched
+		//again. That is why it needs no rectchange tracking and no PBO path.
+		//the L8 guard matters: if the driver has no single-channel format the upload would
+		//silently produce garbage. Skipping leaves sunvis_texture invalid, the bind falls back
+		//to r_whiteimage, and shadows behave exactly as they did before.
+		if (lm->sunvis_modified && lm->sunvis_pixels && gl_config.formatinfo[PTI_L8].internalformat)
+		{
+			if (!TEXVALID(lm->sunvis_texture))
+			{
+				TEXASSIGN(lm->sunvis_texture, Image_CreateTexture(va("***sunvis %i***", lmidx), NULL, IF_LINEAR|IF_NOMIPMAP|IF_CLAMP));
+				qglGenTextures(1, &lm->sunvis_texture->num);
+			}
+			GL_MTBind(0, GL_TEXTURE_2D, lm->sunvis_texture);
+			qglTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+			qglTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+			qglTexImage2D(GL_TEXTURE_2D, 0, gl_config.formatinfo[PTI_L8].internalformat, lm->width, lm->height, 0,
+						gl_config.formatinfo[PTI_L8].format, gl_config.formatinfo[PTI_L8].type, lm->sunvis_pixels);
+#ifndef FTE_TARGET_WEB
+			//single-channel formats are commonly stored as GL_RED, so swizzle like the lightmap
+			//path does or the shader's .r would read the wrong component on some drivers.
+			if (gl_config.glversion >= (gl_config.gles?3.0:3.3))
+			{
+				qglTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_SWIZZLE_R, gl_config.formatinfo[PTI_L8].swizzle_r);
+				qglTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_SWIZZLE_G, gl_config.formatinfo[PTI_L8].swizzle_g);
+				qglTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_SWIZZLE_B, gl_config.formatinfo[PTI_L8].swizzle_b);
+				qglTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_SWIZZLE_A, gl_config.formatinfo[PTI_L8].swizzle_a);
+			}
+#endif
+			lm->sunvis_texture->format = PTI_L8;
+			lm->sunvis_texture->width  = lm->width;
+			lm->sunvis_texture->height = lm->height;
+			lm->sunvis_texture->depth  = 1;
+			lm->sunvis_texture->status = TEX_LOADED;
+			lm->sunvis_modified = false;
+		}
+
 		if (lm->modified)
 		{
 			int t = lm->rectchange.t;	//pull them out now, in the hopes that it'll be more robust with respect to r_dynamic -1
@@ -6440,7 +6864,19 @@ void GLBE_DrawWorld (batch_t **worldbatches)
 		{
 #ifdef RTLIGHTS
 			if (r_fakeshadows)
+			{
+				//nettest: Sh_GenerateFakeShadows used to sit OUTSIDE every RSPEED_ bucket -- the
+				//nearest RSpeedRemark() is the one below, AFTER it.  Its cost (the sun cascades, the
+				//per-prop lamp cells and their paired world cells, plus all the per-caster
+				//classification and lamp scoring) was therefore counted in Total refresh and CSQC
+				//Drawing but attributed to NOTHING.  The sub-buckets simply did not sum to the
+				//total, and on a prop-dense map the missing slice was the LARGEST single line in
+				//the frame -- bigger than Opaque Batches -- which made r_speeds actively
+				//misleading about where the time went.  Read it as "Shadow generation".
+				RSpeedRemark();
 				Sh_GenerateFakeShadows();
+				RSpeedEnd(RSPEED_FAKESHADOWS);
+			}
 #endif
 			GLBE_SelectEntity(&r_worldentity);
 

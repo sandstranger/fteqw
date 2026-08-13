@@ -394,6 +394,7 @@ char *Cbuf_GetNext(int level, qboolean ignoresemicolon)
 	int		i;
 	char	*text;
 	int		quotes;
+	qboolean comment;
 	static char	line[1024];
 
 start:
@@ -401,14 +402,17 @@ start:
 	text = (char *)cmd_text[level].buf.data;
 
 	quotes = 0;
+	comment = false;
 	for (i=0 ; i< cmd_text[level].buf.cursize ; i++)
 	{
-		if (text[i] == '"')
-			quotes++;
-		if ( !(quotes&1) &&  text[i] == ';' && !ignoresemicolon)
-			break;	// don't break if inside a quoted string
 		if (text[i] == '\n')
 			break;
+		if (text[i] == '"')
+			quotes++;
+		if (!(quotes&1) && !comment && text[i] == '/' && i+1 < cmd_text[level].buf.cursize && text[i+1] == '/')
+			comment = true;	//nettest: rest of the physical line is a // comment — a ';' inside it must NOT split the line (matches Cbuf_ExecuteLevel)
+		if ( !(quotes&1) && !comment && text[i] == ';' && !ignoresemicolon)
+			break;	// don't break if inside a quoted string or a // comment
 	}
 
 	if (i >= sizeof(line)-1)
@@ -2441,6 +2445,58 @@ qboolean	Cmd_Exists (const char *cmd_name)
 
 /*
 ============
+Cmd_IsKnownName
+
+nettest: "is this token the name of a command, alias or cvar?"  Replaces the completion-list
+scan that Cmd_IsCommand used to do.
+
+Case-SENSITIVE, deliberately, because that is what the old code did (Cmd_Complete with
+caseinsens=false, then an exact strcmp).  Matching the executor's case-insensitive lookup
+instead would be more self-consistent, but it would also mean that typing "KILL" or "QUIT" in
+chat silently executes the command instead of being said -- so the only behaviour that changes
+here is the one that was actually broken.
+
+Deliberately does NOT consult the tab-completion machinery.  Cmd_Complete only keeps the first
+50 matches for a prefix (cmd_completion_t::completions[50] in cmd.h; the overflow is swallowed
+into res->extra in Cmd_Complete_Check), and because Cmd_IsCommand hands it a bare first token
+the `!partial[len]` disjunct in Cmd_Complete degenerates the filter into a pure PREFIX match.
+Both cvar_groups and group->cvars are built head-first (Cvar_GetGroup / Cvar_Register), so the
+earliest-created group is walked LAST -- and "r_shadows" lives in GRAPHICALNICETIES, whose group
+is created before "Realtime Lighting" (35 r_shadows* entries incl. 2 name2 aliases), before
+"Custom variables" (the `set`s in default.cfg) and before "GLSL Variables" (the !!cvardf
+pragmas).  53 names match the prefix, so plain "r_shadows" fell off the end of the array, the
+exact-match scan found nothing, Cmd_IsCommand called it chat, and cl_chatmode 2 broadcast
+"r_shadows 0" to the server as a say.  Any name that is a prefix of 50+ others hits this.
+
+Deliberately ignores restriction levels: this answers "is this a known name", not "may you run
+it".  A restricted name must still reach the cbuf so Cmd_FindForExecution can print "was
+restricted" locally, instead of the line being broadcast as public chat.
+============
+*/
+qboolean Cmd_IsKnownName (const char *name)
+{
+	cmd_function_t	*cmd;
+	cmdalias_t		*a;
+	cvar_t			*var;
+
+	for (cmd=cmd_functions ; cmd ; cmd=cmd->next)
+		if (!Q_strcmp (name, cmd->name))
+			return true;
+	for (a=cmd_alias ; a ; a=a->next)
+		if (!Q_strcmp (name, a->name))
+			return true;
+	//Cvar_FindVar's hash is case-INsensitive, so re-check the case here to stay faithful to the
+	//old behaviour. Two cvars cannot differ by case alone (Cvar_Register rejects the duplicate),
+	//so the hash can only ever hand back the one candidate. name2 is an alias for the same cvar
+	//and the old completion walk offered it as its own entry, so accept either spelling.
+	var = Cvar_FindVar(name);
+	if (var && (!strcmp(var->name, name) || (var->name2 && !strcmp(var->name2, name))))
+		return true;
+	return false;
+}
+
+/*
+============
 Cmd_Exists
 ============
 */
@@ -2584,8 +2640,25 @@ static void Cmd_Complete_Check(const char *check, cmd_completion_t *res, const c
 	}
 
 	if (res->num == countof(res->completions))
-	{
-		res->extra++;
+	{	//nettest: never let an EXACT match be the entry we drop.  Cmd_CompleteCommand with
+		//matchnum<0 only ever looks for an exact strcmp match, so losing it makes a live cvar
+		//look unregistered -- and even for Tab, the one name you definitely meant is the one
+		//worth keeping.  Steal the last slot rather than grow the array.
+		if (res->partial && !strcmp(check, res->partial))
+		{
+			size_t last = res->num-1;
+			if (res->completions[last].text_alloced)
+				Z_Free((char*)res->completions[last].text);
+			if (res->completions[last].desc_alloced)
+				Z_Free((char*)res->completions[last].desc);
+			res->completions[last].text_alloced = false;
+			res->completions[last].text = check;
+			res->completions[last].desc_alloced = false;
+			res->completions[last].desc = desc;
+			res->completions[last].repl = NULL;
+		}
+		else
+			res->extra++;	//nettest: only count it as omitted if we actually omitted it
 		return;	//no more space for more options
 	}
 
@@ -4275,8 +4348,8 @@ static void Cmd_WriteConfig_f(void)
 		Q_snprintfz(fname, sizeof(fname), "%s", filename);
 		COM_RequireExtension(fname, ".cfg", sizeof(fname));
 
-		if (!strncmp(fname, "data/", 5))
-			nohidden = true;	//we're writing to the data/ dir, which mods may potentially read. don't write any settings they're not allowed to see.
+		if (!strncmp(fname, "data/", 5) || !strncmp(fname, "cfg/", 4))
+			nohidden = true;	//we're writing to a dir mods may potentially read (see QC_FixFileName). don't write any settings they're not allowed to see.
 		else if (Cmd_IsInsecure())
 		{
 			Con_Printf ("%s %s: not allowed\n", Cmd_Argv(0), Cmd_Args());

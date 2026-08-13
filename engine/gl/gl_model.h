@@ -410,6 +410,7 @@ typedef struct
 #define SURF_NOFLAT			0x08000
 #define SURF_DRAWALPHA		0x10000
 #define SURF_NODRAW			0x20000	//set on non-vertical halflife water submodel surfaces
+#define SURF_DETACHED		0x40000	//face not coplanar with the node it is filed under (misc_external_mesh bake); mark visible before the world walk so it does not pop
 
 // !!! if this is changed, it must be changed in asm_draw.h too !!!
 typedef struct
@@ -607,6 +608,9 @@ void Q1BSP_Init(void);
 void Q1BSP_GenerateShadowMesh(struct model_s *model, struct dlight_s *dl, const qbyte *lightvis, qbyte *litvis, void (*callback)(msurface_t *surf));
 
 void BSPX_LightGridLoad(struct model_s *model, bspx_header_t *bspx, qbyte *mod_base);	//for q1 or q2 models.
+void BSPX_PropLightLoad(struct model_s *model, bspx_header_t *bspx, qbyte *mod_base);	//nettest: baked static-prop per-vertex lighting (RGBPROPLIGHT).
+struct entity_s;
+const vec4_t *PropLight_Find(struct model_s *world, const char *modelname, const vec3_t origin, const vec3_t angles, int *out_numverts, vec3_t out_meancolor);	//nettest: look up a prop placement's baked per-vertex colours + mean.
 void BSPX_LoadEnvmaps(struct model_s *mod, bspx_header_t *bspx, void *mod_base);
 void *BSPX_FindLump(bspx_header_t *bspxheader, void *mod_base, char *lumpname, size_t *lumpsize);
 bspx_header_t *BSPX_Setup(struct model_s *mod, char *filebase, size_t filelen, lump_t *lumps, size_t numlumps);
@@ -615,6 +619,7 @@ typedef struct fragmentdecal_s fragmentdecal_t;
 void Fragment_ClipPoly(fragmentdecal_t *dec, int numverts, float *inverts, shader_t *surfshader);
 size_t Fragment_ClipPlaneToBrush(vecV_t *points, size_t maxpoints, void *planes, size_t planestride, size_t numplanes, vec4_t face);
 void Mod_ClipDecal(struct model_s *mod, vec3_t center, vec3_t normal, vec3_t tangent1, vec3_t tangent2, float size, unsigned int surfflagmask, unsigned int surflagmatch, void (*callback)(void *ctx, vec3_t *fte_restrict points, size_t numpoints, shader_t *shader), void *ctx);
+extern const struct msurface_s *Mod_Decal_CurrentSurface;	//nettest: surface of the in-progress decal fragment (r_decal_lightmap); set by Mod_ClipDecal's clipper, read by CL_AddDecal_Callback
 
 void Q1BSP_MarkLights (dlight_t *light, dlightbitmask_t bit, mnode_t *node);
 void GLQ1BSP_LightPointValues(struct model_s *model, const vec3_t point, vec3_t res_diffuse, vec3_t res_ambient, vec3_t res_dir);
@@ -974,6 +979,19 @@ enum
 	MLS_LOADED,
 	MLS_FAILED
 };
+
+//nettest Patch 61: one convex piece of a prop's collision decomposition (sv_prop_collision
+//3). Same plane/tri layout as the single hull below; an array of these approximates a
+//CONCAVE shape (the union of convex pieces). Built per-submesh at load.
+typedef struct
+{
+	int		numplanes;
+	vec4_t	*planes;	//.xyz outward unit normal, .w dist (outside iff dot(p,.xyz)-.w > 0)
+	int		numtris;	//r_showhull viz surface tris (model space, 3 verts each)
+	vec3_t	*tris;
+	vec3_t	mins, maxs;	//nettest Patch 65: model-space AABB of this piece, for the per-piece trace cull
+} convhull_t;
+
 typedef struct model_s
 {
 	char		name[MAX_QPATH];	//actual name on disk
@@ -1133,6 +1151,31 @@ typedef struct model_s
 	void *meshinfo;	//data allocated within the memgroup allocations, will be nulled out when the model is flushed
 	searchpathfuncs_t *archive;	//some bsp formats have an embedded zip...
 	zonegroup_t memgroup;
+	void		*proplights;	//nettest: APPEND-ONLY (prebuilt plugin ABI). baked static-prop per-vertex lighting (RGBPROPLIGHT lump), keyed by prop placement. See gl_rlight.c.
+	qbyte		*sunvisdata;	//nettest: APPEND-ONLY (prebuilt plugin ABI). baked per-luxel sun visibility (SUNVIS lump), 1 byte per luxel, laid out parallel to lightdata at style 0. NULL = no lump; the shader then falls back to fully-lit and dynamic sun shadows behave as they always did.
+
+//
+// nettest Patch 56: TRUE convex-hull collision planes in MODEL space, built from the
+// base verts at load (alias/IQM) by an incremental QuickHull. World_HullTrace clips a
+// swept player box against these for smooth, watertight, mesh-shaped prop collision
+// (sv_prop_collision 2). numhullplanes==0 unless built; each plane: .xyz = outward unit
+// normal, .w = dist (a point is OUTSIDE iff dot(p,.xyz) - .w > 0). Allocated from the
+// model memgroup (auto-freed with the model).
+// APPEND-ONLY (prebuilt plugin ABI): these fields originally sat mid-struct (before
+// clipbox) and shifted every later member by 48 bytes, which silently broke any plugin
+// built before them (fteplug_hl2's VBSP loader wrote mod->surfaces/memgroup/etc at the
+// old offsets = corrupt Source maps). Moved to the tail 2026-07: everything below the
+// struct's classic layout must only ever be APPENDED, and any change here still means
+// rebuilding ALL native plugins (append-only keeps offsets, not array strides).
+//
+	int			numhullplanes;
+	vec4_t		*hullplanes;
+	int			numhulltris;	//r_showhull debug viz: hull surface triangles (model space, 3 verts each)
+	vec3_t		*hulltris;
+	//nettest Patch 61: per-submesh CONVEX DECOMPOSITION (sv_prop_collision 3). numhulls==0 ->
+	//use the single hull above. Each entry is one convex piece; their union = a concave shape.
+	int			numhulls;
+	convhull_t	*convhulls;
 } model_t;
 
 #define MDLF_EMITREPLACE     0x0001 // particle effect engulphs model (don't draw)

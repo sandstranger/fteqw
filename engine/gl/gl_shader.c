@@ -653,8 +653,9 @@ qboolean Shader_ParseSkySides (char *shadername, char *texturename, texid_t *ima
 	//if possible directly use a 7th/cubemap texture instead
 	//this requires fixing the sky code to not do the random transforms thing though.
 	qboolean allokay = true;
-	int i, ss, sp;
+	int i, ss, sp, pass;
 	char path[MAX_QPATH];
+	char hdrname[MAX_QPATH];		//nettest: <skyname>_hdr<side> compressed-HDR variant
 
 	static char	*skyname_suffix[][6] = {
 		{"rt", "bk", "lf", "ft", "up", "dn"},
@@ -669,7 +670,9 @@ qboolean Shader_ParseSkySides (char *shadername, char *texturename, texid_t *ima
 		"%s_%s",
 		"%s%s",
 		"env/%s%s",
-		"gfx/env/%s%s"
+		"gfx/env/%s%s",
+		"skybox/%s%s",			//nettest: Source/GoldSrc skyboxes live under materials/skybox/<name><side>.vtf
+		"materials/skybox/%s%s"	//nettest: explicit materials/ prefix (matches how Source .vpk paths are mounted)
 	};
 
 	if (*texturename == '$')
@@ -691,12 +694,34 @@ qboolean Shader_ParseSkySides (char *shadername, char *texturename, texid_t *ima
 		}
 		else
 		{
-			for (sp = 0; sp < sizeof(skyname_pattern)/sizeof(skyname_pattern[0]); sp++)
+			//nettest: HL2 ships a compressed-HDR sky face named "<skyname>_hdr<side>"
+			// (e.g. sky_day01_01_hdrrt) ALONGSIDE the LDR "<skyname><side>". The 8-bit
+			// LDR face bands; the _hdr face is RGBS-in-BGRA8 (or RGBA16F) and is smooth.
+			// Probe the _hdr variant FIRST with IF_HDRDECOMPRESS so img_vtf decodes the
+			// rgb*alpha*8 face (a native RGBA16F _hdr face just loads as float and ignores
+			// the flag, since the decode gate is vmffmt==VMF_BGRA8); fall back to the LDR
+			// face if no HDR variant exists (CS:S / older skies).
+			Q_snprintfz(hdrname, sizeof(hdrname), "%s_hdr", texturename);
+			for (pass = 0; pass < 2; pass++)
 			{
-				for (ss = 0; ss < sizeof(skyname_suffix)/sizeof(skyname_suffix[0]); ss++)
+				char *tn = pass ? texturename : hdrname;
+				for (sp = 0; sp < sizeof(skyname_pattern)/sizeof(skyname_pattern[0]); sp++)
 				{
-					Q_snprintfz ( path, sizeof(path), skyname_pattern[sp], texturename, skyname_suffix[ss][i] );
-					images[i] = R_LoadHiResTexture ( path, NULL, IF_NOALPHA|IF_CLAMP|IF_LOADNOW);
+					for (ss = 0; ss < sizeof(skyname_suffix)/sizeof(skyname_suffix[0]); ss++)
+					{
+						qboolean ishdr;
+						unsigned int xf;
+						Q_snprintfz ( path, sizeof(path), skyname_pattern[sp], tn, skyname_suffix[ss][i] );
+						//nettest: decode ANY face whose filename carries the Source "_hdr" tag —
+						// covers the "<name>"+"_hdr" probe AND a skyname the mapper already pointed
+						// at the _hdr variant (e.g. sky_day03_01_hdr, which otherwise loaded as plain
+						// LDR via pass 1 and kept banding). Plain LDR faces keep IF_NOALPHA.
+						ishdr = (strstr(path, "_hdr") != NULL);
+						xf = (ishdr ? IF_HDRDECOMPRESS : IF_NOALPHA) | IF_CLAMP | IF_LOADNOW;
+						images[i] = R_LoadHiResTexture ( path, NULL, xf);
+						if (images[i]->width)
+							break;
+					}
 					if (images[i]->width)
 						break;
 				}
@@ -830,6 +855,11 @@ static int Shader_SetImageFlags(parsestate_t *parsestate, shaderpass_t *pass, ch
 		{
 			*name+=11;
 			flags |= IF_PALETTIZE;
+		}
+		else if (!Q_strnicmp(*name, "$hdr:", 5))	//nettest: Source compressed-HDR (RGBS-in-BGRA8) sky face — img_vtf decodes rgb*alpha*8 to linear float
+		{
+			*name+=5;
+			flags |= IF_HDRDECOMPRESS;
 		}
 		else
 			break;
@@ -1008,6 +1038,12 @@ static void Shader_DeformVertexes (parsestate_t *ps, const char **ptr)
 		if (deformv->args[0])
 			deformv->args[0] = 1.0f / deformv->args[0];
 		Shader_ParseFunc (ps, "deformvertexes wave", ptr, &deformv->func );
+	}
+	else if ( !Q_stricmp (token, "ripple") )
+	{
+		//nettest: interactive water ripples.  No per-shader args -- the ring sources are global
+		//(r_waterripples[], fed by R_AddWaterRipple); this just marks the surface as a receiver.
+		deformv->type = DEFORMV_RIPPLE;
 	}
 	else if ( !Q_stricmp (token, "normal") )
 	{
@@ -1434,6 +1470,10 @@ const struct sh_defaultsamplers_s sh_defaultsamplers[] =
 	{"s_deluxemap2",	0},
 	{"s_deluxemap3",	0},
 #endif
+	//nettest: baked per-luxel sun visibility (SUNVIS lump).  MUST stay LAST in this table:
+	//GLSlang_ProgAutoFields assigns texture units by walking THIS array in order, so inserting
+	//anywhere earlier would shift every following sampler's unit. Bound last to match.
+	{"s_sunvis",		1u<<S_SUNVIS},
 	{NULL}
 };
 
@@ -1450,7 +1490,8 @@ static struct
 	{"SKELETAL", PERMUTATION_SKELETAL},
 	{"FOG", PERMUTATION_FOG},
 	{"FRAMEBLEND", PERMUTATION_FRAMEBLEND},
-	{"LIGHTSTYLED", PERMUTATION_LIGHTSTYLES}
+	{"LIGHTSTYLED", PERMUTATION_LIGHTSTYLES},
+	{"VC", PERMUTATION_VC}	//nettest: baked static-prop per-vertex colour multiplier
 };
 #define MAXMODIFIERS 64
 
@@ -1477,6 +1518,13 @@ struct programpermu_s *Shader_LoadPermutation(program_t *prog, unsigned int p)
 	qboolean fail = false;
 
 	extern cvar_t r_glsl_pbr, gl_specular, gl_specular_power;
+	extern cvar_t r_shadows_throwfade;	//nettest: contact-shadow gap fade, injected alongside FAKESHADOWS
+	extern cvar_t r_sun_dir;			//nettest: env_sun world direction, injected as e_fakesundir for model sun-shade
+	extern cvar_t r_shadows_slots;		//nettest P110: fake-shadow atlas slot count, injected as FAKESHADOWS_COUNT
+	extern cvar_t r_shadows_cascades;	//nettest P114: sun cascade count (slots==1 only), also drives FAKESHADOWS_COUNT
+	extern cvar_t r_shadows_propshadows;		//nettest Phase-1: per-prop PERSPECTIVE shadow cells (slots==1 only)
+	extern cvar_t r_shadows_propshadows_max;	//nettest Phase-1: how many perspective prop cells the atlas carries
+	extern cvar_t r_shadows_propshadows_worldmask;	//Patch 120: halves the live cell budget -- must be mirrored below
 
 	if (~prog->supportedpermutations & p)
 		return NULL;	//o.O
@@ -1492,11 +1540,65 @@ struct programpermu_s *Shader_LoadPermutation(program_t *prog, unsigned int p)
 		Q_strlcatfz(defines, &offset, sizeof(defines), "#define PBR\n");
 #ifdef RTLIGHTS
 	if (r_fakeshadows)
+	{
 		Q_strlcatfz(defines, &offset, sizeof(defines), "#define FAKESHADOWS\n%s",
 #ifdef GLQUAKE
 				gl_config.arb_shadow?"#define USE_ARB_SHADOW\n":
 #endif
 				"");
+		//nettest: contact-shadow gap fade constant (sys/pcf.h reads it) driven by the live
+		//cvar value; changes take effect on the next shader flush (vid_reload / r_shadows toggle).
+		Q_strlcatfz(defines, &offset, sizeof(defines), "#define r_shadows_throwfade %f\n", r_shadows_throwfade.value);
+		//nettest: world-space env_sun direction (toward the sun) for the model N-dot-L "sun shade"
+		//in defaultskin.glsl.  r_sun_dir is CVAR_SHADERSYSTEM so its per-map change flushes shaders
+		//and re-injects this (no staleness across maps).
+		Q_strlcatfz(defines, &offset, sizeof(defines), "#define e_fakesundir vec3(%f,%f,%f)\n",
+			r_sun_dir.vec4[0], r_sun_dir.vec4[1], r_sun_dir.vec4[2]);
+		//nettest P110/P114: number of fake-shadow atlas cells.  The receiving shaders size their
+		//uniform/varying ARRAYS from this, so it MUST be a compile-time define -- which is why both
+		//r_shadows_slots and r_shadows_cascades are CVAR_SHADERSYSTEM (a change recompiles shaders).
+		//1 = the legacy single sun ortho; the shaders keep a verbatim `#if FAKESHADOWS_COUNT < 2`
+		//branch so N=1 is the SAME COMPILED CODE as before this patch, not merely the same value.
+		//
+		//The cells hold EITHER P110 direction slots OR P114 sun cascades, never both -- slots win when
+		//>1, cascades apply only at slots==1.  FAKESHADOWS_CASCADE tells the shader which cell SEMANTICS
+		//to use: cascades are nested boxes of the same sun, so the shader must pick the tightest cell
+		//that contains a pixel (not ADD every containing cell as the direction-slot path does).
+		{
+			//nettest Phase-1: the atlas may now carry SUN cells [0,fssun) followed by PERSPECTIVE per-prop
+			//cells [fssun, fssun+fspersp).  FAKESHADOWS_PERSP_FIRST tells the shader where the switch is;
+			//when it is absent the layout is exactly the P110/P114 all-ortho one (byte-identical output).
+			//Perspective prop shadows only apply with slots==1, and (for Phase 1) force a SINGLE sun cell --
+			//they replace the cascades rather than coexisting yet (Phase 2 lifts that).
+			int fsslots = bound(1, r_shadows_slots.ival, 8);	/*direction-atlas layout max (must match Sh_FakeShadowChooseSlots)*/
+			int fscasc  = bound(1, r_shadows_cascades.ival, 4/*SH_MAX_CASCADES*/);
+			int fspersp = (fsslots <= 1 && r_shadows_propshadows.ival) ? bound(1, r_shadows_propshadows_max.ival, MAX_FAKESHADOW_SLOTS-1) : 0;
+			//Phase-2: cascades now COEXIST with prop cells.  Sun cells = direction slots (MULTI) OR cascades.
+			int fssun   = (fsslots > 1) ? fsslots : fscasc;
+			int fscells;
+			if (fspersp > 0)
+			{	//cap prop cells to the free atlas space (MUST match Sh_GeneratePropShadowsAtlas's propmax
+				//clamp): each free quadrant packs up to 16 eighth-size subcells, bounded by the slot array.
+				//Patch 120: the worldmask halving was MISSING here, so at cascades 3 + worldmask 1 the
+				//shader compiled 13 perspective cells while the engine could only ever fill 8.  The five
+				//dead slots still cost a loop iteration (5 depth taps) per pixel on every wall and model,
+				//plus their share of the 16 mat4 uniforms uploaded per draw call.
+				int nce = (fssun <= 1) ? 1 : fssun;
+				int cap = (4-nce)*16;
+				if (r_shadows_propshadows_worldmask.ival)
+					cap /= 2;	//each lamp also gets a same-size WORLD-occlusion subcell
+				if (cap > MAX_FAKESHADOW_SLOTS - nce) cap = MAX_FAKESHADOW_SLOTS - nce;
+				if (cap < 0) cap = 0;
+				if (fspersp > cap) fspersp = cap;
+			}
+			fscells = fssun + fspersp;
+			Q_strlcatfz(defines, &offset, sizeof(defines), "#define FAKESHADOWS_COUNT %i\n", fscells);
+			if (fsslots <= 1 && fscasc > 1)	//cascades (NOT direction slots) -- may now coexist with prop cells
+				Q_strlcatfz(defines, &offset, sizeof(defines), "#define FAKESHADOWS_CASCADE 1\n");
+			if (fspersp > 0)
+				Q_strlcatfz(defines, &offset, sizeof(defines), "#define FAKESHADOWS_PERSP_FIRST %i\n", fssun);
+		}
+	}
 #endif
 
 	for (n = 0; n < countof(permutations); n++)
@@ -1566,12 +1668,21 @@ qboolean Shader_PermutationEnabled(unsigned int bit)
 qboolean Com_PermuOrFloatArgument(const char *shadername, char *arg, size_t arglen, float def)
 {
 	extern cvar_t gl_specular;
+	extern cvar_t r_shadows;	//nettest: see FAKESHADOWS below
 	size_t p;
 	//load-time-only permutations...
 	if (arglen == 8 && !strncmp("SPECULAR", arg, arglen) && gl_specular.value)
 		return true;
 #ifdef RTLIGHTS
-	if (arglen == 11 && !strncmp("FAKESHADOWS", arg, arglen) && r_fakeshadows)
+	//nettest: also accept the CVAR intent, not just the live global.  r_fakeshadows only flips true
+	//once the shadow-settings check runs in a rendered 3D frame (gl_shadow.c), so a cold start
+	//straight into a map (+map / cl_launchintogame) parses every world program's "!!samps
+	//=FAKESHADOWS shadowmap" while the global is still false -> no s_shadowmap uniform -> when the
+	//FAKESHADOWS define later reaches the permutation (injection or !!permu force-define) the GLSL
+	//dies with C1503 "undefined variable s_shadowmap" (seen on the hl2 plugin's vmt/lightmapped).
+	//Declaring the sampler whenever fake shadows COULD enable is free: nothing binds it and all
+	//usage stays behind #ifdef FAKESHADOWS.
+	if (arglen == 11 && !strncmp("FAKESHADOWS", arg, arglen) && (r_fakeshadows || r_shadows.ival == 2))
 		return true;
 #endif
 	if ((arglen==5||arglen==6) && !strncmp("DELUXE", arg, arglen) && r_deluxemapping && Shader_PermutationEnabled(PERMUTATION_BUMPMAP))
@@ -1993,7 +2104,9 @@ static qboolean Shader_LoadPermutations(char *name, program_t *prog, char *scrip
 				if (strncmp("OFFSETMAPPING", script, end - script))
 				if (strncmp("RELIEFMAPPING", script, end - script))
 				if (strncmp("FAKESHADOWS", script, end - script))
-					Con_DPrintf("Unknown pemutation in glsl program %s\n", name);
+				if (strncmp("NOFOG", script, end - script))			//nettest: the VMT programs declare NOFOG/AMBIENTCUBE as compile-time #defines (via #define injection), not bitmask permutations — recognise + skip like TESS/SPECULAR above
+				if (strncmp("AMBIENTCUBE", script, end - script))
+					Con_DLPrintf(2, "Unknown pemutation in glsl program %s\n", name);	//nettest: demote to developer 2 — this is about the bitmask permu table, not actual rendering, so it's spammy-but-benign
 			}
 			script = end;
 		}
@@ -2451,6 +2564,23 @@ struct shader_field_names_s shader_unif_names[] =
 	{"e_colour",				SP_E_COLOURS},		//colormod/alpha, even if colormod isn't set
 /**/{"e_colourident",			SP_E_COLOURSIDENT},	//colormod,alpha or 1,1,1,alpha if colormod isn't set
 /**/{"e_glowmod",				SP_E_GLOWMOD},		//fullbright scalers (for hdr mostly)
+/**/{"e_noshadowrecv",			SP_E_NOSHADOWRECV},	//nettest: 1 = don't receive the r_shadows 2 fake-sun shadowmap (viewmodel); 0 = normal. Fail-safe polarity: an unbound uniform reads 0 = normal.
+/**/{"e_fpfade",				SP_E_FPFADE},		//nettest: 1 = local first-person body, dither away above the height band; 0 = normal. Fail-safe polarity: an unbound uniform reads 0 = draw the whole model.
+/**/{"e_sundir",				SP_E_SUNDIR},		//nettest: PER-ENTITY world-space dominant light dir (toward the light) for the sun form-shade; deluxemap-derived, falls back to r_sun_dir.
+/**/{"e_sunshade",			SP_E_SUNSHADE},		//nettest Patch 120c: PER-ENTITY 0..1 sun-shade fraction (0 sunlit, 1 under a roof), time-smoothed. Fail-safe polarity: an unbound uniform reads 0 = full sun terms.
+	//nettest P110: the fake-shadow atlas slot arrays.  BOTH the bare and the "[0]" spelling are registered
+	//ON PURPOSE.  GLSlang_ProgAutoFields binds by a literal glGetUniformLocation call per row -- there is no
+	//glGetActiveUniform enumeration and no name normalisation -- and drivers disagree about which spelling
+	//of an array uniform's element 0 resolves (the spec permits querying either; real drivers return -1 for
+	//one of them).  Registering both guarantees a hit.  If a driver resolves BOTH, we simply get two parm
+	//entries with the same handle and type, so the upload runs twice with identical data: wasteful by a few
+	//microseconds, never wrong.  DO NOT "clean this up" to a single row.
+/**/{"l_fakeshadowmatrix[0]",	SP_FAKESHADOWMATRIX},
+/**/{"l_fakeshadowmatrix",		SP_FAKESHADOWMATRIX},
+/**/{"l_fakeshadowcell[0]",		SP_FAKESHADOWCELL},
+/**/{"l_fakeshadowcell",		SP_FAKESHADOWCELL},
+/**/{"l_fakeshadowinfo[0]",		SP_FAKESHADOWINFO},
+/**/{"l_fakeshadowinfo",		SP_FAKESHADOWINFO},
 /**/{"e_uppercolour",			SP_E_TOPCOLOURS},	//q1 player colours
 /**/{"e_lowercolour",			SP_E_BOTTOMCOLOURS},//q1 player colours
 /**/{"e_light_dir",				SP_E_L_DIR},		//lightgrid light dir. dotproducts should be clamped to 0-1.
@@ -5167,6 +5297,23 @@ static void Shader_Readpass (parsestate_t *ps)
 	Shader_EndPass(ps);
 }
 
+//nettest: CoD/CoD2 .stype materials use Q3-style directives FTE doesn't implement (nvTexShader, waterMap, perlight,
+//sunfile, tessSize, radialNormals). They're harmless; recognise-and-skip them so they don't spam the developer
+//console, while genuine typos / unknown directives still warn.
+static qboolean Shader_IsKnownIgnoredDirective(const char *token)
+{
+	static const char *ignored[] = {"nvTexShader", "waterMap", "perlight", "sunfile", "tessSize", "radialNormals",
+		//nettest: + Source VMT pass-only keywords / blendfunc args that leak to the top level of the generated shader (harmless no-ops there)
+		"alphatest", "rgbgen", "alphagen", "src_alpha", "dst_alpha", "one_minus_src_alpha", "one_minus_dst_alpha", "one", "zero",
+		//nettest: + CoD metadata directive (imagesize) and orphaned CoD/Q3 if() conditional operators that spill onto a continuation line (Shader_EvaluateCondition stops at the newline, leaving the operator as a bogus top-level directive)
+		"imagesize", "||", "&&", "<", "<=", ">", ">=", "==", "!=", NULL};
+	const char **i;
+	for (i = ignored; *i; i++)
+		if (!Q_stricmp(token, *i))
+			return true;
+	return false;
+}
+
 //we've read the first token, now make sense of it and any args
 static qboolean Shader_Parsetok(parsestate_t *ps, shaderkey_t *keys, const char *token)
 {
@@ -5206,7 +5353,7 @@ static qboolean Shader_Parsetok(parsestate_t *ps, shaderkey_t *keys, const char 
 		}
 	}
 
-	if (!toolchainprefix)	//we don't really give a damn about prefixes owned by various toolchains - they shouldn't affect us.
+	if (!toolchainprefix && !Shader_IsKnownIgnoredDirective(prefix?prefix:token))	//we don't really give a damn about prefixes owned by various toolchains - they shouldn't affect us.
 	{
 		if (prefix)
 			Con_DPrintf("Unknown shader directive parsing %s: \"%s\"\n", ps->s->name, prefix);
@@ -5625,7 +5772,10 @@ static void Shader_Finish (parsestate_t *ps)
 		s->sort = SHADER_SORT_DECAL;
 	}
 
-	if ((r_vertexlight.value || !(s->usageflags & SUF_LIGHTMAP)) && !s->prog)
+	//nettest: a pass-level program that samples $lightmap (e.g. per-pixel-lit decals) uses the
+	//lightmap intentionally - don't apply the vertex-light lightmap strip/collapse to it (that
+	//discards its merged lightmap pass, leaving s_lightmap unbound).
+	if ((r_vertexlight.value || !(s->usageflags & SUF_LIGHTMAP)) && !s->prog && !s->passes->prog)
 	{
 		// do we have a lightmap pass?
 		pass = s->passes;
@@ -6852,6 +7002,7 @@ char *Shader_DefaultBSPWater(parsestate_t *ps, const char *shortname, char *buff
 	int type;
 	float alpha;
 	qboolean explicitalpha = false;
+	char deform[256];
 	cvar_t *alphavars[] = {	&r_wateralpha, &r_lavaalpha, &r_slimealpha, &r_telealpha};
 	cvar_t *stylevars[] = {	&r_waterstyle, &r_lavastyle, &r_slimestyle, &r_telestyle};
 
@@ -6917,6 +7068,25 @@ char *Shader_DefaultBSPWater(parsestate_t *ps, const char *shortname, char *buff
 			wstyle = 1;
 	}
 
+	// r_waterripple: gently displace the (tessellated) liquid surface up/down along its
+	// normal. Two low-amplitude waves at non-harmonic wavelengths/speeds read as a soft chop
+	// rather than one marching sine. Empty when disabled, so the shader is otherwise unchanged.
+	*deform = 0;
+	if (r_waterripple.value > 0)
+	{
+		float amp = r_waterripple.value;
+		float spd = r_waterripple_speed.value;
+		Q_snprintfz(deform, sizeof(deform),
+			"deformVertexes wave 128 sin 0 %g 0 %g\n"
+			"deformVertexes wave 71 sin 0 %g 0.37 %g\n",
+			amp, 0.25*spd, amp*0.6, 0.17*spd);
+	}
+	// interactive ripples (splashes / bullets / props / wading) ride on top of the ambient wave.
+	// The ring sources are global (R_AddWaterRipple); this deform just marks the surface as a
+	// receiver, and the per-source strength is read live so r_waterripple_react tunes without a reload.
+	if (r_waterripple_react.value > 0)
+		Q_strncatz(deform, "deformVertexes ripple\n", sizeof(deform));
+
 	switch(wstyle)
 	{
 	case -1:	//invisible
@@ -6929,8 +7099,9 @@ char *Shader_DefaultBSPWater(parsestate_t *ps, const char *shortname, char *buff
 			"}\n"
 		);
 	case -2:	//regular with r_wateralpha forced off.
-		return (
+		Q_snprintfz(buffer, buffersize,
 			"{\n"
+				"%s"
 				"fte_program defaultwarp\n"
 				"{\n"
 					"map $diffuse\n"
@@ -6940,7 +7111,8 @@ char *Shader_DefaultBSPWater(parsestate_t *ps, const char *shortname, char *buff
 				"surfaceparm nomarks\n"
 				"surfaceparm hasdiffuse\n"
 			"}\n"
-		);
+			, deform);
+		return buffer;
 	case 0:	//fastturb
 		return (
 			"{\n"
@@ -6956,10 +7128,11 @@ char *Shader_DefaultBSPWater(parsestate_t *ps, const char *shortname, char *buff
 		);
 	default:
 	case 1:	//vanilla style
-		Q_snprintfz(buffer, buffersize, 
+		Q_snprintfz(buffer, buffersize,
 				"{\n"
 					"surfaceparm nodlight\n"
 					"surfaceparm nomarks\n"
+					"%s"
 					"if %g < 1\n"
 						"sort underwater\n"
 					"endif\n"
@@ -6974,7 +7147,7 @@ char *Shader_DefaultBSPWater(parsestate_t *ps, const char *shortname, char *buff
 					"}\n"
 					"surfaceparm hasdiffuse\n"
 				"}\n"
-				, alpha, (explicitalpha||alpha==1)?"":va("#ALPHA=%g",alpha), alpha, alpha);
+				, deform, alpha, (explicitalpha||alpha==1)?"":va("#ALPHA=%g",alpha), alpha, alpha);
 		return buffer;
 	case 2:	//refraction of the underwater surface, with a fresnel
 		return (

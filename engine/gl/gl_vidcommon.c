@@ -52,6 +52,12 @@ void (APIENTRY *qglDepthMask) (GLboolean flag);
 void (APIENTRY *qglDisable) (GLenum cap);
 void (APIENTRY *qglEnable) (GLenum cap);
 void (APIENTRY *qglFinish) (void);
+GLsync (APIENTRY *qglFenceSync) (GLenum condition, GLbitfield flags);				//nettest: GL_ARB_sync, sys_framepacing 4
+GLenum (APIENTRY *qglClientWaitSync) (GLsync sync, GLbitfield flags, unsigned long long timeout);
+void   (APIENTRY *qglDeleteSync) (GLsync sync);
+int GLVID_FramePaceDrainPath(void) { return qglFenceSync ? 1 : 2; }	//nettest: sys_framepacing 4 drain path (1=ARB_sync fence, 2=glFinish) for sys_framepacing_stats
+GLsync gl_framepace_fence[GL_FRAMEPACE_SLOTS];	//nettest: see glquake.h -- rotating drain ring, zeroed on context (re)creation
+int    gl_framepace_slot;
 void (APIENTRY *qglFlush) (void);
 void (APIENTRY *qglGenTextures) (GLsizei n, GLuint *textures);
 void (APIENTRY *qglGenerateMipmap)(GLenum target);
@@ -2026,8 +2032,11 @@ static const char *glsl_hdrs[] =
 					//l_projmatrix contains the light's projection matrix so no other magic needed
 					"return ((cubeproj.yxz-vec3(0.0,0.0,0.015))/cubeproj.w + vec3(1.0, 1.0, 1.0)) * vec3(0.5, 0.5, 0.5);\n"
 				"#elif defined(ORTHO) || defined(FAKESHADOWS)\n"
-					//the light's origin is in the center of the 'cube', projecting from one side to the other, so don't bias the z.
-					"return ((cubeproj.xyz-vec3(0.0,0.0,0.015))/cubeproj.w + vec3(1.0, 1.0, 1.0)) * vec3(0.5, 0.5, 0.5);\n"
+					//nettest: NO shader-side z bias here anymore — the old 0.015 NDC constant SCALED
+					//with the ortho radius (~15qu at r_shadows_distance 1024) and cut contact shadows
+					//off well before the caster touched the ground.  The bias is now world-constant,
+					//baked into the projection matrix (gl_backend.c ortho branch, r_shadows_bias qu).
+					"return (cubeproj.xyz/cubeproj.w + vec3(1.0, 1.0, 1.0)) * vec3(0.5, 0.5, 0.5);\n"
 				//"#elif defined(CUBESHADOW)\n"
 				//	vec3 shadowcoord = vshadowcoord.xyz / vshadowcoord.w;
 				//	#define dosamp(x,y) shadowCube(s_t4, shadowcoord + vec2(x,y)*texscale.xy).r
@@ -2128,6 +2137,27 @@ static const char *glsl_hdrs[] =
 								"s = mix(s, 1.0, min(1.0,10.0*(d-0.7)));\n"
 						"#endif\n"
 						"#ifdef FAKESHADOWS\n"
+							//nettest contact-shadow gap fade: the single global ortho sun map has no
+							//world occluder, so a caster on an upper floor projects its shadow onto the
+							//floor below.  Re-test the depth compare a touch (r_shadows_throwfade) closer
+							//to the light: if still lit, the occluder is WITHIN throwfade of the receiver
+							//(a real contact shadow -> keep); if shadowed, the occluder is far in front
+							//(the through-floor case -> fade back to lit).  Units are ortho depth [0,1] ~=
+							//2*r_shadows_distance qu.  Needs no depth READ, so it works with the compare-
+							//only sampler.  r_shadows_throwfade is injected as a #define alongside
+							//FAKESHADOWS (gl_shader.c); this #ifndef is just a safety default.
+							"#ifndef r_shadows_throwfade\n"
+								"#define r_shadows_throwfade 0.06\n"
+							"#endif\n"
+							"if (r_shadows_throwfade > 0.0)\n"
+							"{\n"
+								"#ifdef USE_ARB_SHADOW\n"
+									"float nearocc = float(shadow2D(smap, vec3(shadowcoord.xy, shadowcoord.z - r_shadows_throwfade)));\n"
+								"#else\n"
+									"float nearocc = float(texture2D(smap, shadowcoord.xy).r >= shadowcoord.z - r_shadows_throwfade);\n"
+								"#endif\n"
+								"s = mix(1.0, s, nearocc);\n"
+							"}\n"
 							"s = s*0.5+0.5;\n" //don't be completely black
 						"#endif\n"
 						"return s;\n"
@@ -2429,6 +2459,10 @@ static GLuint GLSlang_CreateShader (program_t *prog, const char *name, int ver, 
 				"uniform sampler2D s_deluxemap1;\n",
 				"uniform sampler2D s_deluxemap2;\n",
 				"uniform sampler2D s_deluxemap3;\n",
+
+				//nettest S_SUNVIS (23): baked per-luxel sun visibility. This array is indexed
+				//POSITIONALLY by the S_* enum, so this entry must sit at index 23 exactly.
+				"uniform sampler2D s_sunvis;\n",
 			};
 			for (i = 0; i < countof(defaultsamplernames); i++)
 			{
@@ -3128,6 +3162,9 @@ void GL_ForgetPointers(void)
 	qglDisable			= NULL;
 	qglEnable			= NULL;
 	qglFinish			= NULL;
+	qglFenceSync		= NULL;
+	qglClientWaitSync	= NULL;
+	qglDeleteSync		= NULL;
 	qglFlush			= NULL;
 	qglGenTextures		= NULL;
 	qglGetFloatv		= NULL;
@@ -3437,6 +3474,14 @@ qboolean GL_Init(rendererstate_t *info, void *(*getglfunction) (char *name))
 	qglScissor			= (void *)getglcore("glScissor");
 	qglPolygonOffset	= (void *)getglext("glPolygonOffset");
 	qglLineWidth		= (void *)getglcore("glLineWidth");
+	qglFenceSync		= (void *)getglext("glFenceSync");		//GL_ARB_sync (3.2) — sys_framepacing 4; NULL-safe (gl_screen.c falls back to glFinish)
+	qglClientWaitSync	= (void *)getglext("glClientWaitSync");
+	qglDeleteSync		= (void *)getglext("glDeleteSync");
+	//nettest: this runs on every context (re)creation, so it is the correct place to drop the
+	//framepacing fence ring.  Any GLsync still held here belongs to a context that no longer
+	//exists; waiting on or deleting one is undefined behaviour, so just forget them.
+	memset(gl_framepace_fence, 0, sizeof(gl_framepace_fence));
+	gl_framepace_slot = 0;
 #endif
 
 #ifndef FTE_TARGET_WEB

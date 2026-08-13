@@ -59,6 +59,11 @@ qbyte releasecommandlevel[K_MAX][MAX_INDEVS];	//and this is the cbuf level it is
 extern cvar_t con_displaypossibilities;
 cvar_t con_echochat = CVAR("con_echochat", "0");
 extern cvar_t cl_chatmode;
+extern cvar_t con_showcompletion;	//nettest: right-arrow-accept must mirror the green hint Con_DrawInput paints, so it reads the same cvar. REQUIRES the de-static in console.c.
+cvar_t con_acceptcompletion	= CVARD("con_acceptcompletion", "1", "When the console is showing the green inline completion hint at the end of your input line, RIGHTARROW accepts it (shell autosuggestion style), exactly as if you had pressed Tab. 0 leaves RIGHTARROW as a plain cursor move. Has no effect while con_showcompletion is 0, since there is then nothing on screen to accept.");
+//nettest: PgUp/PgDn page a whole console window. The mouse wheel is deliberately NOT affected.
+cvar_t con_pagelines		= CVARD("con_pagelines", "0", "How many lines PgUp/PgDn scroll the console by. 0 = one full console window minus con_pageoverlap. Set to 2 for the old fixed step. Does not affect the mouse wheel.");
+cvar_t con_pageoverlap		= CVARD("con_pageoverlap", "2", "Rows of context kept on screen when PgUp/PgDn scroll a full window. One of them is eaten by the ^^^^ backscroll marker row.");
 
 static int KeyModifier (unsigned int shift, unsigned int alt, unsigned int ctrl, unsigned int devbit)
 {
@@ -421,7 +426,7 @@ void Key_PrintQCDefines(vfsfile_t *f, qboolean defines)
 qboolean Cmd_IsCommand (const char *line)
 {
 	char	command[128];
-	const char	*cmd, *s;
+	const char	*s;
 	int		i;
 
 	s = line;
@@ -433,10 +438,17 @@ qboolean Cmd_IsCommand (const char *line)
 			command[i] = s[i];
 	command[i] = 0;
 
-	cmd = Cmd_CompleteCommand (command, true, false, -1, NULL);
-	if (!cmd  || strcmp (cmd, command) )
-		return false;		// just a chat message
-	return true;
+	//nettest: an empty token matched EVERY name but could never exact-match, so the old code
+	//walked the entire cvar table just to return false.  Short-circuit it.
+	if (!*command)
+		return false;
+
+	//nettest: was Cmd_CompleteCommand(command, true, false, -1, NULL), which searches the
+	//tab-completion list -- and that list hard-drops everything past its 50th match.  With 53
+	//"r_shadows*" cvars registered, plain "r_shadows" fell off the end and looked unregistered,
+	//so cl_chatmode 2 broadcast "r_shadows 0" to the server as a chat message.  Ask the same
+	//question the executor asks instead.  See Cmd_IsKnownName (common/cmd.c).
+	return Cmd_IsKnownName(command);
 }
 
 #define COLUMNWIDTH 20
@@ -451,6 +463,8 @@ int PaddedPrint (char *s, int x)
 }
 
 int con_commandmatch;
+static qboolean con_findmode;		//nettest: Ctrl+F search-in-scrollback is open
+static char con_findtext[64];		//nettest: the current find term
 void Key_UpdateCompletionDesc(void)
 {
 	const char *desc;
@@ -478,11 +492,12 @@ void Key_UpdateCompletionDesc(void)
 		desc = c->completions[con_commandmatch-1].desc;
 		var = Cvar_FindVar(cmd);
 		if (var)
-		{
+		{	//nettest: show the cvar's current value AND its default
+			const char *def = var->defaultstr ? var->defaultstr : var->string;
 			if (desc)
-				Con_Footerf(NULL, false, "%s %s\n%s", cmd, var->string, localtext(desc));
+				Con_Footerf(NULL, false, "%s %s (default %s)\n%s", cmd, var->string, def, localtext(desc));
 			else
-				Con_Footerf(NULL, false, "%s %s", cmd, var->string);
+				Con_Footerf(NULL, false, "%s %s (default %s)", cmd, var->string, def);
 		}
 		else
 		{
@@ -505,13 +520,15 @@ void CompleteCommand (qboolean force, int direction)
 	const char	*cmd, *s;
 	const char *desc;
 	cmd_completion_t *c;
+	qboolean had_slash;	//nettest: was a leading / actually typed?
 
 	s = key_lines[edit_line];
 	if (!*s)
 		return;
 	if (*s == ' ' || *s == '\t')
 		s++;
-	if (*s == '\\' || *s == '/')
+	had_slash = (*s == '\\' || *s == '/');	//nettest: don't let tab-complete add a / the user didn't type
+	if (had_slash)
 		s++;
 	if (*s == ' ' || *s == '\t')
 		s++;
@@ -540,19 +557,17 @@ void CompleteCommand (qboolean force, int direction)
 
 			//complete to that (maybe partial) cmd.
 			Key_ClearTyping();
-			if (cl_chatmode.ival)
+			if (cl_chatmode.ival && had_slash)	//nettest: only re-insert the / if it was typed
 				Key_ConsoleInsert("/");
 			Key_ConsoleInsert(cmd);
 			s = key_lines[edit_line];
 			if (*s == '/')
 				s++;
 
-			//if its the only match, add a space ready for arguments.
 			c = Cmd_Complete(s, true);
 			cmd = ((c->num >= 1)?(c->completions[0].repl?c->completions[0].repl:c->completions[0].text):NULL);
 			desc = ((c->num >= 1)?c->completions[0].desc:NULL);
-			if (c->num == 1)
-				Key_ConsoleInsert(" ");
+			//nettest: don't auto-add a trailing space after a sole-match completion - the "invisible spacer" blocked Left-arrow re-completion (type the space yourself for an argument value).
 
 			if (!con_commandmatch)
 				con_commandmatch = 1;
@@ -572,7 +587,7 @@ void CompleteCommand (qboolean force, int direction)
 		if (i != 1 || strcmp(key_lines[edit_line]+i, cmd))
 		{	//if successful, use that instead.
 			Key_ClearTyping();
-			if (cl_chatmode.ival)
+			if (cl_chatmode.ival && had_slash)	//nettest: only re-insert the / if it was typed
 				Key_ConsoleInsert("/");
 			Key_ConsoleInsert(cmd);
 
@@ -759,6 +774,23 @@ qboolean Key_GetConsoleSelectionBox(console_t *con, int *sx, int *sy, int *ex, i
 		*sy = con->mousecursor[1];
 		*ex = con->mousecursor[0];
 		*ey = con->mousecursor[1];
+		return true;
+	}
+	else if (con->buttonsdown == CB_SCROLLBAR)
+	{	//nettest: window scrollbar drag - ABSOLUTE: map mouse Y in the track to a scroll position (top=oldest, bottom=newest), so dragging the thumb DOWN scrolls DOWN
+		float trkh = con->wnd_h - 16;
+		float frac = (trkh > 0) ? (con->mousecursor[1] - 8) / trkh : 0;
+		int target, n;
+		if (frac < 0) frac = 0;
+		if (frac > 1) frac = 1;
+		target = (int)(frac * con->linecount);
+		con->displayscroll = 0;
+		con->display = con->oldest;
+		for (n = 0; con->display && n < target && con->display->newer; n++)
+			con->display = con->display->newer;
+		if (!con->display || target >= con->linecount-1)
+			con->display = con->current;
+		*sx = *sy = *ex = *ey = 0;
 		return true;
 	}
 	else if (con->buttonsdown == CB_SELECT || con->buttonsdown == CB_SELECTED || con->buttonsdown == CB_TAPPED)
@@ -1649,7 +1681,7 @@ qboolean Key_EntryLine(console_t *con, unsigned char **line, int lineoffset, int
 			return true;
 		}
 		else
-			unicode = ' ';
+			return true;	//nettest: Right arrow at end-of-line is a no-op (was inserting a space)
 	}
 
 	if (key == K_DEL || key == K_KP_DEL)
@@ -1737,6 +1769,17 @@ qboolean Key_EntryLine(console_t *con, unsigned char **line, int lineoffset, int
 		*linepos = strlen(*line);
 		return true;
 	}
+	if ((unicode=='W' || unicode=='w' || unicode==23/*etb*/) && ctrl)
+	{	//nettest: Ctrl+W - delete the word before the caret (readline-style)
+		int end = *linepos;
+		while (*linepos > lineoffset && (*line)[*linepos-1] == ' ')	//eat whitespace left of caret
+			*linepos = utf_left((*line)+lineoffset, (*line) + *linepos, !alt) - (*line);
+		while (*linepos > lineoffset && (*line)[*linepos-1] != ' ')	//then the word itself
+			*linepos = utf_left((*line)+lineoffset, (*line) + *linepos, !alt) - (*line);
+		if (end > *linepos)
+			memmove((*line)+*linepos, (*line)+end, strlen((*line)+end)+1);	//close the gap
+		return true;
+	}
 
 	if (unicode < ' ')
 	{
@@ -1819,6 +1862,42 @@ qboolean Key_EntryLine(console_t *con, unsigned char **line, int lineoffset, int
 	return false;
 }
 
+//nettest: how far a console scroll key should move, in display rows.
+//page==true  -> PgUp/PgDn: one full console window minus a little overlap for context.
+//page==false -> mouse wheel / gamepad stick: the classic 2 (8 with ctrl) line step, unchanged.
+//The row count is derived from the console's own pixel height rather than cached by the renderer,
+//so it needs no draw-path hook.  Font_CharVHeight takes an explicit font, so unlike Font_CharHeight
+//it does not depend on whatever font happened to be bound last.  Both wnd_h and vislines are in
+//virtual pixels, which is what Font_CharVHeight returns.  The -2 covers the input line and the
+//^^^^ backscroll marker; it lands within a row of exact without knowing about the console-tab
+//strip, the footer or the tab-completion list.
+static int Key_ConsoleScrollStep(console_t *con, qboolean page, qboolean ctrl)
+{
+	int rows;
+
+	if (!page)
+		return ctrl?8:2;	//wheel/stick keep the old feel
+
+	if (con_pagelines.ival > 0)
+		rows = con_pagelines.ival;	//con_pagelines 2 == exactly the old behaviour
+	else
+	{
+		float chv = Font_CharVHeight(font_console);
+		float px = (con->flags & CONF_ISWINDOW)?con->wnd_h-16:con->vislines;
+		int overlap = con_pageoverlap.ival;
+		rows = (chv >= 1 && px > 0)?(int)(px/chv) - 2:24;	//24 = a sane guess if we've never been drawn
+		if (overlap < 0)
+			overlap = 0;
+		rows -= overlap;
+	}
+
+	if (ctrl)
+		rows *= 2;	//keep the existing sense: ctrl scrolls FASTER. Safe now that both walk loops clamp at the ends of the buffer.
+	if (rows < 1)
+		rows = 1;
+	return rows;
+}
+
 /*
 ====================
 Key_Console
@@ -1836,6 +1915,65 @@ qboolean Key_Console (console_t *con, int key, unsigned int unicode)
 	//weirdness for the keypad.
 	if ((unicode >= '0' && unicode <= '9') || unicode == '.' || key < 0)
 		key = 0;
+
+	//nettest: Ctrl+F find-in-scrollback. Ctrl+F opens a "find:" prompt (shown in the footer) and, if
+	//already open, jumps to the next older match. While open: typing edits the term + jumps to the
+	//newest match, Enter/F3 = next older, Shift+Enter = newer, Backspace edits, Esc closes.
+	if ((unicode=='f' || unicode=='F' || unicode==6/*ack*/) && ctrl)
+	{	//nettest: Ctrl+F toggles the find bar on/off (once open: Enter/F3 = next older, Shift+Enter = newer, Esc also closes)
+		con_findmode = !con_findmode;
+		con->flags &= ~CONF_KEEPSELECTION;
+		con->selstartline = con->selendline = NULL;
+		if (con_findmode)
+		{
+			con_findtext[0] = 0;
+			Con_Footerf(con, false, "find: ");
+		}
+		else
+			Con_Footerf(con, false, "");
+		return true;
+	}
+	if (con_findmode)
+	{
+		if (rkey == K_ESCAPE)
+		{
+			con_findmode = false;
+			con->flags &= ~CONF_KEEPSELECTION;
+			con->selstartline = con->selendline = NULL;
+			Con_Footerf(con, false, "");
+			return true;
+		}
+		if (rkey == K_ENTER || rkey == K_KP_ENTER || rkey == K_F3)
+		{
+			Con_SearchText(con, con_findtext, shift?1:-1);
+			Con_Footerf(con, false, "find: %s", con_findtext);
+			return true;
+		}
+		if (rkey == K_BACKSPACE)
+		{
+			int fl = strlen(con_findtext);
+			if (fl) con_findtext[fl-1] = 0;
+			con->display = con->current;	//re-search from the bottom
+			Con_SearchText(con, con_findtext, -1);
+			Con_Footerf(con, false, "find: %s", con_findtext);
+			return true;
+		}
+		if (!ctrl && unicode >= 32 && unicode < 127)
+		{
+			int fl = strlen(con_findtext);
+			if (fl < (int)sizeof(con_findtext)-1) { con_findtext[fl] = unicode; con_findtext[fl+1] = 0; }
+			con->display = con->current;	//incremental: jump to the newest match of the new term
+			Con_SearchText(con, con_findtext, -1);
+			Con_Footerf(con, false, "find: %s", con_findtext);
+			return true;
+		}
+		//other keys (PgUp/wheel/Home etc.) fall through to normal handling
+	}
+	if ((unicode=='l' || unicode=='L' || unicode==12/*ff*/) && ctrl)
+	{	//nettest: Ctrl+L - clear the console scrollback
+		Con_ClearCon(con);
+		return true;
+	}
 
 	if (key == K_TAB && !(con->flags & CONF_ISWINDOW) && ctrl&&shift)
 	{	// cycle consoles with ctrl+shift+tab.
@@ -1924,7 +2062,10 @@ qboolean Key_Console (console_t *con, int key, unsigned int unicode)
 #endif
 				if (key == K_TOUCHSLIDE || con->mousecursor[0] > ((con->flags & CONF_ISWINDOW)?con->wnd_w-16:vid.width)-8)
 				{	//just scroll the console up/down
-					con->buttonsdown = CB_SCROLL;
+					if ((con->flags & CONF_ISWINDOW) && key != K_TOUCHSLIDE)
+						con->buttonsdown = CB_SCROLLBAR;	//nettest: window scrollbar = absolute thumb drag (drag down -> scroll down)
+					else
+						con->buttonsdown = CB_SCROLL;		//touch / non-window = relative content drag
 				}
 				else
 				{	//selecting text. woo.
@@ -1970,9 +2111,8 @@ qboolean Key_Console (console_t *con, int key, unsigned int unicode)
 	if (key == K_PGUP || key == K_KP_PGUP || key==K_MWHEELUP || key == K_GP_LEFT_THUMB_UP)
 	{
 		conline_t *l;
-		int i = 2;
-		if (ctrl)
-			i = 8;
+		//nettest: page keys scroll a full console window; wheel/stick keep the old 2/8-line step.
+		int i = Key_ConsoleScrollStep(con, (key == K_PGUP || key == K_KP_PGUP), ctrl);
 		if (!con->display)
 			return true;
 //		if (con->display == con->current)
@@ -1980,11 +2120,25 @@ qboolean Key_Console (console_t *con, int key, unsigned int unicode)
 		if (con->display->older != NULL)
 		{
 			con->displayscroll += i;
-			while (con->displayscroll >= con->display->numlines)
-			{
-				if (con->display->older == NULL)
+			for (;;)
+			{	//nettest: a line the renderer never walked can still have numlines==0 (con->current
+				//while it is the empty live line is skipped by the draw, and an evicted line gets
+				//recycled into it without its count being reset). Floor it at 1 -- and test the
+				//SAME floored value the loop subtracts, or displayscroll can be driven negative.
+				int nl = con->display->numlines;
+				if (nl < 1)
+					nl = 1;
+				if (con->displayscroll < nl)
 					break;
-				con->displayscroll -= con->display->numlines;
+				if (con->display->older == NULL)
+				{	//nettest: hit the oldest line. MUST zero the remainder -- a leftover displayscroll
+					//becomes the renderer's `chop`, which shoves the whole view off the bottom and
+					//leaves nothing on screen but the ^^^^ marker. Invisible at the old 2-line step,
+					//very visible at a full page. Same clamp Home and the mouse-drag path use.
+					con->displayscroll = 0;
+					break;
+				}
+				con->displayscroll -= nl;
 				con->display = con->display->older;
 				con->display->time = realtime;
 			}
@@ -1995,9 +2149,8 @@ qboolean Key_Console (console_t *con, int key, unsigned int unicode)
 	}
 	if (key == K_PGDN || key == K_KP_PGDN || key==K_MWHEELDOWN || key == K_GP_LEFT_THUMB_DOWN)
 	{
-		int i = 2;
-		if (ctrl)
-			i = 8;
+		//nettest: page keys scroll a full console window; wheel/stick keep the old 2/8-line step.
+		int i = Key_ConsoleScrollStep(con, (key == K_PGDN || key == K_KP_PGDN), ctrl);
 		if (!con->display)
 			return true;
 		if (con->display->newer != NULL)
@@ -2005,11 +2158,23 @@ qboolean Key_Console (console_t *con, int key, unsigned int unicode)
 			con->displayscroll -= i;
 			while (con->displayscroll < 0)
 			{
+				int nl;
 				if (con->display->newer == NULL)
+				{	//nettest: ran out of newer lines. MUST clamp -- a negative displayscroll survives
+					//into the renderer's `chop` and draws the console that many rows too high, with a
+					//blank gap at the bottom. It also permanently defeats Con_PrintCon's auto-follow
+					//gate (which requires displayscroll==0), so the console silently stops following
+					//new output. The snap-to-bottom below cannot catch this: newer is NULL here, so it
+					//is never equal to con->current.
+					con->displayscroll = 0;
 					break;
+				}
 				con->display = con->display->newer;
 				con->display->time = realtime;
-				con->displayscroll += con->display->numlines;
+				nl = con->display->numlines;
+				if (nl < 1)
+					nl = 1;	//nettest: see the PgUp branch
+				con->displayscroll += nl;
 			}
 			if (con->display->newer && con->display->newer == con->current)
 			{
@@ -2020,24 +2185,18 @@ qboolean Key_Console (console_t *con, int key, unsigned int unicode)
 		}
 	}
 
-	if ((key == K_HOME || key == K_KP_HOME) && ctrl)
+	if (key == K_HOME || key == K_KP_HOME)	//nettest: plain Home (not only Ctrl+Home) jumps to the TOP of the console scrollback
 	{
-		if (con->display != con->oldest)
-		{
-			con->displayscroll = 0;
-			con->display = con->oldest;
-			return true;
-		}
+		con->displayscroll = 0;
+		con->display = con->oldest;
+		return true;
 	}
 
-	if ((key == K_END || key == K_KP_END) && ctrl)
+	if (key == K_END || key == K_KP_END)	//nettest: plain End jumps to the BOTTOM (live)
 	{
-		if (con->display != con->current)
-		{
-			con->displayscroll = 0;
-			con->display = con->current;
-			return true;
-		}
+		con->displayscroll = 0;
+		con->display = con->current;
+		return true;
 	}
 
 #ifdef TEXTEDITOR
@@ -2132,6 +2291,16 @@ qboolean Key_Console (console_t *con, int key, unsigned int unicode)
 	
 	if (key == K_UPARROW || key == K_KP_UPARROW || key == K_GP_DPAD_UP)
 	{
+		if (con_commandmatch)	//nettest: a completion list is open -> Up navigates it instead of history
+		{
+			char *ctxt = key_lines[edit_line];
+			cmd_completion_t *cc = Cmd_Complete((*ctxt=='/'||*ctxt=='\\')?ctxt+1:ctxt, true);
+			if (cc && cc->num > 1)
+			{
+				CompleteCommand(false, -1);
+				return true;
+			}
+		}
 		do
 		{
 			history_line = (history_line - 1) & CON_EDIT_LINES_MASK;
@@ -2149,6 +2318,16 @@ qboolean Key_Console (console_t *con, int key, unsigned int unicode)
 
 	if (key == K_DOWNARROW || key == K_KP_DOWNARROW || key == K_GP_DPAD_DOWN)
 	{
+		if (con_commandmatch)	//nettest: a completion list is open -> Down navigates it instead of history
+		{
+			char *ctxt = key_lines[edit_line];
+			cmd_completion_t *cc = Cmd_Complete((*ctxt=='/'||*ctxt=='\\')?ctxt+1:ctxt, true);
+			if (cc && cc->num > 1)
+			{
+				CompleteCommand(false, 1);
+				return true;
+			}
+		}
 		if (history_line == edit_line)
 		{
 			key_lines[edit_line][0] = '\0';
@@ -2174,6 +2353,60 @@ qboolean Key_Console (console_t *con, int key, unsigned int unicode)
 			key_linepos = Q_strlen(key_lines[edit_line]);
 		}
 		return true;
+	}
+
+	//nettest: RIGHTARROW at end-of-line accepts the inline completion hint (shell autosuggestion
+	//style).  Every clause below mirrors Con_DrawInput's green-text condition, so the key is only
+	//stolen while green text is genuinely on screen and it is never a silent no-op:
+	//	con->commandcompletion  -> excludes plugin/cluster subconsoles, the Con_Navigate URL bar
+	//	                           and the text editor, none of which set it.
+	//	con_showcompletion.ival -> the same cvar the paint reads.
+	//	text[0] && !(text[0]=='/' && !text[1])  -> same as the paint's emptiness test.
+	//	key_linepos == strlen  -> stands in for the paint's `cursor == endmtext`; the hint is only
+	//	                           drawn with the caret at the end.
+	//	cmdstart               -> a single leading '/' ONLY, matching the paint. CompleteCommand is
+	//	                           looser (it also eats whitespace and '\\'), but we must match what
+	//	                           was PAINTED, not what Tab would accept.
+	//	max(1, con_commandmatch)-> the paint uses this too, and paints even on a virgin line where
+	//	                           con_commandmatch is still 0. Do NOT require it to be non-zero.
+	//	strlen(fname) > typedlen-> the paint starts at min(strlen(fname), cursorpos-cmdstart), so an
+	//	                           equal-or-shorter suggestion paints ZERO green chars.
+	//	strlen(acc)   > typedlen-> CompleteCommand inserts completions[idx].repl when set (argument
+	//	                           completions only) and returns without changing anything if that is
+	//	                           shorter than what is typed. Without this test RIGHTARROW would eat
+	//	                           the keypress and do nothing visible.
+	//	!vid.ime_preview        -> approximates the paint's hidecomplete. Not exact (the paint also
+	//	                           requires the preview to fit the buffer), but it only fails safe.
+	//!con_findmode: the Ctrl+F find bar lets arrows fall through and owns the footer, which
+	//CompleteCommand would clobber via Con_Footerf.
+	//`key` (not `rkey`) on purpose: numlocked keypad-6 arrives as unicode '6' with key zeroed, and
+	//must keep typing a digit. K_GP_DPAD_RIGHT is excluded: it is the only way to move the caret
+	//with a pad, and there is no Tab to fall back on.
+	if ((key == K_RIGHTARROW || key == K_KP_RIGHTARROW) &&
+		!ctrl && !shift && !keydown[K_LALT] && !keydown[K_RALT] &&
+		!con_findmode && con->commandcompletion &&
+		con_showcompletion.ival && con_acceptcompletion.ival &&
+		!(vid.ime_preview && *vid.ime_preview))
+	{
+		char *ctext = (char*)key_lines[edit_line];
+		if (ctext[0] && !(ctext[0] == '/' && !ctext[1]) && key_linepos == (int)strlen(ctext))
+		{
+			int cmdstart = (ctext[0] == '/')?1:0;
+			size_t typedlen = strlen(ctext+cmdstart);
+			const char *fname = Cmd_CompleteCommand(ctext+cmdstart, true, true, max(1, con_commandmatch), NULL);
+			if (fname && strlen(fname) < 256 && strlen(fname) > typedlen)
+			{	//green really is on screen. now confirm CompleteCommand will actually act on it.
+				//(this Cmd_Complete hits the cached result the call above just built)
+				cmd_completion_t *cc = Cmd_Complete(ctext+cmdstart, true);
+				size_t idx = (con_commandmatch > 1)?(size_t)(con_commandmatch-1):0;	//matches CompleteCommand
+				const char *acc = (cc && idx < cc->num)?(cc->completions[idx].repl?cc->completions[idx].repl:cc->completions[idx].text):NULL;
+				if (acc && strlen(acc) > typedlen)
+				{
+					CompleteCommand (true, 1);	//the same accept Ctrl+Space performs
+					return true;
+				}
+			}
+		}
 	}
 
 	if (rkey && !consolekeys[rkey])
@@ -2888,6 +3121,9 @@ void Key_Init (void)
 	Cmd_AddCommandD ("unbindall",Key_Unbindall_f, "A dangerous command that forgets ALL your key settings. For use only in default.cfg.");
 
 	Cvar_Register (&con_echochat, "Console variables");
+	Cvar_Register (&con_acceptcompletion, "Console controls");	//nettest: same group as con_showcompletion
+	Cvar_Register (&con_pagelines, "Console controls");
+	Cvar_Register (&con_pageoverlap, "Console controls");
 }
 
 qboolean Key_MouseShouldBeFree(void)
@@ -3005,6 +3241,20 @@ void Key_Event (unsigned int devid, int key, unsigned int unicode, qboolean down
 		{
 			if (Key_Dest_Has(kdm_prompt) || (Key_Dest_Has(kdm_menu) && !Key_Dest_Has(kdm_console|kdm_cwindows)))
 				Menu_KeyEvent (false, devid, key, unicode);
+			return;
+		}
+
+		//nettest: when the Ctrl+F find bar is open, Esc closes IT (not the console). Must live here -
+		//Esc is consumed in Key_Event, before the per-console Key_Console dispatch ever runs.
+		if (con_findmode && Key_Dest_Has(kdm_console|kdm_cwindows))
+		{
+			con_findmode = false;
+			if (con_current)
+			{
+				con_current->flags &= ~CONF_KEEPSELECTION;
+				con_current->selstartline = con_current->selendline = NULL;
+				Con_Footerf(con_current, false, "");
+			}
 			return;
 		}
 

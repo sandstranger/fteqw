@@ -20,6 +20,7 @@ Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
 // cl_main.c  -- client main loop
 
 #include "quakedef.h"
+#include "qkupdate.h"
 #include "winquake.h"
 #include <sys/types.h>
 #include "netinc.h"
@@ -64,6 +65,11 @@ cvar_t	cl_pure		= CVARD("cl_pure", "0", "0=standard quake rules.\n1=clients shou
 cvar_t	cl_sbar		= CVARFC("cl_sbar", "0", CVAR_ARCHIVE, CL_Sbar_Callback);
 cvar_t	cl_hudswap	= CVARF("cl_hudswap", "0", CVAR_ARCHIVE);
 cvar_t	cl_maxfps	= CVARFD("cl_maxfps", "250", CVAR_ARCHIVE, "Sets the maximum allowed framerate. If you're using vsync or want to uncap framerates entirely then you should probably set this to 0. Set cl_yieldcpu 0 if you're trying to benchmark.");
+//nettest: set to 1 by the engine when the user launched STRAIGHT into a game (+connect / +map / a demo) so
+//MenuQC's m_init can SKIP the menu backdrop (whose own `map` would otherwise clobber the launch command).
+//Must be a REGISTERED cvar (not a Cvar_Get/USERCREATED one) so it survives the post-CL_Init usercreated-cvar
+//reset; CVAR_NOSAVE keeps it out of config.cfg.
+cvar_t	cl_launchintogame = CVARFD("cl_launchintogame", "0", CVAR_NOSAVE|CVAR_NORESET, "Engine-set: 1 when launched with a +connect/+map/demo command-line so the mod menu can skip its backdrop.");
 static cvar_t	cl_maxfps_slop	= CVARFD("cl_maxfps_slop", "3", CVAR_ARCHIVE, "If a frame is delayed (eg because of poor system timer precision), this is how much sooner to pretend the frame happened (in milliseconds). If it is set too low then the average framerate will drop below the target, while too high may result in excessively fast frames.");
 static cvar_t	cl_idlefps	= CVARAFD("cl_idlefps", "60", "cl_maxidlefps"/*dp*/, CVAR_ARCHIVE, "This is the maximum framerate to attain while idle/paused/unfocused.");
 cvar_t	cl_yieldcpu = CVARFD("cl_yieldcpu", "1", CVAR_ARCHIVE, "Attempt to yield between frames. This can resolve issues with certain drivers and background software, but can mean less consistant frame times. Will reduce power consumption/heat generation so should be set on laptops or similar (over-hot/battery powered) devices.");
@@ -294,6 +300,7 @@ scenetris_t		*cl_stris;
 vecV_t			*fte_restrict cl_strisvertv;
 vec4_t			*fte_restrict cl_strisvertc;
 vec2_t			*fte_restrict cl_strisvertt;
+vec2_t			*fte_restrict cl_strisvertlm;	//nettest: r_decal_lightmap per-vertex lightmap st
 index_t			*fte_restrict cl_strisidx;
 unsigned int cl_numstrisidx;
 unsigned int cl_maxstrisidx;
@@ -358,6 +365,8 @@ qbyte		*host_basepal;
 qbyte		*h2playertranslations;
 
 cvar_t	host_speeds = CVAR("host_speeds","0");		// set for running times
+cvar_t	cl_debug_spikes = CVARD("cl_debug_spikes", "0", "Logs a timing breakdown whenever a client Host_Frame exceeds cl_debug_spike_ms.");
+cvar_t	cl_debug_spike_ms = CVARD("cl_debug_spike_ms", "2.0", "Frame time threshold, in milliseconds, for cl_debug_spikes logging.");
 
 int			fps_count;
 qboolean	forcesaveprompt;
@@ -2310,6 +2319,7 @@ void CL_ClearState (qboolean gamestart)
 	CL_ClearTEnts();
 	CL_ClearCustomTEnts();
 	Surf_ClearSceneCache();
+	CL_WipePersistentDecals();	//nettest: drop cached persistent lit decals on map change / disconnect
 #ifdef HEXEN2
 	T_FreeInfoStrings();
 #endif
@@ -2494,6 +2504,7 @@ void CL_Disconnect (const char *reason)
 		Cvar_Set(&cl_disconnectreason, reason);
 
 	connectinfo.trying = false;
+	cls.shader_reload_servercount = -1;	//nettest: re-arm the post-first-frame water/shader reload for the next connect (also covers a reconnect to the same unchanged map, where cl.servercount wouldn't differ)
 
 	SCR_SetLoadingStage(0);
 
@@ -5765,6 +5776,7 @@ void CL_Init (void)
 	cls.state = ca_disconnected;
 	cls.demotrack = -1;
 	cls.demonum = -1;
+	cls.shader_reload_servercount = -1;	//nettest: arm the post-first-frame water/shader reload for the very first connect (re-armed per map thereafter)
 
 #ifdef SVNREVISION
 	if (strcmp(STRINGIFY(SVNREVISION), "-"))
@@ -5801,6 +5813,8 @@ void CL_Init (void)
 	CSQC_RegisterCvarsAndThings();
 #endif
 	Cvar_Register (&host_speeds, cl_controlgroup);
+	Cvar_Register (&cl_debug_spikes, cl_controlgroup);
+	Cvar_Register (&cl_debug_spike_ms, cl_controlgroup);
 
 	Cvar_Register (&cfg_save_name, cl_controlgroup);
 
@@ -7103,6 +7117,27 @@ extern cvar_t cl_netfps;
 void CL_StartCinematicOrMenu(void);
 int		nopacketcount;
 void SNDDMA_SetUnderWater(qboolean underwater);
+
+/* When sys_framepacing is active, Host_Frame yields the remaining frame time to
+ * the high-precision paced wait (sys_win.c) instead of busy-waiting, regardless
+ * of cl_yieldcpu.  Only the native win32 build provides the pacer; everywhere
+ * else this is a no-op. */
+#if defined(_WIN32) && !defined(FTE_SDL)
+extern qboolean Sys_FramePacingActive(void);
+extern qboolean Sys_FramePacingAnchor(void);
+extern qboolean Sys_FramePacePresentActive(void);
+extern double   Sys_FramePaceAnchorDelay(double interval, double now, double frameref);
+#define FRAMEPACING_ACTIVE() Sys_FramePacingActive()
+#define FRAMEPACING_ANCHOR() Sys_FramePacingAnchor()
+#define FRAMEPACING_PRESENT() Sys_FramePacePresentActive()
+#define FRAMEPACING_ANCHORDELAY(interval, now, ref) Sys_FramePaceAnchorDelay(interval, now, ref)
+#else
+#define FRAMEPACING_ACTIVE() false
+#define FRAMEPACING_ANCHOR() false
+#define FRAMEPACING_PRESENT() false
+#define FRAMEPACING_ANCHORDELAY(interval, now, ref) ((interval) - ((now) - (ref)))
+#endif
+
 double Host_Frame (double time)
 {
 	static double		time0 = 0;
@@ -7118,6 +7153,18 @@ double Host_Frame (double time)
 	static qboolean hadwork;
 	unsigned int vrflags;
 	qboolean mustrenderbeforeread;
+	qboolean spike_enabled;
+	double spike_start = 0;
+	double spike_early = 0;
+	double spike_cap = 0;
+	double spike_work = 0;
+	double spike_input = 0;
+	double spike_protocol = 0;
+	double spike_server = 0;
+	double spike_postread = 0;
+	double spike_clienttime = 0;
+	double spike_gfx = 0;
+	double spike_audio = 0;
 
 	RSpeedLocals();
 
@@ -7138,6 +7185,9 @@ double Host_Frame (double time)
 	if (cl.gamespeed<0.1)
 		cl.gamespeed = 1;
 	time *= cl.gamespeed;
+	spike_enabled = !!cl_debug_spikes.ival;
+	if (spike_enabled)
+		spike_start = Sys_DoubleTime();
 
 #ifdef WEBCLIENT
 //	FTP_ClientThink();
@@ -7202,6 +7252,8 @@ double Host_Frame (double time)
 	Plug_Tick();
 #endif
 	NET_Tick();
+	if (spike_enabled)
+		spike_early = Sys_DoubleTime();
 
 /*
 	if (cl_maxfps.value)
@@ -7253,14 +7305,22 @@ double Host_Frame (double time)
 #ifdef HAVE_MEDIA_ENCODER
 		&& Media_Capturing() != 2
 #endif
-		&& !(vrflags&VRF_OVERRIDEFRAMETIME))
+		&& !(vrflags&VRF_OVERRIDEFRAMETIME)
+		&& !FRAMEPACING_PRESENT())	//mode 4 paces at the buffer swap instead, so render every loop here
 	{
 		spare = CL_FilterTime((realtime - oldrealtime)*1000, maxfps, 1.5, maxfpsignoreserver);
 		if (!spare)
 		{
+			//Pace to the SAME frame-due threshold CL_FilterTime enforces (it uses
+			//ceil(1000/fps)ms unless it's ignoring the server), so the paced wait lands
+			//exactly on the render boundary instead of waiting short and then busy-spinning
+			//the leftover ceil() remainder every frame (which also floods the pacing stats).
+			double frameinterval = maxfpsignoreserver ? (1.0 / maxfps) : (ceil(1000.0 / maxfps) / 1000.0);
 			while(COM_DoWork(0, false))
 				;
-			return (cl_yieldcpu.ival || vid.isminimized || idle)? (1.0 / maxfps - (realtime - oldrealtime)) : 0;
+			if (FRAMEPACING_ANCHOR())	//mode 3: wait to an absolute time grid instead of relative-to-last-frame
+				return FRAMEPACING_ANCHORDELAY(frameinterval, realtime, oldrealtime);
+			return (cl_yieldcpu.ival || vid.isminimized || idle || FRAMEPACING_ACTIVE())? (frameinterval - (realtime - oldrealtime)) : 0;
 		}
 		if (spare > cl_maxfps_slop.ival)
 			spare = cl_maxfps_slop.ival;
@@ -7274,6 +7334,8 @@ double Host_Frame (double time)
 		spare = 0;
 	host_frametime = (realtime-spare - oldrealtime)*cl.gamespeed;
 	oldrealtime = realtime-spare;
+	if (spike_enabled)
+		spike_cap = Sys_DoubleTime();
 
 	if (host_speeds.ival)
 		time0 = Sys_DoubleTime ();	//end-of-idle
@@ -7291,6 +7353,8 @@ double Host_Frame (double time)
 #endif
 		;
 	COM_MainThreadWork();
+	if (spike_enabled)
+		spike_work = Sys_DoubleTime();
 
 //	if (host_frametime > 0.2)
 //		host_frametime = 0.2;
@@ -7304,6 +7368,8 @@ double Host_Frame (double time)
 
 	// process console commands from said click/button events
 	Cbuf_Execute ();
+	if (spike_enabled)
+		spike_input = Sys_DoubleTime();
 
 #ifdef HAVE_SERVER
 	if (isDedicated)	//someone changed it.
@@ -7375,6 +7441,8 @@ double Host_Frame (double time)
 	CL_AllowIndependantSendCmd(true);
 
 	RSpeedEnd(RSPEED_PROTOCOL);
+	if (spike_enabled)
+		spike_protocol = Sys_DoubleTime();
 
 #ifdef HAVE_SERVER
 	if (sv.state)
@@ -7390,6 +7458,8 @@ double Host_Frame (double time)
 	else
 		MSV_PollSlaves();
 #endif
+	if (spike_enabled)
+		spike_server = Sys_DoubleTime();
 
 	// fetch results from server... now that we've run it.
 	if (!mustrenderbeforeread)
@@ -7398,8 +7468,12 @@ double Host_Frame (double time)
 		CL_ReadPackets ();
 		CL_AllowIndependantSendCmd(true);
 	}
+	if (spike_enabled)
+		spike_postread = Sys_DoubleTime();
 
 	CL_CalcClientTime();
+	if (spike_enabled)
+		spike_clienttime = Sys_DoubleTime();
 
 	// update video
 	if (host_speeds.ival)
@@ -7440,6 +7514,19 @@ double Host_Frame (double time)
 				vrui.enabled |= cl_vrui_force.ival || (vrflags&VRF_UIACTIVE);
 				if (SCR_UpdateScreen())
 					fps_count += 1+max(0, cl_fakeframes.ival);
+				//nettest: connect-time water renders see-through until a shader reload happens AFTER the first frame.
+				//Shader_DoReload early-returns while cls.state < ca_active (gl_shader.c), so on a connect the water
+				//shader is finalized stale (the mod's CSQC "flushshaders" fires too early, at ca_onserver).  Reproduce
+				//the user's working manual post-connect "flushshaders": once active + the world is loaded + this first
+				//active frame has been drawn, request ONE reload.  shader_reload_needed is consumed at the top of the
+				//NEXT frame's Shader_DoReload (before the world is drawn), so that frame shows corrected water.
+				//cl.servercount (fresh per signon) re-arms it per map; the marker lives in cls (survives the cl wipe).
+				if (cls.state == ca_active && cls.shader_reload_servercount != cl.servercount
+					&& cl.worldmodel && cl.worldmodel->loadstate == MLS_LOADED)
+				{
+					Shader_NeedReload(false);
+					cls.shader_reload_servercount = cl.servercount;
+				}
 				if (R2D_Flush)
 					Sys_Error("update didn't flush 2d cache\n");
 				RSpeedEnd(RSPEED_TOTALREFRESH);
@@ -7451,6 +7538,8 @@ double Host_Frame (double time)
 
 		sh_config.showbatches = false;
 	}
+	if (spike_enabled)
+		spike_gfx = Sys_DoubleTime();
 
 	if (host_speeds.ival)
 		time2 = Sys_DoubleTime ();
@@ -7465,6 +7554,8 @@ double Host_Frame (double time)
 	S_Update ();
 
 	CDAudio_Update();
+	if (spike_enabled)
+		spike_audio = Sys_DoubleTime();
 
 	if (host_speeds.ival)
 	{
@@ -7489,6 +7580,39 @@ double Host_Frame (double time)
 #ifdef QUAKESTATS
 	TP_UpdateAutoStatus();
 #endif
+	if (spike_enabled)
+	{
+		double spike_end = Sys_DoubleTime();
+		double spike_total = (spike_end - spike_start) * 1000.0;
+		double spike_limit = cl_debug_spike_ms.value;
+#ifdef HAVE_SERVER
+		int spike_svstate = sv.state;
+#else
+		int spike_svstate = 0;
+#endif
+		if (spike_limit <= 0)
+			spike_limit = 2.0;
+		if (spike_total >= spike_limit)
+		{
+			Con_Printf(CON_WARNING "[engine-spike] frame=%i total=%.3fms hostft=%.3fms early=%.3f cap=%.3f work=%.3f input=%.3f protocol=%.3f server=%.3f postread=%.3f clienttime=%.3f gfx=%.3f audio=%.3f tail=%.3f state=%i sv=%i\n",
+				host_framecount,
+				spike_total,
+				host_frametime * 1000.0,
+				(spike_early - spike_start) * 1000.0,
+				(spike_cap - spike_early) * 1000.0,
+				(spike_work - spike_cap) * 1000.0,
+				(spike_input - spike_work) * 1000.0,
+				(spike_protocol - spike_input) * 1000.0,
+				(spike_server - spike_protocol) * 1000.0,
+				(spike_postread - spike_server) * 1000.0,
+				(spike_clienttime - spike_postread) * 1000.0,
+				(spike_gfx - spike_clienttime) * 1000.0,
+				(spike_audio - spike_gfx) * 1000.0,
+				(spike_end - spike_audio) * 1000.0,
+				cls.state,
+				spike_svstate);
+		}
+	}
 
 	host_framecount++;
 	cl.lasttime = cl.time;
@@ -7734,12 +7858,18 @@ void CL_ExecInitialConfigs(char *resetcommand, qboolean fullvidrestart)
 //		int cfg = COM_FDepthFile ("config.cfg", true);
 		int q3cfg = COM_FDepthFile ("q3config.cfg", true);
 	//	Cbuf_AddText ("bind ` toggleconsole\n", RESTRICT_LOCAL);	//in case default.cfg does not exist. :(
-		Cbuf_AddText ("exec default.cfg\n", RESTRICT_LOCAL);
+		//quakers: prefer <gamedir>/cfg/default.cfg so the mod can keep every config in one folder.
+		//Falls back to the root name when absent, so stock games and a cfg-less install boot
+		//exactly as before. Same COM_FileSize idiom the dedicated server already uses below.
+		if (COM_FileSize("cfg/default.cfg") != -1)
+			Cbuf_AddText ("exec cfg/default.cfg\n", RESTRICT_LOCAL);
+		else
+			Cbuf_AddText ("exec default.cfg\n", RESTRICT_LOCAL);
 		if (q3cfg <= def && q3cfg!=FDEPTH_MISSING)
 			Cbuf_AddText ("exec q3config.cfg\n", RESTRICT_LOCAL);
-		else //if (cfg <= def && cfg!=0x7fffffff)
+		else if (!FS_FileIsAddonOnly("config.cfg"))	//nettest: skip a foreign config.cfg from a fs_load addon (mounted game)
 			Cbuf_AddText ("exec config.cfg\n", RESTRICT_LOCAL);
-		if (def!=FDEPTH_MISSING)
+		if (def!=FDEPTH_MISSING && !FS_FileIsAddonOnly("autoexec.cfg"))	//nettest: ditto — don't run a mounted game's autoexec.cfg
 			Cbuf_AddText ("exec autoexec.cfg\n", RESTRICT_LOCAL);
 	}
 
@@ -7982,6 +8112,18 @@ void Host_Init (quakeparms_t *parms)
 
 //	W_LoadWadFile ("gfx.wad");
 	Key_Init ();
+
+	//nettest: set the launch-into-game flag before the menu's m_init reads it (m_init skips its backdrop when
+	//this is 1, so a command-line +connect/+map/demo lands straight in the game instead of the menu world).
+	//The cvar is declared CVAR_NORESET because Cvar_GamedirChange() (triggered as the fs mounts the game
+	//during boot) otherwise resets every registered cvar to its engine default BEFORE m_init runs, wiping our
+	//value back to "0".  NORESET makes Cvar_GamedirChange skip it, so the value we set here survives to m_init.
+	Cvar_Register (&cl_launchintogame, cl_controlgroup);
+	Cvar_ForceSet (&cl_launchintogame,
+		(COM_CheckParm("+connect") || COM_CheckParm("+map") || COM_CheckParm("+spmap")
+		 || COM_CheckParm("+devmap") || COM_CheckParm("+gamemap") || COM_CheckParm("+changelevel")
+		 || COM_CheckParm("+playdemo") || COM_CheckParm("+demo") || COM_CheckParm("+qtvplay")) ? "1" : "0");
+
 	M_Init ();
 	IN_Init ();
 	S_Init ();
@@ -8046,6 +8188,7 @@ void Host_Shutdown(void)
 	CL_UseIndepPhysics(false);
 
 #ifdef WEBCLIENT
+	QKU_Shutdown();	//quakers: before the terminate, so no late callback lands on freed plan state
 	HTTP_CL_Terminate();
 #endif
 

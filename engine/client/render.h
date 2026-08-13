@@ -162,6 +162,10 @@ typedef struct entity_s
 	int drawflags;
 	int abslight;
 #endif
+	//nettest: APPEND-ONLY (prebuilt plugin ABI). baked static-prop per-vertex colours (RGBPROPLIGHT),
+	//resolved per frame in R_CalcModelLighting; NULL = none. vertlightverts is their length (global vtx order).
+	vec4_t					*vertlightcolors;
+	int						vertlightverts;
 } entity_t;
 
 #define MAX_GEOMSETS 32u
@@ -393,6 +397,18 @@ typedef struct {
 #ifdef GLQUAKE
 	int			pbo_handle;	//when set, lightmaps is a persistently mapped write-only pbo for us to scribble data into, ready to be copied to the actual texture without waiting for glTexSubImage to complete.
 #endif
+	//nettest (SUNVIS): baked per-luxel sun visibility for THIS page, at the SAME atlas coords as
+	//the lightmap above — so the existing lmst texcoords sample it with no new varying and no
+	//extra packing work.  Kept ON the page rather than interleaved like the deluxemap (which
+	//lives at lmnum*2+1): a third interleave stride would mean auditing every *2 / +1 / &1 /
+	//hasdeluxe site in the allocator, the page builder and the batch splitter.
+	//Separately allocated, NOT inline after the struct, because the PBO path maps `lightmaps`
+	//straight out of GPU memory.  NULL when the map has no SUNVIS lump — the shader then falls
+	//back to a white texture and dynamic sun shadows behave exactly as they did before.
+	//APPEND-ONLY (this struct is shared with prebuilt plugins).
+	qbyte		*sunvis_pixels;		//width*height, 1 byte per luxel
+	texid_t		sunvis_texture;
+	qboolean	sunvis_modified;
 } lightmapinfo_t;
 extern lightmapinfo_t **lightmap;
 extern int numlightmaps;
@@ -463,7 +479,7 @@ enum imageflags
 	IF_MIPCAP			= 1<<13,	//allow the use of d_mipcap
 	IF_PREMULTIPLYALPHA	= 1<<14,	//rgb *= alpha
 
-	IF_UNUSED15			= 1<<15,	//
+	IF_HDRDECOMPRESS	= 1<<15,	//nettest: Source compressed-HDR (RGBS) face stored in a BGRA8 VTF — decode rgb*alpha*8 (sRGB read) to linear float. Set via the $hdr: shader name prefix.
 	IF_UNUSED16			= 1<<16,	//
 	IF_INEXACT			= 1<<17,	//subdir info isn't to be used for matching
 
@@ -500,6 +516,7 @@ qboolean Image_LocateHighResTexture(image_t *tex, flocation_t *bestloc, char *be
 void Image_Upload			(texid_t tex, uploadfmt_t fmt, void *data, void *palette, int width, int height, int depth, unsigned int flags);
 void Image_Purge(void);	//purge any textures which are not needed any more (releases memory, but doesn't give null pointers).
 void Image_Init(void);
+void Image_InitCore(void);	//nettest Patch 120d: renderer-independent half; safe (and required) with no renderer
 void Image_Shutdown(void);
 void Image_PrintInputFormatVersions(void); //for version info
 qboolean Image_WriteKTXFile(const char *filename, enum fs_relative fsroot, struct pendingtextureinfo *mips);
@@ -634,6 +651,27 @@ void R_UpdateHDR(vec3_t org);
 void R_UpdateLightStyle(unsigned int style, const char *stylestring, float r, float g, float b);
 void R_BumpLightstyles(unsigned int maxstyle);	//bumps the cl_max_lightstyles array size, if needed.
 qboolean R_CalcModelLighting(entity_t *e, struct model_s *clmodel);
+
+//interactive water ripples: transient expanding-ring disturbances summed on top of the
+//r_waterripple ambient wave by the DEFORMV_RIPPLE shader deform.  Sources are spawned by
+//gameplay (a splash, a bullet hitting water, a prop dropping in, a player wading) via
+//R_AddWaterRipple / the addwaterripple CSQC builtin, stamped with r_refdef.time, and aged out
+//by lifetime.  Held in a fixed ring buffer read by the renderer's deform pass (main thread only).
+typedef struct
+{
+	vec3_t	origin;		//world-space centre (only xy is used by the deform)
+	float	starttime;	//r_refdef.time when spawned
+	float	amp;		//peak height in world units
+	float	size;		//ring band spatial scale in world units (also sets the ripple wavelength)
+	float	speed;		//how fast the ring radius expands, world units/sec
+	float	lifetime;	//seconds until the ring has fully faded
+} waterripple_t;
+#define MAX_WATERRIPPLES 64
+extern waterripple_t r_waterripples[MAX_WATERRIPPLES];
+void R_AddWaterRipple(const vec3_t org, float amp, float size, float speed, float lifetime);
+qboolean R_EntityDominantLightDir(const entity_t *ce, vec3_t out);	//nettest P108/P110: per-entity WORLD-space dominant light dir (toward the light). false = no per-entity info, caller falls back to r_sun_dir.
+float R_PointSunVis(struct model_s *world, const vec3_t org);	//nettest: baked sun visibility 0..1 (1=fully sunlit) at org; -1 = no SUNVIS lump / sample miss.
+void Sh_DrawFakeShadowAtlasOverlay(void);	//nettest: r_shadows_propshadows_showatlas 2d debug view of the fake-shadow atlas (no-op unless set).
 struct texture_s *R_TextureAnimation (int frame, struct texture_s *base);	//mostly deprecated, only lingers for rtlights so world only.
 struct texture_s *R_TextureAnimation_Q2 (struct texture_s *base);	//mostly deprecated, only lingers for rtlights so world only.
 void RQ_Init(void);
@@ -690,6 +728,11 @@ extern	cvar_t	r_wateralpha;
 extern	cvar_t	r_lavaalpha;
 extern	cvar_t	r_slimealpha;
 extern	cvar_t	r_telealpha;
+extern	cvar_t	r_wateralpha_extendpvs;
+extern	cvar_t	r_waterripple;
+extern	cvar_t	r_waterripple_tess;
+extern	cvar_t	r_waterripple_speed;
+extern	cvar_t	r_waterripple_react;	//interactive ripples: splashes/impacts spawn expanding rings on the water mesh
 extern	cvar_t	r_waterstyle;
 extern	cvar_t	r_lavastyle;
 extern	cvar_t	r_slimestyle;
@@ -754,6 +797,33 @@ enum {
 	RSPEED_LINKENTITIES,
 	RSPEED_WORLDNODE,
 	RSPEED_DYNAMIC,
+	RSPEED_FAKESHADOWS,	//nettest: Sh_GenerateFakeShadows -- was in NO bucket, see gl_backend.c
+	//nettest: split of the 429us FAKESHADOWS bucket, because the two halves want completely
+	//different fixes and guessing which dominates has been wrong every time this session.
+	//CLASSIFY is Sh_GeneratePropShadowsAtlas's per-caster loop (lamp ownership, sun-vis, LOS
+	//traces) -- pure CPU, and it has no distance or frustum rejection at all before the
+	//expensive work.  ENTDRAW is GLBE_BaseEntTextures inside Sh_GenShadowFace, which the engine
+	//itself flags at gl_shadow.c:2676 as walking the entity list up to 6 times per frame per
+	//entity.  Both live faces pass smesh=NULL, so NO world geometry is rendered into the atlas;
+	//between them these two should account for essentially all of it.
+	RSPEED_SHADOW_CLASSIFY,
+	RSPEED_SHADOW_ENTDRAW,
+	//nettest: CL_SetSolidEntities + CL_TransitionEntities + CL_PredictMove, which run inside the
+	//CSQC Drawing bracket but in no child bucket.  See pr_csqc.c.
+	RSPEED_CSQC_PREDICT,
+	//nettest: the PR_ExecuteProgram(CSQC_UpdateView) call itself, builtins included. See pr_csqc.c.
+	RSPEED_CSQC_QCVIEW,
+	RSPEED_POSTPROC,	//nettest: FBO resolve + postproc chain + bloom -- was in NO bucket
+	RSPEED_RSPEEDSHOW,	//nettest: the cost of DRAWING this very table -- was in NO bucket
+	//nettest: the five gaps in GLSCR_UpdateScreen.  Between them these cover EVERY statement in
+	//that function that was not already inside CSQCREDRAW / 2D / PALETTEFLASHES / RSPEEDSHOW /
+	//PRESENT, so "Total refresh" is now forced to reconcile with its children instead of leaving
+	//a ~1100us residual for us to guess at.
+	RSPEED_SCR_SETUP,	//prologue: srgb, Shader_DoReload, console setup, r_clear
+	RSPEED_SCR_COMPOSITE,	//GL_Set2D(false) after the 3d view + the noworld fallback
+	RSPEED_SCR_BRIGHTEN,	//R2D_BrightenScreen + Media_RecordFrame
+	RSPEED_SCR_PACING,	//sys_framepacing GPU drain + paced hold either side of the swap
+	RSPEED_SCR_RESET,	//qglGetGraphicsResetStatus -- a driver round-trip run every frame
 	RSPEED_OPAQUE,
 	RSPEED_RTLIGHTS,
 	RSPEED_TRANSPARENTS,
@@ -790,6 +860,8 @@ enum {
 	RQUANT_RTLIGHT_CULL_FRUSTUM,
 	RQUANT_RTLIGHT_CULL_PVS,
 	RQUANT_RTLIGHT_CULL_SCISSOR,
+
+	RQUANT_MODELLIGHTSAMPLE,	//Patch 105: props that re-walked the world lightmap this frame (r_modellight_cache misses)
 
 	RQUANT_MAX
 };

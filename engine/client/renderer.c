@@ -104,6 +104,11 @@ cvar_t cl_cursor							= CVAR  ("cl_cursor", "");
 cvar_t cl_cursorscale						= CVAR  ("cl_cursor_scale", "1.0");
 cvar_t cl_cursorbiasx						= CVAR  ("cl_cursor_bias_x", "0.0");
 cvar_t cl_cursorbiasy						= CVAR  ("cl_cursor_bias_y", "0.0");
+//nettest: ignore a filesystem gfx/palette.lmp + gfx/colormap.lmp and use the engine's built-in
+//Quake palette/fullbright instead.  Set 1 when you MOUNT an external game (e.g. a Steam Half-Life/
+//CS dir) for its TEXTURES but don't want its global palette/colormap replacing yours (which corrupts
+//colours -> green, and flips fullbright on -> random glowing pixels, across ALL your own content).
+cvar_t r_builtinpalette						= CVARFD ("r_builtinpalette", "0", CVAR_ARCHIVE, "Ignore any mounted gfx/palette.lmp + gfx/colormap.lmp and use the engine's built-in Quake palette/fullbright. Use when mounting an external game for its textures only. -- FTE patch (nettest).");
 
 #ifdef QWSKINS
 cvar_t gl_nocolors							= CVARFD  ("gl_nocolors", "0", CVAR_ARCHIVE, "Ignores player colours and skins, reducing texture memory usage at the cost of not knowing whether you're killing your team mates.");
@@ -147,6 +152,8 @@ cvar_t r_wireframe							= CVARAFD ("r_showtris", "0",
 													"r_wireframe", CVAR_CHEAT, "Developer feature where everything is drawn with wireframe over the top. Only active where cheats are permitted.");
 cvar_t r_outline							= CVARD ("gl_outline", "0", "Draw some stylised outlines.");
 cvar_t r_outline_width						= CVARD ("gl_outline_width", "2", "The width of those outlines.");
+cvar_t gl_line_width						= CVARD ("gl_line_width", "1", "Pixel width of CSQC debug wireframe lines (nav graph, hitboxes, impacts, etc.). Driver-clamped to GL_ALIASED_LINE_WIDTH_RANGE; core-profile drivers may cap at 1.");
+cvar_t gl_2dline_width						= CVARD ("gl_2dline_width", "2", "Pixel width of 2D drawline strokes (e.g. the hit-marker reticle). Separate from gl_line_width (3D debug wireframe). Driver-clamped.");
 cvar_t r_wireframe_smooth					= CVAR ("r_wireframe_smooth", "0");
 cvar_t r_refract_fbo						= CVARD ("r_refract_fbo", "1", "Use an fbo for refraction. If 0, just renders as a portal and uses a copy of the current framebuffer.");
 cvar_t r_refractreflect_scale				= CVARD ("r_refractreflect_scale", "0.5", "Use a different scale for refraction and reflection texturemaps. Because $reasons.");
@@ -162,6 +169,17 @@ cvar_t r_fb_bmodels							= CVARAFD("r_fb_bmodels", "1",
 cvar_t r_fb_models							= CVARAFD  ("r_fb_models", "1",
 													"gl_fb_models", CVAR_SEMICHEAT, "Enables the use of lumas on models. Note that if ruleset_allow_fbmodels is enabled, then all models are unconditionally fullbright in deathmatch, because cheaters would set up their models like that anyway, hurrah for beating them at their own game. QuakeWorld players suck.");
 cvar_t gl_overbright_models					= CVARFD("gl_overbright_models", "0", CVAR_SEMICHEAT|CVAR_ARCHIVE, "Doubles the brightness of models, to match QuakeSpasm's misfeature of the same name.");
+cvar_t r_viewmodel_maxlight					= CVARFD("r_viewmodel_maxlight", "0", CVAR_ARCHIVE, "Per-channel ceiling on the ambient/shade light sampled at the player's eye for the first-person viewmodel. 0 = off (engine default — viewmodel takes the full lightmap value, which can blow out the gun on bright floors / lava / white tiles). Try 96..160 to soften the brightening without losing low-light response.");
+cvar_t r_modellight_fallback				= CVARFD("r_modellight_fallback", "1", CVAR_ARCHIVE, "Model lighting is sampled 24qu above the entity origin, which lands inside the ceiling for roof-mounted models and makes them render pure black. When the standard sample comes back black, retry at the origin and then 24/48qu below it so ceiling/wall-mounted models pick up the light of the space they hang in. 0 = engine default (single sample).");
+cvar_t r_modellight_bilinear				= CVARFD("r_modellight_bilinear", "1", CVAR_ARCHIVE, "Bilinearly filter the world lightmap when sampling light for models/particles, matching how the GPU filters lit surfaces. 0 = nearest-luxel (engine default), which makes models catch isolated black luxels on dense/decoupled lightmaps where the surface beside them is lit.");
+cvar_t r_modellight_worlddir				= CVARFD("r_modellight_worlddir", "1", CVAR_ARCHIVE, "Decode the deluxemap light DIRECTION correctly when sampling light for models. The bakers store it in the face's TANGENT basis (s, t, facenormal) pointing TOWARD the light, but the legacy code aliased those onto world x/y/z and negated the third component -- so on a deluxemapped map every model was lit from BELOW, with a scrambled azimuth on rotated/sloped faces. 1 = rotate it into world space with the real face basis (correct). 0 = the legacy decode (use if you have content authored against the old inverted lighting). NOTE: with 1 the model light dir finally points TOWARD the light, so a shader must not negate it before use.");
+cvar_t r_modellight_cache					= CVARFD("r_modellight_cache", "1", CVAR_ARCHIVE, "Cache each model entity's world-lightmap sample across frames instead of re-walking the BSP every frame for models that have not moved. The sample is a pure function of the entity origin and the lightstyle state, so the cached value is exact, not an approximation: it is dropped the moment the entity moves, a lightstyle changes, the map reloads, or any r_modellight_*/mod_lightpoint_distance setting changes. Dynamic lights are added AFTER the cache and are unaffected. 0 = re-sample every frame (engine default). 2 = validate: use the cached value but re-sample anyway and print a console error if they ever disagree (slower than 0; for proving a suspected stale-lighting bug). Prop-dense maps are dominated by this sample.");
+cvar_t r_propvertexlight						= CVARFD("r_propvertexlight", "1", CVAR_ARCHIVE, "Apply baked static-prop per-vertex lighting from the map's RGBPROPLIGHT BSPX lump (produced by protoanus-tools 'light -propvertexlight'). Each placed prop's baked lighting is multiplied over its live (PBR) lighting per vertex via the VC shader permutation, so a prop's sunlit top stays brighter than its shadowed underside instead of the whole model reading one light sample. 0 = off (no change). Contrast/clamps are r_propvertexlight_contrast/_min/_max (applied at map load).");
+cvar_t r_propvertexlight_contrast			= CVARFD("r_propvertexlight_contrast", "1", CVAR_ARCHIVE, "Exponent applied to the baked static-prop per-vertex multiplier (>1 exaggerates the sunlit/shadowed contrast, <1 flattens it). Applied when the map loads; change it then reload the map to re-tune. See r_propvertexlight.");
+cvar_t r_propvertexlight_min				= CVARFD("r_propvertexlight_min", "0.3", CVAR_ARCHIVE, "Lower clamp on the baked static-prop per-vertex multiplier, so shadowed vertices cannot go fully black. Applied at map load. See r_propvertexlight.");
+cvar_t r_propvertexlight_max				= CVARFD("r_propvertexlight_max", "3", CVAR_ARCHIVE, "Upper clamp on the baked static-prop per-vertex multiplier, so bright vertices cannot blow out. Applied at map load. See r_propvertexlight.");
+cvar_t r_propvertexlight_minlight			= CVARFD("r_propvertexlight_minlight", "0.1", CVAR_ARCHIVE, "Minimum base brightness (0..1) for a static prop lit by RGBPROPLIGHT. The prop's overall brightness comes from its own baked mean (not the world lightmap sample, which would read the prop's own cast shadow and go too dark); this floors that so a prop in deep shadow never renders pure black. 0 = no floor. See r_propvertexlight.");
+cvar_t r_prop_minlight						= CVARFD("r_prop_minlight", "0", CVAR_ARCHIVE, "Minimum ambient brightness (0..1) for world-placed models that do NOT have baked RGBPROPLIGHT vertex lighting (a non-IQM prop, or any prop when -propvertexlight wasn't baked or r_propvertexlight is 0), so they never sit pure black in shadow. Complements r_propvertexlight_minlight (which floors props that DO have baked lighting). 0 = off (default). Applies to all non-player, non-viewmodel models, not only props.");
 //cvar_t r_skin_overlays						= CVARF  ("r_skin_overlays", "1",
 //													CVAR_SEMICHEAT|CVAR_RENDERERLATCH);
 cvar_t r_globalskin_first					= CVARFD  ("r_globalskin_first", "100", CVAR_RENDERERLATCH, "Specifies the first .skin value that is a global skin. Entities within this range will use the shader/image called 'gfx/skinSKIN.lmp' instead of their regular skin. See also: r_globalskin_count.");
@@ -238,8 +256,41 @@ cvar_t r_slimealpha							= CVARF  ("r_slimealpha", "",
 												CVAR_ARCHIVE | CVAR_SHADERSYSTEM);
 cvar_t r_telealpha							= CVARF  ("r_telealpha", "",
 												CVAR_ARCHIVE | CVAR_SHADERSYSTEM);
+cvar_t r_wateralpha_extendpvs				= CVARFD ("r_wateralpha_extendpvs", "0",
+												CVAR_ARCHIVE,
+												"When 1 and r_wateralpha < 1, the renderer ORs every fluid leaf's PVS into the visible set so transparent water shows the geometry on the other side from any distance. ONLY needed for legacy maps compiled without transparent-water vis support (vanilla GoldSrc maps, q1bsp compiled with classic vis). Modern maps compiled with ericw-tools vis or any vis tool that handles transparent water at compile time already have correct PVS — leave this 0 for those, otherwise rendering will pull in far-away unrelated leafs.");
 cvar_t r_waterwarp							= CVARFD ("r_waterwarp", "1",
 												CVAR_ARCHIVE, "Enables fullscreen warp, preferably via glsl. -1 specifies to force the fov warp fallback instead which can give a smidge more performance.");
+cvar_t r_waterripple						= CVARFD ("r_waterripple", "3",
+												CVAR_ARCHIVE | CVAR_SHADERSYSTEM, "Makes liquid (water/slime/lava/teleport) surfaces ripple as a real subdivided mesh: the value is the wave height in world units, 0 disables. Turning it on from 0, or changing r_waterripple_tess, requires a map reload (the tessellation is baked into the world at load); changing the height or r_waterripple_speed updates live.");
+cvar_t r_waterripple_tess					= CVARFD ("r_waterripple_tess", "64",
+												CVAR_ARCHIVE, "Grid cell size, in world units, for r_waterripple tessellation. Smaller = smoother ripples but more vertices. Read at map load.");
+cvar_t r_waterripple_speed					= CVARFD ("r_waterripple_speed", "1",
+												CVAR_ARCHIVE | CVAR_SHADERSYSTEM, "Speed multiplier for the r_waterripple wave motion.");
+cvar_t r_waterripple_react					= CVARFD ("r_waterripple_react", "1",
+												CVAR_ARCHIVE | CVAR_SHADERSYSTEM, "Makes liquid surfaces REACT to gameplay: players jumping in / wading, and bullets and props hitting the water spawn expanding ripple rings on the mesh. The value scales the strength of those rings; 0 disables the reaction (the ambient r_waterripple wave is separate). Like the wave this needs the water tessellated, so turning it on from 0 needs a map reload; the strength updates live. Sources are spawned from QC via the addwaterripple builtin.");
+
+//interactive water ripples fed by R_AddWaterRipple (see render.h).  A fixed ring buffer: new
+//sources overwrite the oldest slot, and the renderer's DEFORMV_RIPPLE pass skips any whose
+//lifetime has elapsed, so nothing has to be explicitly pruned.
+waterripple_t r_waterripples[MAX_WATERRIPPLES];
+static int r_waterripples_next;
+void R_AddWaterRipple(const vec3_t org, float amp, float size, float speed, float lifetime)
+{
+	waterripple_t *r;
+	if (r_waterripple_react.value <= 0)
+		return;	//reaction disabled (the ambient wave is a separate cvar); drop it
+	if (amp <= 0 || lifetime <= 0)
+		return;
+	r = &r_waterripples[r_waterripples_next];
+	r_waterripples_next = (r_waterripples_next + 1) % MAX_WATERRIPPLES;
+	VectorCopy(org, r->origin);
+	r->starttime = r_refdef.time;
+	r->amp = amp;
+	r->size = (size > 1)? size : 16;
+	r->speed = (speed > 0)? speed : 60;
+	r->lifetime = lifetime;
+}
 
 cvar_t r_replacemodels						= CVARFD ("r_replacemodels", IFMINIMAL("","md3 md2 md5mesh"),
 												CVAR_ARCHIVE, "A list of filename extensions to attempt to use instead of mdl.");
@@ -475,8 +526,16 @@ cvar_t r_portalonly							= CVARD  ("r_portalonly", "0", "Don't draw things whic
 cvar_t r_noaliasshadows						= CVARF ("r_noaliasshadows", "0", CVAR_ARCHIVE);
 cvar_t r_lodscale							= CVARFD ("r_lodscale", "5", CVAR_ARCHIVE, "Scales the level-of-detail reduction on models (for those that have lod).");
 cvar_t r_lodbias							= CVARFD ("r_lodbias", "0", CVAR_ARCHIVE, "Biases the level-of-detail on models (for those that have lod).");
+//nettest Patch 100: model entities are otherwise frustum-culled ONLY, so a prop 3000qu away still
+//pays a full batch-gen, skeletal build, lightmap sample, uniform upload and draw call in every pass
+//while covering almost no pixels.  This culls a model entity once its projected on-screen size drops
+//below the threshold.  Size-aware for free (it is screen coverage, not raw distance), so a van stays
+//visible far out while a grass tuft drops early.  0 = off (the stock behaviour).
+cvar_t r_model_mincoverage					= CVARFD ("r_model_mincoverage", "0", CVAR_ARCHIVE, "Cull model entities whose projected on-screen size (fraction of screen height, as used by the LOD selector) falls below this. Players, viewmodels and skeletal-object entities are never culled. 0 = off. Try 0.002-0.01 on prop-dense maps.");
 cvar_t r_shadows							= CVARFD ("r_shadows", "0", CVAR_ARCHIVE, "Draw basic blob shadows underneath entities without using realtime lighting.");
 cvar_t r_showbboxes							= CVARFD("r_showbboxes", "0", CVAR_CHEAT, "Debugging. Shows bounding boxes. 1=ssqc, 2=csqc. Red=solid, Green=stepping/toss/bounce, Blue=onground.");
+cvar_t r_showhull							= CVARFD("r_showhull", "0", CVAR_CHEAT, "Debugging. Draws the convex-hull collision geometry of SOLID_PHYSICS_TRIMESH props as green lines. 1=ssqc, 2=csqc.");
+cvar_t r_showhull_maxdist					= CVARFD("r_showhull_maxdist", "1024", CVAR_CHEAT, "r_showhull: only draw the hulls of props within this many units of the view, so a prop-dense scene doesn't overflow the line buffer (distant hulls would stop drawing). 0 = unlimited.");
 cvar_t r_showfields							= CVARD("r_showfields", "0", "Debugging. Shows entity fields boxes (entity closest to crosshair). 1=ssqc, 2=csqc, 3=snapshots.");
 cvar_t r_showshaders						= CVARD("r_showshaders", "0", "Debugging. Shows the name of the (worldmodel) shader being pointed to.");
 cvar_t r_lightprepass_cvar					= CVARFD("r_lightprepass", "0", CVAR_ARCHIVE, "Experimental. Attempt to use a different lighting mechanism (aka: deferred lighting). Requires vid_reload to take effect.");
@@ -579,6 +638,7 @@ void GLRenderer_Init(void)
 
 	Cvar_Register (&r_lodscale, GRAPHICALNICETIES);
 	Cvar_Register (&r_lodbias, GRAPHICALNICETIES);
+	Cvar_Register (&r_model_mincoverage, GRAPHICALNICETIES);	//nettest Patch 100
 
 	Cvar_Register (&gl_motionblur, GLRENDEREROPTIONS);
 	Cvar_Register (&gl_motionblurscale, GLRENDEREROPTIONS);
@@ -754,15 +814,33 @@ void R_ToggleFullscreen_f(void)
 #endif
 }
 
+//nettest: a real "flushshaders" command.  Drops the shader cache + rescans the filesystem so freshly-written
+//shader files (the mod's custom sprays) are re-parsed AND any shader that wasn't built yet gets rebuilt.  This
+//is exactly what the CVAR_SHADERSYSTEM cvars (r_wateralpha etc.) do on change -- which is why nudging
+//r_wateralpha "fixed" the see-through CoD water on a dedicated-server connect (the water shaders were stale).
+//The mod's CSQC already runs "flushshaders" on map load (client/cl_sprays.qc); it was a silent no-op
+//("Unknown command flushshaders") until now, so the water stayed stale on a connect until a manual cvar nudge.
+void Shader_NeedReload(qboolean rescanfs);	//nettest: declared in gl/shader.h, not always pulled into this TU
+static void R_FlushShaders_f(void)
+{
+	Shader_NeedReload(true);
+}
+
 void Renderer_Init(void)
 {
 	currentrendererstate.renderer = NULL;
 	qrenderer = QR_NONE;
 
+	//nettest Patch 120d: set up the renderer-INDEPENDENT image state here, because Image_Init only
+	//ever runs from R_ApplyRenderer's graphics branch and a dedicated client never takes it -- yet
+	//the model and wad loaders still run.  Host_Init calls Renderer_Init in both modes.
+	Image_InitCore();
+
 	r_blockvidrestart = true;
 	Cmd_AddCommand("setrenderer", R_SetRenderer_f);
 	Cmd_AddCommand("vid_restart", R_RestartRenderer_f);
 	Cmd_AddCommand("vid_reload", R_ReloadRenderer_f);
+	Cmd_AddCommand("flushshaders", R_FlushShaders_f);	//nettest: real shader-cache flush (fixes connect-water + spray refresh; see R_FlushShaders_f above)
 	Cmd_AddCommand("vid_toggle", R_ToggleFullscreen_f);
 
 #ifdef RTLIGHTS
@@ -790,6 +868,7 @@ void Renderer_Init(void)
 #endif
 
 	Cvar_Register (&gl_conback, GRAPHICALNICETIES);
+	Cvar_Register (&r_builtinpalette, GRAPHICALNICETIES);	//nettest
 
 	Cvar_Register (&r_novis, GLRENDEREROPTIONS);
 
@@ -896,6 +975,8 @@ void Renderer_Init(void)
 	Cvar_Register (&r_wireframe_smooth, GRAPHICALNICETIES);
 	Cvar_Register (&r_outline, GRAPHICALNICETIES);
 	Cvar_Register (&r_outline_width, GRAPHICALNICETIES);
+	Cvar_Register (&gl_line_width, GRAPHICALNICETIES);
+	Cvar_Register (&gl_2dline_width, GRAPHICALNICETIES);
 	Cvar_Register (&r_refract_fbo, GRAPHICALNICETIES);
 	Cvar_Register (&r_refractreflect_scale, GRAPHICALNICETIES);
 	Cvar_Register (&r_postprocshader, GRAPHICALNICETIES);
@@ -975,9 +1056,14 @@ void Renderer_Init(void)
 
 	Cvar_Register (&r_fastturb, GRAPHICALNICETIES);
 	Cvar_Register (&r_wateralpha, GRAPHICALNICETIES);
+	Cvar_Register (&r_waterripple, GRAPHICALNICETIES);
+	Cvar_Register (&r_waterripple_tess, GRAPHICALNICETIES);
+	Cvar_Register (&r_waterripple_speed, GRAPHICALNICETIES);
+	Cvar_Register (&r_waterripple_react, GRAPHICALNICETIES);
 	Cvar_Register (&r_lavaalpha, GRAPHICALNICETIES);
 	Cvar_Register (&r_slimealpha, GRAPHICALNICETIES);
 	Cvar_Register (&r_telealpha, GRAPHICALNICETIES);
+	Cvar_Register (&r_wateralpha_extendpvs, GRAPHICALNICETIES);
 	Cvar_Register (&gl_shadeq1_name, GLRENDEREROPTIONS);
 
 	Cvar_Register (&gl_mindist, GLRENDEREROPTIONS);
@@ -1008,6 +1094,17 @@ void Renderer_Init(void)
 	Cvar_Register (&r_fb_bmodels, GRAPHICALNICETIES);
 	Cvar_Register (&r_fb_models, GRAPHICALNICETIES);
 	Cvar_Register (&gl_overbright_models, GRAPHICALNICETIES);
+	Cvar_Register (&r_viewmodel_maxlight, GRAPHICALNICETIES);
+	Cvar_Register (&r_modellight_fallback, GRAPHICALNICETIES);
+	Cvar_Register (&r_modellight_bilinear, GRAPHICALNICETIES);
+	Cvar_Register (&r_modellight_cache, GRAPHICALNICETIES);
+	Cvar_Register (&r_modellight_worlddir, GRAPHICALNICETIES);
+	Cvar_Register (&r_propvertexlight, GRAPHICALNICETIES);
+	Cvar_Register (&r_propvertexlight_contrast, GRAPHICALNICETIES);
+	Cvar_Register (&r_propvertexlight_min, GRAPHICALNICETIES);
+	Cvar_Register (&r_propvertexlight_max, GRAPHICALNICETIES);
+	Cvar_Register (&r_propvertexlight_minlight, GRAPHICALNICETIES);
+	Cvar_Register (&r_prop_minlight, GRAPHICALNICETIES);
 //	Cvar_Register (&r_fullbrights, GRAPHICALNICETIES);	//dpcompat: 1 if r_fb_bmodels&&r_fb_models
 //	Cvar_Register (&r_skin_overlays, GRAPHICALNICETIES);
 	Cvar_Register (&r_globalskin_first, GRAPHICALNICETIES);
@@ -1017,6 +1114,8 @@ void Renderer_Init(void)
 	Cvar_Register (&r_replacemodels, GRAPHICALNICETIES);
 
 	Cvar_Register (&r_showbboxes, GLRENDEREROPTIONS);
+	Cvar_Register (&r_showhull, GLRENDEREROPTIONS);
+	Cvar_Register (&r_showhull_maxdist, GLRENDEREROPTIONS);
 	Cvar_Register (&r_showfields, GLRENDEREROPTIONS);
 	Cvar_Register (&r_showshaders, GLRENDEREROPTIONS);
 #ifdef BEF_PUSHDEPTH
@@ -1555,7 +1654,7 @@ qboolean R_ApplyRenderer_Load (rendererstate_t *newr)
 
 		if (host_basepal)
 			BZ_Free(host_basepal);
-		host_basepal = (qbyte *)FS_LoadMallocFile ("gfx/palette.lmp", &sz);
+		host_basepal = r_builtinpalette.ival ? NULL : (qbyte *)FS_LoadMallocFile ("gfx/palette.lmp", &sz);	//nettest: skip a mounted (e.g. Half-Life) palette so it can't override ours globally -> falls to default_quakepal below
 		vid.fullbright = host_basepal?32:0;	//q1-like mods are assumed to have 32 fullbright pixels, even if the colormap is missing.
 		if (!host_basepal)
 		{
@@ -1585,7 +1684,7 @@ qboolean R_ApplyRenderer_Load (rendererstate_t *newr)
 
 		{
 			size_t csize;
-			qbyte *colormap = (qbyte *)FS_LoadMallocFile ("gfx/colormap.lmp", &csize);
+			qbyte *colormap = r_builtinpalette.ival ? NULL : (qbyte *)FS_LoadMallocFile ("gfx/colormap.lmp", &csize);	//nettest: see r_builtinpalette (skips a mounted HL/CS colormap that wrongly flips fullbright on)
 
 			if (colormap && csize == VID_GRADES*256+1 && Ruleset_FileLoaded("gfx/colormap.lmp", colormap, csize))
 			{
@@ -1920,6 +2019,7 @@ TRACE(("dbg: R_ApplyRenderer: efrags\n"));
 	Shader_DoReload();
 	CSQC_RendererRestarted(false);
 #endif
+	CL_PersistentDecals_Restarted();	//nettest: re-resolve shaders + re-clip persistent decals against the rebuilt atlas
 #ifdef MENU_DAT
 	MP_RendererRestarted();
 #endif
@@ -2527,6 +2627,8 @@ mspriteframe_t *R_GetSpriteFrame (entity_t *currententity)
 	float			*pintervals, fullinterval, targettime, time;
 
 	psprite = currententity->model->meshinfo;
+	if (currententity->model->type != mod_sprite || !psprite)
+		return NULL;	//nettest: a non-sprite / failed-load model (e.g. a Source sprite .vmt fed to the model loader -> mod_dummy with NULL meshinfo) must never be dereferenced as a sprite. The caller treats a NULL frame as "draw nothing".
 	frame = currententity->framestate.g[FS_REG].frame[0];
 
 	if ((frame >= psprite->numframes) || (frame < 0))

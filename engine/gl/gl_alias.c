@@ -37,9 +37,11 @@ typedef struct
 
 
 
-extern cvar_t gl_part_flame, r_fullbrightSkins, r_fb_models, ruleset_allow_fbmodels, gl_overbright_models;
+extern cvar_t gl_part_flame, r_fullbrightSkins, r_fb_models, ruleset_allow_fbmodels, gl_overbright_models, r_viewmodel_maxlight, r_modellight_fallback, r_modellight_cache;
+extern cvar_t r_propvertexlight, r_propvertexlight_minlight, r_prop_minlight;	//nettest: baked static-prop per-vertex lighting + world-model minlight floor
 extern cvar_t r_noaliasshadows;
 extern cvar_t r_lodscale, r_lodbias;
+extern cvar_t r_model_mincoverage;	//nettest Patch 100: screen-coverage entity cull
 
 extern cvar_t gl_ati_truform;
 extern cvar_t r_vertexdlights;
@@ -1228,7 +1230,7 @@ static shader_t *GL_ChooseSkin(galiasinfo_t *inf, model_t *model, int surfnum, e
 	else
 	{
 		static float timer;
-		Con_ThrottlePrintf(&timer, 1, "Skin number out of range (%u >= %u - %s)\n", e->skinnum, inf->numskins, model->name);
+		Con_ThrottlePrintf(&timer, 2, "Skin number out of range (%u >= %u - %s)\n", e->skinnum, inf->numskins, model->name);	//nettest: developer 2 — a 1-skin Source .mdl asked for skin index 1 is cosmetic (falls through to a valid skin), not worth flooding developer 1
 		if (!inf->numskins)
 			return NULL;
 	}
@@ -1361,6 +1363,80 @@ static void R_DrawShadowVolume(mesh_t *mesh)
 #endif
 
 //true if no shading is to be used.
+/*Patch 105 -- persistent model-light cache.
+
+  THE COST: R_CalcModelLighting runs per model entity per pass, and its LightPointValues call
+  is a RECURSIVE BSP WALK down to the floor (GLRecursiveLightPoint3C, gl_rlight.c) that then
+  bilinearly taps up to 4 luxels x 4 lightstyle maps, each with a pow(). cl_visedicts is a
+  per-frame array and CL_LinkPacketEntities clears light_known every frame, so there was no
+  cross-frame reuse at all: 651 static props re-derived identical numbers 60 times a second.
+  Measured on a prop-dense map: 9.7ms/frame, of which r_fullbright (which skips exactly this
+  sample) proved ~6.3ms was the lighting and only ~1.8ms was the actual drawing.
+
+  WHY THIS IS EXACT, NOT AN APPROXIMATION: the sample is a pure function of
+      (sample point, lightstyle state, world lightdata, a few sampler cvars)
+  and the sample point is itself a pure function of e->origin (origin +24z, or the Patch 94
+  ladder's origin+0/-24/-48). So an entry is reusable iff the origin and r_modellight_seq
+  both match. Everything in the "lightstyle state / lightdata / cvars" half is folded into
+  r_modellight_seq by R_AnimateLight + Surf_NewMap (see gl_rlight.c).
+
+  WHAT IS DELIBERATELY *NOT* CACHED: only the sampler is wrapped. The dlight loop further
+  down this function reads cl_dlights fresh every frame and adds into ambientlight/
+  shadelight AFTER the cached value lands -- caching the function's final result instead
+  would freeze muzzle flashes and explosions onto every prop. MLS handling, the lightmap-
+  format clamps and the player/fbskin rules likewise still run per frame. The cut is exactly
+  the LightPointValues block and nothing else.
+
+  KEY: e->keynum is only a HASH BUCKET, never a correctness input -- it is reused for
+  tag-parents so it can collide. Validation is on origin + seq, which means a collision
+  degrades to a recompute, and two entities that genuinely share an origin sharing an entry
+  is CORRECT (same point => same sample, by definition). Origin validation also gives
+  move-invalidation for free: a prop that moves simply misses.
+  Not cached for RF_WEAPONMODEL: it samples the eye position, so it moves constantly (and
+  its post-sample clamps live inside that branch).*/
+#define MODELLIGHTCACHE_BUCKETS 4096	//power of 2. ~651 props on the stress map; direct-mapped
+typedef struct
+{
+	unsigned int seq;		//0 = empty; must match r_modellight_seq
+	vec3_t origin;			//the ENTITY origin the sample was taken for (not the sample point)
+	vec3_t shadelight;
+	vec3_t ambientlight;
+	vec3_t lightdir;
+} modellightcache_t;
+static modellightcache_t modellightcache[MODELLIGHTCACHE_BUCKETS];
+
+/*The world-lightmap sample, factored out so the cache-fill path and the r_modellight_cache 2
+  self-check can run byte-identical code. Pure function of e->origin (+ the world/styles/cvars
+  tracked by r_modellight_seq) -- that purity is the whole basis of the cache being exact.*/
+static void R_SampleModelLight(entity_t *e, model_t *clmodel, vec3_t shadelight, vec3_t ambientlight, vec3_t lightdir)
+{
+	vec3_t center;
+	#if 0 /*hexen2*/
+	VectorAvg(clmodel->mins, clmodel->maxs, center);
+	VectorAdd(e->origin, center, center);
+	#else
+	VectorCopy(e->origin, center);
+	center[2] += 24;
+	#endif
+	cl.worldmodel->funcs.LightPointValues(cl.worldmodel, center, shadelight, ambientlight, lightdir);
+	if (r_modellight_fallback.ival)
+	{	/*the +24 sample point lands inside the ceiling for roof-mounted
+		  models, and a lightpoint trace that starts in solid returns
+		  pure black. step the sample point back down and retry so such
+		  models take the light of the open space they hang in; only a
+		  black first sample pays for the extra traces.*/
+		static const float drop[] = {0, -24, -48};
+		int attempt;
+		for (attempt = 0; attempt < countof(drop); attempt++)
+		{
+			if (ambientlight[0] || ambientlight[1] || ambientlight[2] || shadelight[0] || shadelight[1] || shadelight[2])
+				break;
+			center[2] = e->origin[2] + drop[attempt];
+			cl.worldmodel->funcs.LightPointValues(cl.worldmodel, center, shadelight, ambientlight, lightdir);
+		}
+	}
+}
+
 qboolean R_CalcModelLighting(entity_t *e, model_t *clmodel)
 {
 	vec3_t lightdir;
@@ -1368,9 +1444,20 @@ qboolean R_CalcModelLighting(entity_t *e, model_t *clmodel)
 	vec3_t dist;
 	float add, m;
 	vec3_t shadelight, ambientlight;
+	vec3_t bakedmean = {0,0,0};	//nettest: this prop's mean baked colour (0-1), if it has an RGBPROPLIGHT record
+	modellightcache_t *cache = NULL;	//Patch 105: non-NULL = this entity is cacheable
 
 	if (e->light_known)
 		return e->light_known-1;
+
+	//nettest: resolve this prop instance's baked per-vertex colours once per frame (the light_known
+	//guard above makes this run on the first call each frame, not per render pass). PropLight_Find is
+	//a cheap hash probe; NULL when the master toggle is off, the map has no RGBPROPLIGHT lump, or this
+	//placement has no record -- in which case the VC permutation stays inactive and drawing is unchanged.
+	e->vertlightcolors = NULL;
+	e->vertlightverts = 0;
+	if (r_propvertexlight.ival && clmodel && clmodel->type == mod_alias && cl.worldmodel && cl.worldmodel->proplights)
+		e->vertlightcolors = (vec4_t*)PropLight_Find(cl.worldmodel, clmodel->name, e->origin, e->angles, &e->vertlightverts, bakedmean);
 
 	e->light_dir[0] = 0; e->light_dir[1] = 1; e->light_dir[2] = 0;
 #ifdef HEXEN2
@@ -1410,19 +1497,72 @@ qboolean R_CalcModelLighting(entity_t *e, model_t *clmodel)
 			{	/*viewmodels may not be pure black*/
 				if (ambientlight[i] < 24)
 					ambientlight[i] = 24;
+				/*r_viewmodel_maxlight: optional ceiling so a bright floor
+				  (lava, white tile, sky-lit area) doesn't blow the gun out.
+				  0 disables the cap = engine-default behaviour. Caps both
+				  ambient and shade so directional brightening from below
+				  is also bounded.*/
+				if (r_viewmodel_maxlight.value > 0)
+				{
+					if (ambientlight[i] > r_viewmodel_maxlight.value)
+						ambientlight[i] = r_viewmodel_maxlight.value;
+					if (shadelight[i] > r_viewmodel_maxlight.value)
+						shadelight[i] = r_viewmodel_maxlight.value;
+				}
 			}
 		}
 		else
 		{
-			vec3_t center;
-			#if 0 /*hexen2*/
-			VectorAvg(clmodel->mins, clmodel->maxs, center);
-			VectorAdd(e->origin, center, center);
-			#else
-			VectorCopy(e->origin, center);
-			center[2] += 24;
-			#endif
-			cl.worldmodel->funcs.LightPointValues(cl.worldmodel, center, shadelight, ambientlight, lightdir);
+			qboolean cachehit = false;
+
+			/*Patch 105: reuse this entity's sample if it has not moved and nothing feeding
+			  the sampler has changed. Bucket by keynum; VALIDATE on origin + seq.*/
+			if (r_modellight_cache.ival)
+			{
+				cache = &modellightcache[(unsigned int)e->keynum & (MODELLIGHTCACHE_BUCKETS-1)];
+				if (cache->seq == r_modellight_seq && VectorEquals(cache->origin, e->origin))
+				{
+					VectorCopy(cache->shadelight, shadelight);
+					VectorCopy(cache->ambientlight, ambientlight);
+					VectorCopy(cache->lightdir, lightdir);
+					cachehit = true;	//fall through to the per-frame dlight/clamp tail
+
+					if (r_modellight_cache.ival == 2)
+					{	/*self-check: re-sample and prove the cached value is EXACT. Any
+						  hit here is a real cache bug (a missed invalidation), not a
+						  rounding difference -- both sides run the same code on the same
+						  inputs, so the only correct outcome is bit-identical.*/
+						vec3_t s2, a2, d2;
+						R_SampleModelLight(e, clmodel, s2, a2, d2);
+						if (!VectorEquals(s2, shadelight) || !VectorEquals(a2, ambientlight) || !VectorEquals(d2, lightdir))
+							Con_Printf(CON_ERROR "r_modellight_cache: STALE for %s at %.1f %.1f %.1f\n",
+										clmodel?clmodel->name:"?", e->origin[0], e->origin[1], e->origin[2]);
+					}
+				}
+			}
+
+			if (!cachehit)
+			{
+				R_SampleModelLight(e, clmodel, shadelight, ambientlight, lightdir);
+				/*r_speeds "ModelLight Samples": props that actually re-walked the world
+				  lightmap this frame. ~0 in the good steady state; ~= visible-prop count
+				  with the cache off or when a flickering style defeats it globally; ticks
+				  up by the number of props currently in motion. Counted here (the genuine
+				  resample), NOT inside R_SampleModelLight, so the r_modellight_cache 2
+				  self-check's parallel resample does not double-count.*/
+				RQuantAdd(RQUANT_MODELLIGHTSAMPLE, 1);
+
+				/*store the LADDER'S RESULT, so a ceiling prop's retries happen once rather
+				  than every frame -- the cache must kill the repetition, not the outcome.*/
+				if (cache)
+				{
+					VectorCopy(e->origin, cache->origin);
+					VectorCopy(shadelight, cache->shadelight);
+					VectorCopy(ambientlight, cache->ambientlight);
+					VectorCopy(lightdir, cache->lightdir);
+					cache->seq = r_modellight_seq;	//publish last: the entry is only valid once filled
+				}
+			}
 		}
 	}
 	else
@@ -1431,6 +1571,40 @@ qboolean R_CalcModelLighting(entity_t *e, model_t *clmodel)
 		lightdir[0] = 0;
 		lightdir[1] = 1;
 		lightdir[2] = 1;
+	}
+
+	if (e->vertlightcolors)
+	{	//nettest: baked static-prop lighting. Take the prop's absolute brightness from its OWN baked mean
+		//(correctly self-shadowed, includes bounce colour) instead of the world lightmap sample, which reads
+		//the prop's OWN baked floor shadow -> too dark, and the relative VC multiply cannot rescue a dark base.
+		//Keep lightdir (the sun dir) for normalmaps; the VC permutation still multiplies the per-vertex
+		//top/underside variation on top. r_propvertexlight_minlight floors it so nothing goes pure black.
+		float minl = r_propvertexlight_minlight.value * 255.0f;
+		for (i = 0; i < 3; i++)
+		{
+			float mc = bakedmean[i] * 255.0f;
+			if (mc < minl)
+				mc = minl;
+			ambientlight[i] = mc;
+			shadelight[i] = mc;
+		}
+	}
+	else if (r_prop_minlight.value > 0.0f && e->playerindex < 0 && !(e->flags & RF_WEAPONMODEL))
+	{	//nettest: minimum brightness for world-placed models that DON'T have baked vertex lighting (a
+		//non-IQM prop, or any prop when -propvertexlight wasn't baked / r_propvertexlight is 0), so they
+		//never sit pure black in shadow. Opt-in (default 0). Applies to all non-player world models.
+		//NB: shadelight -> e->light_avg -> SP_E_L_AMBIENT is the shader's FLAT base (the term that fills
+		//faces pointing away from the light); ambientlight -> light_range -> SP_E_L_MUL is the directional
+		//multiplier (x dot(n,dir), so it can't lift a face that faces away). Floor BOTH, so the darkest
+		//faces are actually lifted -- flooring only the directional term keeps the contrast (parts x0).
+		float minl = r_prop_minlight.value * 255.0f;
+		for (i = 0; i < 3; i++)
+		{
+			if (shadelight[i] < minl)
+				shadelight[i] = minl;
+			if (ambientlight[i] < minl)
+				ambientlight[i] = minl;
+		}
 	}
 
 #ifdef HEXEN2
@@ -1699,6 +1873,55 @@ qboolean R_CalcModelLighting(entity_t *e, model_t *clmodel)
 	return e->light_known-1;
 }
 
+//nettest (Patch 108/110): reconstruct an entity's dominant light direction in WORLD space, pointing TOWARD
+//the light.  R_CalcModelLighting above stores e->light_dir PROJECTED onto the entity's orthonormal axes
+//(the DotProduct block at the end of it), so the inverse is simply the axis-weighted sum.  Reconstructing
+//rather than storing keeps entity_t's layout frozen -- the prebuilt hl2/cod plugins build entity_t arrays
+//using their own compiled sizeof, so appending a field to it is an ABI break.
+//
+//SINGLE SOURCE OF TRUTH: both the SP_E_SUNDIR shader uniform (the per-prop sun form-shade, Patch 108) and
+//the Patch 110 fake-shadow direction bucketer call this, so the direction a prop is SHADED by and the
+//direction it CASTS its shadow along can never drift apart.
+//
+//Returns false when there is no per-entity direction to be had -- the caller must fall back to r_sun_dir:
+//  - no deluxemap (.lux/LIGHTINGDIR): LightPointValues returns a CONSTANT direction, which would look
+//    worse than the sun, so un-relit maps keep exactly their current appearance (zero regression).
+//  - RF_WEAPONMODEL: that branch projects through the VIEW basis first, so the plain inverse is wrong.
+//  - non-alias models: light_dir is only ever written by R_CalcModelLighting.
+//  - "nolightdir" (fullbright/abslight/lightstyle paths return early leaving light_dir at the {0,1,0}
+//    placeholder set on entry), or a degenerate zero-length sample.
+//Takes a CONST entity because the backend's shaderstate.curentity is const.  The R_CalcModelLighting call
+//below does mutate the entity, but only to fill its per-frame light memo -- the renderer performs that exact
+//same fill moments later in R_GAlias_DrawBatch, so the resulting state is identical either way.  Hence the
+//cast: logically const, physically a cache warm-up.
+qboolean R_EntityDominantLightDir(const entity_t *ce, vec3_t out)
+{
+	entity_t *e = (entity_t*)ce;
+
+	if (!cl.worldmodel || !cl.worldmodel->deluxdata)
+		return false;
+	if (!e->model || e->model->type != mod_alias)
+		return false;
+	if (e->flags & RF_WEAPONMODEL)
+		return false;
+
+	//CRITICAL: light_dir is filled at DRAW time (R_GAlias_DrawBatch below), and CL_LinkPacketEntities
+	//clears light_known every frame -- so a caller running EARLIER in the frame (the Patch 110 bucketer
+	//fires at the top of GLBE_DrawWorld, before any model is drawn) would otherwise read LAST frame's
+	//value, left in this cl_visedicts slot by whatever entity happened to occupy it.  This call is
+	//idempotent (the light_known guard) and Patch-105 origin-cached, so it moves existing work earlier
+	//in the frame rather than adding any.  Safe to hoist: every view-state dependency inside
+	//R_CalcModelLighting (r_refdef.vieworg, vpn/vright/vup) lives in the RF_WEAPONMODEL branch, which
+	//is rejected above.
+	if (R_CalcModelLighting(e, e->model))
+		return false;	//returns "nolightdir"
+
+	VectorScale(e->axis[0], e->light_dir[0], out);
+	VectorMA(out, e->light_dir[1], e->axis[1], out);
+	VectorMA(out, e->light_dir[2], e->axis[2], out);
+	return VectorNormalize(out) != 0;
+}
+
 void R_GAlias_DrawBatch(batch_t *batch)
 {
 	entity_t *e;
@@ -1728,6 +1951,18 @@ void R_GAlias_DrawBatch(batch_t *batch)
 			if (batch->user.alias.surfrefs[0] == surfnum)
 			{
 				/*needrecolour =*/ Alias_GAliasBuildMesh(&mesh, &batch->vbo, inf, surfnum, e, batch->shader->prog && (batch->shader->prog->supportedpermutations & PERMUTATION_SKELETAL));
+				//nettest: override this surface's colour attribute with the prop instance's baked
+				//per-vertex multiplier. Colours are in GLOBAL vertex order, so slice by the surface's
+				//firstvert; the mesh's (local, 0-based) indices then address it correctly. The VC
+				//permutation (BE_RenderMeshProgram) does light *= v_colour, preserving PBR. This runs
+				//AFTER Alias_GAliasBuildMesh, which rewrites colours[0] every call, so it never leaks
+				//between entities. Skipped on a vertex-count mismatch (wrong LOD/model) to stay in-bounds.
+				if (e->vertlightcolors && batch->vbo && inf->firstvert + inf->numverts <= e->vertlightverts)
+				{
+					batch->vbo->colours[0].gl.vbo = 0;
+					batch->vbo->colours[0].gl.addr = e->vertlightcolors + inf->firstvert;
+					batch->vbo->colours_bytes = false;
+				}
 				batch->mesh = &meshl;
 				if (!mesh.numindexes)
 				{
@@ -1752,6 +1987,7 @@ void R_GAlias_GenerateBatches(entity_t *e, batch_t **batches)
 	int surfnum, j;
 	shadersort_t sort;
 	float lod;
+	qboolean sizecullable;	//nettest Patch 100
 
 	texnums_t *skin;
 
@@ -1771,6 +2007,22 @@ void R_GAlias_GenerateBatches(entity_t *e, batch_t **batches)
 		}
 	}
 #endif
+
+	//nettest Patch 100: may this entity be culled purely for being small on screen?
+	//Starts from the same exemptions the frustum cull below uses (a viewmodel has no meaningful
+	//world size; a skeletal-object entity is posed by QC and may be drawn anywhere), then adds the
+	//ones that only matter when culling by SIZE rather than by visibility:
+	//  playerindex >= 0  -- a QW player (set from state->colormap-1 in cl_ents.c, else -1)
+	//  RF_EXTERNALMODEL  -- the local player's own body in third person
+	//  RF_FIRSTPERSON    -- eyes-only models
+	//A distant enemy must never blink out, so players are exempt regardless of how small they get.
+	//In this game the player proxies are CSQC skeletal objects and so are already covered by the
+	//bonestate test, but the explicit checks keep this correct for plain packet-entity players too.
+	sizecullable = !(e->flags & (RF_WEAPONMODEL|RF_EXTERNALMODEL|RF_FIRSTPERSON))
+#ifdef SKELETALMODELS
+				&& !e->framestate.bonestate
+#endif
+				&& e->playerindex < 0;
 
 	if (!(e->flags & RF_WEAPONMODEL)
 #ifdef SKELETALMODELS
@@ -1799,7 +2051,32 @@ void R_GAlias_GenerateBatches(entity_t *e, batch_t **batches)
 
 	inf = Mod_Extradata (clmodel);
 
-	if (clmodel->maxlod)
+	//nettest Patch 100: the projected screen-coverage of the model's bounding sphere drives BOTH the
+	//stock per-surface LOD selection AND the entity cull below, so it is computed once here.  It used
+	//to be gated behind `if (clmodel->maxlod)`, i.e. it never ran at all for a model without authored
+	//LOD data -- which is every asset in this game.  That left model entities frustum-culled ONLY: a
+	//prop 3000qu away still generated batches, rebuilt its skeleton, sampled the lightmap, uploaded
+	//its uniforms and issued draws in every pass, while covering almost no pixels.
+	//
+	//PERSPECTIVE PASSES ONLY (Patch 100a -- fixes "r_model_mincoverage kills self-shadowing").
+	//The maths below is a PERSPECTIVE projected-sphere size, but Sh_GenShadowMap OVERWRITES
+	//r_refdef.m_projection_std with the light's ORTHOGRAPHIC matrix (gl_shadow.c ->
+	//Matrix4x4_CM_Orthographic) before generating the shadow faces.  Fed an ortho matrix the formula
+	//is meaningless -- the perspective divide term (m[7]*r + m[11]*-z + m[15]) collapses to the
+	//constant 1 -- so it fell under the threshold for everything and culled every caster out of the
+	//depth map: models stopped shadowing themselves and each other the moment the cvar went nonzero.
+	//(vpn/vieworg stay the CAMERA's through the shadow pass -- ONLY the projection is swapped -- which
+	//is exactly what made this look correct right up until it wasn't.)
+	//Testing the matrix directly, rather than plumbing bemode down through 4 call sites, keeps the
+	//guard next to the assumption it protects and can never go stale:
+	//  perspective (Matrix4x4_CM_Projection_Far): m[11] = -1, m[15] = 0
+	//  orthographic (Matrix4x4_CM_Orthographic):  m[11] =  0, m[15] = 1
+	//Costs us nothing: the fake-sun pass is already limited to the r_shadows_distance ortho box, so
+	//the far props this cull targets were never drawn into it to begin with.
+	//This also guards the STOCK LOD path, which shares the same latent flaw and would have selected
+	//nonsense LOD levels in the shadow pass the moment any asset carried lodrange data.
+	if (r_refdef.m_projection_std[11] != 0
+	    && (clmodel->maxlod || r_model_mincoverage.value > 0))
 	{
 		vec3_t v;
 		float z;
@@ -1809,7 +2086,7 @@ void R_GAlias_GenerateBatches(entity_t *e, batch_t **batches)
 		if (z < -clmodel->radius)
 			return;		//furthest extent of bounding sphere is nearer than the near clip plane, and thus completely invisible
 		else if (z < 0)
-			lod = 0;	//nearer than the camera, use the highest lod
+			lod = 0;	//nearer than the camera, use the highest lod (and never size-cull)
 		else
 		{
 			//if the ent is in the middle of the screen, then the right edge of its sphere is at what percentage of the width of the screen...?
@@ -1817,11 +2094,30 @@ void R_GAlias_GenerateBatches(entity_t *e, batch_t **batches)
 			//simplified Matrix4x4_CM_Transform4
 			float coverage = (r_refdef.m_projection_std[5]*clmodel->radius + r_refdef.m_projection_std[ 9]*-z + r_refdef.m_projection_std[13]) /
 							 (r_refdef.m_projection_std[7]*clmodel->radius + r_refdef.m_projection_std[11]*-z + r_refdef.m_projection_std[15]);
-			lod = 1-(coverage*r_lodscale.value);
-			lod = bound(0, lod, 1);	//so lodbias is a little more reliable.
-			lod *= clmodel->maxlod;
-			lod += r_lodbias.value;
-			lod = max(0, lod);	//never nearer than 0, the min value check wouldn't cope.
+
+			//nettest Patch 100: size cull.  Culling HERE (before Mod_Extradata's surface walk below)
+			//drops the whole per-entity cost -- batch-gen, Alias_GAliasBuildMesh's bone build,
+			//R_CalcModelLighting's recursive lightmap sample, the uniform upload and the draw -- not
+			//just triangles.  Both the main pass and the r_shadows 2 depth pass funnel through this
+			//one function via BE_GenModelBatches, so one test culls both.
+			//Coverage is a fraction of the screen, so this is size-aware: a large prop stays visible
+			//much further out than a small one at the same distance -- which is what you want, and
+			//what a raw distance cull cannot do.
+			//`sizecullable` deliberately excludes players/viewmodels/skeletal-object entities: an
+			//enemy going invisible at range is a gameplay bug, not an optimisation.
+			if (r_model_mincoverage.value > 0 && coverage < r_model_mincoverage.value && sizecullable)
+				return;
+
+			if (clmodel->maxlod)
+			{
+				lod = 1-(coverage*r_lodscale.value);
+				lod = bound(0, lod, 1);	//so lodbias is a little more reliable.
+				lod *= clmodel->maxlod;
+				lod += r_lodbias.value;
+				lod = max(0, lod);	//never nearer than 0, the min value check wouldn't cope.
+			}
+			else
+				lod = 0;
 		}
 	}
 	else
@@ -2582,6 +2878,8 @@ static void R_Sprite_GenerateTrisoup(entity_t *e, int bemode)
 		// don't even bother culling, because it's just a single
 		// polygon without a surface cache
 		frame = R_GetSpriteFrame(e);
+		if (!frame)	//nettest: sprite model failed to load (e.g. a Source .vmt handed to the model loader) — draw nothing rather than NULL-deref frame->shader
+			return;
 		shader = frame->shader;
 	}
 
@@ -2830,7 +3128,7 @@ static void R_Sprite_GenerateTrisoup(entity_t *e, int bemode)
 	VectorMA (point, frame->right, spraxis[1], xyz[3]);
 }
 
-static void R_DB_Poly(batch_t *batch)
+void R_DB_Poly(batch_t *batch)	//nettest: non-static so gl_backend.c can tag CSQC debug-line batches for gl_line_width
 {
 	static mesh_t mesh;
 	static mesh_t *meshptr = &mesh;
@@ -2847,6 +3145,13 @@ static void R_DB_Poly(batch_t *batch)
 	mesh.indexes = cl_strisidx + cl_stris[i].firstidx;
 	mesh.numindexes = cl_stris[i].numidx;
 	mesh.numvertexes = cl_stris[i].numvert;
+	//nettest r_decal_lightmap: per-pixel lightmap st for decal batches whose shader has a
+	//$lightmap stage.  Set EVERY call (the mesh is static) so a prior decal's pointer never
+	//leaks into a later non-lightmap batch.
+	if ((cl_stris[i].lightmap >= 0) && cl_stris[i].shader && (cl_stris[i].shader->flags & SHADER_HASLIGHTMAP))
+		mesh.lmst_array[0] = cl_strisvertlm + cl_stris[i].firstvert;
+	else
+		mesh.lmst_array[0] = NULL;
 }
 static void BE_GenPolyBatches(batch_t **batches)
 {
@@ -2878,6 +3183,12 @@ static void BE_GenPolyBatches(batch_t **batches)
 		b->shader = shader;
 		for (j = 0; j < MAXRLIGHTMAPS; j++)
 			b->lightmap[j] = -1;
+		//nettest r_decal_lightmap: a decal batch (shader carries a $lightmap stage) gets the
+		//surface's lightmap atlas page so the stage samples the matching lightmap.  Gated on
+		//the shader flag so the ~20 other scenetris producers (which don't set .lightmap) are
+		//unaffected.
+		if (shader->flags & SHADER_HASLIGHTMAP)
+			b->lightmap[0] = cl_stris[i].lightmap;
 		b->user.poly.surface = i;
 		b->flags = cl_stris[i].flags;
 		b->vbo = 0;
@@ -2975,6 +3286,13 @@ void BE_GenModelBatches(batch_t **batches, const dlight_t *dl, unsigned int bemo
 			if (ent->keynum == dl->key && ent->keynum)	//shadows are not cast from the entity that owns the light. it is expected to be inside.
 				continue;
 			if (ent->model && ent->model->engineflags & MDLF_FLAME)
+				continue;
+			//nettest P110: the multi-direction fake-shadow atlas renders one cell per cast direction,
+			//and each caster belongs to exactly ONE of them -- otherwise every prop would be drawn into
+			//every cell and pick up all N directions at once.  Placed before the EdictInFatPVS call
+			//below so rejected entities don't pay for the PVS walk.  Returns 1 for every other
+			//BEM_DEPTHONLY pass (the real rtlight shadow maps), which must stay unfiltered.
+			if (bemode == BEM_DEPTHONLY && !Sh_FakeShadowFilter(i))
 				continue;
 		}
 #endif

@@ -21,6 +21,18 @@
 qboolean		r_loadbumpmapping;
 extern cvar_t r_noframegrouplerp;
 cvar_t r_lerpmuzzlehack						= CVARF  ("r_lerpmuzzlehack", "1", CVAR_ARCHIVE);
+//nettest Patch 36: master enable for the engine-native player spine bend (view-pitch lean + body twist)
+//applied to IQM player skeletons so the SERVER collision pose, gettaginfo and the render all match.
+cvar_t r_skel_spinebend						= CVARFD ("r_skel_spinebend", "1", CVAR_ARCHIVE, "Engine-native view-pitch/body-twist spine bend for IQM player models, so server-side hit detection matches the rendered lean. 0 disables (falls back to the QC client deform).");
+//nettest warp fix: re-orthonormalize each BLENDED bone matrix.  Alias_BlendBoneData does a
+//LINEAR weighted sum of 3x4 bone matrices; a linear blend of rotations is no longer orthonormal
+//(the basis shrinks/skews), and on a SKEL_RELATIVE skeleton that scale COMPOUNDS down the parent
+//chain, blowing the deepest bones (head/root) to a giant/inf ABSOLUTE scale — the IQM player-model
+//"warp" (and the same upper-body scale fed the weapon attach + warped the gun).  1 fixes it in the
+//engine for all models; 0 falls back to the per-bone QC orthonormalize.
+cvar_t r_skel_blendnormalize				= CVARFD ("r_skel_blendnormalize", "1", CVAR_ARCHIVE, "Re-orthonormalize blended IQM bone matrices so frame-blend scale can't compound down the skeleton (the player-model warp). 0 = off (set only for models that bake intentional non-unit bone scale).");
+cvar_t r_showragdoll						= CVARD ("r_showragdoll", "0", "Force-draw every ragdoll collision body (dark box/sphere) + joint anchor (cyan Z / yellow X gizmo) regardless of the .doll draw flags. Doll-tuning debug: the joint gizmo sits at the real constraint anchor, so mis-placed joints show as gizmos away from where two limbs meet.");
+cvar_t r_ragdoll_timescale					= CVARD ("r_ragdoll_timescale", "1", "Time scale for the CLIENT (csqc_world) ragdoll physics step. 1 = normal, 0.1 = slow motion, 0 = frozen (read-back + camera still run, so you can orbit and inspect a paused pose). Doll-tuning aid; does not affect gameplay/server physics.");
 #ifdef MD1MODELS
 cvar_t mod_h2holey_bugged					= CVARD ("mod_h2holey_bugged", "0", "Hexen2's holey-model flag uses index 0 as transparent (and additionally 255 in gl, due to a bug). GLQuake engines tend to have bugs that use ONLY index 255, resulting in a significant compatibility issue that can be resolved only with this shitty cvar hack.");
 cvar_t mod_halftexel						= CVARD ("mod_halftexel", "1", "Offset texture coords by a half-texel, for compatibility with glquake and the majority of engine forks.");
@@ -1200,6 +1212,29 @@ static int Alias_FindRawSkelData(galiasinfo_t *inf, const framestate_t *fstate, 
 	return value is the lastbone argument, or less if the model simply doesn't have that many bones.
 	_always_ writes into result
 */
+//nettest warp fix: Gram-Schmidt a blended bone's 3x3 (column basis) back to a clean rotation,
+//preserving handedness and the translation column.  m is a 3x4 row-major matrix (12 floats);
+//the columns are the local axes (matching bonemat_toqcvectors).  Leaves a degenerate bone as-is.
+//non-static: also called from pr_skelobj.c PF_skel_build (skel_build uses a different blend path).
+void Alias_RenormalizeBoneMatrix(float *m)
+{
+	vec3_t c0, c1, c2, x;
+	c0[0]=m[0]; c0[1]=m[4]; c0[2]=m[8];	//column 0
+	c1[0]=m[1]; c1[1]=m[5]; c1[2]=m[9];	//column 1
+	c2[0]=m[2]; c2[1]=m[6]; c2[2]=m[10];	//column 2 (original — only for the handedness test)
+	if (VectorNormalize(c0) < 0.000001)
+		return;
+	VectorMA(c1, -DotProduct(c1, c0), c0, c1);	//orthogonalize c1 against c0
+	if (VectorNormalize(c1) < 0.000001)
+		return;
+	CrossProduct(c0, c1, x);			//right-handed third axis
+	if (DotProduct(x, c2) < 0)			//keep the original handedness (don't mirror)
+		VectorNegate(x, x);
+	m[0]=c0[0]; m[4]=c0[1]; m[8]=c0[2];
+	m[1]=c1[0]; m[5]=c1[1]; m[9]=c1[2];
+	m[2]=x[0];  m[6]=x[1];  m[10]=x[2];
+}
+
 static int Alias_BlendBoneData(galiasinfo_t *inf, const framestate_t *fstate, float *result, skeltype_t skeltype, int firstbone, int lastbone, const galiasbone_t *boneinfo)
 {
 	skellerps_t lerps[FS_COUNT], *lerp;
@@ -1208,6 +1243,9 @@ static int Alias_BlendBoneData(galiasinfo_t *inf, const framestate_t *fstate, fl
 
 	float *pose, *matrix;
 	int k, b;
+	//nettest warp fix: only the BLENDED (non-exact) path skews the basis, and only relative
+	//skeletons compound it down the chain — so renormalize there.
+	int renorm = (skeltype == SKEL_RELATIVE) && r_skel_blendnormalize.ival;
 
 	for (lerp = lerps; numgroups--; lerp++)
 	{
@@ -1224,16 +1262,24 @@ static int Alias_BlendBoneData(galiasinfo_t *inf, const framestate_t *fstate, fl
 				{
 					pose = result + 12*bone;
 					//set up the per-bone transform matrix
-					matrix = lerps->pose[0] + bone*12;
+					//nettest fix: use THIS group's poses (lerp->pose), not the first group's
+					//(lerps->pose).  With a basebone split the torso group is lerps[1]; reading
+					//lerps[0].pose[b] for b>=group0's lerpcount dereferences an uninitialised pose
+					//pointer -> garbage keyframe data -> whole-upper-body translation blowup on a
+					//transition frame (the "stretched limbs" warp).  The memcpy fast-path above
+					//already correctly uses lerp->pose[0].
+					matrix = lerp->pose[0] + bone*12;
 					for (k = 0;k < 12;k++)
 						pose[k] = matrix[k] * lerp->frac[0];
 					for (b = 1;b < lerp->lerpcount;b++)
 					{
-						matrix = lerps->pose[b] + bone*12;
+						matrix = lerp->pose[b] + bone*12;
 
 						for (k = 0;k < 12;k++)
 							pose[k] += matrix[k] * lerp->frac[b];
 					}
+					if (renorm)
+						Alias_RenormalizeBoneMatrix(pose);	//undo the linear-blend basis shrink/skew
 				}
 			}
 		}
@@ -1247,7 +1293,7 @@ static int Alias_BlendBoneData(galiasinfo_t *inf, const framestate_t *fstate, fl
 only writes targetbuffer if needed. the return value is the only real buffer result.
 assumes that all blended types are the same. probably buggy, but meh.
 */
-static const float *Alias_GetBoneInformation(galiasinfo_t *inf, const framestate_t *framestate, skeltype_t targettype, float *targetbuffer, float *targetbufferalt, size_t numbones, const galiasbone_t *boneinfo)
+static const float *Alias_GetBoneInformation_Raw(galiasinfo_t *inf, const framestate_t *framestate, skeltype_t targettype, float *targetbuffer, float *targetbufferalt, size_t numbones, const galiasbone_t *boneinfo)
 {
 	skellerps_t lerps[FS_COUNT], *lerp;
 	size_t numgroups;
@@ -1372,6 +1418,236 @@ static const float *Alias_GetBoneInformation(galiasinfo_t *inf, const framestate
 
 	return Alias_ConvertBoneData(lerps[0].skeltype, targetbuffer, inf->numbones, inf->ofsbones, targettype, targetbuffer, targetbufferalt, numbones);
 }
+
+//nettest Patch 36 ===========================================================
+//Engine-native view-pitch/body-twist spine bend for IQM player models.
+//
+//Background: the player models are IQM. The third-person up/down view-pitch
+//lean (and the strafe body-twist) used to be applied ONLY on the client, as a
+//QC skel_set_bone deform on the visual proxy. The server's collision pose and
+//gettaginfo stayed upright, so server-side hit detection (and the client's own
+//MOVE_HITMODEL trace) never matched the leaning silhouette. This reproduces the
+//exact client deform here in the pose pipeline so that the render, the
+//MOVE_HITMODEL trace and gettaginfo ALL carry the same lean, on both sides.
+//
+//It is driven by the framestate's HL subblend values, which the gamecode
+//already sets identically on both sides and which lag-comp already rewinds:
+//   subblend2frac = v_angle_x/90   (view pitch)
+//   subblendfrac  = leg_twist/90   (lower-body yaw delta -> upper-body twist)
+//Those were inert on IQM until now. No new fields, no new networking.
+//
+//Math mirrors cl_player.qc (PlayerVis_LoadBoneBasis / TwistBone / PitchBone):
+//we work in the same QC vector space (forward,right,up) using the engine's
+//bone<->qcvector convention (col0=forward, col1=-right, col2=up, col3=org),
+//apply twist (rotate right/up about forward) then pitch (rotate forward/right
+//about up), per spine bone, in PARENT-RELATIVE space so the hierarchy walk
+//propagates the bend to all descendants exactly like skel_set_bone did.
+
+static const char *spinebend_bonenames[5] =
+	{"Bip01 Spine", "Bip01 Spine1", "Bip01 Spine2", "Bip01 Spine3", "Bip01 Neck"};
+
+static qboolean Alias_SpineBend_Resolve(galiasinfo_t *inf)
+{
+	int i, b;
+	if (inf->spinebend_checked)
+		return inf->spinebend_any;
+	inf->spinebend_checked = true;
+	inf->spinebend_any = false;
+	for (i = 0; i < 5; i++)
+	{
+		inf->spinebend_bone[i] = -1;
+		for (b = 0; b < inf->numbones; b++)
+		{
+			if (!strcmp(inf->ofsbones[b].name, spinebend_bonenames[i]))
+			{
+				inf->spinebend_bone[i] = (short)b;
+				inf->spinebend_any = true;
+				break;
+			}
+		}
+	}
+	return inf->spinebend_any;
+}
+
+static qboolean Alias_SpineBendActive(galiasinfo_t *inf, const framestate_t *framestate)
+{
+#ifdef HALFLIFEMODELS
+	if (!inf->numbones || !framestate || !r_skel_spinebend.ival)
+		return false;
+#ifdef SKELETALOBJECTS
+	//nettest Patch 36: when a QC skeletal object drives this entity (the CLIENT player
+	//visual proxy uses skel_build + a QC skel_set_bone spine deform), that object already
+	//owns the pose AND the lean — applying the engine bend on top would double-bend/warp it
+	//(the gun attachment visibly warped). The engine bend is for entities WITHOUT a QC
+	//skeleton: the SERVER player (its skeleton is cleared each tick), so trust-0 still leans.
+	if (framestate->bonestate)
+		return false;
+#endif
+	if (fabs(framestate->g[FS_REG].subblend2frac) < 0.0001 &&
+		fabs(framestate->g[FS_REG].subblendfrac)  < 0.0001)
+		return false;
+	return Alias_SpineBend_Resolve(inf);
+#else
+	return false;
+#endif
+}
+
+#ifdef HALFLIFEMODELS
+//read a QC-registered tuning cvar by name (cached), falling back to the gamecode default.
+static float Alias_SpineBend_Tune(cvar_t **cache, const char *name, float def)
+{
+	if (!*cache)
+		*cache = Cvar_FindVar(name);
+	if (*cache)
+		return (*cache)->value;
+	return def;
+}
+
+//orthonormalize a (forward,right,up) basis - mirrors PlayerVis_LoadBoneBasis.
+static qboolean Alias_SpineBend_Ortho(vec3_t fwd, vec3_t right, vec3_t up)
+{
+	vec3_t lf, lu, lr;
+	float d;
+	VectorCopy(fwd, lf);
+	if (VectorNormalize(lf) < 0.001)
+		return false;
+	d = DotProduct(up, lf);
+	VectorMA(up, -d, lf, lu);
+	if (VectorLength(lu) < 0.001)
+		CrossProduct(right, lf, lu);
+	if (VectorNormalize(lu) < 0.001)
+		return false;
+	CrossProduct(lf, lu, lr);
+	if (VectorNormalize(lr) < 0.001)
+		return false;
+	if (DotProduct(lr, right) < 0)
+	{
+		VectorInverse(lr);
+		VectorInverse(lu);
+	}
+	VectorCopy(lf, fwd);
+	VectorCopy(lr, right);
+	VectorCopy(lu, up);
+	return true;
+}
+
+//apply the spine bend to a SKEL_RELATIVE pose buffer (numbones*12 floats), in place.
+static void Alias_ApplySpineBend(galiasinfo_t *inf, const framestate_t *framestate, float *rel)
+{
+	static cvar_t *c_pscale, *c_pmax, *c_pupper, *c_tscale, *c_tmax, *c_twaist, *c_tupper;
+	static const float pitch_frac[5] = {0.05f, 0.15f, 0.30f, 0.35f, 0.15f};
+	const double DEG2RAD = 3.14159265358979 / 180.0;
+
+	float pitch_scale = Alias_SpineBend_Tune(&c_pscale, "cl_player_spine_pitch_scale", 1);
+	float pitch_max   = Alias_SpineBend_Tune(&c_pmax,   "cl_player_spine_pitch_max",   35);
+	float pitch_upper = Alias_SpineBend_Tune(&c_pupper, "cl_player_spine_pitch_upper_scale", 0.6);
+	float twist_scale = Alias_SpineBend_Tune(&c_tscale, "cl_player_spine_twist_scale", -0.55);
+	float twist_max   = Alias_SpineBend_Tune(&c_tmax,   "cl_player_spine_twist_max",   50);
+	float twist_waist = Alias_SpineBend_Tune(&c_twaist, "cl_player_spine_twist_waist_scale", 1);
+	float twist_upper = Alias_SpineBend_Tune(&c_tupper, "cl_player_spine_twist_upper_scale", 0.5);
+	float pfrac, iqm_pitch, leg_twist, iqm_twist;
+	int i;
+
+	if (pitch_max <= 0) pitch_max = 35;
+	if (twist_max <= 0) twist_max = 50;
+	if (pitch_upper < 0) pitch_upper = 0; else if (pitch_upper > 2) pitch_upper = 2;
+	if (twist_upper < 0) twist_upper = 0; else if (twist_upper > 2) twist_upper = 2;
+	if (twist_waist < 0) twist_waist = 0; else if (twist_waist > 2) twist_waist = 2;
+
+	//pitch (degrees), clamped exactly as the client does
+	pfrac = framestate->g[FS_REG].subblend2frac;
+	if (pfrac < -1) pfrac = -1; else if (pfrac > 1) pfrac = 1;
+	iqm_pitch = pfrac * pitch_max * pitch_scale;
+	if (iqm_pitch < -pitch_max) iqm_pitch = -pitch_max; else if (iqm_pitch > pitch_max) iqm_pitch = pitch_max;
+
+	//twist (degrees): client uses leg_twist = subblendfrac*90, iqm_twist = -leg_twist*twist_scale
+	leg_twist = framestate->g[FS_REG].subblendfrac * 90.0f;
+	iqm_twist = -leg_twist * twist_scale;
+	if (iqm_twist < -twist_max) iqm_twist = -twist_max; else if (iqm_twist > twist_max) iqm_twist = twist_max;
+
+	for (i = 0; i < 5; i++)
+	{
+		int b = inf->spinebend_bone[i];
+		float *m;
+		vec3_t fwd, right, up;
+		float tdeg, pdeg, c, s;
+		vec3_t nf, nr, nu;
+		if (b < 0 || b >= inf->numbones)
+			continue;
+		m = rel + b*12;
+
+		//extract qc-space basis (bonemat_toqcvectors convention); origin (col3) is left untouched.
+		fwd[0]=m[0];    fwd[1]=m[4];    fwd[2]=m[8];
+		right[0]=-m[1]; right[1]=-m[5]; right[2]=-m[9];
+		up[0]=m[2];     up[1]=m[6];     up[2]=m[10];
+		if (!Alias_SpineBend_Ortho(fwd, right, up))
+			continue;
+
+		//twist: rotate (right,up) around forward.  fractions per the client.
+		tdeg = 0;
+		if      (i == 0) tdeg = iqm_twist * twist_waist;
+		else if (i == 1) tdeg = iqm_twist * 0.5f;
+		else if (i == 2) tdeg = iqm_twist * 0.25f * twist_upper;
+		else if (i == 3) tdeg = iqm_twist * 0.125f * twist_upper;
+		if (tdeg != 0)
+		{
+			c = cos(tdeg * DEG2RAD);
+			s = sin(tdeg * DEG2RAD);
+			VectorScale(right, c, nr); VectorMA(nr, s, up, nr);
+			VectorScale(up, c, nu);    VectorMA(nu, -s, right, nu);
+			VectorCopy(nr, right);
+			VectorCopy(nu, up);
+		}
+
+		//pitch: rotate (forward,right) around up.  upper bones scale by pitch_upper.
+		pdeg = iqm_pitch * pitch_frac[i];
+		if (i == 3 || i == 4) pdeg *= pitch_upper;
+		if (pdeg != 0)
+		{
+			c = cos(pdeg * DEG2RAD);
+			s = sin(pdeg * DEG2RAD);
+			VectorScale(fwd, c, nf);   VectorMA(nf, -s, right, nf);
+			VectorScale(right, c, nr); VectorMA(nr, s, fwd, nr);
+			VectorCopy(nf, fwd);
+			VectorCopy(nr, right);
+		}
+
+		//write back (bonemat_fromqcvectors convention).
+		m[0]=fwd[0];  m[1]=-right[0]; m[2]=up[0];
+		m[4]=fwd[1];  m[5]=-right[1]; m[6]=up[1];
+		m[8]=fwd[2];  m[9]=-right[2]; m[10]=up[2];
+	}
+}
+#endif //HALFLIFEMODELS
+
+//Wrapper around Alias_GetBoneInformation_Raw that injects the spine bend (Patch 36).
+//When no bend is active it is a straight pass-through (zero behaviour change).
+//When active it fetches the blended pose in SKEL_RELATIVE form into a PRIVATE copy
+//(never the shared static frame data), bends it, then converts to the requested type.
+static const float *Alias_GetBoneInformation(galiasinfo_t *inf, const framestate_t *framestate, skeltype_t targettype, float *targetbuffer, float *targetbufferalt, size_t numbones, const galiasbone_t *boneinfo)
+{
+#ifdef HALFLIFEMODELS
+	if (Alias_SpineBendActive(inf, framestate))
+	{
+		const float *rel = Alias_GetBoneInformation_Raw(inf, framestate, SKEL_RELATIVE, targetbuffer, targetbufferalt, numbones, boneinfo);
+		size_t n = numbones;
+		if (n > (size_t)inf->numbones)
+			n = inf->numbones;
+		//ensure we own the buffer before mutating it (the raw fast-path can return shared frame data).
+		if (rel != targetbuffer && rel != targetbufferalt)
+		{
+			memcpy(targetbuffer, rel, n*12*sizeof(float));
+			rel = targetbuffer;
+		}
+		Alias_ApplySpineBend(inf, framestate, (float*)rel);
+		if (targettype == SKEL_RELATIVE)
+			return rel;
+		return Alias_ConvertBoneData(SKEL_RELATIVE, rel, n, inf->ofsbones, targettype, targetbuffer, targetbufferalt, numbones);
+	}
+#endif
+	return Alias_GetBoneInformation_Raw(inf, framestate, targettype, targetbuffer, targetbufferalt, numbones, boneinfo);
+}
+//=========================================================================== Patch 36
 
 static void Alias_BuildSkeletalMesh(mesh_t *mesh, framestate_t *framestate, galiasinfo_t *inf)
 {
@@ -2389,6 +2665,821 @@ void Mod_AddSingleSurface(entity_t *ent, int surfaceidx, shader_t *shader, int m
 #endif
 
 
+//nettest Patch 55: the 13 unique directions of a 26-DOP (3 axes + 4 cube corners +
+//6 edge midpoints), as INTEGER vectors — NOT unit. The enter/leave clip is scale-
+//invariant per plane, so only World_HullTrace's final hit normal is normalized.
+//Shared (extern) with World_HullTrace in world.c. Order is load-bearing: the model's
+//kdop[0..12] are max supports along +dir, kdop[13..25] are min supports.
+const vec3_t kdop13[13] =
+{
+	{1,0,0}, {0,1,0}, {0,0,1},
+	{1,1,1}, {1,1,-1}, {1,-1,1}, {1,-1,-1},
+	{1,1,0}, {1,-1,0}, {1,0,1}, {1,0,-1}, {0,1,1}, {0,1,-1}
+};
+
+//nettest Patch 56: TRUE convex-hull builders for static-prop player collision.
+//Produce OUTWARD face planes (model space) into a ZG_Malloc'd vec4_t array
+//(.xyz = unit normal, .w = dist; a point is OUTSIDE iff dot(p,n)-w > 0). World_HullTrace
+//clips a swept player box against these — convex + watertight (leak-free) and O(planes)
+//(no per-triangle scan, no nudge thrashing). Three generators are tried in order by the
+//loader: a real incremental QuickHull, then the 26-DOP, then the AABB — so every model
+//gets SOME valid convex hull.
+
+//nettest Patch 60/61: store a 12-triangle box (the given bounds) as the r_showhull viz for a
+//FALLBACK hull, so a piece that bailed to the k-DOP/AABB still shows its bounding shape (the
+//Con_DPrintf says which fallback). The actual collision is the tighter k-DOP planes; this is
+//only a "it fell back" indicator. Fills out->tris; no-op if a real hull already stored tris.
+static void Mod_StoreBoxHullTris(model_t *mod, convhull_t *out, const vec3_t mins, const vec3_t maxs)
+{
+	static const int idx[12][3] = {
+		{0,1,2},{0,2,3}, {4,6,5},{4,7,6}, {0,4,5},{0,5,1},
+		{1,5,6},{1,6,2}, {2,6,7},{2,7,3}, {3,7,4},{3,4,0} };
+	vec3_t c[8];
+	vec3_t *tv;
+	int i;
+	if (out->tris)
+		return;
+	VectorSet(c[0], mins[0], mins[1], mins[2]);
+	VectorSet(c[1], maxs[0], mins[1], mins[2]);
+	VectorSet(c[2], maxs[0], maxs[1], mins[2]);
+	VectorSet(c[3], mins[0], maxs[1], mins[2]);
+	VectorSet(c[4], mins[0], mins[1], maxs[2]);
+	VectorSet(c[5], maxs[0], mins[1], maxs[2]);
+	VectorSet(c[6], maxs[0], maxs[1], maxs[2]);
+	VectorSet(c[7], mins[0], maxs[1], maxs[2]);
+	tv = ZG_Malloc(&mod->memgroup, sizeof(vec3_t)*12*3);
+	for (i = 0; i < 12; i++)
+	{
+		VectorCopy(c[idx[i][0]], tv[i*3+0]);
+		VectorCopy(c[idx[i][1]], tv[i*3+1]);
+		VectorCopy(c[idx[i][2]], tv[i*3+2]);
+	}
+	out->numtris = 12;
+	out->tris = tv;
+}
+
+//AABB fallback: 6 axis planes from the given bounds. Always valid.
+static int Mod_AABBHullPlanes(model_t *mod, convhull_t *out, const vec3_t mins, const vec3_t maxs)
+{
+	vec4_t *p = ZG_Malloc(&mod->memgroup, sizeof(vec4_t)*6);
+	int i;
+	for (i = 0; i < 3; i++)
+	{
+		VectorClear(p[i*2+0]); p[i*2+0][i] =  1; p[i*2+0][3] =  maxs[i];
+		VectorClear(p[i*2+1]); p[i*2+1][i] = -1; p[i*2+1][3] = -mins[i];
+	}
+	Mod_StoreBoxHullTris(mod, out, mins, maxs);
+	out->planes = p;
+	return 6;
+}
+
+//26-DOP fallback: support along the 13 kdop13 dirs (both signs). Tighter than AABB. mins/maxs
+//are this vert set's axis bounds (for the fallback box viz only).
+static int Mod_KDOPHullPlanes(model_t *mod, convhull_t *out, const vecV_t *opos, int num, const vec3_t mins, const vec3_t maxs)
+{
+	vec4_t *p = ZG_Malloc(&mod->memgroup, sizeof(vec4_t)*26);
+	int d, i;
+	for (d = 0; d < 13; d++)
+	{
+		vec3_t nrm;
+		float mn, mx, dp;
+		VectorCopy(kdop13[d], nrm);
+		VectorNormalize(nrm);	//kdop13 is integer; unit-normalize for a real plane normal
+		mn = mx = DotProduct(nrm, opos[0]);
+		for (i = 1; i < num; i++)
+		{
+			dp = DotProduct(nrm, opos[i]);
+			if (dp < mn) mn = dp;
+			if (dp > mx) mx = dp;
+		}
+		VectorCopy(nrm, p[d*2+0]);   p[d*2+0][3] =  mx;	//+dir face
+		VectorNegate(nrm, p[d*2+1]); p[d*2+1][3] = -mn;	//-dir face
+	}
+	Mod_StoreBoxHullTris(mod, out, mins, maxs);	//nettest Patch 60: bbox viz for a k-DOP fallback
+	out->planes = p;
+	return 26;
+}
+
+//right-hand unit normal of triangle (p0,p1,p2); returns the pre-normalize length (2*area).
+static double Hull_PlaneFrom(const double *p0, const double *p1, const double *p2, double *n)
+{
+	double u[3], v[3], len;
+	u[0]=p1[0]-p0[0]; u[1]=p1[1]-p0[1]; u[2]=p1[2]-p0[2];
+	v[0]=p2[0]-p0[0]; v[1]=p2[1]-p0[1]; v[2]=p2[2]-p0[2];
+	n[0]=u[1]*v[2]-u[2]*v[1];
+	n[1]=u[2]*v[0]-u[0]*v[2];
+	n[2]=u[0]*v[1]-u[1]*v[0];
+	len = sqrt(n[0]*n[0]+n[1]*n[1]+n[2]*n[2]);
+	if (len > 1e-12) { n[0]/=len; n[1]/=len; n[2]/=len; }
+	return len;
+}
+
+typedef struct { int a, b, c; double n[3], d; char dead; } hullface_t;
+
+//append face (a,b,c) to the list, oriented so the interior point is BEHIND it (outward).
+//returns 0 on array overflow (caller bails to a fallback); 1 otherwise (degenerate
+//slivers are silently skipped, not added — not an error).
+static int Mod_HullAddFace(hullface_t *faces, int *nf, int maxf, double (*pts)[3], const double *interior, int a, int b, int c)
+{
+	hullface_t *f;
+	double n[3], dd;
+	if (*nf >= maxf) return 0;
+	if (Hull_PlaneFrom(pts[a], pts[b], pts[c], n) < 1e-9)
+		return 1;	//degenerate sliver -> skip
+	dd = n[0]*pts[a][0]+n[1]*pts[a][1]+n[2]*pts[a][2];
+	if (n[0]*interior[0]+n[1]*interior[1]+n[2]*interior[2] - dd > 0)
+	{	//interior in front -> flip to outward
+		n[0]=-n[0]; n[1]=-n[1]; n[2]=-n[2]; dd=-dd;
+	}
+	f = &faces[(*nf)++];
+	f->a=a; f->b=b; f->c=c;
+	f->n[0]=n[0]; f->n[1]=n[1]; f->n[2]=n[2]; f->d=dd; f->dead=0;
+	return 1;
+}
+
+//Incremental convex hull (QuickHull family). Returns the # of merged outward planes
+//written to *out (ZG_Malloc'd), or 0 on degenerate input (<4 verts, collinear, flat) or
+//if the hull would exceed 'cap' planes — caller then falls to the k-DOP. All temporaries
+//are BZ_Malloc scratch, freed here.
+static int Mod_BuildHullPlanes(model_t *mod, convhull_t *out, const vecV_t *opos, int num, int cap)
+{
+	double (*pts)[3];
+	hullface_t *faces;
+	int *hedge;
+	int maxfaces, nfaces, i, j, p, result = 0;
+	double interior[3], ext, eps;
+	int ia, ib, ic, id;
+	int lo3[3], hi3[3];
+	vec4_t *outp = NULL;
+	int nout = 0;
+	int orignum = num;		//nettest Patch 60: full vert count, for the conservative push-out
+	int *decidx = NULL;		//decimation index map (NULL = build on all verts)
+
+	if (num < 4)
+		return 0;
+
+	//nettest Patch 60: DECIMATE high-vert clouds before building. The incremental hull's
+	//horizon cost explodes on a 4839-vert curved car shell (it overran the edge guard and
+	//bailed to the k-DOP -> blank r_showhull). Keep the 26 kdop EXTREME verts (guaranteed on
+	//the hull) + a strided subset, capped, so the build is fast + robust on <=~512 verts. The
+	//final planes are pushed out over ALL original verts below, so the decimated hull is
+	//conservative-outward and never clips INTO the model.
+	if (num > 600)
+	{
+		char *keep = BZ_Malloc(num);
+		int d, kept = 0, stride, c, target = 512;
+		memset(keep, 0, num);
+		for (d = 0; d < 13; d++)
+		{
+			int hiidx = 0, loidx = 0;
+			double hv = -1e30, lv = 1e30, dp;
+			for (i = 0; i < num; i++)
+			{
+				dp = kdop13[d][0]*opos[i][0] + kdop13[d][1]*opos[i][1] + kdop13[d][2]*opos[i][2];
+				if (dp > hv) { hv = dp; hiidx = i; }
+				if (dp < lv) { lv = dp; loidx = i; }
+			}
+			keep[hiidx] = 1; keep[loidx] = 1;
+		}
+		for (i = 0; i < num; i++) if (keep[i]) kept++;
+		stride = (target > kept) ? num / (target - kept) : num;
+		if (stride < 1) stride = 1;
+		for (i = 0; i < num && kept < target; i += stride)
+			if (!keep[i]) { keep[i] = 1; kept++; }
+		decidx = BZ_Malloc(sizeof(int)*kept);
+		c = 0;
+		for (i = 0; i < num; i++) if (keep[i]) decidx[c++] = i;
+		num = kept;
+		BZ_Free(keep);
+	}
+
+	pts = BZ_Malloc(sizeof(*pts)*num);
+	{
+		double lo[3], hi[3];
+		for (j = 0; j < 3; j++) { lo[j] = 1e30; hi[j] = -1e30; lo3[j] = hi3[j] = 0; }
+		for (i = 0; i < num; i++)
+		{
+			int s = decidx ? decidx[i] : i;
+			for (j = 0; j < 3; j++)
+			{
+				pts[i][j] = opos[s][j];
+				if (pts[i][j] < lo[j]) { lo[j] = pts[i][j]; lo3[j] = i; }
+				if (pts[i][j] > hi[j]) { hi[j] = pts[i][j]; hi3[j] = i; }
+			}
+		}
+		ext = hi[0]-lo[0];
+		if (hi[1]-lo[1] > ext) ext = hi[1]-lo[1];
+		if (hi[2]-lo[2] > ext) ext = hi[2]-lo[2];
+	}
+	if (decidx) { BZ_Free(decidx); decidx = NULL; }
+	eps = ext * 1e-5;
+	if (eps < 1e-6) eps = 1e-6;
+
+	//initial tetra: extreme pair on the longest-spread axis, then farthest-from-line,
+	//then farthest-from-plane. Bail (->k-DOP) if any step is degenerate (flat/collinear).
+	{
+		double best = -1; int bj = 0;
+		for (j = 0; j < 3; j++) { double s = pts[hi3[j]][j]-pts[lo3[j]][j]; if (s > best) { best = s; bj = j; } }
+		ia = lo3[bj]; ib = hi3[bj];
+	}
+	if (ia == ib) { BZ_Free(pts); return 0; }
+	{
+		double ab[3], abl, best = -1;
+		ic = -1;
+		ab[0]=pts[ib][0]-pts[ia][0]; ab[1]=pts[ib][1]-pts[ia][1]; ab[2]=pts[ib][2]-pts[ia][2];
+		abl = sqrt(ab[0]*ab[0]+ab[1]*ab[1]+ab[2]*ab[2]);
+		if (abl < eps) { BZ_Free(pts); return 0; }
+		ab[0]/=abl; ab[1]/=abl; ab[2]/=abl;
+		for (i = 0; i < num; i++)
+		{
+			double apv[3], t, c[3], dist;
+			apv[0]=pts[i][0]-pts[ia][0]; apv[1]=pts[i][1]-pts[ia][1]; apv[2]=pts[i][2]-pts[ia][2];
+			t = apv[0]*ab[0]+apv[1]*ab[1]+apv[2]*ab[2];
+			c[0]=apv[0]-t*ab[0]; c[1]=apv[1]-t*ab[1]; c[2]=apv[2]-t*ab[2];
+			dist = sqrt(c[0]*c[0]+c[1]*c[1]+c[2]*c[2]);
+			if (dist > best) { best = dist; ic = i; }
+		}
+		if (ic < 0 || best < eps) { BZ_Free(pts); return 0; }
+	}
+	{
+		double n[3], best = -1, pd;
+		Hull_PlaneFrom(pts[ia], pts[ib], pts[ic], n);
+		pd = n[0]*pts[ia][0]+n[1]*pts[ia][1]+n[2]*pts[ia][2];
+		id = -1;
+		for (i = 0; i < num; i++)
+		{
+			double s = n[0]*pts[i][0]+n[1]*pts[i][1]+n[2]*pts[i][2] - pd;
+			if (s < 0) s = -s;
+			if (s > best) { best = s; id = i; }
+		}
+		if (id < 0 || best < eps) { BZ_Free(pts); return 0; }
+	}
+
+	for (j = 0; j < 3; j++)
+		interior[j] = (pts[ia][j]+pts[ib][j]+pts[ic][j]+pts[id][j]) * 0.25;
+
+	maxfaces = 16*num + 256;	//generous (compaction keeps live count well under this)
+	faces = BZ_Malloc(sizeof(*faces)*maxfaces);
+	hedge = BZ_Malloc(sizeof(int)*maxfaces*6);
+	nfaces = 0;
+#define HULL_ADDFACE(A,B,C) Mod_HullAddFace(faces,&nfaces,maxfaces,pts,interior,(A),(B),(C))
+	if (!HULL_ADDFACE(ia,ib,ic) || !HULL_ADDFACE(ia,ic,id) ||
+	    !HULL_ADDFACE(ia,id,ib) || !HULL_ADDFACE(ib,id,ic))
+		goto cleanup;
+
+	for (p = 0; p < num; p++)
+	{
+		int ne = 0, anyvis = 0;
+		//nettest Patch 58: compact dead faces before they overflow the array. A big hull
+		//(a 4839-vert car shell) creates tens of thousands of faces during construction and
+		//the dead ones were never removed -> it hit maxfaces and bailed to the k-DOP (no real
+		//hull + blank r_showhull). At the loop top no face is mid-pass (dead==2), so removing
+		//dead==1 faces and shifting the live ones down is safe (faces hold only vert indices).
+		if (nfaces > maxfaces/2)
+		{
+			int w = 0, r;
+			for (r = 0; r < nfaces; r++)
+				if (!faces[r].dead)
+				{
+					if (w != r) faces[w] = faces[r];
+					w++;
+				}
+			nfaces = w;
+		}
+		for (i = 0; i < nfaces; i++)
+		{
+			if (faces[i].dead) continue;
+			if (faces[i].n[0]*pts[p][0]+faces[i].n[1]*pts[p][1]+faces[i].n[2]*pts[p][2] - faces[i].d > eps)
+				{ faces[i].dead = 2; anyvis = 1; }	//2 = visible this pass
+		}
+		if (!anyvis) continue;	//p is inside the hull
+		for (i = 0; i < nfaces; i++)
+		{
+			if (faces[i].dead != 2) continue;
+			if (ne+3 > maxfaces*2) { goto cleanup; }	//horizon overflow -> bail
+			hedge[ne*2+0]=faces[i].a; hedge[ne*2+1]=faces[i].b; ne++;
+			hedge[ne*2+0]=faces[i].b; hedge[ne*2+1]=faces[i].c; ne++;
+			hedge[ne*2+0]=faces[i].c; hedge[ne*2+1]=faces[i].a; ne++;
+		}
+		for (i = 0; i < nfaces; i++)
+			if (faces[i].dead == 2) faces[i].dead = 1;	//remove visible
+		//a directed edge whose reverse is NOT among the visible edges is on the horizon
+		for (i = 0; i < ne; i++)
+		{
+			int a = hedge[i*2+0], b = hedge[i*2+1], boundary = 1;
+			for (j = 0; j < ne; j++)
+				if (hedge[j*2+0]==b && hedge[j*2+1]==a) { boundary = 0; break; }
+			if (boundary && !HULL_ADDFACE(a, b, p))
+				goto cleanup;	//face overflow -> bail
+		}
+	}
+#undef HULL_ADDFACE
+
+	//collect unique outward planes, merging near-coplanar faces (~2 degrees).
+	outp = BZ_Malloc(sizeof(vec4_t)*(cap+8));
+	nout = 0;
+	for (i = 0; i < nfaces; i++)
+	{
+		vec3_t fn; float fd; int merged = 0;
+		if (faces[i].dead) continue;
+		fn[0]=faces[i].n[0]; fn[1]=faces[i].n[1]; fn[2]=faces[i].n[2]; fd=faces[i].d;
+		for (j = 0; j < nout; j++)
+			if (DotProduct(fn, outp[j]) > 0.99939f)	//within ~2 degrees -> same plane
+			{
+				if (fd > outp[j][3]) outp[j][3] = fd;	//keep the looser (conservative-outward)
+				merged = 1; break;
+			}
+		if (!merged)
+		{
+			if (nout >= cap)
+			{	//nettest Patch 57: over cap (a curved car shell has thousands of hull faces) —
+				//merge this face into the most-parallel existing plane (keep the looser .w =
+				//conservative-outward) instead of bailing to the k-DOP. Keeps a real, valid,
+				//convex hull (and r_showhull viz) at <= cap planes. O(cap) per over-cap face.
+				int best = 0, a;
+				float bestdot = -2;
+				for (a = 0; a < nout; a++)
+				{
+					float d = DotProduct(fn, outp[a]);
+					if (d > bestdot) { bestdot = d; best = a; }
+				}
+				if (fd > outp[best][3]) outp[best][3] = fd;
+			}
+			else
+			{
+				VectorCopy(fn, outp[nout]); outp[nout][3] = fd; nout++;
+			}
+		}
+	}
+	if (nout >= 4)
+	{
+		vec4_t *fin;
+		int nt = 0, t = 0;
+		//nettest Patch 60: push every plane out so its dist encloses ALL original verts (the
+		//hull was built only on the decimated subset). Conservative-outward -> the hull never
+		//clips INTO the model. No-op for un-decimated models (the merge already set the full
+		//support distance). O(nout * orignum) once at load.
+		for (j = 0; j < nout; j++)
+		{
+			float mx = -1e30f, dp;
+			for (i = 0; i < orignum; i++)
+			{
+				dp = outp[j][0]*opos[i][0] + outp[j][1]*opos[i][1] + outp[j][2]*opos[i][2];
+				if (dp > mx) mx = dp;
+			}
+			outp[j][3] = mx;
+		}
+		fin = ZG_Malloc(&mod->memgroup, sizeof(vec4_t)*nout);
+		memcpy(fin, outp, sizeof(vec4_t)*nout);
+		out->planes = fin;
+		result = nout;
+
+		//r_showhull debug viz: store the hull's surface triangles (model space).
+		for (i = 0; i < nfaces; i++) if (!faces[i].dead) nt++;
+		if (nt > 0)
+		{
+			vec3_t *tv = ZG_Malloc(&mod->memgroup, sizeof(vec3_t)*nt*3);
+			for (i = 0; i < nfaces; i++)
+				if (!faces[i].dead)
+				{
+					tv[t*3+0][0]=pts[faces[i].a][0]; tv[t*3+0][1]=pts[faces[i].a][1]; tv[t*3+0][2]=pts[faces[i].a][2];
+					tv[t*3+1][0]=pts[faces[i].b][0]; tv[t*3+1][1]=pts[faces[i].b][1]; tv[t*3+1][2]=pts[faces[i].b][2];
+					tv[t*3+2][0]=pts[faces[i].c][0]; tv[t*3+2][1]=pts[faces[i].c][1]; tv[t*3+2][2]=pts[faces[i].c][2];
+					t++;
+				}
+			out->numtris = nt;
+			out->tris = tv;
+		}
+	}
+
+cleanup:
+	//nettest Patch 59: developer readout of WHICH guard tripped if the hull bailed (-> k-DOP
+	//fallback, blank r_showhull). nout==0 = bailed before the merge (face/horizon overflow);
+	//nout 1..3 = the merge produced too few planes.
+	if (!result)
+		Con_DPrintf("Mod_BuildHullPlanes(%s): bailed (verts=%i/%i nfaces=%i nout=%i) -> k-DOP\n",
+			mod->name, num, orignum, nfaces, nout);
+	if (outp) BZ_Free(outp);
+	BZ_Free(hedge);
+	BZ_Free(faces);
+	BZ_Free(pts);
+	return result;
+}
+
+//nettest Patch 63: add BEVEL planes (axial + edge) to a finished convex hull so a swept
+//player box ROUNDS the hull's convex edges instead of snagging on them (the box-corner catch
+//that makes sliding feel sticky). Ports the BSP/Q3 facet bevel logic (gl_q2bsp.c ~820-913).
+//Candidate edges come from the hull surface (out->tris), but each candidate is kept only if
+//ALL ORIGINAL verts (allverts/numall, not the possibly-DECIMATED surface) are behind it — so
+//on a >600-vert decimated hull a bevel can never clip into a model vert that protrudes past
+//the decimated surface (Patch 60). Conservative-outward; bevels are plain extra out->planes
+//entries, so the trace/prediction/viz handle them with no change.
+#define HULL_MAXBEVELS 1024
+static void Mod_AddHullBevels(model_t *mod, convhull_t *out, const vecV_t *allverts, int numall, const vec3_t mins, const vec3_t maxs)
+{
+	vec4_t	*bev;	//candidate bevel planes (.xyz normal + .w dist), model space
+	vec4_t	*fin;
+	int		nbev = 0, total;
+	int		i, t, a, d, k;
+	float	ext, veps;
+
+	if (!out->tris || out->numtris < 1 || out->numplanes < 4 || numall < 1)
+		return;
+	ext = maxs[0]-mins[0];
+	if (maxs[1]-mins[1] > ext) ext = maxs[1]-mins[1];
+	if (maxs[2]-mins[2] > ext) ext = maxs[2]-mins[2];
+	veps = ext * 1e-4f; if (veps < 1e-3f) veps = 1e-3f;
+
+	bev = BZ_Malloc(sizeof(vec4_t)*HULL_MAXBEVELS);
+
+	//AXIAL bevels: the 6 model-space AABB planes (mins/maxs already span ALL verts), unless a
+	//near-axial face already exists.
+	for (a = 0; a < 3; a++)
+		for (d = -1; d <= 1; d += 2)
+		{
+			vec3_t n; float dist; int dup = 0;
+			VectorClear(n); n[a] = d;
+			dist = (d > 0) ? maxs[a] : -mins[a];
+			for (k = 0; k < out->numplanes; k++)
+				if (DotProduct(out->planes[k], n) > 0.9995f && fabs(out->planes[k][3]-dist) < veps) { dup = 1; break; }
+			if (!dup && nbev < HULL_MAXBEVELS) { VectorCopy(n, bev[nbev]); bev[nbev][3] = dist; nbev++; }
+		}
+
+	//EDGE bevels: per hull surface-triangle edge, the slanted axial candidates.
+	for (t = 0; t < out->numtris && nbev < HULL_MAXBEVELS; t++)
+		for (i = 0; i < 3; i++)
+		{
+			float *va = out->tris[t*3 + i];
+			float *vb = out->tris[t*3 + ((i+1)%3)];
+			vec3_t ev;
+			VectorSubtract(va, vb, ev);
+			if (VectorNormalize(ev) < 0.5f)
+				continue;	//degenerate edge
+			for (a = 0; a < 3; a++)
+				for (d = -1; d <= 1; d += 2)
+				{
+					vec3_t ax, n; float dist; int dup = 0, infront = 0;
+					VectorClear(ax); ax[a] = d;
+					CrossProduct(ev, ax, n);
+					if (VectorNormalize(n) < 0.5f)
+						continue;
+					dist = DotProduct(va, n);
+					for (k = 0; k < out->numplanes; k++)	//dup of a face plane?
+						if (DotProduct(out->planes[k], n) > 0.9995f && fabs(out->planes[k][3]-dist) < veps) { dup = 1; break; }
+					for (k = 0; !dup && k < nbev; k++)		//dup of an existing bevel?
+						if (DotProduct(bev[k], n) > 0.9995f && fabs(bev[k][3]-dist) < veps) { dup = 1; break; }
+					if (dup)
+						continue;
+					//keep only if ALL ORIGINAL verts are behind it (outer + conservative even on
+					//a decimated hull — a protruding model vert in front rejects the bevel).
+					for (k = 0; k < numall; k++)
+						if (DotProduct(allverts[k], n) - dist > veps) { infront = 1; break; }
+					if (infront)
+						continue;
+					if (nbev < HULL_MAXBEVELS) { VectorCopy(n, bev[nbev]); bev[nbev][3] = dist; nbev++; }
+				}
+		}
+
+	if (nbev > 0)
+	{	//append the bevels to the face planes (the old face array stays in the memgroup).
+		total = out->numplanes + nbev;
+		fin = ZG_Malloc(&mod->memgroup, sizeof(vec4_t)*total);
+		memcpy(fin, out->planes, sizeof(vec4_t)*out->numplanes);
+		memcpy(fin + out->numplanes, bev, sizeof(vec4_t)*nbev);
+		out->planes = fin;
+		out->numplanes = total;
+	}
+
+	BZ_Free(bev);
+}
+#undef HULL_MAXBEVELS
+
+//nettest Patch 61: build ONE convex piece (planes + viz tris) into 'out' from a vert set,
+//with the QuickHull -> k-DOP -> AABB fallback chain. mins/maxs are this set's axis bounds
+//(used only by the fallback box viz). Used for both the single hull (mode 2, all verts) and
+//each per-submesh piece (mode 3).
+//nettest Patch 103: no longer static - gl_hlmdl.c builds the same hull for GoldSrc .mdl. Prototype in com_mesh.h.
+void Mod_BuildConvHull(model_t *mod, convhull_t *out, const vecV_t *verts, int num, const vec3_t mins, const vec3_t maxs, int cap)
+{
+	int n;
+	out->numplanes = 0; out->planes = NULL;
+	out->numtris = 0;   out->tris = NULL;
+	n = Mod_BuildHullPlanes(mod, out, verts, num, cap);
+	if (n < 4)
+		n = Mod_KDOPHullPlanes(mod, out, verts, num, mins, maxs);
+	if (n < 4)
+		n = Mod_AABBHullPlanes(mod, out, mins, maxs);
+	out->numplanes = n;
+	Mod_AddHullBevels(mod, out, verts, num, mins, maxs);	//nettest Patch 63: round convex edges (conservative over ALL verts)
+	VectorCopy(mins, out->mins);	//nettest Patch 65: this piece's AABB (its vert bounds) for the per-piece trace cull
+	VectorCopy(maxs, out->maxs);
+}
+
+//nettest Patch 65: Tier-2 geometric Approximate Convex Decomposition (ACD). Recursively split
+//a triangle set wherever a single convex hull would BRIDGE a concavity (a hollow pipe bore, an
+//arch opening), until each piece is convex-enough, then emit one convex hull per piece. The
+//result feeds model->convhulls[] like the per-submesh split (sv_prop_collision 3), but now
+//captures concavity WITHIN one mesh. DETERMINISTIC (no rng, fixed tie-breaks, same compiled
+//path) so the client + server builds are byte-identical -> prediction lockstep. Every piece's
+//hull (Mod_BuildConvHull) is conservative-outward, so the union never clips into the model.
+//Bounded by ACD_PIECECAP so it cannot explode or loop.
+#define ACD_MAXDEPTH 8
+#define ACD_MINTRIS  8
+#define ACD_PIECECAP 64		//soft cap: at/above this, nodes force-emit (cover, don't split)
+#define ACD_ARRAY    128	//hard array size: PIECECAP + headroom for force-emit-near-cap + submesh roots
+
+typedef struct
+{
+	model_t      *mod;
+	convhull_t   *out;		//the model's convhulls[] array (size ACD_ARRAY)
+	int           count;	//pieces emitted so far (across all submeshes)
+	const vecV_t *base;		//this submesh's verts (opos + first_vertex)
+	const index_t*li;		//this submesh's LOCAL triangle indices (3 per tri)
+	float         threshold;//concavity threshold in world units
+	int           hullcap;	//Mod_BuildConvHull plane cap
+} acdctx_t;
+
+//gather a triangle subset's verts (with dups; QuickHull dedups internally) + their AABB.
+static int Mod_ACDGather(const acdctx_t *c, const int *tris, int ntris, vecV_t *pv, vec3_t smin, vec3_t smax)
+{
+	int t, k, n = 0;
+	ClearBounds(smin, smax);
+	for (t = 0; t < ntris; t++)
+		for (k = 0; k < 3; k++)
+		{
+			VectorCopy(c->base[c->li[tris[t]*3 + k]], pv[n]);
+			AddPointToBounds(pv[n], smin, smax);
+			n++;
+		}
+	return n;
+}
+
+static void Mod_ACDRecurse(acdctx_t *c, int *tris, int ntris, int depth)
+{
+	vecV_t		*pv;
+	convhull_t	H;
+	vec3_t		smin, smax;
+	int			npv, p, k;
+	float		worst = -1;
+	int			worstvert = 0, worstplane = 0;
+
+	if (ntris < 1 || c->count >= ACD_ARRAY)
+		return;	//hard backstop (the single all-verts hull is the collision floor)
+
+	//build this subset's convex hull + measure its concavity (deepest mesh vert below the hull).
+	pv = BZ_Malloc(sizeof(vecV_t) * ntris * 3);
+	npv = Mod_ACDGather(c, tris, ntris, pv, smin, smax);
+	Mod_BuildConvHull(c->mod, &H, pv, npv, smin, smax, c->hullcap);
+
+	for (k = 0; k < npv; k++)
+	{	//dist of vert k to the nearest hull face (>=0, vert is inside the hull).
+		float dmin = 1e30f; int pk = 0;
+		for (p = 0; p < H.numplanes; p++)
+		{
+			float d = H.planes[p][3] - DotProduct(H.planes[p], pv[k]);
+			if (d < dmin) { dmin = d; pk = p; }
+		}
+		if (dmin > worst) { worst = dmin; worstvert = k; worstplane = pk; }	//first deepest wins (stable)
+	}
+
+	if (worst < c->threshold || depth >= ACD_MAXDEPTH || ntris <= ACD_MINTRIS || c->count >= ACD_PIECECAP)
+	{	//convex-enough (or near the cap) -> emit this hull, covering all its tris.
+		c->out[c->count++] = H;
+		BZ_Free(pv);
+		return;
+	}
+
+	{	//split through the deepest dent, perpendicular to the bridge face it sits under.
+		vec3_t n; float splitdist;
+		int *frontt, *backt, nf = 0, nb = 0, t;
+		VectorCopy(H.planes[worstplane], n);
+		splitdist = DotProduct(n, pv[worstvert]);
+		BZ_Free(pv);
+
+		frontt = BZ_Malloc(sizeof(int) * ntris);
+		backt  = BZ_Malloc(sizeof(int) * ntris);
+		for (t = 0; t < ntris; t++)
+		{
+			const float *a = c->base[c->li[tris[t]*3+0]];
+			const float *b = c->base[c->li[tris[t]*3+1]];
+			const float *q = c->base[c->li[tris[t]*3+2]];
+			vec3_t ctr;
+			ctr[0] = (a[0]+b[0]+q[0])*(1.0f/3); ctr[1] = (a[1]+b[1]+q[1])*(1.0f/3); ctr[2] = (a[2]+b[2]+q[2])*(1.0f/3);
+			if (DotProduct(n, ctr) >= splitdist) frontt[nf++] = tris[t];
+			else                                 backt[nb++]  = tris[t];
+		}
+
+		if (nf == 0 || nb == 0)	//split didn't separate -> emit the whole subset (termination guard)
+			c->out[c->count++] = H;
+		else
+		{
+			Mod_ACDRecurse(c, frontt, nf, depth+1);
+			Mod_ACDRecurse(c, backt,  nb, depth+1);
+		}
+		BZ_Free(frontt);
+		BZ_Free(backt);
+	}
+}
+
+//nettest Patch 65 (Phase B): load an OFFLINE convex-decomposition sidecar (<model>.acd, baked by
+//tools/acd_bake.py via CoACD) for sv_prop_decomp 2. Binary, little-endian: char[4] "FCAD",
+//int32 version(=1), int32 numpieces, then per piece { int32 numverts; float32 xyz[numverts*3] }
+//in MODEL space. The engine builds each piece's hull with Mod_BuildConvHull (same bevels +
+//conservative push-out as the runtime ACD), so offline vs runtime differ ONLY in the partition.
+//Returns the piece count (0 = missing/invalid -> caller falls back to the runtime ACD).
+//nettest Patch 102: should this model skip collision-hull construction entirely?
+//
+//Mod_LoadIQMFile builds a QuickHull of EVERY IQM's base verts (Patch 56), and on top of that runs the
+//full convex DECOMPOSITION when sv_prop_decomp >= 1 -- and it does so with NO test that the model will
+//ever be used as a collidable prop, because at load time it cannot know.  So every player model, every
+//gib, every debris chip pays for collision geometry that nothing will ever trace against.  On this
+//game's content that is 11 player models (highly concave, thousands of verts -> the FULL recursive ACD,
+//up to 64 QuickHull builds each) plus 122 gibs -- all of it wasted, and all of it on the loader worker
+//that the map load is waiting for.  Players collide via hitboxes/skeleton and gibs via bounce boxes;
+//only SOLID_PHYSICS_TRIMESH/BOX entities ever reach World_HullTrace / PM_HullTrace.
+//
+//An EXCLUDE list (rather than an include list) is the safe direction: a path that is not listed keeps
+//exactly today's behaviour, so nothing silently loses collision by being forgotten.  And a model that
+//IS excluded but somehow gets used as a prop degrades gracefully rather than falling through the world
+//-- pmovetst.c gates the hull trace on `numhullplanes >= 4 || numhulls > 0`, so with no hull it simply
+//falls back to the engine's normal per-triangle/box alias trace, which is what an unhulled model has
+//always done.
+//nettest Patch 103: no longer static - gl_hlmdl.c gates its hull build on the same cvar. Prototype in com_mesh.h.
+qboolean Mod_SkipCollisionHulls(model_t *mod)
+{
+	//*** Registered in Mod_Init (gl_model.c), NOT Cvar_Get'd here. ***
+	//Mod_LoadIQMFile runs on a LOADER WORKER, and Cvar_Get REGISTERS the cvar on first call.  This
+	//started life as a lazy Cvar_Get here and crashed the game on any map with props: worker_count
+	//defaults to 4, a prop map loads many IQMs at once, and several workers hit the first-ever
+	//Cvar_Get simultaneously and raced to insert into the cvar hash.  (The neighbouring
+	//Cvar_Get("sv_prop_decomp") gets away with the same shape ONLY because that cvar is already in
+	//the mod's server.cfg, so it is registered on the main thread long before any model loads and the
+	//workers merely FIND it.  A brand-new cvar has no such protection -- do not copy that pattern.)
+	extern cvar_t mod_prop_hull_exclude;
+	const char *list, *sep;
+	size_t seglen;
+
+	//NULL-CHECK ->string, do not just deref it. A cvar_t declared with the CVAR* macros is
+	//{name, NULL, NULL, flags, ...} -- ->string stays NULL until Cvar_Register runs (the default
+	//value is held in a separate field until then, cvar.h CVARAFCD). So ->string is NULL for any
+	//model loaded before Mod_Init registers this, and `!*var.string` faults on it.
+	//This crashed the game on launch the moment Patch 103 called this from Mod_LoadQ1Model: Quake
+	//.mdl load during startup, long before the IQM path (the only Patch 102 caller) ever ran.
+	//Treat "not registered yet" as "no exclusions" -- the same as an empty list.
+	if (!mod_prop_hull_exclude.string || !*mod_prop_hull_exclude.string)
+		return false;
+	for (list = mod_prop_hull_exclude.string; *list; )
+	{
+		sep = strchr(list, ';');
+		seglen = sep ? (size_t)(sep - list) : strlen(list);
+		if (seglen && !Q_strncasecmp(mod->name, list, seglen))
+			return true;
+		if (!sep)
+			break;
+		list = sep + 1;
+	}
+	return false;
+}
+
+static int Mod_LoadACDSidecar(model_t *mod)
+{
+	char	fname[MAX_QPATH];
+	qbyte	*buf, *p, *end;
+	size_t	fsize = 0;
+	int		ver, npieces, i, ok = 1;
+	vecV_t	*pv = NULL;
+	int		pvmax = 0;
+
+	COM_StripExtension(mod->name, fname, sizeof(fname));
+	Q_strncatz(fname, ".acd", sizeof(fname));
+	buf = FS_LoadMallocFile(fname, &fsize);
+	if (!buf)
+		return 0;
+	p = buf; end = buf + fsize;
+	if (fsize < 12 || p[0]!='F' || p[1]!='C' || p[2]!='A' || p[3]!='D')
+	{	Con_Printf(CON_WARNING "%s: not a .acd file\n", fname); BZ_Free(buf); return 0; }
+	memcpy(&ver, p+4, 4);     ver = LittleLong(ver);
+	memcpy(&npieces, p+8, 4); npieces = LittleLong(npieces);
+	p += 12;
+	if ((ver != 1 && ver != 2) || npieces < 1 || npieces > ACD_ARRAY)
+	{	Con_Printf(CON_WARNING "%s: unsupported .acd (ver=%i pieces=%i)\n", fname, ver, npieces); BZ_Free(buf); return 0; }
+
+	//nettest Patch 102: FCAD **v2** = fully-BUILT hulls (planes/tris/bounds straight off disk).
+	//
+	//*** STATUS: the READER is correct and stays (v2 files load fine). But NO v2 FILES SHIP: the
+	//*** offline baker that produced them was WRONG and its output was reverted. Do not re-bake v2
+	//*** until the baker reproduces Mod_BuildConvHull EXACTLY. What it missed:
+	//***   - Mod_AddHullBevels (Patch 63) - Mod_BuildConvHull ALWAYS calls it; v2 props silently lost
+	//***     their bevels, so the swept player box catches on prop edges again.
+	//***   - the Patch-60 conservative-outward plane push - CoACD face dists are not guaranteed to
+	//***     enclose the source mesh, so v2 hulls could clip INTO the visible model.
+	//***   - the face-merge TOLERANCE: this builder merges within ~2 degrees (dot > 0.99939, below);
+	//***     the baker merged only near-identical planes, so 697 of 7819 pieces jammed at the 256 cap
+	//***     (van_2: 3339 planes over 24 pieces, vs 111 for this builder's single hull of the same
+	//***     model). Capped pieces then hit the "merge into most-parallel, keep the looser .w" fudge
+	//***     -> INFLATED hulls -> invisible collision. And traces are O(planes) per piece.
+	//*** The lesson: an offline baker has to re-implement this whole pipeline and will silently drift
+	//*** from it. If this is revisited, have the ENGINE write the cache right here after
+	//*** Mod_BuildConvHull - byte-identical by construction, no divergence possible. FS_WriteFile
+	//*** (FS_GAMEONLY) is safe from the loader worker; the hash flush must be posted to WG_MAIN via
+	//*** COM_AddWork (COM_WriteFile / FS_FlushFSHashWritten from a worker DEADLOCK on COM_WorkerLock).
+	//
+	//v1 only cached the PARTITION -- the point set of each piece -- so the loader still had to run
+	//Mod_BuildConvHull per piece on every load (see the v1 path below).  For a 26-piece van that is 26
+	//QuickHull builds on the loader worker the map load is waiting on, from a file that was supposed to
+	//be "the cached version".  v2 stores what those builds produce, so loading is a read + memcpy.
+	//This is also why v2 is worth baking for CONVEX props that v1 deliberately skipped (the bake tool
+	//only wrote a v1 sidecar when CoACD found >1 piece, since a 1-piece v1 file saved nothing): a
+	//1-piece v2 file still skips that piece's hull build.
+	//
+	//Layout (little-endian, mirrors convhull_t):
+	//  "FCAD" | i32 ver=2 | i32 npieces
+	//  per piece: i32 numplanes | f32 planes[numplanes*4]   (xyz = outward unit normal, w = dist)
+	//             i32 numtris   | f32 tris[numtris*3*3]     (numtris triangles x 3 verts x xyz)
+	//             f32 mins[3]   | f32 maxs[3]
+	//v1 files keep loading unchanged -- 584 of them ship, and are currently the ONLY .acd in the game.
+	if (ver == 2)
+	{
+		mod->convhulls = ZG_Malloc(&mod->memgroup, sizeof(convhull_t)*npieces);
+		for (i = 0; i < npieces; i++)
+		{
+			convhull_t *ch = &mod->convhulls[i];
+			int np, nt, j, k;
+			if (p + 4 > end) { ok = 0; break; }
+			memcpy(&np, p, 4); np = LittleLong(np); p += 4;
+			//>=4 planes for a closed volume. Division, not multiplication, for the bounds test so a
+			//hostile count cannot wrap (same reasoning as the v1 path below). 16 bytes per vec4.
+			if (np < 4 || np > 65536 || (size_t)np > (size_t)(end - p) / 16) { ok = 0; break; }
+			ch->numplanes = np;
+			ch->planes = ZG_Malloc(&mod->memgroup, sizeof(vec4_t)*np);
+			for (j = 0; j < np; j++)
+			{
+				for (k = 0; k < 4; k++)
+				{
+					float f;
+					memcpy(&f, p, 4); p += 4;
+					ch->planes[j][k] = LittleFloat(f);
+				}
+			}
+
+			if (p + 4 > end) { ok = 0; break; }
+			memcpy(&nt, p, 4); nt = LittleLong(nt); p += 4;
+			//tris are viz-only (r_showhull); 0 is legal. 36 bytes per tri (3 verts x xyz).
+			if (nt < 0 || nt > 1048576 || (size_t)nt > (size_t)(end - p) / 36) { ok = 0; break; }
+			ch->numtris = nt;
+			ch->tris = nt ? ZG_Malloc(&mod->memgroup, sizeof(vec3_t)*nt*3) : NULL;
+			for (j = 0; j < nt*3; j++)
+			{
+				for (k = 0; k < 3; k++)
+				{
+					float f;
+					memcpy(&f, p, 4); p += 4;
+					ch->tris[j][k] = LittleFloat(f);
+				}
+			}
+
+			if (p + 24 > end) { ok = 0; break; }
+			for (k = 0; k < 3; k++) { float f; memcpy(&f, p, 4); p += 4; ch->mins[k] = LittleFloat(f); }
+			for (k = 0; k < 3; k++) { float f; memcpy(&f, p, 4); p += 4; ch->maxs[k] = LittleFloat(f); }
+		}
+		BZ_Free(buf);
+		if (!ok)
+		{	Con_Printf(CON_WARNING "%s: truncated/invalid .acd v2 -> falling back to runtime ACD\n", fname); return 0; }
+		mod->numhulls = npieces;
+		Con_DPrintf("ACD sidecar %s: %i pieces (v2, prebuilt)\n", fname, npieces);
+		return npieces;
+	}
+
+	mod->convhulls = ZG_Malloc(&mod->memgroup, sizeof(convhull_t)*npieces);
+	for (i = 0; i < npieces; i++)
+	{
+		int nv, v;
+		vec3_t smin, smax;
+		if (p + 4 > end) { ok = 0; break; }
+		memcpy(&nv, p, 4); nv = LittleLong(nv); p += 4;
+		//need >=4 verts, in-bounds, and a sane count. Use DIVISION (overflow-proof) + a hard cap so
+		//a hostile file's huge nv can't wrap (size_t)nv*12 / sizeof(vecV_t)*nv on a 32-bit build.
+		if (nv < 4 || nv > 0x100000 || (size_t)nv > (size_t)(end - p) / 12) { ok = 0; break; }
+		if (nv > pvmax) { if (pv) BZ_Free(pv); pvmax = nv; pv = BZ_Malloc(sizeof(vecV_t)*pvmax); }
+		ClearBounds(smin, smax);
+		for (v = 0; v < nv; v++)
+		{
+			float x, y, z;
+			memcpy(&x, p,   4); memcpy(&y, p+4, 4); memcpy(&z, p+8, 4); p += 12;
+			pv[v][0] = LittleFloat(x); pv[v][1] = LittleFloat(y); pv[v][2] = LittleFloat(z);
+			AddPointToBounds(pv[v], smin, smax);
+		}
+		Mod_BuildConvHull(mod, &mod->convhulls[i], pv, nv, smin, smax, 256);
+	}
+	if (pv) BZ_Free(pv);
+	BZ_Free(buf);
+	if (!ok)
+	{	Con_Printf(CON_WARNING "%s: truncated/invalid .acd -> falling back to runtime ACD\n", fname); return 0; }
+	mod->numhulls = npieces;
+	Con_DPrintf("ACD sidecar %s: %i pieces\n", fname, npieces);
+	return npieces;
+}
+
 static float PlaneNearest(const vec3_t normal, const vec3_t mins, const vec3_t maxs)
 {
 	float result;
@@ -2428,6 +3519,15 @@ static qboolean Mod_Trace_Trisoup(vecV_t *posedata, index_t *indexes, int numind
 
 	vec3_t impactpoint;
 
+	//nettest Patch 54: a swept BOX (player) is clipped per-triangle with a proper
+	//enter/leave-fraction loop (the single-point test below only works for rays).
+	qboolean isbox = (mins[0]!=maxs[0] || mins[1]!=maxs[1] || mins[2]!=maxs[2]);
+	vec3_t plnorm[11], hitnorm, ofs, ax;
+	float pldist[11];
+	float enterfrac, leavefrac, d1, d2, lo, hi;
+	int np, k;
+	qboolean startout, getout, reject;
+
 	for (i = 0; i < numindexes; i+=3)
 	{
 		p1 = posedata[indexes[i+0]];
@@ -2463,6 +3563,82 @@ static qboolean Mod_Trace_Trisoup(vecV_t *posedata, index_t *indexes, int numind
 		//degenerate triangle
 		if (!normal[0] && !normal[1] && !normal[2])
 			continue;
+
+		if (isbox)
+		{
+			//nettest Patch 54: clip the swept box against this triangle treated as a
+			//Minkowski "brush" — front+back face (gives the flat tri box-thickness),
+			//the 3 edge side planes, and the 6 axial bevels of the tri AABB (handle the
+			//box corners) — each pushed out by the box, then an enter/leave-fraction
+			//loop exactly like CM_ClipBoxToBrush. The single-point test further down
+			//only works for rays (a box straddling small tris slips through it).
+			np = 0;
+			VectorCopy (normal, plnorm[np]);  pldist[np] =  DotProduct(p1, normal); np++;	//front
+			VectorNegate(normal, plnorm[np]); pldist[np] = -DotProduct(p1, normal); np++;	//back
+			CrossProduct(edge1, normal, edgenormal); VectorNormalize(edgenormal);
+			VectorCopy(edgenormal, plnorm[np]); pldist[np] = DotProduct(p2, edgenormal); np++;
+			CrossProduct(normal, edge2, edgenormal); VectorNormalize(edgenormal);
+			VectorCopy(edgenormal, plnorm[np]); pldist[np] = DotProduct(p3, edgenormal); np++;
+			VectorSubtract(p1, p3, edge3);
+			CrossProduct(normal, edge3, edgenormal); VectorNormalize(edgenormal);
+			VectorCopy(edgenormal, plnorm[np]); pldist[np] = DotProduct(p1, edgenormal); np++;
+			for (k = 0; k < 3; k++)
+			{
+				lo = hi = p1[k];
+				if (p2[k] < lo) lo = p2[k];
+				if (p2[k] > hi) hi = p2[k];
+				if (p3[k] < lo) lo = p3[k];
+				if (p3[k] > hi) hi = p3[k];
+				VectorClear(ax); ax[k] =  1; VectorCopy(ax, plnorm[np]); pldist[np] =  hi; np++;
+				VectorClear(ax); ax[k] = -1; VectorCopy(ax, plnorm[np]); pldist[np] = -lo; np++;
+			}
+
+			enterfrac = -1; leavefrac = 2;
+			startout = getout = reject = false;
+			VectorClear(hitnorm);
+			for (j = 0; j < np; j++)
+			{
+				ofs[0] = (plnorm[j][0] < 0) ? maxs[0] : mins[0];
+				ofs[1] = (plnorm[j][1] < 0) ? maxs[1] : mins[1];
+				ofs[2] = (plnorm[j][2] < 0) ? maxs[2] : mins[2];
+				planedist = pldist[j] - DotProduct(ofs, plnorm[j]);
+				d1 = DotProduct(start, plnorm[j]) - planedist;
+				d2 = DotProduct(end,   plnorm[j]) - planedist;
+				if (d1 > 0) startout = true;
+				if (d2 > 0) getout = true;
+				if (d1 > 0 && d2 >= d1) { reject = true; break; }	//in front of a plane: miss
+				if (d1 <= 0 && d2 <= 0) continue;					//behind it: inside this plane
+				if (d1 > d2)
+				{	//entering the slab through this plane
+					frac = d1 / (d1 - d2);
+					if (frac > enterfrac) { enterfrac = frac; VectorCopy(plnorm[j], hitnorm); }
+				}
+				else
+				{	//leaving
+					frac = d1 / (d1 - d2);
+					if (frac < leavefrac) leavefrac = frac;
+				}
+			}
+			//miss, or started embedded (skip: false rest/seam solids would teleport the
+			//player), or it leaves before it enters.
+			if (reject || !startout || enterfrac > leavefrac || enterfrac <= -1)
+				continue;
+			if (enterfrac < 0) enterfrac = 0;
+			frac = enterfrac - 0.03125;	//DIST_EPSILON back-off so prediction won't re-embed
+			if (frac < 0) frac = 0;
+			if (frac >= trace->truefraction)
+				continue;	//already found a closer impact
+			trace->truefraction = frac;
+			trace->fraction = frac;
+			trace->endpos[0] = start[0] + frac*(end[0]-start[0]);
+			trace->endpos[1] = start[1] + frac*(end[1]-start[1]);
+			trace->endpos[2] = start[2] + frac*(end[2]-start[2]);
+			VectorCopy(hitnorm, trace->plane.normal);
+			trace->plane.dist = DotProduct(trace->endpos, hitnorm);
+			trace->triangle_id = 1+i/3;
+			impacted = true;
+			continue;
+		}
 
 		//debugging
 //		if (normal[2] != 1)
@@ -2586,6 +3762,219 @@ static qboolean Mod_Trace_Trisoup(vecV_t *posedata, index_t *indexes, int numind
 }
 
 //The whole reason why model loading is supported in the server.
+//nettest Patch 36 Part B ===================================================
+//Native per-bone hitbox collision for IQM/alias player models.
+//
+//IQM has no native hitbox chunk, so MOVE_HITMODEL would otherwise trace the mesh
+//triangles and the gamecode had to guess the hitgroup from the hit's Z-height
+//(a hand raised to head height read as a headshot). These boxes give exact,
+//forgiving, CS-style per-bone collision that returns the struck box's hitgroup.
+//Boxes are registered at runtime from QC (addmodelhitbox -> Mod_AddHitbox) out of
+//the same $hbox table the debug overlays use. The trace mirrors HLMDL_Trace
+//(gl/gl_hlmdl.c) but works in model space: the ray is already model-local
+//(start_l/end_l) and the SKEL_ABSOLUTE bones (with the Patch 36 view-pitch bend
+//already applied) are model-space too, so no axis is baked into the bones here.
+
+#ifdef SKELETALMODELS
+qboolean Mod_AddHitbox(model_t *model, const char *bonename, int hitgroup, const float *mins, const float *maxs)
+{
+	galiasinfo_t *inf;
+	int b, h;
+	aliashitbox_t *hb;
+
+	if (!model || model->type != mod_alias)
+		return false;	//HL .mdl has native hitboxes; non-skeletal has no bones.
+	inf = Mod_Extradata(model);
+	if (!inf || !inf->numbones || !inf->ofsbones)
+		return false;
+
+	for (b = 0; b < inf->numbones; b++)
+		if (!strcmp(inf->ofsbones[b].name, bonename))
+			break;
+	if (b >= inf->numbones)
+		return false;	//unknown bone (custom rig / wrong model) - skip silently.
+
+	//update the existing box for this bone if present (idempotent re-precache), else append.
+	for (h = 0; h < inf->numhitboxes; h++)
+		if (inf->hitbox[h].bone == b)
+			break;
+	if (h == inf->numhitboxes)
+	{
+		if (inf->numhitboxes >= MAX_ALIASHITBOXES)
+			return false;
+		inf->numhitboxes++;
+	}
+	hb = &inf->hitbox[h];
+	hb->bone = b;
+	hb->hitgroup = hitgroup;
+	VectorCopy(mins, hb->mins);
+	VectorCopy(maxs, hb->maxs);
+	return true;
+}
+
+static qboolean Mod_Trace_Hitbox(galiasinfo_t *inf, const framestate_t *framestate, const vec3_t axis[3], const vec3_t start, const vec3_t end, const vec3_t start_l, const vec3_t end_l, const vec3_t mins, const vec3_t maxs, trace_t *trace)
+{
+	float buffer[MAX_BONES*12];
+	float bufferalt[MAX_BONES*12];
+	const float *bones;
+	int h, i;
+	vec3_t p1l, p2l, norm;
+	float inverse[12];
+	float dist, d1, d2, f, enterfrac, enterdist, exitfrac;
+	qboolean startout, endout;
+	int enterplane;
+
+	trace->allsolid = false;
+	//Initialize the fields the post-loop and QC read, so a MISS can't leave stale/garbage
+	//values (HLMDL_Trace memsets the whole trace for this; Mod_Trace does not). Without this,
+	//a stale brush_face would index norm[]/bones[] out of bounds, and a stale surface_id would
+	//leak a phantom hitgroup to W_HitgroupClassify.
+	trace->brush_face = 0;
+	trace->bone_id = 0;
+	trace->brush_id = 0;
+	trace->surface_id = 0;
+
+	//nettest Patch 36 Part B FIX: pass inf->numbones, NOT MAX_BONES. Alias_GetBoneInformation_Raw
+	//only uses a QC skeletal object's bonestate when framestate->bonecount >= numbones; the CSQC
+	//player visual proxy's skel_build skeleton has bonecount == inf->numbones (~40-60), so passing
+	//MAX_BONES (256) made that test fail and SILENTLY DISCARDED the posed skeleton, tracing the
+	//bind/raw frame pose instead — boxes ended up offset from the rendered (posed) silhouette and a
+	//ray through the proxy origin missed. The render path always passes inf->numbones (e.g.
+	//Alias_BuildSkeletalMesh), so this realigns the trace's bone source with the render's.
+	bones = Alias_GetBoneInformation(inf, framestate, SKEL_ABSOLUTE, buffer, bufferalt, inf->numbones, NULL);
+	if (!bones)
+		return false;
+
+	for (h = 0; h < inf->numhitboxes; h++)
+	{
+		aliashitbox_t *hb = &inf->hitbox[h];
+		if (hb->bone < 0 || hb->bone >= inf->numbones)
+			continue;
+
+		startout = false;
+		endout = false;
+		enterplane = 0;
+		enterfrac = -1;
+		exitfrac = 10;
+		enterdist = 0;
+
+		//transform the model-space ray into this bone's local frame so the box is axial.
+		Matrix3x4_Invert_Simple((void*)(bones + hb->bone*12), inverse);
+		Matrix3x4_RM_Transform3(inverse, start_l, p1l);
+		Matrix3x4_RM_Transform3(inverse, end_l, p2l);
+
+		//clip against the 6 axial faces (Minkowski-expanded by the trace bbox, as HL does)
+		for (i = 0; i < 6; i++)
+		{
+			if (i < 3)
+			{
+				dist = hb->maxs[i] - mins[i];
+				d1 = p1l[i] - dist;
+				d2 = p2l[i] - dist;
+			}
+			else
+			{
+				dist = maxs[i-3] - hb->mins[i-3];
+				d1 = -p1l[i-3] - dist;
+				d2 = -p2l[i-3] - dist;
+			}
+
+			if (d1 >= 0)
+				startout = true;
+			if (d2 > 0)
+				endout = true;
+
+			if (d1 > 0 && d2 >= 0)
+				goto nexthitbox;	//fully outside one plane -> cannot enter
+			if (d1 < 0 && d2 <= 0)
+				continue;			//fully inside this plane -> irrelevant
+
+			f = d1 / (d1 - d2);
+			if (d1 > d2)
+			{	//entering - favour the furthest fraction (convex)
+				if (enterfrac < f)
+				{
+					enterfrac = f;
+					enterplane = i;
+					enterdist = dist;
+				}
+			}
+			else
+			{	//leaving - favour the nearest
+				if (exitfrac > f)
+					exitfrac = f;
+			}
+		}
+
+		if (!startout)
+		{	//ray started inside this box
+			trace->startsolid = true;
+			if (!endout)
+				trace->allsolid = true;
+			trace->contents = inf->contents;
+			trace->brush_face = 0;
+			trace->bone_id = hb->bone+1;
+			trace->brush_id = h+1;
+			trace->surface_id = hb->hitgroup;
+			trace->surface = &inf->csurface;
+			break;
+		}
+		if (enterfrac != -1 && enterfrac < exitfrac)
+		{
+			if (enterfrac < trace->fraction)
+			{	//closest impact so far
+				trace->fraction = trace->truefraction = enterfrac;
+				trace->plane.dist = enterdist;
+				trace->contents = inf->contents;
+				trace->brush_face = enterplane+1;
+				trace->bone_id = hb->bone+1;
+				trace->brush_id = h+1;
+				trace->surface_id = hb->hitgroup;
+				trace->surface = &inf->csurface;
+			}
+		}
+nexthitbox:
+		;
+	}
+
+	if (trace->brush_face)
+	{	//bone-local axial normal -> model space (bone rotation) -> world space (iaxis)
+		vec3_t mnorm;
+		VectorClear(norm);
+		if (trace->brush_face < 4)
+			norm[trace->brush_face-1] = 1;
+		else
+			norm[trace->brush_face-4] = -1;
+		Matrix3x4_RM_Transform3x3((void*)(bones + (trace->bone_id-1)*12), norm, mnorm);
+		if (axis)
+		{
+			vec3_t iaxis[3];
+			Matrix3x3_RM_Invert_Simple((const void *)axis, iaxis);
+			trace->plane.normal[0] = DotProduct(mnorm, iaxis[0]);
+			trace->plane.normal[1] = DotProduct(mnorm, iaxis[1]);
+			trace->plane.normal[2] = DotProduct(mnorm, iaxis[2]);
+		}
+		else
+			VectorCopy(mnorm, trace->plane.normal);
+	}
+	else
+		VectorClear(trace->plane.normal);
+
+	//world-space impact point
+	trace->endpos[0] = start[0] + trace->fraction*(end[0]-start[0]);
+	trace->endpos[1] = start[1] + trace->fraction*(end[1]-start[1]);
+	trace->endpos[2] = start[2] + trace->fraction*(end[2]-start[2]);
+
+	return trace->truefraction != 1;
+}
+#else
+qboolean Mod_AddHitbox(model_t *model, const char *bonename, int hitgroup, const float *mins, const float *maxs)
+{
+	return false;
+}
+#endif
+//=========================================================================== Patch 36 Part B
+
 static qboolean Mod_Trace(model_t *model, int forcehullnum, const framestate_t *framestate, const vec3_t axis[3], const vec3_t start, const vec3_t end, const vec3_t mins, const vec3_t maxs, qboolean capsule, unsigned int contentsmask, trace_t *trace)
 {
 	galiasinfo_t *mod = Mod_Extradata(model);
@@ -2621,6 +4010,14 @@ static qboolean Mod_Trace(model_t *model, int forcehullnum, const framestate_t *
 
 	trace->fraction = trace->truefraction = 1;
 
+#ifdef SKELETALMODELS
+	//nettest Patch 36 Part B: if this model has registered per-bone hitboxes (players),
+	//trace the boxes instead of the mesh triangles ("use only hitboxes") and report the
+	//struck box's hitgroup via trace->surface_id.
+	if (mod && mod->numhitboxes && framestate && (mod->contents & contentsmask))
+		return Mod_Trace_Hitbox(mod, framestate, axis, start, end, start_l, end_l, mins, maxs, trace);
+#endif
+
 	for(; mod; mod = mod->nextsurf, surfnum++)
 	{
 		if (!(mod->contents & contentsmask))
@@ -2638,7 +4035,12 @@ static qboolean Mod_Trace(model_t *model, int forcehullnum, const framestate_t *
 				if (curbonesurf != mod->shares_bones)
 				{
 					curbonesurf = mod->shares_bones;
-					bonepose = Alias_GetBoneInformation(mod, framestate, SKEL_INVERSE_ABSOLUTE, buffer, bufferalt, MAX_BONES, NULL);
+					//nettest Patch 36 FIX: inf->numbones, not MAX_BONES — see the matching note in
+					//Mod_Trace_Hitbox. A QC skeletal object's bonestate is only honoured when
+					//framestate->bonecount >= numbones; MAX_BONES(256) defeated that and made the
+					//mesh trace ignore the proxy's posed skeleton too (it would mostly bite when a
+					//player model has no registered hitboxes and falls through to this mesh path).
+					bonepose = Alias_GetBoneInformation(mod, framestate, SKEL_INVERSE_ABSOLUTE, buffer, bufferalt, mod->numbones, NULL);
 				}
 				posedata = alloca(mod->numverts*sizeof(vecV_t));
 				Alias_TransformVerticies_V(bonepose, mod->numverts, mod->ofs_skel_idx[0], mod->ofs_skel_weight[0], mod->ofs_skel_xyz[0], posedata[0]);
@@ -4433,6 +5835,43 @@ static qboolean QDECL Mod_LoadQ1Model (model_t *mod, void *buffer, size_t fsize)
 		AddPointToBounds(vec3_origin, mod->mins, mod->maxs);
 #endif
 
+	//nettest Patch 103: collision hull for QUAKE (IDPO) .mdl -- the companion to the GoldSrc one in
+	//gl_hlmdl.c. Only the IQM loader built a hull (Patch 56), so every .mdl had numhullplanes==0 and
+	//the SOLID_PHYSICS_TRIMESH path silently fell back to a bbox. 40 of this game's 75 dropped-weapon
+	//world models are IDPO (knife/ak47/awp/deagle/usp among them), so the GoldSrc fix alone would
+	//have covered less than half of them.
+	//
+	//Simpler than the GoldSrc case: Quake .mdl is VERTEX-ANIMATED, not skeletal, so poseofs verts are
+	//already in model space -- no bind-pose transform to replicate, and no bone-local trap.
+	//
+	//Use POSE 0 only (the rest pose), matching the IQM loader's use of the base verts. The bounds loop
+	//above deliberately unions EVERY pose (bounds must contain the whole animation), but a hull over
+	//every pose would be the swept volume of the animation -- far too fat for collision. Static props
+	//and w_ models have one pose anyway, so the two agree there.
+	//*** DISABLED — Patch 103 CRASHED THE GAME ON LAUNCH (STATUS_HEAP_CORRUPTION 0xC0000374). ***
+	//Bisecting showed the GoldSrc half (gl_hlmdl.c) corrupts the heap on its own; this Q1 half was
+	//NOT proven guilty, but it is disabled with it because it was never proven innocent either -
+	//shipping half a bisect is how you get a second crash. Both halves are inert until the overrun is
+	//found: my hullverts buffer is bounds-guarded and Mod_AddHullBevels enforces HULL_MAXBEVELS, so
+	//the fault is somewhere else in what Mod_BuildConvHull does with .mdl input (Mod_BuildHullPlanes'
+	//decimation path is the next thing to read - it is the one part sized off the vert count).
+	//The design is still right and the research stands (see ENGINE_PATCHES.md Patch 103): .mdl verts
+	//ARE available and DO give every dropped weapon its own hull instead of one shared 12x5x3 box.
+	//Re-enable only with a real repro + a heap-checked run (gflags/ASAN), not by eyeballing it again.
+	if (0 && galias->numanimations && galias->numverts >= 4 && !Mod_SkipCollisionHulls(mod))
+	{
+		galiasanimation_t *a = galias->ofsanimations;
+		if (a->numposes && a->poseofs[0].ofsverts)
+		{
+			convhull_t single;
+			Mod_BuildConvHull(mod, &single, a->poseofs[0].ofsverts, galias->numverts, mod->mins, mod->maxs, 256);
+			mod->numhullplanes = single.numplanes;
+			mod->hullplanes    = single.planes;
+			mod->numhulltris   = single.numtris;
+			mod->hulltris      = single.tris;
+		}
+	}
+
 	mod->type = mod_alias;
 	Mod_ClampModelSize(mod);
 	Mesh_HandleFramegroupsFile(mod, galias);
@@ -5363,6 +6802,20 @@ qboolean Mod_GetTag(model_t *model, int tagnum, framestate_t *fstate, float *res
 				return false;
 			tagnum--;	//tagnum 0 is 'use my angles/org'
 
+#ifdef HALFLIFEMODELS
+			//nettest Patch 36: when the spine bend is active, build the bent absolute
+			//pose and read the bone directly, so gettaginfo (weapon attachment, debug
+			//hitbox draws, QC) matches the rendered/collided lean.
+			if (Alias_SpineBendActive(inf, fstate) && tagnum < inf->numbones)
+			{
+				float *bb = alloca(inf->numbones*12*sizeof(float));
+				float *ba = alloca(inf->numbones*12*sizeof(float));
+				const float *abspose = Alias_GetBoneInformation(inf, fstate, SKEL_ABSOLUTE, bb, ba, inf->numbones, NULL);
+				memcpy(result, abspose + tagnum*12, 12*sizeof(*result));
+				return true;
+			}
+#endif
+
 			//data comes from skeletal object, if possible
 			if (!numbonegroups && fstate->bonestate)
 			{
@@ -5426,6 +6879,18 @@ qboolean Mod_GetTag(model_t *model, int tagnum, framestate_t *fstate, float *res
 					for (k = 0;k < 12;k++)
 						m[k] += matrix[k] * lerp->frac[b];
 				}
+
+				//nettest Patch 112: the linear blend above is IDENTICAL to the one in
+				//Alias_BlendBoneData, which renormalizes afterwards (the renorm flag there) - but
+				//this copy never did. Blending two rotations linearly shrinks the basis to
+				//cos(theta/2) at the midpoint, and R_ConcatTransforms below compounds that up the
+				//parent chain, so every tag-driven attachment (gettaginfo, weapon attach, the IQM
+				//spine deform) still inherited the blend skew that Patch 43 fixed everywhere else.
+				//Gated per-lerp because GetTag has no function-level skeltype, but otherwise
+				//semantically identical to Alias_BlendBoneData - r_skel_blendnormalize 0 still
+				//turns the whole warp fix off in one place.
+				if (lerp->skeltype == SKEL_RELATIVE && r_skel_blendnormalize.ival)
+					Alias_RenormalizeBoneMatrix(m);
 
 				if (lerp->skeltype == SKEL_ABSOLUTE)
 				{
@@ -8918,6 +10383,7 @@ static galiasinfo_t *Mod_ParseIQMMeshModel(model_t *mod, const char *buffer, siz
 		/*verts*/
 		gai[i].shares_verts = i;
 		gai[i].numverts = numverts;
+		gai[i].firstvert = firstvert;	//nettest: global base vertex for RGBPROPLIGHT per-vertex colour slicing
 		gai[i].ofs_skel_xyz = (opos+firstvert);
 		gai[i].ofs_skel_norm = (onorm1+firstvert);
 		gai[i].ofs_skel_svect = (onorm2+firstvert);
@@ -8956,9 +10422,113 @@ static galiasinfo_t *Mod_ParseIQMMeshModel(model_t *mod, const char *buffer, siz
 	IQM_ImportArrayF(buffer, &vnorm, (float*)onorm1, 3, h->num_vertexes, defaultcolour);
 	IQM_ImportArrayF(buffer, &vpos, (float*)opos, sizeof(opos[0])/sizeof(float), h->num_vertexes, defaultvert);
 
-	if (!h->ofs_bounds || !h->num_frames)
-		for (i = 0; i < h->num_vertexes; i++)
-			AddPointToBounds(opos[i], mod->mins, mod->maxs);
+	//nettest: ALWAYS fold the base vertex extents into the bounds (was gated on
+	//"no bounds chunk").  Some exporters write a degenerate/zero bounds chunk for
+	//STATIC IQMs, which left mod->mins/maxs tiny — collapsing a SOLID_PHYSICS_TRIMESH
+	//prop's collision bbox to ~nothing, so the broadphase (world.c) rejects the
+	//per-triangle trace over the whole mesh and the player walks through a full-size
+	//model.  Union corrects bad/empty static chunks while preserving animated models'
+	//larger per-frame chunk bounds (a good chunk already encloses the bind pose, so
+	//well-formed models are unchanged).
+	for (i = 0; i < h->num_vertexes; i++)
+		AddPointToBounds(opos[i], mod->mins, mod->maxs);
+
+	//nettest Patch 56: build a TRUE convex hull (incremental QuickHull) of the base verts
+	//for smooth, watertight, O(planes) player collision (World_HullTrace, sv_prop_collision
+	//2). Fall back to the 26-DOP, then the AABB, so every static model gets a valid hull.
+	//nettest Patch 102: skip ALL collision-hull work for models that can never be props (see
+	//Mod_SkipCollisionHulls).  This is the whole block -- the Patch 56 single hull AND the Patch 61/65
+	//decomposition -- because neither is reachable for a non-prop.
+	if (h->num_vertexes && !Mod_SkipCollisionHulls(mod))
+	{
+		convhull_t single;
+		Mod_BuildConvHull(mod, &single, opos, h->num_vertexes, mod->mins, mod->maxs, 256);
+		mod->numhullplanes = single.numplanes;
+		mod->hullplanes    = single.planes;
+		mod->numhulltris   = single.numtris;
+		mod->hulltris      = single.tris;
+
+		//nettest Patch 61/65: CONVEX DECOMPOSITION for sv_prop_collision 3, method picked at LOAD
+		//by sv_prop_decomp: 0 = per-submesh (one hull per IQM mesh — concavity BETWEEN parts, van
+		//body vs wheels); 1 = geometric ACD (recursive concavity-split — concavity WITHIN a mesh,
+		//hollow pipe / arch); 2 = offline .acd sidecar (Phase B; falls through to 1 here for now).
+		{
+			cvar_t *cdecomp = Cvar_Get("sv_prop_decomp", "0", CVAR_SERVERINFO,
+				"Prop convex-DECOMPOSITION method for sv_prop_collision 3, read at model LOAD (reload to apply): 0=per-submesh (one hull per mesh part), 1=geometric ACD (splits concavity within a single mesh: hollow pipe, arch), 2=offline-baked .acd sidecar if present else 1. Builds the collision geometry, so for client-PREDICTED props the client and server must use the SAME value (a content constant — set it server-side; a listen server shares one cvar).");
+			int decomp = cdecomp ? cdecomp->ival : 0;
+
+			//gate ACD to <=32 submeshes: the shared piece counter across submeshes is then bounded
+			//(<=64 cap + ~8 unwind + <=32 roots = <=104 < ACD_ARRAY 128), so the hard backstop never
+			//DROPS triangles (which would leak collision in mode 3). >32-submesh models fall to the
+			//per-submesh path / single hull (their parts already separate concavity).
+			if (decomp >= 1 && h->num_meshes <= 32)
+			{	//geometric decomposition (single-mesh props included).
+			 if (decomp == 2 && Mod_LoadACDSidecar(mod))
+				;	//offline .acd bake loaded -> convhulls/numhulls set; skip the runtime ACD
+			 else
+			 {	//runtime geometric ACD (decomp 1, or 2 with no/invalid sidecar)
+				cvar_t *cconc = Cvar_Get("sv_prop_decomp_concavity", "0.06", CVAR_SERVERINFO,
+					"Geometric-ACD concavity threshold as a fraction of the model extent (clamped 0.01..0.5); smaller = more/finer pieces. Read at model load.");
+				float frac = cconc ? cconc->value : 0.06f;
+				float ext = mod->maxs[0]-mod->mins[0];
+				int m, nm = h->num_meshes ? (int)h->num_meshes : 1;
+				acdctx_t ctx;
+				if (mod->maxs[1]-mod->mins[1] > ext) ext = mod->maxs[1]-mod->mins[1];
+				if (mod->maxs[2]-mod->mins[2] > ext) ext = mod->maxs[2]-mod->mins[2];
+				if (frac < 0.01f) frac = 0.01f; else if (frac > 0.5f) frac = 0.5f;
+
+				mod->convhulls = ZG_Malloc(&mod->memgroup, sizeof(convhull_t)*ACD_ARRAY);
+				ctx.mod = mod; ctx.out = mod->convhulls; ctx.count = 0;
+				ctx.threshold = frac * ext; ctx.hullcap = 256;
+				for (m = 0; m < nm; m++)
+				{
+					int fv = h->num_meshes ? LittleLong(mesh[m].first_vertex) : 0;
+					int ntris = gai[m].numindexes / 3;
+					int *tris, t;
+					if (ntris < 1)
+						continue;
+					ctx.base = opos + fv;
+					ctx.li   = gai[m].ofs_indexes;	//LOCAL indices (relative to first_vertex)
+					tris = BZ_Malloc(sizeof(int)*ntris);
+					for (t = 0; t < ntris; t++) tris[t] = t;
+					Mod_ACDRecurse(&ctx, tris, ntris, 0);
+					BZ_Free(tris);
+				}
+				mod->numhulls = ctx.count;
+			 }
+			}
+			else if (h->num_meshes >= 2 && h->num_meshes <= 32)
+			{	//per-submesh: one hull per IQM mesh (multi-part models within a sane cap).
+				int m;
+				mod->convhulls = ZG_Malloc(&mod->memgroup, sizeof(convhull_t)*h->num_meshes);
+				for (m = 0; m < (int)h->num_meshes; m++)
+				{
+					int fv = LittleLong(mesh[m].first_vertex);
+					int nv = LittleLong(mesh[m].num_vertexes);
+					vec3_t smin, smax;
+					int v;
+					if (nv < 1 || fv < 0 || fv + nv > (int)h->num_vertexes)
+					{	//empty / out-of-range mesh -> empty piece (contributes no collision)
+						memset(&mod->convhulls[m], 0, sizeof(mod->convhulls[m]));
+						continue;
+					}
+					ClearBounds(smin, smax);
+					for (v = 0; v < nv; v++)
+						AddPointToBounds(opos[fv+v], smin, smax);
+					Mod_BuildConvHull(mod, &mod->convhulls[m], opos+fv, nv, smin, smax, 256);
+				}
+				mod->numhulls = h->num_meshes;
+			}
+		}
+
+		//nettest Patch 58/61/63: developer readout so the prop collision bounds + hull(s) can be
+		//verified instead of inferred (hulltris<=12 + low hullplanes = QuickHull bailed to k-DOP/
+		//box; hulls>0 = per-submesh decomposition for sv_prop_collision 3). Note hullplanes now
+		//also counts Patch-63 bevel planes, so it is no longer exactly the face count.
+		Con_DPrintf("IQM collision %s: bounds %.1f %.1f %.1f .. %.1f %.1f %.1f  hullplanes=%i hulltris=%i hulls=%i\n",
+			mod->name, mod->mins[0], mod->mins[1], mod->mins[2], mod->maxs[0], mod->maxs[1], mod->maxs[2],
+			mod->numhullplanes, mod->numhulltris, mod->numhulls);
+	}
 
 	if (vnorm.offset && vtang)
 	{
@@ -10312,6 +11882,10 @@ static qboolean QDECL Mod_LoadObjModel(model_t *mod, void *buffer, size_t fsize)
 
 void Alias_Register(void)
 {
+	Cvar_Register(&r_skel_spinebend, NULL);	//nettest Patch 36
+	Cvar_Register(&r_skel_blendnormalize, NULL);	//nettest warp fix (IQM frame-blend renormalize)
+	Cvar_Register(&r_showragdoll, NULL);	//nettest ragdoll debug draw toggle
+	Cvar_Register(&r_ragdoll_timescale, NULL);	//nettest ragdoll slow-mo/freeze
 #ifdef MD1MODELS
 #ifndef SERVERONLY
 	Cvar_Register(&dpcompat_nofloodfill, NULL);

@@ -624,6 +624,53 @@ int VARGS Sys_DebugLog(char *file, char *fmt, ...)
 	return 1;
 };
 
+//nettest (crash diag): UNCONDITIONAL crash-address logger (the release mingw build compiles out the whole
+//CATCHCRASH handler below, so a segfault otherwise leaves no trace). A process-wide vectored handler
+//registered in WinMain calls this; it records the faulting module-relative address to crashaddr.txt for
+//addr2line, then returns CONTINUE_SEARCH so normal handling is unchanged. Benign first-chance exceptions
+//pass through. Uses raw Win32 + an absolute path because FTE's `#define fopen fopen_nolink` + an unknown
+//cwd swallowed earlier attempts.
+LONG CALLBACK nettest_CrashAddrLogger(PEXCEPTION_POINTERS ei)
+{
+	DWORD code = ei->ExceptionRecord->ExceptionCode;
+	if (code == EXCEPTION_ACCESS_VIOLATION || code == EXCEPTION_ILLEGAL_INSTRUCTION
+	 || code == EXCEPTION_STACK_OVERFLOW   || code == EXCEPTION_IN_PAGE_ERROR
+	 || code == EXCEPTION_PRIV_INSTRUCTION)
+	{
+		char *base = (char*)GetModuleHandle(NULL);
+		char *addr = (char*)ei->ExceptionRecord->ExceptionAddress;
+		char buf[256];
+		buf[0] = 0;
+		snprintf(buf, sizeof(buf), "code=0x%08lx addr=%p base=%p rva=0x%llx\r\n",
+			(unsigned long)code, (void*)addr, (void*)base, (unsigned long long)(addr - base));
+		//was C:\FTEQuake\nettest\crashaddr.txt -- that gamedir was renamed to quakers, so every
+		//crash address was being written into a folder that no longer exists (CreateFileA does not
+		//create missing directories), silently losing the diagnostics this whole handler exists for.
+		HANDLE h = CreateFileA("C:\\FTEQuake\\quakers\\crashaddr.txt", FILE_APPEND_DATA,
+			FILE_SHARE_READ|FILE_SHARE_WRITE, NULL, OPEN_ALWAYS, FILE_ATTRIBUTE_NORMAL, NULL);
+		if (h != INVALID_HANDLE_VALUE)
+		{
+			DWORD wrote;
+			void *frames[28];
+			USHORT nf, fi;
+			SetFilePointer(h, 0, NULL, FILE_END);
+			WriteFile(h, buf, (DWORD)strlen(buf), &wrote, NULL);
+			//also capture the call stack (module-relative) so addr2line can show the FULL chain.
+			nf = CaptureStackBackTrace(0, 28, frames, NULL);
+			for (fi = 0; fi < nf; fi++)
+			{
+				char fbuf[80];
+				fbuf[0] = 0;
+				snprintf(fbuf, sizeof(fbuf), "  frame[%u] rva=0x%llx\r\n",
+					(unsigned)fi, (unsigned long long)((char*)frames[fi] - base));
+				WriteFile(h, fbuf, (DWORD)strlen(fbuf), &wrote, NULL);
+			}
+			CloseHandle(h);
+		}
+	}
+	return EXCEPTION_CONTINUE_SEARCH;
+}
+
 #ifdef CATCHCRASH
 #include "dbghelp.h"
 typedef BOOL (WINAPI *MINIDUMPWRITEDUMP) (
@@ -1549,6 +1596,20 @@ static void QDECL Sys_Priority_Changed(cvar_t *var, char *oldval)
 static cvar_t sys_priority = CVARFCD("sys_highpriority", "0", CVAR_NOTFROMSERVER, Sys_Priority_Changed, "Controls the process priority");
 static cvar_t sys_clocktype = CVARFCD("sys_clocktype", "", CVAR_NOTFROMSERVER, Sys_ClockType_Changed, "Controls which system clock to base timings from.\n0: auto\n1: timeGetTime (low precision).\n2: QueryPerformanceCounter (may drift, desync between cpu cores, or run fast with longer uptimes depending on cpu(s) and windows version).\n3: QueryPerformanceCounter-with-force-affinity (shouldn't drift, but may result in less cpu time available).");
 static cvar_t sys_clockprecision = CVARFCD("sys_clockprecision", "1", CVAR_NOTFROMSERVER, Sys_ClockPrecision_Changed, "Attempts to control windows' interrupt interval, in milliseconds. This can cause windows to give better clock precision and shorter waits, but also more overhead from process rescheduling.");
+static void Sys_FramePacing_Changed(cvar_t *var, char *oldval);
+static cvar_t sys_framepacing = CVARFCD("sys_framepacing", "2", CVAR_NOTFROMSERVER, Sys_FramePacing_Changed,
+	"High-precision frame pacing for cl_maxfps.  The engine's own limiter still decides WHEN each frame is due (it already carries sub-frame remainder, so it stays drift-free); this makes the wait HIT that target accurately, via a high-res waitable timer plus a short spin, instead of a coarse Sleep().  Default 2 — uses the DXGI frame-latency wait on D3D11 and falls back to the timer+spin path on OpenGL/Vulkan.  Set to 0 for the vanilla Sleep() path.\n0: vanilla Sleep(). 1: NtSetTimerResolution + high-res waitable timer + spin. 2: (1) + DXGI frame-latency waitable object sync (D3D11 only; identical to 1 elsewhere). 3: (2) + absolute-grid anchor — pins each frame START to a fixed base+N/fps grid to shed the limiter's residual drift; works on every renderer. 4: present-pacing (SpecialK-style) — render frames ASAP and HOLD the buffer swap to the grid, so the PRESENT cadence is flat on a VRR display (absorbs render-time variance) at the cost of ~one frame of latency; OpenGL only — on D3D11/Vulkan it cleanly falls back to mode 3 (frame-START anchor). Use sys_framepacing_stats to compare the present-cadence jitter between modes.");
+//nettest: how deep the sys_framepacing 4 GPU drain reaches back.  The original behaviour was
+//"fence this frame, then immediately wait on it", which forbids frame N's GPU work from
+//overlapping frame N+1's CPU work.  Measured on fy_killzone that cost 623us/frame -- 22% of the
+//whole frame, 361->481 fps -- while the GPU still had headroom (r_renderscale 2 vs 1 was 14.7us
+//with the drain off).  Waiting on the PREVIOUS frame's fence bounds queue depth just as well,
+//so the paced flip is still the real present, but the pipeline keeps its overlap.
+static cvar_t sys_framepacing_drain = CVARFD("sys_framepacing_drain", "2", CVAR_NOTFROMSERVER,
+	"How far back sys_framepacing 4's GPU drain waits before the paced flip. 0: no drain (fastest, but the swap can sit behind a deep GPU queue and the cadence sawtooths). 1: drain THIS frame -- the original behaviour; flattest cadence, but it serialises CPU and GPU and costs ~a fifth of the frame. 2: drain the PREVIOUS frame (default) -- caps queue depth at one frame while keeping CPU/GPU overlap. 3: drain two frames back -- looser still, more latency, least stall. Only used when sys_framepacing is 4 on OpenGL.");
+void Sys_FramePacedWait(double seconds);
+static void Sys_FramePacing_Stats_f(void);
+static void Sys_FramePacing_Init(void);
 /*
 ================
 Sys_Init
@@ -1565,6 +1626,10 @@ void Sys_Init (void)
 
 	Cvar_Register(&sys_clocktype, "System vars");
 	Cvar_Register(&sys_clockprecision, "System vars");
+	Cvar_Register(&sys_framepacing, "System vars");
+	Cvar_Register(&sys_framepacing_drain, "System vars");
+	Cmd_AddCommandD("sys_framepacing_stats", Sys_FramePacing_Stats_f,
+		"Reports what sys_framepacing is actually doing: current mode, acquired timer resolution, waitable-timer tier, DXGI handle availability, and wait-accuracy stats over the last 128 frames. Use this to verify non-zero modes have any effect.");
 #ifndef SERVERONLY
 	Cvar_Register(&sys_disableWinKeys, "System vars");
 	Cvar_Register(&sys_disableTaskSwitch, "System vars");
@@ -1769,6 +1834,527 @@ static void Sys_ClockPrecision_Changed(cvar_t *var, char *oldval)
 		if (TIMERR_NOERROR != timeBeginPeriod(sys_interrupt_freq) && oldval)
 			Con_Printf(CON_ERROR"%s: timeBeginPeriod(%u) failed.\n", var->name, sys_interrupt_freq);
 	}
+}
+
+/*
+==================================================================
+ SpecialK-style frame pacing layer.
+
+ The engine limiter (CL_FilterTime + Host_Frame's oldrealtime carry)
+ already decides WHEN each frame is due and is drift-free; this layer
+ only makes the WAIT land on that target precisely.
+
+ Mode 0 = vanilla FTE (original Sys_Sleep).
+ Mode 1 = NtSetTimerResolution (~0.5ms) + high-res waitable timer for
+          the bulk of the wait, then a YieldProcessor() spin for the
+          final sub-millisecond sliver.  Works on every renderer.
+ Mode 2 = (1) + the DXGI frame-latency waitable-object wait on D3D11
+          (handle from D3D11_GetFrameLatencyWaitHandle); identical to
+          mode 1 on OpenGL/Vulkan.
+ Mode 3 = (2) + the absolute-grid anchor: the limiter aims each frame at
+          a fixed time grid (base + N/fps) via Sys_FramePaceAnchorDelay()
+          instead of relative-to-last-frame, shedding the limiter's small
+          residual phase drift.  The anchor is pure timing, so it works on
+          every renderer (the DXGI part of mode 2 is still D3D11-only).
+ Mode 4 = present-pacing (SpecialK-style).  Modes 1-3 pace the frame START,
+          so render-time variance leaks into the PRESENT (what a VRR display
+          follows).  Mode 4 instead renders frames ASAP and HOLDS the swap to
+          a fixed grid via Sys_FramePacePresent() (hooked before the renderer's
+          buffer swap), so the present cadence is flat -- at ~one frame more
+          latency than mode 3.  OpenGL only for now (hook is in gl_screen.c).
+
+ Cvar live-toggleable.  All Windows APIs resolved via GetProcAddress
+ so the binary still loads on pre-Win10-1803.
+==================================================================
+*/
+extern cvar_t cl_maxfps;
+#ifdef D3D11QUAKE
+extern HANDLE D3D11_GetFrameLatencyWaitHandle(void);
+#endif
+#ifdef GLQUAKE
+extern int GLVID_FramePaceDrainPath(void);	//nettest: sys_framepacing 4 GPU-drain path — 1=ARB_sync fence, 2=glFinish fallback
+#endif
+
+/* ntdll.dll signatures */
+typedef LONG (NTAPI *NtSetTimerResolution_pfn)(ULONG DesiredResolution, BOOLEAN SetResolution, PULONG CurrentResolution);
+typedef LONG (NTAPI *NtQueryTimerResolution_pfn)(PULONG MinimumResolution, PULONG MaximumResolution, PULONG CurrentResolution);
+
+static NtSetTimerResolution_pfn   pNtSetTimerResolution   = NULL;
+static NtQueryTimerResolution_pfn pNtQueryTimerResolution = NULL;
+
+/* CreateWaitableTimerExW signature (kernel32, Vista+; the flag
+ * CREATE_WAITABLE_TIMER_HIGH_RESOLUTION = 0x2 is Win10 1803+) */
+typedef HANDLE (WINAPI *CreateWaitableTimerExW_pfn)(LPSECURITY_ATTRIBUTES, LPCWSTR, DWORD, DWORD);
+static CreateWaitableTimerExW_pfn pCreateWaitableTimerExW = NULL;
+
+/* Bookkeeping for the wait path */
+static HANDLE   g_pace_timer         = NULL;
+static int      g_pace_timer_highres = 0;
+static double   g_pace_timer_res_s   = 0.001;   /* effective scheduler tick */
+static int      g_pace_inited        = 0;
+static double   g_pace_next_sanitize = 0;
+
+/* Mode-3 absolute-grid anchor state (renderer-agnostic, pure timing). */
+static double   g_anchor_base = 0;   /* engine-realtime of grid slot 0 */
+static double   g_anchor_tpf  = 0;   /* seconds-per-frame the grid was built for */
+
+/* Diagnostic ring: wait-error samples in microseconds.  Each call to
+ * Sys_FramePacedWait records (actual_elapsed - requested_wait), so
+ * positive = we overshot, negative = returned early.  A vanilla Sleep
+ * at default 15.6ms scheduler tick shows ±15000us spread; a working
+ * high-res hybrid should show ±50us.  Exposed via the
+ * sys_framepacing_stats console command. */
+#define PACE_ERR_RING 128
+static double g_pace_err_ring[PACE_ERR_RING];
+static int    g_pace_err_head  = 0;
+static int    g_pace_err_count = 0;
+static double g_pace_last_req_s  = 0;
+static double g_pace_last_err_us = 0;
+static int    g_pace_last_path   = 0;  /* 0=sleep, 1=timer+spin, 2=spin-only */
+
+/* Diagnostic ring: PRESENT cadence — the actual present-to-present interval (seconds),
+ * sampled once per swap by Sys_FramePace_RecordPresent.  This is the real VRR-smoothness
+ * metric: low jitter == a flat cadence the display can follow.  Modes 0-3 pace the frame
+ * START so render variance leaks in here; mode 4 holds the swap to a grid so it stays flat. */
+static double g_present_ring[PACE_ERR_RING];
+static int    g_present_head   = 0;
+static int    g_present_count  = 0;
+static double g_last_present_t = 0;
+
+static void Sys_FramePacing_Init(void)
+{
+	HMODULE ntdll;
+	HMODULE k32;
+	ULONG minres = 0, maxres = 0, curres = 0;
+
+	if (g_pace_inited)
+		return;
+	g_pace_inited = 1;
+
+	ntdll = GetModuleHandleA("ntdll.dll");
+	if (ntdll)
+	{
+		pNtSetTimerResolution   = (NtSetTimerResolution_pfn)  (void*)GetProcAddress(ntdll, "NtSetTimerResolution");
+		pNtQueryTimerResolution = (NtQueryTimerResolution_pfn)(void*)GetProcAddress(ntdll, "NtQueryTimerResolution");
+	}
+
+	k32 = GetModuleHandleA("kernel32.dll");
+	if (k32)
+		pCreateWaitableTimerExW = (CreateWaitableTimerExW_pfn)(void*)GetProcAddress(k32, "CreateWaitableTimerExW");
+
+	/* Create the waitable timer we re-use across frames.  Flags:
+	 * 0x1 = CREATE_WAITABLE_TIMER_MANUAL_RESET (we don't use; 0 = auto)
+	 * 0x2 = CREATE_WAITABLE_TIMER_HIGH_RESOLUTION (Win10 1803+)
+	 * TIMER_ALL_ACCESS = 0x1F0003. */
+	if (pCreateWaitableTimerExW)
+	{
+		g_pace_timer = pCreateWaitableTimerExW(NULL, NULL, 0x2 /*HIGH_RES*/, 0x1F0003);
+		if (g_pace_timer)
+			g_pace_timer_highres = 1;
+	}
+	if (!g_pace_timer)
+		g_pace_timer = CreateWaitableTimer(NULL, FALSE, NULL);
+
+	/* Ask the kernel for its best timer resolution and latch it. */
+	if (pNtQueryTimerResolution && pNtSetTimerResolution)
+	{
+		pNtQueryTimerResolution(&minres, &maxres, &curres);
+		/* maxres is the finest available (smallest value), in 100ns units. */
+		if (maxres > 0)
+		{
+			pNtSetTimerResolution(maxres, TRUE, &curres);
+			g_pace_timer_res_s = curres * 1e-7; /* 100ns units -> seconds */
+		}
+	}
+	else if (sys_interrupt_freq > 0)
+	{
+		g_pace_timer_res_s = sys_interrupt_freq * 1e-3;
+	}
+	if (g_pace_timer_res_s <= 0 || g_pace_timer_res_s > 0.016)
+		g_pace_timer_res_s = 0.001;
+
+	Con_DPrintf("sys_framepacing: %s timer (%.2fms), %s\n",
+		g_pace_timer_highres ? "high-res waitable" : "basic waitable",
+		g_pace_timer_res_s * 1000.0,
+		g_pace_timer ? "ready" : "unavailable");
+}
+
+/* Periodically re-apply the timer resolution; other processes (including
+ * Windows itself on some versions) can quietly lower it.  Called from the
+ * wait path, not per-frame, to avoid overhead. */
+static void Sys_FramePacing_SanitizeRes(void)
+{
+	ULONG curres = 0;
+	double now;
+	if (!pNtSetTimerResolution)
+		return;
+	now = Sys_DoubleTime();
+	if (now < g_pace_next_sanitize)
+		return;
+	g_pace_next_sanitize = now + 2.0;  /* every 2 seconds */
+	pNtSetTimerResolution(1, TRUE, &curres);               /* push to max */
+	pNtSetTimerResolution(5000, TRUE, &curres);            /* ~0.5ms */
+	if (curres > 0)
+		g_pace_timer_res_s = curres * 1e-7;
+}
+
+/* Accurate paced wait: a high-res waitable-timer sleep for the bulk of the
+ * interval, then a tight spin for the final microseconds, and (mode >= 2) a
+ * piggy-back on the DXGI frame-latency waitable object when the D3D11 renderer
+ * has one exposed.  Returns with wall clock >= (start + seconds).  The engine
+ * limiter supplies the drift-corrected `seconds`. */
+void Sys_FramePacedWait(double seconds)
+{
+	double start = Sys_DoubleTime();
+	double target;
+	double actual;
+	int    mode = sys_framepacing.ival;
+	int    took_timer = 0;
+
+	g_pace_last_req_s = seconds;
+
+	/* Mode 0 or pathological inputs: behave exactly like vanilla. */
+	if (mode <= 0 || seconds <= 0)
+	{
+		if (seconds > 0)
+			Sleep((DWORD)(seconds * 1000.0));
+		actual = Sys_DoubleTime() - start;
+		g_pace_last_err_us = (actual - seconds) * 1e6;
+		g_pace_last_path   = 0;
+		g_pace_err_ring[g_pace_err_head] = g_pace_last_err_us;
+		g_pace_err_head = (g_pace_err_head + 1) % PACE_ERR_RING;
+		if (g_pace_err_count < PACE_ERR_RING) g_pace_err_count++;
+		return;
+	}
+
+	if (!g_pace_inited)
+		Sys_FramePacing_Init();
+	Sys_FramePacing_SanitizeRes();
+
+	/* The engine limiter already computed how long to wait and carries any
+	 * sub-frame remainder itself, so we just need to land on that target. */
+	target = start + seconds;
+
+	/* Bulk wait: kernel timer for most of the interval; leave a small
+	 * tail for the spin so the OS scheduler jitter is absorbed. */
+	if (g_pace_timer)
+	{
+		double to_wait;
+		for (;;)
+		{
+			double now = Sys_DoubleTime();
+			LARGE_INTEGER due;
+			HANDLE waits[2];
+			DWORD  nwaits = 0;
+			DWORD  wait_ms;
+
+			to_wait = target - now;
+			if (to_wait <= g_pace_timer_res_s * 2.875)
+				break; /* short enough to fall into the spin phase */
+
+			/* Negative due = relative time in 100ns units.  Undershoot by
+			 * ~1.125x the timer resolution (SpecialK's fSwapWaitRatio) so the
+			 * spin tail, not the timer, is what lands us on target. */
+			due.QuadPart = -(LONGLONG)((to_wait - g_pace_timer_res_s * 1.125) * 10000000.0);
+			if (due.QuadPart >= 0)
+				break;
+			if (!SetWaitableTimer(g_pace_timer, &due, 0, NULL, NULL, FALSE))
+				break;	/* couldn't arm the timer; fall through to the spin */
+			took_timer = 1;
+			waits[nwaits++] = g_pace_timer;
+#ifdef D3D11QUAKE
+			if (mode >= 2)
+			{
+				HANDLE hsw = D3D11_GetFrameLatencyWaitHandle();
+				if (hsw)
+					waits[nwaits++] = hsw;
+			}
+#endif
+			wait_ms = (DWORD)((to_wait - g_pace_timer_res_s * 1.125) * 1000.0) + 1;
+			if (nwaits > 1)
+				WaitForMultipleObjects(nwaits, waits, FALSE, wait_ms);
+			else
+				WaitForSingleObject(waits[0], wait_ms);
+			break;
+		}
+	}
+
+	/* Spin out the final sub-millisecond sliver for precise wake. */
+	/* Spin all the way to the boundary (not a margin short): the engine limiter
+	 * only renders once realtime reaches it, so landing early just makes it
+	 * busy-loop the remainder in tiny waits that flood the pacing stats. */
+	while (Sys_DoubleTime() < target)
+		YieldProcessor();
+
+	/* Record wait error for sys_framepacing_stats. */
+	actual = Sys_DoubleTime() - start;
+	g_pace_last_err_us = (actual - seconds) * 1e6;
+	g_pace_last_path   = took_timer ? 1 : 2;
+	g_pace_err_ring[g_pace_err_head] = g_pace_last_err_us;
+	g_pace_err_head = (g_pace_err_head + 1) % PACE_ERR_RING;
+	if (g_pace_err_count < PACE_ERR_RING) g_pace_err_count++;
+}
+
+/* Reported to the engine frame limiter (cl_main.c Host_Frame) so it yields the
+ * remaining frame time to the paced wait whenever pacing is enabled, regardless
+ * of cl_yieldcpu. */
+qboolean Sys_FramePacingActive(void)
+{
+	return sys_framepacing.ival > 0;
+}
+
+/* Mode 3 only: the absolute-grid anchor.  The engine limiter's target drifts
+ * relative to wall-clock (it carries a bounded sub-frame remainder); this pins
+ * each frame to a fixed grid at base + N/fps so that small bias can't
+ * accumulate.  Renderer-agnostic: pure QPC-time math, no D3D/DXGI. */
+qboolean Sys_FramePacingAnchor(void)
+{
+	/* mode 3 always; mode 4 too when present-pacing can't run (non-GL) so it cleanly
+	 * degrades to the frame-START grid anchor instead of doing nothing. */
+	return sys_framepacing.ival == 3 || (sys_framepacing.ival == 4 && qrenderer != QR_OPENGL);
+}
+
+/* Returns how long to wait (seconds, in the engine's realtime base) so the next
+ * frame lands on the absolute grid.  `tpf` is the seconds-per-frame the caller
+ * (Host_Frame) computes to match the engine limiter's own frame-due threshold;
+ * `now`/`frameref` are Host_Frame's realtime/oldrealtime.  Snaps the last frame
+ * to its nearest grid slot and aims one slot past it, so repeated calls within a
+ * frame converge instead of jumping (a long stall just drops to the next slot). */
+double Sys_FramePaceAnchorDelay(double tpf, double now, double frameref)
+{
+	double slot, target;
+	if (tpf <= 0)
+		return 0;
+	/* (re)establish the grid on first use / interval change, and re-anchor every
+	 * few minutes so double precision can't accumulate visible error. */
+	if (tpf != g_anchor_tpf || g_anchor_base <= 0 || (frameref - g_anchor_base) > 600.0)
+	{
+		g_anchor_base = frameref;
+		g_anchor_tpf  = tpf;
+	}
+	slot   = floor((frameref - g_anchor_base) / tpf + 0.5);	/* nearest slot to last frame */
+	target = g_anchor_base + (slot + 1.0) * tpf;				/* one slot past it */
+	return (target > now) ? (target - now) : 0;
+}
+
+/* Mode 4 only: present-pacing (the SpecialK approach).  Modes 1-3 pace the frame
+ * START, so render-time variance leaks into the PRESENT (what a VRR display
+ * follows) as jitter.  Mode 4 instead lets frames render as soon as the previous
+ * flip completes and HOLDS the buffer swap to a fixed time grid -- absorbing
+ * render variance for a flat present cadence, at the cost of ~one frame of
+ * latency vs mode 3's present-ASAP.  Renderer-agnostic timing; hooked from the
+ * renderer just before the swap (GL: gl_screen.c). */
+static double g_present_base     = 0;	/* QPC-time of present grid slot 0 */
+static double g_present_interval = 0;	/* seconds per present the grid was built for */
+
+/* nettest: drain depth for the GL present pacer.  0 = none, 1 = this frame (legacy full
+ * serialisation), 2 = previous frame, 3 = two frames back.  See sys_framepacing_drain. */
+int Sys_FramePaceDrainDepth(void)
+{
+	int d = sys_framepacing_drain.ival;
+	if (d < 0) d = 0;
+	if (d > 3) d = 3;
+	return d;
+}
+
+qboolean Sys_FramePacePresentActive(void)
+{
+	/* present-pacing only exists in the GL swap hook (gl_screen.c); off-GL, mode 4
+	 * falls back to the mode-3 frame-START anchor (see Sys_FramePacingAnchor). */
+	return sys_framepacing.ival == 4 && qrenderer == QR_OPENGL;
+}
+
+/* Called from the renderer immediately before the buffer swap.  Blocks until the
+ * next present-grid slot using the same high-res timer+spin wait as the other
+ * modes, so consecutive flips are evenly spaced.  A long render just drops to the
+ * next slot rather than bursting to catch up. */
+void Sys_FramePacePresent(void)
+{
+	double fps = cl_maxfps.value;
+	double now, slot, target, delay;
+	if (sys_framepacing.ival != 4 || fps <= 0)
+		return;	/* not in present mode, or uncapped -> swap immediately */
+	now = Sys_DoubleTime();
+	if ((1.0 / fps) != g_present_interval || g_present_base <= 0 || (now - g_present_base) > 600.0)
+	{
+		g_present_base     = now;
+		g_present_interval = 1.0 / fps;
+	}
+	slot   = floor((now - g_present_base) / g_present_interval) + 1.0;	/* next slot after now */
+	target = g_present_base + slot * g_present_interval;
+	delay  = target - now;
+	if (delay > 0)
+		Sys_FramePacedWait(delay);	/* reuse the high-res timer+spin wait (+stats) */
+}
+
+/* Called once per frame from the renderer right after the buffer swap, to sample the
+ * actual present-to-present interval for sys_framepacing_stats — the real VRR-cadence
+ * metric (independent of which pacing mode is active).  Renderer-agnostic timing. */
+void Sys_FramePace_RecordPresent(void)
+{
+	double now = Sys_DoubleTime();
+	if (g_last_present_t > 0)
+	{
+		g_present_ring[g_present_head] = now - g_last_present_t;
+		g_present_head = (g_present_head + 1) % PACE_ERR_RING;
+		if (g_present_count < PACE_ERR_RING) g_present_count++;
+	}
+	g_last_present_t = now;
+}
+
+/* Called when sys_framepacing changes.  Force-init the subsystem so the
+ * stats command shows accurate state without waiting for a frame, and
+ * clear the wait-error ring so only samples from the new mode show. */
+static void Sys_FramePacing_Changed(cvar_t *var, char *oldval)
+{
+	int mode = var ? var->ival : 0;
+	int i;
+	g_pace_err_head  = 0;
+	g_pace_err_count = 0;
+	for (i = 0; i < PACE_ERR_RING; i++) g_pace_err_ring[i] = 0;
+	g_present_head = 0;	/* restart present-cadence sampling so stats reflect the new mode */
+	g_present_count = 0;
+	g_last_present_t = 0;
+	g_anchor_base = 0;	/* re-establish the mode-3 grid on next use */
+	g_anchor_tpf  = 0;
+	if (mode > 0)
+	{
+		Sys_FramePacing_Init();   /* idempotent */
+		if (oldval)
+			Con_Printf("sys_framepacing: mode %i active (timer res %.3fms, waitable %s, dxgi %s)\n",
+				mode, g_pace_timer_res_s * 1000.0,
+				g_pace_timer ? (g_pace_timer_highres ? "high-res" : "standard") : "none",
+#ifdef D3D11QUAKE
+				D3D11_GetFrameLatencyWaitHandle() ? "ready" : "absent"
+#else
+				"N/A (no D3D11)"
+#endif
+				);
+	}
+	else if (oldval)
+		Con_Printf("sys_framepacing: vanilla Sleep() path\n");
+}
+
+/* Console command: prints what the pacing subsystem is actually doing.
+ * Answers the question "is sys_framepacing doing anything?" by dumping
+ * mode, acquired timer resolution, waitable-timer tier, whether the
+ * DXGI waitable handle is available, and running wait-accuracy stats
+ * over the last ~128 frames. */
+static void Sys_FramePacing_Stats_f(void)
+{
+	double mn = 0, mx = 0, sum = 0, stddev = 0, avg = 0;
+	int i;
+	int mode = sys_framepacing.ival;
+#ifdef D3D11QUAKE
+	HANDLE hdxgi = D3D11_GetFrameLatencyWaitHandle();
+#else
+	HANDLE hdxgi = NULL;
+#endif
+
+	Con_Printf("sys_framepacing mode: %i\n", mode);
+	Con_Printf("  0 = vanilla Sleep()\n");
+	Con_Printf("  1 = high-res waitable timer + spin\n");
+	Con_Printf("  2 = (1) + DXGI frame-latency waitable (D3D11 only)\n");
+	Con_Printf("  3 = (2) + absolute-grid anchor on frame START (all renderers)\n");
+	Con_Printf("  4 = present-pacing: hold the SWAP to the grid (flat VRR cadence, GL only; falls back to mode 3 off-GL)\n");
+	Con_Printf("\n");
+	Con_Printf("Subsystem state:\n");
+	Con_Printf("  initialised        : %s\n", g_pace_inited ? "yes" : "no (lazy init on first wait)");
+	Con_Printf("  NtSetTimerResolution: %s\n", pNtSetTimerResolution ? "resolved" : "NOT AVAILABLE");
+	Con_Printf("  effective timer res : %.3f ms\n", g_pace_timer_res_s * 1000.0);
+	Con_Printf("  waitable timer tier : %s\n", g_pace_timer ? (g_pace_timer_highres ? "HIGH_RESOLUTION (Win10 1803+)" : "standard (Win7/Vista)") : "none");
+	Con_Printf("  DXGI waitable handle: %s\n", hdxgi ? "present (D3D11 renderer active)" : "absent (GL/Vk/non-D3D11 renderer, or not created yet)");
+	{	//sys_framepacing 4 GPU-drain path — confirms the ARB_sync fence is live vs the glFinish fallback
+		const char *drain = "n/a (only mode 4 drains the GPU before the paced swap)";
+		if (mode == 4)
+		{
+#ifdef GLQUAKE
+			if (qrenderer == QR_OPENGL)
+			{
+				static const char *depthname[4] = {
+					"OFF (sys_framepacing_drain 0 -- no GPU wait before the flip)",
+					"THIS frame (sys_framepacing_drain 1 -- legacy; serialises CPU and GPU, costs ~a fifth of the frame)",
+					"PREVIOUS frame (sys_framepacing_drain 2 -- caps queue depth, keeps CPU/GPU overlap)",
+					"TWO frames back (sys_framepacing_drain 3 -- loosest, most latency, least stall)"};
+				drain = (GLVID_FramePaceDrainPath() == 1) ? "ARB_sync fence (surgical)" : "glFinish (ARB_sync absent on this context)";
+				Con_Printf("  GPU drain depth     : %s\n", depthname[Sys_FramePaceDrainDepth()]);
+			}
+			else
+#endif
+				drain = "n/a (off-GL: mode 4 falls back to the mode-3 frame-START anchor)";
+		}
+		Con_Printf("  mode-4 GPU drain    : %s\n", drain);
+	}
+
+	if (mode >= 3)
+	{
+		Con_Printf("\nAbsolute-grid anchor:\n");
+		Con_Printf("  grid fps           : %.2f\n", g_anchor_tpf > 0 ? 1.0 / g_anchor_tpf : 0.0);
+		Con_Printf("  seconds per frame  : %.5f\n", g_anchor_tpf);
+	}
+
+	Con_Printf("\nWait accuracy (last %i frames):\n", g_pace_err_count);
+	if (g_pace_err_count > 0)
+	{
+		mn = mx = g_pace_err_ring[0];
+		for (i = 0; i < g_pace_err_count; i++)
+		{
+			double v = g_pace_err_ring[i];
+			sum += v;
+			if (v < mn) mn = v;
+			if (v > mx) mx = v;
+		}
+		avg = sum / g_pace_err_count;
+		for (i = 0; i < g_pace_err_count; i++)
+		{
+			double d = g_pace_err_ring[i] - avg;
+			stddev += d * d;
+		}
+		stddev = sqrt(stddev / g_pace_err_count);
+		Con_Printf("  actual - requested : min %+7.1f us  avg %+7.1f us  max %+7.1f us  stddev %.1f us\n",
+			mn, avg, mx, stddev);
+		Con_Printf("  last sample error  : %+.1f us (%s path)\n", g_pace_last_err_us,
+			g_pace_last_path == 0 ? "Sleep" : g_pace_last_path == 1 ? "timer+spin" : "spin-only (sleep < timer res)");
+		Con_Printf("  last requested wait: %.3f ms\n", g_pace_last_req_s * 1000.0);
+		Con_Printf("\nInterpretation:\n");
+		Con_Printf("  vanilla Sleep()       : stddev typically > 1000 us (up to 15000 at default scheduler tick)\n");
+		Con_Printf("  high-res hybrid       : stddev ~20-200 us\n");
+		Con_Printf("  pure spin (tiny wait) : stddev < 50 us\n");
+		Con_Printf("  if stddev looks similar between modes, your sleeps are sub-ms already\n");
+		Con_Printf("  (try cl_maxfps 60 to force a 15ms sleep budget where modes differ drastically)\n");
+	}
+	else
+	{
+		Con_Printf("  no samples yet — wait a few frames then retry.\n");
+	}
+
+	Con_Printf("\nPresent cadence (last %i swaps):\n", g_present_count);
+	if (g_present_count > 1)
+	{
+		mn = mx = g_present_ring[0]; sum = 0; stddev = 0;
+		for (i = 0; i < g_present_count; i++)
+		{
+			double v = g_present_ring[i];
+			sum += v;
+			if (v < mn) mn = v;
+			if (v > mx) mx = v;
+		}
+		avg = sum / g_present_count;
+		for (i = 0; i < g_present_count; i++)
+		{
+			double d = g_present_ring[i] - avg;
+			stddev += d * d;
+		}
+		stddev = sqrt(stddev / g_present_count);
+		Con_Printf("  interval           : avg %.3f ms (%.1f fps)  min %.3f  max %.3f ms\n",
+			avg * 1000.0, avg > 0 ? 1.0 / avg : 0.0, mn * 1000.0, mx * 1000.0);
+		Con_Printf("  jitter (stddev)    : %.1f us   spread (max-min) %.1f us\n",
+			stddev * 1e6, (mx - mn) * 1e6);
+		Con_Printf("  -> lower jitter = flatter present cadence (smoother on a VRR/G-Sync display);\n");
+		Con_Printf("     mode 4 should be far below mode 2 here even if wait-accuracy looks similar.\n");
+	}
+	else
+		Con_Printf("  present cadence: no samples yet.\n");
 }
 
 static quint64_t timer_qpc_frequency;
@@ -4069,6 +4655,14 @@ int WINAPI WinMain (HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLin
 #endif
 #endif
 
+	//nettest (crash diag): register the crash-address logger UNCONDITIONALLY + process-wide (vectored) so a
+	//segfault records its faulting address even in release (where the CATCHCRASH __try below is compiled out).
+	{
+		PVOID (WINAPI *pAVEHlog)(ULONG, PVECTORED_EXCEPTION_HANDLER);
+		dllfunction_t avehlogfuncs[] = {{(void*)&pAVEHlog, "AddVectoredExceptionHandler"}, {NULL,NULL}};
+		if (Sys_LoadLibrary("kernel32.dll", avehlogfuncs) && pAVEHlog)
+			pAVEHlog(1, nettest_CrashAddrLogger);
+	}
 #ifdef CATCHCRASH
 	LoadLibraryU ("DBGHELP");	//heap corruption can prevent loadlibrary from working properly, so do this in advance.
 #ifdef MSVC_SEH
@@ -4397,7 +4991,7 @@ int WINAPI WinMain (HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLin
 
 				/*sleep if its not yet time for a frame*/
 				if (sleeptime)
-					Sys_Sleep(sleeptime);
+					Sys_FramePacedWait(sleeptime);
 	#else
 				Sys_Error("wut?");
 	#endif

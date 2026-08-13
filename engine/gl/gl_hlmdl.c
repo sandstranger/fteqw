@@ -370,6 +370,140 @@ qboolean QDECL Mod_LoadHLModel (model_t *mod, void *buffer, size_t fsize)
 	model->bones = bones;
 	model->bonectls = bonectls;
 
+	//nettest Patch 60: GoldSrc .mdl loaders never set mod->mins/maxs, so a prop spawned on a
+	//.mdl (server/sv_props.qc) hit the +-16 fallback cube -> wrong-size collision. Compute the
+	//real bounds from the BIND-POSE verts. Server-safe: the file + bones live in the loaded
+	//header on both sides (the global transform_matrix is only filled client-side), so we build
+	//a local bind-pose matrix set here. Falls back to the header's bbox if there are no verts.
+	{
+		hlmdl_bodypart_t *bodyparts = (hlmdl_bodypart_t *)((qbyte *)header + header->bodypartindex);
+		matrix3x4 *bonemat = NULL;
+		int bp, sm, vi, bi, added = 0;
+		//nettest Patch 103: collect the SAME bind-pose verts this block already computes for the
+		//bounds, so we can build a real collision hull from them (see the hull build after the loop).
+		vecV_t *hullverts = NULL;
+		int hullvertcount = 0, hullvertmax = 0;
+		//*** DISABLED — this CRASHED THE GAME ON LAUNCH (STATUS_HEAP_CORRUPTION 0xC0000374). ***
+		//Bisected to this half specifically. The collected verts themselves look right (the bind-pose
+		//transform is Patch 60's own, already shipping for bounds) and hullvertcount is bounds-guarded
+		//against hullvertmax, so the overrun is inside what Mod_BuildConvHull does with this input,
+		//not in the collection. See the note on the disabled Q1 half in com_mesh.c.
+		//Left in place rather than deleted: the research is sound and worth finishing (75 dropped
+		//weapons currently share ONE hardcoded 12x5x3 box). Finish it with a heap-checked build.
+		qboolean wanthull = false && !Mod_SkipCollisionHulls(mod);
+
+		if (wanthull)
+		{	//count first: numverts is per-submodel, so total up the bodypart/submodel tree.
+			for (bp = 0; bp < header->numbodyparts; bp++)
+			{
+				hlmdl_submodel_t *subs = (hlmdl_submodel_t *)((qbyte *)header + bodyparts[bp].modelindex);
+				for (sm = 0; sm < bodyparts[bp].nummodels; sm++)
+					hullvertmax += subs[sm].numverts;
+			}
+			if (hullvertmax > 0)
+				hullverts = BZ_Malloc(sizeof(vecV_t) * hullvertmax);
+		}
+
+		if (header->numbones > 0 && header->numbones <= MAX_BONES)
+		{
+			bonemat = BZ_Malloc(sizeof(matrix3x4) * header->numbones);
+			for (bi = 0; bi < header->numbones; bi++)
+			{
+				float m[12]; vec4_t quat; vec3_t one; one[0]=one[1]=one[2]=1;
+				QuaternionGLAngle(bones[bi].value+3, quat);
+				GenMatrixPosQuat4Scale(bones[bi].value, quat, one, m);
+				if (bones[bi].parent >= 0 && bones[bi].parent < bi)
+					R_ConcatTransforms((void*)bonemat[bones[bi].parent], (void*)m, (void*)bonemat[bi]);
+				else
+					memcpy(bonemat[bi], m, sizeof(m));
+			}
+		}
+
+		ClearBounds(mod->mins, mod->maxs);
+		for (bp = 0; bp < header->numbodyparts; bp++)
+		{
+			hlmdl_submodel_t *subs = (hlmdl_submodel_t *)((qbyte *)header + bodyparts[bp].modelindex);
+			for (sm = 0; sm < bodyparts[bp].nummodels; sm++)
+			{
+				vec3_t *verts = (vec3_t *)((qbyte *)header + subs[sm].vertindex);
+				qbyte  *vinfo = (qbyte  *)header + subs[sm].vertinfoindex;
+				for (vi = 0; vi < subs[sm].numverts; vi++)
+				{
+					vec3_t world;
+					bi = vinfo[vi];
+					if (bonemat && bi >= 0 && bi < header->numbones)
+					{
+						float *t = (float *)bonemat[bi];
+						world[0] = t[0]*verts[vi][0] + t[1]*verts[vi][1] + t[2] *verts[vi][2] + t[3];
+						world[1] = t[4]*verts[vi][0] + t[5]*verts[vi][1] + t[6] *verts[vi][2] + t[7];
+						world[2] = t[8]*verts[vi][0] + t[9]*verts[vi][1] + t[10]*verts[vi][2] + t[11];
+					}
+					else
+						VectorCopy(verts[vi], world);
+					AddPointToBounds(world, mod->mins, mod->maxs);
+					//nettest Patch 103: keep it. `world` is the bind-posed, MODEL-SPACE vertex --
+					//exactly the space the renderer draws in (gl_hlmdl.c's draw path transforms the
+					//bone-local xyz_array by the same bones), and exactly the space the hull trace
+					//rotates in. The raw studio verts are BONE-LOCAL: on w_awp the single bone's bind
+					//pose rotates the barrel axis Z->X and shifts the centroid 13.5qu, so a hull from
+					//raw verts would be a rifle standing vertically, offset from its own model.
+					if (hullverts && hullvertcount < hullvertmax)
+						VectorCopy(world, hullverts[hullvertcount++]);
+					added++;
+				}
+			}
+		}
+		if (bonemat)
+			BZ_Free(bonemat);
+
+		//nettest Patch 103: build the collision hull for GoldSrc .mdl.
+		//
+		//The IQM loader has done this since Patch 56 (com_mesh.c, Mod_LoadIQMFile); gl_hlmdl.c never
+		//did, so EVERY .mdl had numhullplanes==0 and numhulls==0. That silently disabled the whole
+		//hull path for them: the gate in pmovetst.c / world.c is
+		//    solid == SOLID_PHYSICS_TRIMESH && (numhullplanes >= 4 || numhulls > 0)
+		//so a .mdl asked to collide as a trimesh just fell back to its bbox. That is why all 75
+		//dropped weapon world models shared one hardcoded 12x5x3 box (sv_weapons.qc) -- a knife and
+		//an AWP had identical collision -- and why sv_physprop_weapon_geom 1 appeared to do nothing.
+		//
+		//No asset work is needed for this: the verts were always here, the loader just never used
+		//them. No .acd sidecar either -- a sidecar only describes a multi-piece DECOMPOSITION, and
+		//this is the single convex hull (mod->hullplanes), which is what sv_prop_collision 2 traces.
+		//
+		//Mins/maxs are already correct and in the same space at this point (Patch 60 just computed
+		//them from these very verts), so they can be passed straight through. Cap 256 matches the
+		//IQM caller.
+		if (hullverts)
+		{
+			if (hullvertcount >= 4)
+			{
+				convhull_t single;
+				Mod_BuildConvHull(mod, &single, hullverts, hullvertcount, mod->mins, mod->maxs, 256);
+				mod->numhullplanes = single.numplanes;
+				mod->hullplanes    = single.planes;
+				mod->numhulltris   = single.numtris;
+				mod->hulltris      = single.tris;
+			}
+			BZ_Free(hullverts);
+		}
+
+		if (!added)
+		{	//no mesh verts -> use the header's ideal-hull (unknown3[1/2]) or clip (3/4) bbox,
+			//accepting a pair if it has nonzero extent on ANY axis (a flat prop may be valid
+			//on Y/Z but degenerate on X); else a degenerate box (the QC ±16 guard handles it).
+			vec3_t *idl = &header->unknown3[1];	//[0]=min, [1]=max
+			vec3_t *clp = &header->unknown3[3];
+			if (idl[1][0]>idl[0][0] || idl[1][1]>idl[0][1] || idl[1][2]>idl[0][2])
+				{ VectorCopy(idl[0], mod->mins); VectorCopy(idl[1], mod->maxs); }
+			else if (clp[1][0]>clp[0][0] || clp[1][1]>clp[0][1] || clp[1][2]>clp[0][2])
+				{ VectorCopy(clp[0], mod->mins); VectorCopy(clp[1], mod->maxs); }
+			else
+				{ VectorClear(mod->mins); VectorClear(mod->maxs); }
+		}
+		Con_DPrintf("HLMDL collision %s: bounds %.1f %.1f %.1f .. %.1f %.1f %.1f (%i verts)\n",
+			mod->name, mod->mins[0], mod->mins[1], mod->mins[2], mod->maxs[0], mod->maxs[1], mod->maxs[2], added);
+	}
+
 #ifndef SERVERONLY
 	model->compatbones = ZG_Malloc(&mod->memgroup, header->numbones * sizeof(*model->compatbones));
 	for (i = 0; i < header->numbones; i++)
@@ -607,8 +741,29 @@ qboolean QDECL Mod_LoadHLModel (model_t *mod, void *buffer, size_t fsize)
 		}
 	}
 
-
-
+	// FTE patch: whole-model normalmap support for HL .mdl.
+	// Looks for <modelname-without-ext>_norm.<tga|png|...> next to the
+	// .mdl and binds it as the .bump slot on every shader entry.  The
+	// existing defaultskin GLSL program automatically picks up the bump
+	// slot via its #BUMP permutation when a per-pixel light direction is
+	// available (realtime dlights, deluxemaps, etc.).
+	//
+	// The normalmap should be authored at the same dimensions and atlas
+	// layout as the engine-built diffuse atlas (typically 1024x1024 for
+	// player models) so that per-mesh UVs sample matching pixels in
+	// both diffuse and bump.  Authors can dump the diffuse atlas via
+	// "r_imageexport models/<name>.mdl#0" to use as a paint reference.
+	{
+		char stripped[MAX_QPATH], normname[MAX_QPATH];
+		COM_StripExtension(mod->name, stripped, sizeof(stripped));
+		Q_snprintfz(normname, sizeof(normname), "%s_norm", stripped);
+		texid_t normtex = R_LoadHiResTexture(normname, NULL, 0);
+		if (normtex != r_nulltex)
+		{
+			for (i = 0; i < texheader->numtextures; i++)
+				shaders[i].defaulttex.bump = normtex;
+		}
+	}
 
 	model->numskinrefs = texheader->skinrefs;
 	model->numskingroups = texheader->skingroups;

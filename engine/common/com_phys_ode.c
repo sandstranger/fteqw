@@ -232,6 +232,97 @@ void            (ODE_API *dCloseODE)(void);
 //void            (ODE_API *dBodySetFiniteRotationAxis)(dBodyID, dReal x, dReal y, dReal z);
 //int             (ODE_API *dBodyGetFiniteRotationMode)(dBodyID);
 //void            (ODE_API *dBodyGetFiniteRotationAxis)(dBodyID, dVector3 result);
+int             (ODE_API *dBodyGetNumJoints)(dBodyID b);
+dJointID        (ODE_API *dBodyGetJoint)(dBodyID, int index);
+//void            (ODE_API *dBodySetDynamic)(dBodyID);
+//void            (ODE_API *dBodySetKinematic)(dBodyID);
+//int             (ODE_API *dBodyIsKinematic)(dBodyID);
+void            (ODE_API *dBodyEnable)(dBodyID);
+void            (ODE_API *dBodyDisable)(dBodyID);
+int             (ODE_API *dBodyIsEnabled)(dBodyID);	//nettest Patch 67: resting-prop dCollide skip
+void            (ODE_API *dBodySetGravityMode)(dBodyID b, int mode);
+int             (ODE_API *dBodyGetGravityMode)(dBodyID b);
+//void            (*dBodySetMovedCallback)(dBodyID b, void(ODE_API *callback)(dBodyID));
+//dGeomID         (ODE_API *dBodyGetFirstGeom)(dBodyID b);
+//dGeomID         (ODE_API *dBodyGetNextGeom)(dGeomID g);
+//void            (ODE_API *dBodySetDampingDefaults)(dBodyID b);
+//dReal           (ODE_API *dBodyGetLinearDamping)(dBodyID b);
+void            (ODE_API *dBodySetLinearDamping)(dBodyID b, dReal scale);
+//dReal           (ODE_API *dBodyGetAngularDamping)(dBodyID b);
+void            (ODE_API *dBodySetAngularDamping)(dBodyID b, dReal scale);
+//void            (ODE_API *dBodySetDamping)(dBodyID b, dReal linear_scale, dReal angular_scale);
+//dReal           (ODE_API *dBodyGetLinearDampingThreshold)(dBodyID b);
+//void            (ODE_API *dBodySetLinearDampingThreshold)(dBodyID b, dReal threshold);
+//dReal           (ODE_API *dBodyGetAngularDampingThreshold)(dBodyID b);
+//void            (ODE_API *dBodySetAngularDampingThreshold)(dBodyID b, dReal threshold);
+//dReal           (ODE_API *dBodyGetMaxAngularSpeed)(dBodyID b);
+void            (ODE_API *dBodySetMaxAngularSpeed)(dBodyID b, dReal max_speed);
+//int             (ODE_API *dBodyGetGyroscopicMode)(dBodyID b);
+//void            (ODE_API *dBodySetGyroscopicMode)(dBodyID b, int enabled);
+dJointID        (ODE_API *dJointCreateBall)(dWorldID, dJointGroupID);
+dJointID        (ODE_API *dJointCreateHinge)(dWorldID, dJointGroupID);
+dJointID        (ODE_API *dJointCreateSlider)(dWorldID, dJointGroupID);
+dJointID        (ODE_API *dJointCreateContact)(dWorldID, dJointGroupID, const dContact *);
+dJointID        (ODE_API *dJointCreateHinge2)(dWorldID, dJointGroupID);
+dJointID        (ODE_API *dJointCreateUniversal)(dWorldID, dJointGroupID);
+//dJointID        (ODE_API *dJointCreatePR)(dWorldID, dJointGroupID);
+//dJointID        (ODE_API *dJointCreatePU)(dWorldID, dJointGroupID);
+//dJointID        (ODE_API *dJointCreatePiston)(dWorldID, dJointGroupID);
+dJointID        (ODE_API *dJointCreateFixed)(dWorldID, dJointGroupID);
+//dJointID        (ODE_API *dJointCreateNull)(dWorldID, dJointGroupID);
+//dJointID        (ODE_API *dJointCreateAMotor)(dWorldID, dJointGroupID);
+//dJointID        (ODE_API *dJointCreateLMotor)(dWorldID, dJointGroupID);
+//dJointID        (ODE_API *dJointCreatePlane2D)(dWorldID, dJointGroupID);
+void            (ODE_API *dJointDestroy)(dJointID);
+dJointGroupID   (ODE_API *dJointGroupCreate)(int max_size);
+void            (ODE_API *dJointGroupDestroy)(dJointGroupID);
+void            (ODE_API *dJointGroupEmpty)(dJointGroupID);
+//int             (ODE_API *dJointGetNumBodies)(dJointID);
+void            (ODE_API *dJointAttach)(dJointID, dBodyID body1, dBodyID body2);
+void            (ODE_API *dJointEnable)(dJointID);
+void            (ODE_API *dJointDisable)(dJointID);
+//int             (ODE_API *dJointIsEnabled)(dJointID);
+void            (ODE_API *dJointSetData)(dJointID, void *data);
+void *          (ODE_API *dJointGetData)(dJointID);
+//dJointType      (ODE_API *dJointGetType)(dJointID);
+dBodyID         (ODE_API *dJointGetBody)(dJointID, int index);
+//void            (ODE_API *dJointSetFeedback)(dJointID, dJointFeedback *);
+//dJointFeedback *(ODE_API *dJointGetFeedback)(dJointID);
+void            (ODE_API *dJointSetBallAnchor)(dJointID, dReal x, dReal y, dReal z);
+//void            (ODE_API *dJointSetBallAnchor2)(dJointID, dReal x, dReal y, dReal z);
+void            (ODE_API *dJointSetBallParam)(dJointID, int parameter, dReal value);
+void            (ODE_API *dJointSetHingeAnchor)(dJointID, dReal x, dReal y, dReal z);
+//void            (ODE_API *dJointSetHingeAnchorDelta)(dJointID, dReal x, dReal y, dReal z, dReal ax, dReal ay, dReal az);
+void            (ODE_API *dJointSetHingeAxis)(dJointID, dReal x, dReal y, dReal z);
+//void            (ODE_API *dJointSetHingeAxisOffset)(dJointID j, dReal x, dReal y, dReal z, dReal angle);
+void            (ODE_API *dJointSetHingeParam)(dJointID, int parameter, dReal value);
+//void            (ODE_API *dJointAddHingeTorque)(dJointID joint, dReal torque);
+void            (ODE_API *dJointSetSliderAxis)(dJointID, dReal x, dReal y, dReal z);
+//void            (ODE_API *dJointSetSliderAxisDelta)(dJointID, dReal x, dReal y, dReal z, dReal ax, dReal ay, dReal az);
+void            (ODE_API *dJointSetSliderParam)(dJointID, int parameter, dReal value);
+//void            (ODE_API *dJointAddSliderForce)(dJointID joint, dReal force);
+void            (ODE_API *dJointSetHinge2Anchor)(dJointID, dReal x, dReal y, dReal z);
+void            (ODE_API *dJointSetHinge2Axis1)(dJointID, dReal x, dReal y, dReal z);
+void            (ODE_API *dJointSetHinge2Axis2)(dJointID, dReal x, dReal y, dReal z);
+void            (ODE_API *dJointSetHinge2Param)(dJointID, int parameter, dReal value);
+//void            (ODE_API *dJointAddHinge2Torques)(dJointID joint, dReal torque1, dReal torque2);
+void            (ODE_API *dJointSetUniversalAnchor)(dJointID, dReal x, dReal y, dReal z);
+void            (ODE_API *dJointSetUniversalAxis1)(dJointID, dReal x, dReal y, dReal z);
+//void            (ODE_API *dJointSetUniversalAxis1Offset)(dJointID, dReal x, dReal y, dReal z, dReal offset1, dReal offset2);
+void            (ODE_API *dJointSetUniversalAxis2)(dJointID, dReal x, dReal y, dReal z);
+//void            (ODE_API *dJointSetUniversalAxis2Offset)(dJointID, dReal x, dReal y, dReal z, dReal offset1, dReal offset2);
+void            (ODE_API *dJointSetUniversalParam)(dJointID, int parameter, dReal value);
+//void            (ODE_API *dJointAddUniversalTorques)(dJointID joint, dReal torque1, dReal torque2);
+//void            (ODE_API *dJointSetPRAnchor)(dJointID, dReal x, dReal y, dReal z);
+//void            (ODE_API *dJointSetPRAxis1)(dJointID, dReal x, dReal y, dReal z);
+//void            (ODE_API *dJointSetPRAxis2)(dJointID, dReal x, dReal y, dReal z);
+//void            (ODE_API *dJointSetPRParam)(dJointID, int parameter, dReal value);
+//void            (ODE_API *dJointAddPRTorque)(dJointID j, dReal torque);
+//void            (ODE_API *dJointSetPUAnchor)(dJointID, dReal x, dReal y, dReal z);
+//void            (ODE_API *dJointSetPUAnchorOffset)(dJointID, dReal x, dReal y, dReal z, dReal dx, dReal dy, dReal dz);
+//void            (ODE_API *dJointSetPUAxis1)(dJointID, dReal x, dReal y, dReal z);
+//void            (ODE_API *dJointSetPUAxis2)(dJointID, dReal x, dReal y, dReal z);
+//void            (ODE_API *dJointSetPUAxis3)(dJointID, dReal x, dReal y, dReal z);
 //void            (ODE_API *dJointSetPUAxisP)(dJointID id, dReal x, dReal y, dReal z);
 //void            (ODE_API *dJointSetPUParam)(dJointID, int parameter, dReal value);
 //void            (ODE_API *dJointAddPUTorque)(dJointID j, dReal torque);
@@ -519,7 +610,7 @@ static dllfunction_t odefuncs[] =
 //	{"dBodyIsKinematic",							(void **) &dBodyIsKinematic},
 	{(void **) &dBodyEnable,						"dBodyEnable"},
 	{(void **) &dBodyDisable,						"dBodyDisable"},
-//	{"dBodyIsEnabled",								(void **) &dBodyIsEnabled},
+	{(void **) &dBodyIsEnabled,						"dBodyIsEnabled"},	//nettest Patch 67
 	{(void **) &dBodySetGravityMode,				"dBodySetGravityMode"},
 	{(void **) &dBodyGetGravityMode,				"dBodyGetGravityMode"},
 //	{"dBodySetMovedCallback",						(void **) &dBodySetMovedCallback},
@@ -855,6 +946,9 @@ static cvar_t *physics_ode_autodisable_threshold_linear;
 static cvar_t *physics_ode_autodisable_threshold_angular;
 static cvar_t *physics_ode_autodisable_threshold_samples;
 static cvar_t *physics_ode_maxspeed;
+static cvar_t *physics_ode_trimesh_from_hull;	//nettest Patch 67: 0 render mesh / 1 low-poly hull (default) / 2 box
+static cvar_t *physics_ode_restingskip;			//nettest Patch 67: skip world-dCollide for auto-disabled (settled) bodies
+static cvar_t *physics_ode_use_decomp;			//nettest Patch 68: ODE body = decomposition soup (1) vs single hull (0, default). Read in world.c.
 
 struct odectx_s
 {
@@ -940,6 +1034,9 @@ static qboolean World_ODE_Init(void)
 	physics_ode_autodisable_threshold_linear	= cvarfuncs->GetNVFDG("physics_ode_autodisable_threshold_linear",		"0.2",	0,	"body will be disabled if it's linear move below this value",		"ODE Physics Library");
 	physics_ode_autodisable_threshold_angular	= cvarfuncs->GetNVFDG("physics_ode_autodisable_threshold_angular",	"0.3",	0,	"body will be disabled if it's angular move below this value",		"ODE Physics Library");
 	physics_ode_autodisable_threshold_samples	= cvarfuncs->GetNVFDG("physics_ode_autodisable_threshold_samples",	"5",	0,	"average threshold with this number of samples",					"ODE Physics Library");
+	physics_ode_trimesh_from_hull				= cvarfuncs->GetNVFDG("physics_ode_trimesh_from_hull",				"1",	0,	"ODE rigid-body collision shape for SOLID_PHYSICS_TRIMESH props (read at body build / model load; reload to apply). 0=full render mesh (slow), 1=low-poly collision hull/decomposition (default; player+bullet collision stays exact via World_HullTrace), 2=box from model bounds.",	"ODE Physics Library");
+	physics_ode_restingskip						= cvarfuncs->GetNVFDG("physics_ode_restingskip",						"1",	0,	"skip the world-collision test for auto-disabled (settled) physics bodies so a scene of resting props costs ~0; a body still wakes when another body lands on it",	"ODE Physics Library");
+	physics_ode_use_decomp						= cvarfuncs->GetNVFDG("physics_ode_use_decomp",						"0",	0,	"when physics_ode_trimesh_from_hull is 1: 0=ODE body is the single convex hull (cheap, avoids trimesh-trimesh contact-hash overflow when props pile; default), 1=convex DECOMPOSITION soup (concave sim, much slower in piles). Player collision is unaffected. Reload to apply.",	"ODE Physics Library");
 
 #ifdef ODE_DYNAMIC
 	// Load the DLL
@@ -1023,6 +1120,11 @@ static void QDECL World_ODE_RemoveFromEntity(world_t *world, wedict_t *ed)
 	if (ed->rbe.body.geom)
 		dGeomDestroy((dGeomID)ed->rbe.body.geom);
 	ed->rbe.body.geom = NULL;
+	if (ed->rbe.geomdata)	//nettest: free the dTriMeshData behind a trimesh geom — dGeomDestroy does NOT, so it leaked on every (re)build (per-frame for moving brush ents -> 12GB OOM crash)
+	{
+		dGeomTriMeshDataDestroy((dTriMeshDataID)ed->rbe.geomdata);
+		ed->rbe.geomdata = NULL;
+	}
 	if (ed->rbe.body.body)
 	{
 		dJointID j;
@@ -1426,7 +1528,20 @@ static qboolean QDECL World_ODE_RagCreateBody(world_t *world, rbebody_t *bodyptr
 	dGeomSetBody(bodyptr->geom, bodyptr->body);
 	dGeomSetData(bodyptr->geom, (void*)ent);
 
+	//NB: don't seed velocity here - rag_instanciate re-poses every body via RagMatrixToBody AFTER this
+	//(which zeros velocity), so it's dead.  The throw seed is applied post-re-pose via RagSetBodyVelocity.
 	return World_ODE_RagMatrixToBody(bodyptr, mat);
+}
+
+//seed a ragdoll limb's velocity - called by rag_instanciate AFTER its final re-pose loop (so it survives).
+//linvel/avel are already physics-space (Quake units/s, rad/s); the QC-Euler remap happens at the call site.
+static void QDECL World_ODE_RagSetBodyVelocity(world_t *world, rbebody_t *bodyptr, vec3_t linvel, vec3_t avel)
+{
+	if (!bodyptr->body)
+		return;
+	dBodySetLinearVel(bodyptr->body,  linvel[0], linvel[1], linvel[2]);
+	dBodySetAngularVel(bodyptr->body, avel[0],   avel[1],   avel[2]);
+	dBodyEnable(bodyptr->body);
 }
 
 static void QDECL World_ODE_RagMatrixFromJoint(rbejoint_t *joint, rbejointinfo_t *info, float *mat)
@@ -1812,6 +1927,17 @@ static void World_ODE_Frame_BodyFromEntity(world_t *world, wedict_t *ed)
 		switch(geomtype)
 		{
 		case GEOMTYPE_TRIMESH:
+			//nettest Patch 67: physics_ode_trimesh_from_hull 2 -> simulate this prop as a cheap box
+			//(the player + bullet collision stays the exact hull via World_HullTrace, unaffected).
+			//0/1 build a trimesh; the hull-vs-render-mesh choice is made engine-side in
+			//World_GenerateCollisionMesh (same cvar), so here we only special-case the box.
+			if (physics_ode_trimesh_from_hull && physics_ode_trimesh_from_hull->ival == 2)
+			{
+				Matrix4x4_RM_CreateTranslate(ed->rbe.offsetmatrix, geomcenter[0], geomcenter[1], geomcenter[2]);
+				ed->rbe.body.geom = (void *)dCreateBox(ctx->space, geomsize[0], geomsize[1], geomsize[2]);
+				dMassSetBoxTotal(&mass, massval, geomsize[0], geomsize[1], geomsize[2]);
+				break;
+			}
 			Matrix4x4_Identity(ed->rbe.offsetmatrix);
 			ed->rbe.body.geom = NULL;
 			if (!model)
@@ -1823,8 +1949,13 @@ static void World_ODE_Frame_BodyFromEntity(world_t *world, wedict_t *ed)
 			}
 			if (!rbefuncs->GenerateCollisionMesh(world, model, ed, geomcenter))
 			{
-				if (ed->rbe.physics)
-					World_ODE_RemoveFromEntity(world, ed);
+				//nettest: brush entity built no collision surfaces (Source func_door_rotating/
+				// func_breakable whose brush model has no faces in FTE). Do NOT RemoveFromEntity —
+				// that resets ed->rbe.physics=false, so the rebuild condition (!physics) re-fires and
+				// we re-attempt + re-spam "has no geometry" EVERY frame. Leave physics=true with a
+				// NULL geom (mins/maxs/modelindex were just recorded above) so we only retry if those
+				// actually change. The entity keeps its normal non-ODE (BSP/brush) collision.
+				ed->rbe.body.geom = NULL;
 				return;
 			}
 
@@ -1833,6 +1964,7 @@ static void World_ODE_Frame_BodyFromEntity(world_t *world, wedict_t *ed)
 			dataID = dGeomTriMeshDataCreate();
 			dGeomTriMeshDataBuildSingle(dataID, (void*)ed->rbe.vertex3f, sizeof(float[3]), ed->rbe.numvertices, ed->rbe.element3i, ed->rbe.numtriangles*3, sizeof(int[3]));
 			ed->rbe.body.geom = (void *)dCreateTriMesh(ctx->space, dataID, NULL, NULL, NULL);
+			ed->rbe.geomdata = dataID;	//nettest: track the trimesh data so RemoveFromEntity frees it (dGeomDestroy does NOT)
 			dMassSetBoxTotal(&mass, massval, geomsize[0], geomsize[1], geomsize[2]);
 			break;
 		case GEOMTYPE_BOX:
@@ -2249,6 +2381,22 @@ static void VARGS nearCallback (void *data, dGeomID o1, dGeomID o2)
 	if(!ed2 || ED_ISFREE(ed2))
 		ed2 = world->edicts;
 
+	//nettest Patch 67/68: skip the O(tris) trimesh dCollide for pairs that can't newly interact this
+	//step, so a scene of resting props costs ~0 (auto-disable stops integrate/solve but NOT this
+	//broadphase collide). Two cases: (a) a settled body vs the STATIC WORLD (worldspawn ONLY — a
+	//SOLID_BSP mover or any other body must still push+wake it); (b) Patch 68: BOTH bodies settled
+	//(auto-disabled) — two sleeping props can't wake each other, and an external awake body is a
+	//separate (awake,disabled) pair that still collides+wakes them. This is what frees a GRAVGUN PILE
+	//of settled props (O(n^2) prop-vs-prop -> ~0). (physics_ode_restingskip 0 = off)
+	//NOTE for future paths: a prop moved by DIRECT QC .velocity/setorigin on an auto-disabled body
+	//would stay disabled here and be wrongly skipped — always wake it (physics_addforce auto-enables;
+	//else physics_enable(prop,TRUE)) so it's ENABLED before the next step. All current push paths do.
+	if (physics_ode_restingskip && physics_ode_restingskip->ival &&
+		((b1 && !b2 && ed2 == world->edicts && !dBodyIsEnabled(b1)) ||
+		 (b2 && !b1 && ed1 == world->edicts && !dBodyIsEnabled(b2)) ||
+		 (b1 && b2 && !dBodyIsEnabled(b1) && !dBodyIsEnabled(b2))))
+		return;
+
 	//non-solid things can still interact with pushers, but not other stuff.
 	if (!ed1->v->solid && ed2->v->solid != SOLID_BSP)
 		return;
@@ -2493,6 +2641,7 @@ static void QDECL World_ODE_Start(world_t *world)
 	ctx->pub.RagCreateJoint			= World_ODE_RagCreateJoint;
 	ctx->pub.RagDestroyBody			= World_ODE_RagDestroyBody;
 	ctx->pub.RagDestroyJoint		= World_ODE_RagDestroyJoint;
+	ctx->pub.RagSetBodyVelocity		= World_ODE_RagSetBodyVelocity;	//nettest: throwable ragdolls
 	ctx->pub.RunFrame				= World_ODE_Frame;
 	ctx->pub.PushCommand			= World_ODE_PushCommand;
 

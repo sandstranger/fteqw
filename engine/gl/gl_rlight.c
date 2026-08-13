@@ -27,9 +27,21 @@ Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
 extern cvar_t r_shadow_realtime_world, r_shadow_realtime_world_lightmaps;
 extern cvar_t r_hdr_irisadaptation, r_hdr_irisadaptation_multiplier, r_hdr_irisadaptation_minvalue, r_hdr_irisadaptation_maxvalue, r_hdr_irisadaptation_fade_down, r_hdr_irisadaptation_fade_up;
 extern cvar_t mod_lightpoint_distance;
+extern cvar_t r_modellight_bilinear, r_modellight_fallback;	//Patch 105 (both feed r_modellight_seq)
 
 int	r_dlightframecount;
 int		d_lightstylevalue[MAX_NET_LIGHTSTYLES];	// 8.8 fraction of base light value
+
+/*Patch 105: invalidation sequence for the model-light cache (gl_alias.c).
+  GLQ1BSP_LightPointValues' result is a PURE FUNCTION of (sample point, the lightstyle
+  state folded in by LightPoint3C_AccumLuxel, the world's lightdata, and the handful of
+  cvars the sampler reads). The cache validates the point itself by comparing origins, so
+  this counter has to cover everything ELSE. R_AnimateLight already walks every style once
+  per frame, so hashing the values as they are written costs ~nothing and is EXACT: a map
+  whose styles never change (a baked sun) never bumps this and caches at 100%, while a
+  flickering light bumps it and every prop re-samples that frame.
+  Bumped here on any change, and directly by Surf_NewMap on map load.*/
+unsigned int r_modellight_seq = 1;	//never 0: a zeroed cache entry must never validate
 
 void R_BumpLightstyles(unsigned int maxstyle)
 {
@@ -165,6 +177,45 @@ void R_AnimateLight (void)
 				cl_lightstyle[j].colourkey = 0xff;
 			else
 				cl_lightstyle[j].colourkey = (int)(cl_lightstyle[j].colours[0]*0x400) ^ (int)(cl_lightstyle[j].colours[1]*0x100000) ^ (int)(cl_lightstyle[j].colours[2]*0x40000000);
+		}
+	}
+
+	/*Patch 105: bump r_modellight_seq when anything the model-light sampler reads (other
+	  than the sample point, which the cache validates itself) changes. Hashing the actual
+	  VALUES rather than tracking cvar->modified means a cvar that is set to the value it
+	  already had does not needlessly dump the cache, and nothing can be silently missed.
+	  ~cl_max_lightstyles iterations ONCE PER FRAME, against 672 recursive BSP walks saved.*/
+	{
+		static unsigned int lasthash;
+		union {float f; unsigned int u;} c;
+		unsigned int hash = 0x811c9dc5;
+		#define MLHASH_U(v) (hash = (hash*33) ^ (unsigned int)(v))
+		#define MLHASH_F(v) (c.f = (v), hash = (hash*33) ^ c.u)
+		for (j=0 ; j<cl_max_lightstyles ; j++)
+		{	//everything LightPoint3C_AccumLuxel folds in per luxel
+			MLHASH_U(d_lightstylevalue[j]);
+			MLHASH_U(cl_lightstyle[j].colourkey);
+		}
+		//the cvars GLQ1BSP_LightPointValues / GLRecursiveLightPoint3C / the Patch 94 ladder read
+		MLHASH_U(r_modellight_bilinear.ival);
+		MLHASH_U(r_modellight_fallback.ival);
+		MLHASH_F(mod_lightpoint_distance.value);
+#ifdef RTLIGHTS
+		MLHASH_U(r_shadow_realtime_world.ival);		//scales the result at gl_rlight.c:3247
+		MLHASH_F(r_shadow_realtime_world_lightmaps.value);
+#endif
+		//map load / lightmap reload (Surf_NewMap also bumps directly; this is belt-and-braces)
+		MLHASH_U((uintptr_t)cl.worldmodel);
+		if (cl.worldmodel)
+			MLHASH_U((uintptr_t)cl.worldmodel->lightdata);
+		#undef MLHASH_U
+		#undef MLHASH_F
+
+		if (hash != lasthash)
+		{
+			lasthash = hash;
+			if (!++r_modellight_seq)
+				r_modellight_seq++;	//skip 0 on wrap; 0 means "empty slot"
 		}
 	}
 }
@@ -2413,6 +2464,19 @@ LIGHT SAMPLING
 
 mplane_t		*lightplane;
 vec3_t			lightspot;
+//nettest: corrected WORLD-space light direction (pointing TOWARD the light) for the luxel that
+//GLRecursiveLightPoint3C last sampled, plus a validity flag.  Written at the sample site (the only place
+//the face's tangent basis is in scope) and consumed a few lines later in GLQ1BSP_LightPointValues -- both
+//within one synchronous call, so no per-entity storage is needed (and none is possible: entity_t is
+//plugin-visible, so appending a field to it would be a stride/ABI hazard).  See r_modellight_worlddir.
+vec3_t			lightpoint_worlddir;
+qboolean		lightpoint_worlddir_ok;
+//nettest: sun VISIBILITY (0..1, 1=fully sunlit) for the luxel GLRecursiveLightPoint3C last sampled, read
+//from the parallel SUNVIS lump at the SAME luxel the deluxemap uses.  Written at the sample site, consumed
+//synchronously by R_PointSunVis.  _ok=false => no SUNVIS data at that hit (caller treats as fully sunlit).
+float			lightpoint_sunvis;
+qboolean		lightpoint_sunvis_ok;
+extern cvar_t	r_modellight_worlddir;
 
 static void GLQ3_AddLatLong(const qbyte latlong[2], vec3_t dir, float mag)
 {
@@ -2698,8 +2762,84 @@ int R_LightPoint (vec3_t p)
 
 #ifdef PEXT_LIGHTSTYLECOL
 
+//Decodes ONE lightmap luxel of a surface (summed over its lightstyles), scaled by
+//`weight`, and accumulates it into l[0..2] (colour) + l[3..5] (deluxe direction). Shared
+//by the nearest and bilinear model-lightpoint paths so the per-format decode lives once.
+static void LightPoint3C_AccumLuxel(model_t *mod, msurface_t *surf, int lsi, int lti, float weight, float *l)
+{
+	int smax = (surf->extents[0]>>surf->lmshift)+1;
+	int tmax = (surf->extents[1]>>surf->lmshift)+1;
+	int plane = smax*tmax;
+	int idx = lti*smax + lsi;
+	qbyte *samples = surf->samples;
+	qbyte *deluxe = NULL;
+	float scale, overbright = weight/255.0f;
+	int maps;
+
+	if (mod->deluxdata)
+	{
+		switch(mod->lightmaps.fmt)
+		{
+		case LM_E5BGR9:	deluxe = ((surf->samples - mod->lightdata)>>2)*3 + mod->deluxdata;	break;
+		case LM_RGB8:	deluxe = (surf->samples - mod->lightdata) + mod->deluxdata;			break;
+		case LM_L8:		deluxe = (surf->samples - mod->lightdata)*3 + mod->deluxdata;		break;
+		}
+	}
+
+	switch(mod->lightmaps.fmt)
+	{
+	case LM_E5BGR9:
+		for (maps = 0 ; maps < MAXCPULIGHTMAPS && surf->styles[maps] != INVALID_LIGHTSTYLE ; maps++)
+		{
+			unsigned int lm = *(unsigned int*)(samples + ((idx + maps*plane)<<2));
+			scale = d_lightstylevalue[surf->styles[maps]]*overbright;
+			scale *= pow(2, (int)(lm>>27)-15-9+7);	//2^(exp-17): match the surface build (rgb9e5tab[exp]*(1<<7)); the old +8 made models 2x brighter than the world on HDR maps
+			l[0] += ((lm>> 0)&0x1ff) * scale * cl_lightstyle[surf->styles[maps]].colours[0];
+			l[1] += ((lm>> 9)&0x1ff) * scale * cl_lightstyle[surf->styles[maps]].colours[1];
+			l[2] += ((lm>>18)&0x1ff) * scale * cl_lightstyle[surf->styles[maps]].colours[2];
+			if (deluxe)
+			{
+				qbyte *d = deluxe + (idx + maps*plane)*3;
+				l[3] += (d[0]-127)*scale; l[4] += (d[1]-127)*scale; l[5] += (d[2]-127)*scale;
+			}
+		}
+		break;
+	case LM_RGB8:
+		for (maps = 0 ; maps < MAXCPULIGHTMAPS && surf->styles[maps] != INVALID_LIGHTSTYLE ; maps++)
+		{
+			qbyte *lm = samples + (idx + maps*plane)*3;
+			scale = d_lightstylevalue[surf->styles[maps]]*overbright;
+			l[0] += lm[0] * scale * cl_lightstyle[surf->styles[maps]].colours[0];
+			l[1] += lm[1] * scale * cl_lightstyle[surf->styles[maps]].colours[1];
+			l[2] += lm[2] * scale * cl_lightstyle[surf->styles[maps]].colours[2];
+			if (deluxe)
+			{
+				qbyte *d = deluxe + (idx + maps*plane)*3;
+				l[3] += (d[0]-127)*scale; l[4] += (d[1]-127)*scale; l[5] += (d[2]-127)*scale;
+			}
+		}
+		break;
+	case LM_L8:
+		for (maps = 0 ; maps < MAXCPULIGHTMAPS && surf->styles[maps] != INVALID_LIGHTSTYLE ; maps++)
+		{
+			qbyte *lm = samples + (idx + maps*plane);
+			scale = d_lightstylevalue[surf->styles[maps]]*overbright;
+			l[0] += *lm * scale * cl_lightstyle[surf->styles[maps]].colours[0];
+			l[1] += *lm * scale * cl_lightstyle[surf->styles[maps]].colours[1];
+			l[2] += *lm * scale * cl_lightstyle[surf->styles[maps]].colours[2];
+			if (deluxe)
+			{
+				qbyte *d = deluxe + (idx + maps*plane)*3;
+				l[3] += d[0]*scale; l[4] += d[1]*scale; l[5] += d[2]*scale;
+			}
+		}
+		break;
+	}
+}
+
 static float *GLRecursiveLightPoint3C (model_t *mod, mnode_t *node, const vec3_t start, const vec3_t end)
 {
+	extern cvar_t r_modellight_bilinear;
 	static float l[6];
 	float *r;
 	float		front, back, frac;
@@ -2708,11 +2848,10 @@ static float *GLRecursiveLightPoint3C (model_t *mod, mnode_t *node, const vec3_t
 	vec3_t		mid;
 	msurface_t	*surf;
 	int			s, t, ds, dt;
+	float		fs, ft;
 	int			i;
 	vec4_t	*lmvecs;
-	qbyte		*lightmap, *deluxmap;
-	float	scale, overbright;
-	int			maps;
+	qbyte		*lightmap;
 
 	if (mod->fromgame == fg_quake2)
 	{
@@ -2761,8 +2900,10 @@ static float *GLRecursiveLightPoint3C (model_t *mod, mnode_t *node, const vec3_t
 		else
 			lmvecs = surf->texinfo->vecs;
 		
-		s = DotProduct (mid, lmvecs[0]) + lmvecs[0][3];
-		t = DotProduct (mid, lmvecs[1]) + lmvecs[1][3];
+		fs = DotProduct (mid, lmvecs[0]) + lmvecs[0][3];
+		ft = DotProduct (mid, lmvecs[1]) + lmvecs[1][3];
+		s = fs;
+		t = ft;
 
 		if (s < surf->texturemins[0] ||
 			t < surf->texturemins[1])
@@ -2774,12 +2915,13 @@ static float *GLRecursiveLightPoint3C (model_t *mod, mnode_t *node, const vec3_t
 		if ( ds > surf->extents[0] || dt > surf->extents[1] )
 			continue;
 
+		//A face with no lightmap must NOT terminate the search with black: ericw omits
+		//fully-dark faces from the DECOUPLED_LM lump, so a model resting on (or a coplanar
+		//face of) the lit floor would otherwise read black. Skip it and keep descending so
+		//the sampler finds the real lit surface. (decoupled zeroes texturemins, so an
+		//omitted coplanar face can win the bbox accept-test above — skipping it is the fix.)
 		if (!surf->samples)
-		{
-			l[0]=0;l[1]=0;l[2]=0;
-			l[3]=0;l[4]=1;l[5]=1;
-			return l;
-		}
+			continue;
 
 		ds >>= surf->lmshift;
 		dt >>= surf->lmshift;
@@ -2789,137 +2931,82 @@ static float *GLRecursiveLightPoint3C (model_t *mod, mnode_t *node, const vec3_t
 		l[3]=0;l[4]=0;l[5]=0;
 		if (lightmap)
 		{
-			overbright = 1/255.0f;
-			if (mod->deluxdata)
+			int smax = (surf->extents[0]>>surf->lmshift)+1;
+			int tmax = (surf->extents[1]>>surf->lmshift)+1;
+			if (r_modellight_bilinear.ival && (smax > 1 || tmax > 1))
 			{
-				switch(mod->lightmaps.fmt)
-				{
-				case LM_E5BGR9:
-					deluxmap = ((surf->samples - mod->lightdata)>>2)*3 + mod->deluxdata;
-
-					lightmap += (dt * ((surf->extents[0]>>surf->lmshift)+1) + ds)<<2;
-					deluxmap += (dt * ((surf->extents[0]>>surf->lmshift)+1) + ds)*3;
-					for (maps = 0 ; maps < MAXCPULIGHTMAPS && surf->styles[maps] != INVALID_LIGHTSTYLE ; maps++)
-					{
-						unsigned int lm = *(unsigned int*)lightmap;
-						scale = d_lightstylevalue[surf->styles[maps]]*overbright;
-						scale *= pow(2, (int)(lm>>27)-15-9+8);
-
-						l[0] += ((lm>> 0)&0x1ff) * scale * cl_lightstyle[surf->styles[maps]].colours[0];
-						l[1] += ((lm>> 9)&0x1ff) * scale * cl_lightstyle[surf->styles[maps]].colours[1];
-						l[2] += ((lm>>18)&0x1ff) * scale * cl_lightstyle[surf->styles[maps]].colours[2];
-
-						l[3] += (deluxmap[0]-127)*scale;
-						l[4] += (deluxmap[1]-127)*scale;
-						l[5] += (deluxmap[2]-127)*scale;
-
-						lightmap += ((surf->extents[0]>>surf->lmshift)+1) *
-								((surf->extents[1]>>surf->lmshift)+1)<<2;
-						deluxmap += ((surf->extents[0]>>surf->lmshift)+1) *
-								((surf->extents[1]>>surf->lmshift)+1) * 3;
-					}
-					break;
-				case LM_RGB8:
-					deluxmap = surf->samples - mod->lightdata + mod->deluxdata;
-
-					lightmap += (dt * ((surf->extents[0]>>surf->lmshift)+1) + ds)*3;
-					deluxmap += (dt * ((surf->extents[0]>>surf->lmshift)+1) + ds)*3;
-					for (maps = 0 ; maps < MAXCPULIGHTMAPS && surf->styles[maps] != INVALID_LIGHTSTYLE ; maps++)
-					{
-						scale = d_lightstylevalue[surf->styles[maps]]*overbright;
-
-						l[0] += lightmap[0] * scale * cl_lightstyle[surf->styles[maps]].colours[0];
-						l[1] += lightmap[1] * scale * cl_lightstyle[surf->styles[maps]].colours[1];
-						l[2] += lightmap[2] * scale * cl_lightstyle[surf->styles[maps]].colours[2];
-
-						l[3] += (deluxmap[0]-127)*scale;
-						l[4] += (deluxmap[1]-127)*scale;
-						l[5] += (deluxmap[2]-127)*scale;
-
-						lightmap += ((surf->extents[0]>>surf->lmshift)+1) *
-								((surf->extents[1]>>surf->lmshift)+1) * 3;
-						deluxmap += ((surf->extents[0]>>surf->lmshift)+1) *
-								((surf->extents[1]>>surf->lmshift)+1) * 3;
-					}
-					break;
-				case LM_L8:
-					deluxmap = (surf->samples - mod->lightdata)*3 + mod->deluxdata;
-
-					lightmap += (dt * ((surf->extents[0]>>surf->lmshift)+1) + ds);
-					deluxmap += (dt * ((surf->extents[0]>>surf->lmshift)+1) + ds)*3;
-					for (maps = 0 ; maps < MAXCPULIGHTMAPS && surf->styles[maps] != INVALID_LIGHTSTYLE ; maps++)
-					{
-						scale = d_lightstylevalue[surf->styles[maps]]*overbright;
-
-						l[0] += *lightmap * scale * cl_lightstyle[surf->styles[maps]].colours[0];
-						l[1] += *lightmap * scale * cl_lightstyle[surf->styles[maps]].colours[1];
-						l[2] += *lightmap * scale * cl_lightstyle[surf->styles[maps]].colours[2];
-
-						l[3] += deluxmap[0]*scale;
-						l[4] += deluxmap[1]*scale;
-						l[5] += deluxmap[2]*scale;
-
-						lightmap += ((surf->extents[0]>>surf->lmshift)+1) *
-								((surf->extents[1]>>surf->lmshift)+1);
-						deluxmap += ((surf->extents[0]>>surf->lmshift)+1) *
-								((surf->extents[1]>>surf->lmshift)+1) * 3;
-					}
-					break;
-				}
-
+				//Bilinear 2x2 tap so model lighting is as smooth as the GPU-filtered
+				//surfaces. Nearest sampling (below) makes models catch isolated black
+				//luxels (sharp shadow / dirt-map corners) that dense lightmaps have many
+				//of, even where the floor beside them stays lit. The half-luxel bias is
+				//baked into the decoupled lmvecs (gl_model.c) but not the classic
+				//texinfo vecs, so remove it only for decoupled faces.
+				float halfbias = mod->facelmvecs ? 0.5f : 0.0f;
+				float cs = (fs - surf->texturemins[0]) / (float)(1<<surf->lmshift) - halfbias;
+				float ct = (ft - surf->texturemins[1]) / (float)(1<<surf->lmshift) - halfbias;
+				int ls0 = floor(cs), lt0 = floor(ct);
+				float ws = cs - ls0, wt = ct - lt0;
+				int ls1 = ls0+1, lt1 = lt0+1;
+				//edge-replicate clamp each tap into the face's luxel grid
+				if (ls0 < 0) ls0 = 0; else if (ls0 > smax-1) ls0 = smax-1;
+				if (ls1 < 0) ls1 = 0; else if (ls1 > smax-1) ls1 = smax-1;
+				if (lt0 < 0) lt0 = 0; else if (lt0 > tmax-1) lt0 = tmax-1;
+				if (lt1 < 0) lt1 = 0; else if (lt1 > tmax-1) lt1 = tmax-1;
+				LightPoint3C_AccumLuxel(mod, surf, ls0, lt0, (1-ws)*(1-wt), l);
+				LightPoint3C_AccumLuxel(mod, surf, ls1, lt0,    ws *(1-wt), l);
+				LightPoint3C_AccumLuxel(mod, surf, ls0, lt1, (1-ws)*   wt , l);
+				LightPoint3C_AccumLuxel(mod, surf, ls1, lt1,    ws *   wt , l);
 			}
 			else
+				LightPoint3C_AccumLuxel(mod, surf, ds, dt, 1.0f, l);
+		}
+
+		//nettest: rotate the deluxel from the face's TANGENT basis into WORLD space.
+		//The bakers store (dot(L,svector), dot(L,tvector), dot(L,facenormal)) with L pointing TOWARD the
+		//light -- FTE's own ltface.c (~:980, basis ~:911) and ericw-tools light/write.cc (~:452, basis
+		//ltface.cc:690).  The legacy consumer below just aliased those tangent coefficients onto world x/y/z
+		//AND negated the third, so for the common case (the sample ray goes straight DOWN, so the hit face is
+		//a FLOOR with facenormal=+Z) an overhead light decoded to (0,0,-1) = pointing straight DOWN.  Every
+		//model was therefore lit from BELOW; invisible in the additive lambert, glaring once the per-prop
+		//sun-shade amplified it.  Rotating with the real face basis fixes both the inverted pitch AND the
+		//scrambled azimuth (s/t are texture axes, not world X/Y -- wrong on any rotated/sloped face).
+		//Use texinfo->vecs, NOT lmvecs: ericw derives its s/t normals from texinfo even on DECOUPLED_LM faces.
+		lightpoint_worlddir_ok = false;
+		if (r_modellight_worlddir.ival && (l[3] || l[4] || l[5]))
+		{
+			vec3_t sn, tn, fn;
+			VectorCopy(surf->texinfo->vecs[0], sn); VectorNormalize(sn);
+			VectorCopy(surf->texinfo->vecs[1], tn); VectorNormalize(tn); VectorNegate(tn, tn);
+			VectorCopy(surf->plane->normal, fn);
+			if (surf->flags & SURF_PLANEBACK)
+				VectorNegate(fn, fn);
+			VectorScale(sn, l[3], lightpoint_worlddir);
+			VectorMA(lightpoint_worlddir, l[4], tn, lightpoint_worlddir);
+			VectorMA(lightpoint_worlddir, l[5], fn, lightpoint_worlddir);	//+l[5], NOT negated
+			//a sample taken on a face cannot legitimately be lit from behind that face -- reject garbage
+			if (VectorNormalize(lightpoint_worlddir) && DotProduct(lightpoint_worlddir, fn) > 0)
+				lightpoint_worlddir_ok = true;
+		}
+
+		//nettest: sun-visibility at THIS luxel.  The SUNVIS lump (mod->sunvisdata, 1 byte/luxel, style-0
+		//only) is laid out parallel to the style-0 lightdata, so index it with the SAME face base +
+		//nearest-luxel offset the deluxemap uses (gl_rlight.c deluxe base ~:2775) but at UNIT stride and
+		//with NO maps*plane style term -- exactly as r_surf.c:1443-1471 does when it blits this same lump
+		//into the atlas.  RAW byte is VISIBILITY (255=fully sunlit, 0=occluded): byte/255 directly, do NOT
+		//invert (the shader's 1-x only cancels the engine's own 255-x TEXTURE-upload flip in r_surf.c).
+		lightpoint_sunvis_ok = false;
+		if (mod->sunvisdata && surf->samples)
+		{
+			int lofsscale = (mod->lightmaps.fmt==LM_E5BGR9)?4 : (mod->lightmaps.fmt==LM_RGB8)?3 : 1;
+			int smax = (surf->extents[0]>>surf->lmshift)+1;
+			size_t off = (size_t)(surf->samples - mod->lightdata)/lofsscale + (size_t)dt*smax + ds;
+			if (off < (size_t)mod->lightdatasize / lofsscale)	//== sunvisdata byte count (r_surf.c:1457)
 			{
-				switch(mod->lightmaps.fmt)
-				{
-				case LM_E5BGR9:
-					lightmap += (dt * ((surf->extents[0]>>surf->lmshift)+1) + ds)<<2;
-					for (maps = 0 ; maps < MAXCPULIGHTMAPS && surf->styles[maps] != INVALID_LIGHTSTYLE ; maps++)
-					{
-						unsigned int lm = *(unsigned int*)lightmap;
-						scale = d_lightstylevalue[surf->styles[maps]]*overbright;
-						scale *= pow(2, (int)(lm>>27)-15-9+8);
-
-						l[0] += ((lm>> 0)&0x1ff) * scale * cl_lightstyle[surf->styles[maps]].colours[0];
-						l[1] += ((lm>> 9)&0x1ff) * scale * cl_lightstyle[surf->styles[maps]].colours[1];
-						l[2] += ((lm>>18)&0x1ff) * scale * cl_lightstyle[surf->styles[maps]].colours[2];
-
-						lightmap += ((surf->extents[0]>>surf->lmshift)+1) *
-								((surf->extents[1]>>surf->lmshift)+1)<<2;
-					}
-					break;
-				case LM_RGB8:
-					lightmap += (dt * ((surf->extents[0]>>surf->lmshift)+1) + ds)*3;
-					for (maps = 0 ; maps < MAXCPULIGHTMAPS && surf->styles[maps] != INVALID_LIGHTSTYLE ; maps++)
-					{
-						scale = d_lightstylevalue[surf->styles[maps]]*overbright;
-
-						l[0] += lightmap[0] * scale * cl_lightstyle[surf->styles[maps]].colours[0];
-						l[1] += lightmap[1] * scale * cl_lightstyle[surf->styles[maps]].colours[1];
-						l[2] += lightmap[2] * scale * cl_lightstyle[surf->styles[maps]].colours[2];
-
-						lightmap += ((surf->extents[0]>>surf->lmshift)+1) *
-								((surf->extents[1]>>surf->lmshift)+1) * 3;
-					}
-					break;
-				case LM_L8:
-					lightmap += (dt * ((surf->extents[0]>>surf->lmshift)+1) + ds);
-					for (maps = 0 ; maps < MAXCPULIGHTMAPS && surf->styles[maps] != INVALID_LIGHTSTYLE ; maps++)
-					{
-						scale = d_lightstylevalue[surf->styles[maps]]*overbright;
-
-						l[0] += *lightmap * scale * cl_lightstyle[surf->styles[maps]].colours[0];
-						l[1] += *lightmap * scale * cl_lightstyle[surf->styles[maps]].colours[1];
-						l[2] += *lightmap * scale * cl_lightstyle[surf->styles[maps]].colours[2];
-
-						lightmap += ((surf->extents[0]>>surf->lmshift)+1) *
-								((surf->extents[1]>>surf->lmshift)+1);
-					}
-					break;
-				}
+				lightpoint_sunvis    = mod->sunvisdata[off] * (1.0f/255.0f);
+				lightpoint_sunvis_ok = true;
 			}
 		}
-		
+
 		return l;
 	}
 
@@ -3119,6 +3206,200 @@ void BSPX_LightGridLoad(model_t *model, bspx_header_t *bspx, qbyte *mod_base)
 
 	model->lightgrid = (void*)grid;
 }
+
+//nettest: baked static-prop per-vertex lighting (RGBPROPLIGHT lump, from protoanus-tools
+//`light -propvertexlight`).  One record per placed IQM prop: model name + placement, and one baked
+//absolute RGB per (global IQM-order) vertex.  We normalise each record to a ~1.0-centred GREYSCALE
+//multiplier so the renderer multiplies it over the prop's live (PBR) lighting via the VC shader
+//permutation -- redistributing brightness across the mesh (sunlit top brighter, shadowed underside
+//darker) without replacing per-pixel lighting or double-tinting the model's own light colour.
+extern cvar_t r_propvertexlight_contrast, r_propvertexlight_min, r_propvertexlight_max;
+
+#define PROPLIGHT_HASHSIZE 256
+typedef struct proplight_s
+{
+	struct proplight_s *hashnext;
+	unsigned int namehash;
+	int qorg[3];			//quantised origin (nearest unit) -- the match key
+	char model[MAX_QPATH];
+	unsigned int numverts;
+	vec4_t *colours;		//[numverts], normalised greyscale multiplier (~1.0), in global IQM vertex order
+	vec3_t meancolor;		//nettest: mean of the ABSOLUTE baked RGB (0-1) = the prop's own overall brightness,
+							//used as the model's base light so it doesn't read its own baked floor shadow.
+} proplight_t;
+typedef struct
+{
+	unsigned int count;
+	proplight_t *records;
+	proplight_t *hash[PROPLIGHT_HASHSIZE];
+} proplightset_t;
+
+static unsigned int PropLight_NameHash(const char *s)
+{	//case-insensitive, treats '\\' as '/'
+	unsigned int h = 2166136261u;
+	for (; *s; s++)
+	{
+		int c = (unsigned char)*s;
+		if (c >= 'A' && c <= 'Z') c += 'a'-'A';
+		if (c == '\\') c = '/';
+		h = (h ^ (unsigned)c) * 16777619u;
+	}
+	return h;
+}
+static unsigned int PropLight_Bucket(unsigned int namehash, const int q[3])
+{
+	unsigned int h = namehash;
+	h ^= (unsigned)q[0]*73856093u;
+	h ^= (unsigned)q[1]*19349663u;
+	h ^= (unsigned)q[2]*83492791u;
+	return h & (PROPLIGHT_HASHSIZE-1);
+}
+static void PropLight_Quantise(const vec3_t v, int q[3])
+{
+	q[0] = (int)floor(v[0]+0.5);
+	q[1] = (int)floor(v[1]+0.5);
+	q[2] = (int)floor(v[2]+0.5);
+}
+
+void BSPX_PropLightLoad(model_t *model, bspx_header_t *bspx, qbyte *mod_base)
+{
+	struct rctx_s ctx = {0};
+	unsigned int version, count, i, v;
+	proplightset_t *set;
+	float contrast, cmin, cmax;
+
+	model->proplights = NULL;
+	ctx.data = BSPX_FindLump(bspx, mod_base, "RGBPROPLIGHT", &ctx.size);
+	if (!ctx.data)
+		return;
+
+	contrast = r_propvertexlight_contrast.value;
+	cmin = r_propvertexlight_min.value;
+	cmax = r_propvertexlight_max.value;
+	if (contrast <= 0) contrast = 1;
+	if (cmax < cmin) cmax = cmin;
+
+	version = ReadInt(&ctx);
+	if (version != 1)
+	{
+		Con_Printf(CON_WARNING "RGBPROPLIGHT: unsupported version %u (ignored)\n", version);
+		return;
+	}
+	count = ReadInt(&ctx);
+	if (!count || count > 0x100000)
+		return;
+
+	set = ZG_Malloc(&model->memgroup, sizeof(*set) + sizeof(proplight_t)*count);
+	set->count = count;
+	set->records = (proplight_t*)(set+1);	//hash[] left NULL by Z_Malloc
+
+	for (i = 0; i < count; i++)
+	{
+		proplight_t *pl = &set->records[i];
+		vec3_t org;
+		unsigned int namelen, nv, k;
+		double sum = 0, sumr = 0, sumg = 0, sumb = 0;
+		float mean, inv;
+
+		for (k = 0; k < 3; k++) org[k] = ReadFloat(&ctx);
+		for (k = 0; k < 3; k++) (void)ReadFloat(&ctx);	//angles: read+skip (we match on model+origin, robust to QC angle normalisation)
+
+		namelen = (unsigned)ReadByte(&ctx);
+		namelen |= (unsigned)ReadByte(&ctx)<<8;
+		for (k = 0; k < namelen; k++)
+		{
+			qbyte c = ReadByte(&ctx);
+			if (k < sizeof(pl->model)-1) pl->model[k] = c;
+		}
+		pl->model[(namelen < sizeof(pl->model)-1)?namelen:sizeof(pl->model)-1] = 0;
+
+		nv = ReadInt(&ctx);
+		pl->numverts = nv;
+		pl->colours = nv ? ZG_Malloc(&model->memgroup, sizeof(vec4_t)*nv) : NULL;
+
+		//pass 1: read absolute RGB, accumulate luminance (stashed in [0])
+		for (v = 0; v < nv; v++)
+		{
+			float r = ReadByte(&ctx)/255.0f;
+			float g = ReadByte(&ctx)/255.0f;
+			float b = ReadByte(&ctx)/255.0f;
+			float lum = r*0.299f + g*0.587f + b*0.114f;
+			pl->colours[v][0] = lum;
+			sum += lum;
+			sumr += r; sumg += g; sumb += b;
+		}
+		//pass 2: normalise to a ~1.0-centred greyscale multiplier (+contrast, +clamp)
+		mean = nv ? (float)(sum/nv) : 1.0f;
+		inv = (mean > 0.0001f) ? 1.0f/mean : 1.0f;
+		for (v = 0; v < nv; v++)
+		{
+			float m = pl->colours[v][0]*inv;
+			if (contrast != 1.0f) m = (float)pow(m, contrast);
+			if (m < cmin) m = cmin;
+			if (m > cmax) m = cmax;
+			pl->colours[v][0] = pl->colours[v][1] = pl->colours[v][2] = m;
+			pl->colours[v][3] = 1;
+		}
+
+		//mean of the ABSOLUTE baked colour = the prop's own brightness (used as its base light)
+		pl->meancolor[0] = nv ? (float)(sumr/nv) : 0.0f;
+		pl->meancolor[1] = nv ? (float)(sumg/nv) : 0.0f;
+		pl->meancolor[2] = nv ? (float)(sumb/nv) : 0.0f;
+
+		PropLight_Quantise(org, pl->qorg);
+		pl->namehash = PropLight_NameHash(pl->model);
+	}
+
+	//build the placement lookup
+	for (i = 0; i < count; i++)
+	{
+		proplight_t *pl = &set->records[i];
+		unsigned int b = PropLight_Bucket(pl->namehash, pl->qorg);
+		pl->hashnext = set->hash[b];
+		set->hash[b] = pl;
+	}
+
+	model->proplights = set;
+	Con_Printf("RGBPROPLIGHT: %u prop vertex-light record(s) loaded\n", count);
+}
+
+//Look up a prop placement's baked per-vertex colours by (model name, quantised origin).
+//Returns the greyscale-multiplier array (length via out_numverts) or NULL; also fills out_meancolor
+//(the record's mean ABSOLUTE colour, 0-1) when matched. Cheap: one hash probe.
+const vec4_t *PropLight_Find(model_t *world, const char *modelname, const vec3_t origin, const vec3_t angles, int *out_numverts, vec3_t out_meancolor)
+{
+	proplightset_t *set;
+	proplight_t *pl;
+	int q[3];
+	unsigned int nh, b;
+
+	*out_numverts = 0;
+	if (out_meancolor)
+		VectorClear(out_meancolor);
+	if (!world || !world->proplights || !modelname || !*modelname)
+		return NULL;
+	set = world->proplights;
+
+	nh = PropLight_NameHash(modelname);
+	PropLight_Quantise(origin, q);
+	b = PropLight_Bucket(nh, q);
+	for (pl = set->hash[b]; pl; pl = pl->hashnext)
+	{
+		if (pl->namehash != nh)
+			continue;
+		if (pl->qorg[0] != q[0] || pl->qorg[1] != q[1] || pl->qorg[2] != q[2])
+			continue;
+		if (Q_strcasecmp(pl->model, modelname))	//guard against a hash collision
+			continue;
+		*out_numverts = pl->numverts;
+		if (out_meancolor)
+			VectorCopy(pl->meancolor, out_meancolor);
+		return pl->colours;
+	}
+	(void)angles;
+	return NULL;
+}
+
 static float BSPX_LightGridSingleValue(bspxlightgrid_t *grid, int x, int y, int z, float w, vec3_t res_diffuse)
 {
 	int i;
@@ -3209,6 +3490,11 @@ void GLQ1BSP_LightPointValues(model_t *model, const vec3_t point, vec3_t res_dif
 	extern cvar_t r_shadow_realtime_world, r_shadow_realtime_world_lightmaps;
 #endif
 
+	//nettest: clear before sampling so a MISS (or a non-deluxe path) can never leak the previous
+	//caller's world direction into this result.  Set only by GLRecursiveLightPoint3C on a real hit.
+	lightpoint_worlddir_ok = false;
+	lightpoint_sunvis_ok = false;	//same: the lightgrid branch + the early-outs below must not leak stale sunvis
+
 	if (!model->lightdata || r_fullbright.ival || model->loadstate != MLS_LOADED)
 	{
 		if (model->loadstate != MLS_LOADED)
@@ -3261,12 +3547,20 @@ void GLQ1BSP_LightPointValues(model_t *model, const vec3_t point, vec3_t res_dif
 		res_ambient[1] = r[1];
 		res_ambient[2] = r[2];
 
-		res_dir[0] = r[3];
-		res_dir[1] = r[4];
-		res_dir[2] = -r[5];
-		if (!res_dir[0] && !res_dir[1] && !res_dir[2])
-			res_dir[0] = res_dir[2] = 1;
-		VectorNormalize(res_dir);
+		//nettest: prefer the properly rotated WORLD-space direction computed at the sample site (see
+		//lightpoint_worlddir).  The legacy path below aliases the face-TANGENT coefficients straight onto
+		//world x/y/z and negates the third, which points the vector at the FLOOR instead of the light.
+		if (lightpoint_worlddir_ok)
+			VectorCopy(lightpoint_worlddir, res_dir);
+		else
+		{
+			res_dir[0] = r[3];
+			res_dir[1] = r[4];
+			res_dir[2] = -r[5];
+			if (!res_dir[0] && !res_dir[1] && !res_dir[2])
+				res_dir[0] = res_dir[2] = 1;
+			VectorNormalize(res_dir);
+		}
 	}
 
 #ifdef RTLIGHTS
@@ -3279,6 +3573,20 @@ void GLQ1BSP_LightPointValues(model_t *model, const vec3_t point, vec3_t res_dif
 		VectorScale(res_ambient, lm, res_ambient);
 	}
 #endif
+}
+
+//nettest: sun visibility 0..1 (1=fully sunlit) at `org`, sampled FRESH via the shared LightPointValues walk
+//(which warms lightpoint_sunvis in GLRecursiveLightPoint3C).  Returns -1 when the world has no SUNVIS lump,
+//the sample missed a lit face, or the walk took the lightgrid / early-out path -- callers must treat -1 as
+//"no data, don't suppress the sun shadow", NEVER as 0 (which would delete every prop's sun shadow).  Does
+//NOT ride the Patch-105 model-light cache: a cache HIT skips the walk, so this must sample every call.
+float R_PointSunVis(model_t *world, const vec3_t org)
+{
+	vec3_t d, a, dir;	//scratch: we only want the side-effect (lightpoint_sunvis)
+	if (!world || !world->sunvisdata || !world->funcs.LightPointValues)
+		return -1.0f;
+	world->funcs.LightPointValues(world, org, d, a, dir);
+	return lightpoint_sunvis_ok ? lightpoint_sunvis : -1.0f;
 }
 
 #endif

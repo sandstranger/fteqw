@@ -578,6 +578,7 @@ typedef struct
 
 	colourised_t *colourised;
 	qboolean	nqexpectingstatusresponse;
+	int			shader_reload_servercount;	//nettest: cl.servercount we last fired the post-first-frame water/shader reload for (re-armed per map; -1 = none yet).  See the one-shot in CL_Frame.
 } client_static_t;
 
 extern client_static_t	cls;
@@ -1135,6 +1136,9 @@ extern	dlight_t		*cl_dlights;
 extern	size_t cl_maxdlights;
 
 extern	int				d_lightstylevalue[MAX_NET_LIGHTSTYLES];
+/*Patch 105: bumped (in R_AnimateLight / Surf_NewMap) whenever anything that feeds the world
+  lightmap sampler changes, so gl_alias.c's per-entity model-light cache knows to re-sample.*/
+extern	unsigned int	r_modellight_seq;
 
 extern size_t rtlights_first, rtlights_max;
 extern int cl_baselines_count;
@@ -1198,11 +1202,13 @@ typedef struct {
 	int numvert;
 	int numidx;
 	unsigned int flags;
+	int lightmap;	//nettest: lightmap atlas page for per-pixel-lit decals (r_decal_lightmap), -1 = none/unlit
 } scenetris_t;
 extern scenetris_t		*cl_stris;
 extern vecV_t			*fte_restrict cl_strisvertv;
 extern vec4_t			*fte_restrict cl_strisvertc;
 extern vec2_t			*fte_restrict cl_strisvertt;
+extern vec2_t			*fte_restrict cl_strisvertlm;	//nettest: per-vertex lightmap st for r_decal_lightmap decals
 //extern vec3_t			*fte_restrict cl_strisvertn[3];
 extern index_t			*fte_restrict cl_strisidx;
 extern unsigned int cl_numstrisidx;
@@ -1220,15 +1226,25 @@ extern unsigned int cl_maxstris;
 		cl_strisvertv = BZ_Realloc(cl_strisvertv, sizeof(*cl_strisvertv)*cl_maxstrisvert);	\
 		cl_strisvertt = BZ_Realloc(cl_strisvertt, sizeof(*cl_strisvertt)*cl_maxstrisvert);	\
 		cl_strisvertc = BZ_Realloc(cl_strisvertc, sizeof(*cl_strisvertc)*cl_maxstrisvert);	\
+		cl_strisvertlm = BZ_Realloc(cl_strisvertlm, sizeof(*cl_strisvertlm)*cl_maxstrisvert);	/*nettest: r_decal_lightmap*/	\
 /*		cl_strisvertn[0] = BZ_Realloc(cl_strisvertn[0], sizeof(*cl_strisvertn[0])*cl_maxstrisvert);	\
 		cl_strisvertn[1] = BZ_Realloc(cl_strisvertn[1], sizeof(*cl_strisvertn[1])*cl_maxstrisvert);	\
 		cl_strisvertn[2] = BZ_Realloc(cl_strisvertn[2], sizeof(*cl_strisvertn[2])*cl_maxstrisvert);	\
 */	} while(0)
 
+//nettest: persistent lit decals (cl_ents.c) — clip once + cache, re-emit cheaply each frame.
+int CL_AddPersistentDecal(const char *shadername, const vec3_t origin, const vec3_t up, const vec3_t side, const vec3_t rgb, float alpha, float aspect, float lifetime);
+void CL_RemovePersistentDecal(int handle);
+void CL_UpdatePersistentDecal(int handle, const vec3_t rgb, float alpha);
+void CL_EmitPersistentDecals(void);	//called from the world draw (r_surf.c) before BE_DrawWorld
+void CL_WipePersistentDecals(void);	//called from CL_ClearState
+void CL_PersistentDecals_Restarted(void);	//called on renderer restart (renderer.c) -> re-clip all next emit
+
 extern char emodel_name[], pmodel_name[], prespawn_name[], modellist_name[], soundlist_name[];
 
 //CL_TraceLine traces against network(positive)+csqc(negative) ents. returns frac(1 on failure), and impact, normal, ent values
 float CL_TraceLine (vec3_t start, vec3_t end, vec3_t impact, vec3_t normal, int *ent);
+float CL_TraceLineProps (vec3_t start, vec3_t end, vec3_t impact, vec3_t normal, int *ent);	//nettest: CL_TraceLine + SOLID_PHYSICS_* props (MOVE_HITPROPS)
 entity_t *TraceLineR (vec3_t start, vec3_t end, vec3_t impact, vec3_t normal, qboolean bsponly);
 
 //

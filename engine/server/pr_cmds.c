@@ -482,6 +482,29 @@ static pbool PDECL SV_BadField(pubprogfuncs_t *inst, edict_t *foo, const char *k
 	if (!svs.numprogs)
 		return true;
 
+	//QC fallback hook — let the progs handle arbitrary unknown keys
+	//on a per-entity basis.  Looks up
+	//   void(string keyname, string value) ED_ParseUnknownEpair
+	//in the loaded progs; if present, calls it with self bound to the
+	//entity being parsed.  Used by entities like multi_manager that
+	//store mapper-supplied <targetname>=<delay> pairs as arbitrary
+	//keyvalues (HL/Source convention via SmartEdit-disabled mode).
+	//If the QC handler exists we always return true to suppress the
+	//"is not a field" warning — the QC code is responsible for
+	//ignoring keys it doesn't care about.
+	{
+		func_t hookfn = PR_FindFunction(inst, "ED_ParseUnknownEpair", PR_ANY);
+		if (hookfn)
+		{
+			globalvars_t *pr_globals = PR_globals(inst, PR_CURRENT);
+			pr_global_struct->self = EDICT_TO_PROG(inst, foo);
+			G_INT(OFS_PARM0) = (int)PR_TempString(inst, keyname);
+			G_INT(OFS_PARM1) = (int)PR_TempString(inst, value);
+			PR_ExecuteProgram(inst, hookfn);
+			return true;
+		}
+	}
+
 	return false;
 }
 
@@ -549,6 +572,21 @@ void QC_Clear(void);
 builtin_t pr_builtin[];
 extern int pr_numbuiltins;
 
+//nettest Patch 101: non-blocking peek — see the Peek_CModel comment in world.h.  Deliberately does
+//NOT call Mod_LoadModel or COM_WorkerPartialSync: a still-loading model simply reads as "not ready
+//yet" and the caller skips it this frame.  (Something else always kicks the real load: the prop is
+//precached and its collision/render path calls the blocking Get_CModel.)
+model_t *QDECL SVPR_PeekCModel(world_t *w, int modelindex)
+{
+	if ((unsigned int)modelindex < MAX_PRECACHE_MODELS)
+	{
+		model_t *mod = sv.models[modelindex];
+		if (mod && mod->loadstate == MLS_LOADED)
+			return mod;
+	}
+	return NULL;
+}
+
 model_t *QDECL SVPR_GetCModel(world_t *w, int modelindex)
 {
 	if ((unsigned int)modelindex < MAX_PRECACHE_MODELS)
@@ -574,6 +612,24 @@ model_t *QDECL SVPR_GetCModel(world_t *w, int modelindex)
 static void QDECL SVPR_Get_FrameState(world_t *w, wedict_t *ent, framestate_t *fstate)
 {
 	memset(fstate, 0, sizeof(*fstate));
+
+#ifdef HALFLIFEMODELS
+	fstate->bonecontrols[0] = ent->xv->bonecontrol1;
+	fstate->bonecontrols[1] = ent->xv->bonecontrol2;
+	fstate->bonecontrols[2] = ent->xv->bonecontrol3;
+	fstate->bonecontrols[3] = ent->xv->bonecontrol4;
+	fstate->bonecontrols[4] = ent->xv->bonecontrol5;
+	// Match cs_getframestate: apply subblendfrac/subblend2frac to BOTH the
+	// regular layer and the base layer.  The base-specific fields
+	// (basesubblendfrac/basesubblend2frac) are typically zero on player
+	// entities and using them here leaves the torso/arm bones in their
+	// default pose even when the aim pose wants them raised/lowered.
+	fstate->g[FS_REG].subblendfrac    = ent->xv->subblendfrac;
+	fstate->g[FS_REG].subblend2frac   = ent->xv->subblend2frac;
+	fstate->g[FST_BASE].subblendfrac  = ent->xv->subblendfrac;
+	fstate->g[FST_BASE].subblend2frac = ent->xv->subblend2frac;
+#endif
+
 	fstate->g[FS_REG].frame[0] = ent->v->frame;
 	fstate->g[FS_REG].frametime[0] = ent->xv->frame1time;
 	fstate->g[FS_REG].lerpweight[0] = 1;
@@ -759,6 +815,7 @@ void Q_SetProgsParms(qboolean forcompiler)
 	sv.world.Event_Sound = SVQ1_StartSound;
 	sv.world.Event_ContentsTransition = SVPR_Event_ContentsTransition;
 	sv.world.Get_CModel = SVPR_GetCModel;
+	sv.world.Peek_CModel = SVPR_PeekCModel;	//nettest Patch 101 (non-blocking; debug viz)
 	sv.world.Get_FrameState = SVPR_Get_FrameState;
 	PR_ClearThreads(svprogfuncs);
 	PR_fclose_progs(svprogfuncs);
@@ -11765,6 +11822,7 @@ static BuiltinList_t BuiltinList[] = {				//nq	qw		h2		ebfs
 	{"clusterevent",	PF_clusterevent,	0,		0,		0,		0,		D("void(string dest, string from, string cmd, string info)", "Only functions in mapcluster mode. Sends an event to whichever server the named player is on. The destination server can then dispatch the event to the client or handle it itself via the SV_ParseClusterEvent entrypoint. If dest is empty, the event is broadcast to ALL servers. If the named player can't be found, the event will be returned to this server with the cmd prefixed with 'error:'.")},
 	{"clustertransfer",	PF_clustertransfer,	0,		0,		0,		0,		D("string(entity player, optional string newnode)", "Only functions in mapcluster mode. Initiate transfer of the player to a different node. Can take some time. If dest is specified, returns null on error. Otherwise returns the current/new target node (or null if not transferring).")},
 	{"modelframecount", PF_modelframecount, 0,		0,		0,		0,		D("float(float mdlidx)", "Retrieves the number of frames in the specified model.")},
+	{"addmodelhitbox",	PF_addmodelhitbox,	0,		0,		0,		0,		D("float(float modelindex, string bonename, float hitgroup, vector mins, vector maxs)", "nettest: registers a per-bone hitbox on an alias/IQM model so MOVE_HITMODEL traces the box (reporting its hitgroup via trace_surface_id) instead of the mesh. Returns 1 on success.")},
 
 	{"clearscene",		PF_Fixme,	0,		0,		0,		300,	D("void()", "Forgets all rentities, polygons, and temporary dlights. Resets all view properties to their default values.")},// (EXT_CSQC)
 	{"addentities",		PF_Fixme,	0,		0,		0,		301,	D("void(float mask)", "Walks through all entities effectively doing this:\n if (ent.drawmask&mask){ if (!ent.predaw()) addentity(ent); }\nIf mask&MASK_DELTA, non-csqc entities, particles, and related effects will also be added to the rentity list.\n If mask&MASK_STDVIEWMODEL then the default view model will also be added.")},// (EXT_CSQC)
@@ -13963,6 +14021,7 @@ void PR_DumpPlatform_f(void)
 		{"RF_USEAXIS",			"const float", CS, D("The entity will be oriented according to the current v_forward+v_right+v_up vector values instead of the entity's .angles field."), CSQCRF_USEAXIS},
 		{"RF_NOSHADOW",			"const float", CS, D("This entity will not cast shadows. Often useful on view models."), CSQCRF_NOSHADOW},
 		{"RF_FRAMETIMESARESTARTTIMES","const float", CS, D("Specifies that the frame1time, frame2time field are timestamps (denoting the start of the animation) rather than time into the animation."), CSQCRF_FRAMETIMESARESTARTTIMES},
+		{"RF_XFLIP",			"const float", CS, D("Mirror this entity horizontally. Intended for left-handed viewmodels: the renderer flips projection X and inverts cull winding so backface culling stays correct."), CSQCRF_XFLIP},
 		{"RF_FIRSTPERSON","const float", CS, D("This is basically the opposite of RF_EXTERNALMODEL. Don't draw in third-person or mirrors."), CSQCRF_FIRSTPERSON},
 
 		{"IE_KEYDOWN",			"const float", CS|MENU, D("Specifies that a key was pressed. Second argument is the scan code. Third argument is the unicode (printable) char value. Fourth argument denotes which keyboard(or mouse, if its a mouse 'scan' key) the event came from. Note that some systems may completely separate scan codes and unicode values, with a 0 value for the unspecified argument."), CSIE_KEYDOWN},

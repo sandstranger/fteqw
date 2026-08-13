@@ -97,6 +97,7 @@ char *r_defaultimageextensions =
 #ifdef IMAGEFMT_LMP
 	//" lmp" //lame outdated junk. any code that expects a lmp will use that extension, so don't bother swapping out extensions for it.
 #endif
+	" vtf"	//nettest: Source .vtf faces (skyboxes/materials) probed by raw name; decoded by the hl2 plugin img_vtf. Last so native tga/png/dds keep priority.
 	;
 
 static void QDECL R_ImageExtensions_Callback(struct cvar_s *var, char *oldvalue);
@@ -116,7 +117,14 @@ extern cvar_t r_shadow_heightscale_bumpmap;
 
 
 static bucket_t *imagetablebuckets[256];
-static hashtable_t imagetable;
+//nettest Patch 120d: STATICALLY initialised, not left to Image_Init.
+//Image_Init runs only from R_ApplyRenderer, i.e. only once a real renderer is up.  But the model
+//loaders call Image_FindTexture unconditionally, so a CLIENT build started with -dedicated (which
+//never applies a renderer) reached Hash_GetInsensitive with numbuckets == 0 and died in `div` --
+//an instant SIGFPE / 0xC0000094 on a worker thread the moment any real map was loaded.
+//A static init costs nothing: imagetablebuckets is static storage and therefore already zero-filled,
+//which is exactly Hash_InitTable's documented precondition ("mem must be 0 filled").
+static hashtable_t imagetable = {sizeof(imagetablebuckets)/sizeof(imagetablebuckets[0]), imagetablebuckets};
 static image_t *imagelist;
 #endif
 
@@ -4882,13 +4890,20 @@ static void Image_LoadTextureMips(void *ctx, void *data, size_t a, size_t b)
 	if ((tex->flags & IF_TEXTYPEMASK)==IF_TEXTYPE_ANY)
 		tex->flags = (tex->flags&~IF_TEXTYPEMASK)|(mips->type<<IF_TEXTYPESHIFT);
 
-	if (rf->IMG_LoadTextureMips(tex, mips))
+	//nettest Patch 120d: `rf` (currentrendererstate.renderer) is NULL when no renderer was ever
+	//applied -- a client build run with -dedicated.  The model loaders still queue texture uploads,
+	//and COM_WorkerPartialSync drains that queue on the main thread, so this ran with rf == NULL and
+	//took an access violation on every map load.  IMG_UpdateFiltering below already guards for it;
+	//these did not.  With no renderer there is genuinely nowhere to upload to, so the existing
+	//failure path is the right answer.
+	if (rf && rf->IMG_LoadTextureMips(tex, mips))
 	{
 		tex->format = mips->encoding;
 		tex->status = TEX_LOADED;
 	}
 	else
 	{	//failure can happen because a) lost device. b) out of device memory. c) format not supported.
+		//d) no renderer at all (dedicated).
 		//FIXME: handle oom properly.
 		tex->format = TF_INVALID;
 		tex->status = TEX_FAILED;
@@ -7728,6 +7743,63 @@ qbyte *ReadRawImageFile(qbyte *buf, int len, int *width, int *height, uploadfmt_
 	{
 		TRACE(("dbg: ReadRawImageFile: ico\n"));
 		return data;
+	}
+#endif
+
+#ifdef IMAGEFMT_DDS
+	//nettest: let ReadRawImageFile (hence r_readimage / PF_CL_readimage, which passes
+	//force_rgba8) read DDS.  Image_ReadDDSFile decodes to a still-COMPRESSED BCn mip set
+	//(the GPU normally decompresses); with force_rgba8 we run the SAME CPU decode the
+	//imageloader-plugin branch below uses (Image_ChangeFormat -> RGBA8; BC1-BC7 are
+	//compiled in via DECOMPRESS_*).  2D only; extrafree == buf (the caller's file) so we
+	//never free it here.
+	if (len > 4 && buf[0]=='D'&&buf[1]=='D'&&buf[2]=='S'&&buf[3]==' ')
+	{
+		struct pendingtextureinfo *mips = Image_ReadDDSFile(0, fname, buf, len);
+		if (mips)
+		{
+			data = NULL;
+			if (mips->extrafree == buf)
+				mips->extrafree = NULL;	//input file belongs to the caller
+			while (mips->mipcount > 1)
+				if (mips->mip[--mips->mipcount].needfree)
+					BZ_Free(mips->mip[mips->mipcount].data);
+			if (mips->mipcount > 0 && mips->type == PTI_2D)
+			{
+				if (force_rgba8)
+				{
+					qboolean rgbx8only[PTI_MAX] = {0};
+					rgbx8only[PTI_RGBX8] = true;
+					rgbx8only[PTI_RGBA8] = true;
+					Image_ChangeFormat(mips, rgbx8only, mips->encoding, fname);
+				}
+				if (mips->mip[0].needfree)
+				{
+					data = mips->mip[0].data;
+					mips->mip[0].data = NULL;
+					mips->mip[0].needfree = false;
+				}
+				else
+				{
+					data = BZ_Malloc(mips->mip[0].datasize);
+					memcpy(data, mips->mip[0].data, mips->mip[0].datasize);
+				}
+				*width = mips->mip[0].width;
+				*height = mips->mip[0].height;
+				*format = mips->encoding;
+			}
+			for (i = 0; i < mips->mipcount; i++)
+				if (mips->mip[i].needfree)
+					BZ_Free(mips->mip[i].data);
+			if (mips->extrafree)
+				BZ_Free(mips->extrafree);
+			BZ_Free(mips);
+			if (data)
+			{
+				TRACE(("dbg: ReadRawImageFile: dds\n"));
+				return data;
+			}
+		}
 	}
 #endif
 
@@ -14919,7 +14991,8 @@ void Image_Upload			(texid_t tex, uploadfmt_t fmt, void *data, void *palette, in
 		return;
 	Image_GenerateMips(&mips, flags);
 	Image_ChangeFormatFlags(&mips, flags, fmt, tex->ident);
-	rf->IMG_LoadTextureMips(tex, &mips);
+	if (rf)	//Patch 120d: NULL with no renderer applied (-dedicated); nowhere to upload to
+		rf->IMG_LoadTextureMips(tex, &mips);
 	tex->format = fmt;
 	tex->width = width;
 	tex->height = height;
@@ -15010,7 +15083,8 @@ qboolean Image_UnloadTexture(image_t *tex)
 {
 	if (tex->status == TEX_LOADED)
 	{
-		rf->IMG_DestroyTexture(tex);
+		if (rf)	//Patch 120d: nothing was ever uploaded without a renderer, so nothing to destroy
+			rf->IMG_DestroyTexture(tex);
 		tex->status = TEX_NOTLOADED;
 		return true;
 	}
@@ -15142,7 +15216,7 @@ void Image_List_f(void)
 			}
 			if (tex->flags & IF_MIPCAP)			Con_Printf("^[^8MIPCAP\\tip\\allow the use of d_mipcap^] ");
 			if (tex->flags & IF_PREMULTIPLYALPHA)Con_Printf("^[^8PREMULTIPLYALPHA\\tip\\rgb *= alpha^] ");
-			if (tex->flags & IF_UNUSED15)		Con_Printf("^[^8UNUSED15\\tip\\...^] ");
+			if (tex->flags & IF_HDRDECOMPRESS)	Con_Printf("^[^8HDRDECOMPRESS\\tip\\Source RGBS compressed-HDR (rgb*alpha*8) decode^] ");
 			if (tex->flags & IF_UNUSED16)		Con_Printf("^[^8UNUSED16\\tip\\...^] ");
 			if (tex->flags & IF_INEXACT)		Con_Printf("^[^8INEXACT\\tip\\subdir info isn't to be used for matching^] ");
 			if (tex->flags & IF_WORLDTEX)		Con_Printf("^[^8WORLDTEX\\tip\\gl_picmip_world^] ");
@@ -15336,18 +15410,35 @@ void Image_Shutdown(void)
 		imagelist = tex->next;
 		if (tex->status == TEX_LOADED)
 			j++;
-		rf->IMG_DestroyTexture(tex);
+		if (rf)	//Patch 120d: see Image_UnloadTexture
+			rf->IMG_DestroyTexture(tex);
 		Z_Free(tex);
 		i++;
 	}
 	if (i)
 		Con_DPrintf("Destroyed %i/%i images\n", j, i);
 
-	if (wadmutex)
-		Sys_DestroyMutex(wadmutex);
-	wadmutex = NULL;
+	//Patch 120d: wadmutex is NOT destroyed here any more.  It is created once by Image_InitCore at
+	//Host_Init and is process-lifetime state, because the wad loaders run with or without a renderer.
+	//Destroying it on renderer teardown left six unguarded Sys_LockMutex(wadmutex) sites in wad.c
+	//holding a NULL, which is what crashed a dedicated client in W_GetTexture.  Keeping it costs one
+	//critical section for the life of the process and removes the whole window.
 }
 #endif
+
+//nettest Patch 120d: the part of Image_Init that has NOTHING to do with having a renderer.
+//Image_Init is only reached from R_ApplyRenderer, i.e. only once a renderer is applied -- but the
+//model/wad loaders run regardless, so a client build started with -dedicated used the image
+//subsystem with none of its state set up.  That produced a string of crashes (an uninitialised
+//hash table, then a NULL wad mutex) each of which looked like a separate bug and was really this
+//one.  Called from Renderer_Init, which Host_Init runs in BOTH modes.  Idempotent.
+void Image_InitCore(void)
+{
+#ifdef HAVE_CLIENT
+	if (!wadmutex)
+		wadmutex = Sys_CreateMutex();
+#endif
+}
 
 //may not create any images yet.
 void Image_Init(void)
@@ -15368,9 +15459,15 @@ void Image_Init(void)
 	}
 
 #ifdef HAVE_CLIENT
-	wadmutex = Sys_CreateMutex();
-	memset(imagetablebuckets, 0, sizeof(imagetablebuckets));
-	Hash_InitTable(&imagetable, sizeof(imagetablebuckets)/sizeof(imagetablebuckets[0]), imagetablebuckets);
+	Image_InitCore();	//Patch 120d: idempotent, and already done if we booted headless
+	//Patch 120d: the table is now initialised statically (see its declaration), so DON'T clear it here.
+	//Blindly re-initing would drop anything already registered -- and something can now legitimately
+	//register before the renderer comes up, which is the whole point of the static init.
+	if (!imagetable.numbuckets)
+	{
+		memset(imagetablebuckets, 0, sizeof(imagetablebuckets));
+		Hash_InitTable(&imagetable, sizeof(imagetablebuckets)/sizeof(imagetablebuckets[0]), imagetablebuckets);
+	}
 
 	Cmd_AddCommandD("r_imagelist", Image_List_f, "Prints out a list of the currently-known textures.");
 	Cmd_AddCommandD("r_imageformats", Image_Formats_f, "Prints out a list of the usable hardware pixel formats.");

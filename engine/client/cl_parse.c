@@ -892,8 +892,11 @@ void CL_DownloadFinished(qdownload_t *dl)
 static qboolean CL_CheckFile(const char *filename)
 {
 	if (strstr (filename, ".."))
-	{
-		Con_TPrintf ("Refusing to download a path with ..\n");
+	{	//nettest: name the path. This fires from four unrelated call sites (hlbsp wad list,
+		//hlbsp skybox faces, Sound_CheckDownload, the download queue) and the bare message
+		//made it impossible to tell which, or whether ".." was real traversal or just a
+		//substring -- the test is strstr, so "foo..tga" trips it as readily as "../foo".
+		Con_Printf (CON_WARNING "Refusing to download a path with ..: \"%s\"\n", filename);
 		return true;
 	}
 
@@ -1073,7 +1076,10 @@ static qboolean CL_CheckHLBspWads(char *file)
 	char *w;
 	char key[256];
 	char wads[4096];
+	char skyname[64];	//nettest P39: capture worldspawn skyname so we can fetch the skybox faces too
 	dh = (dheader_t *)file;
+
+	skyname[0] = 0;	//nettest P39
 
 	lump.fileofs = LittleLong(dh->lumps[LUMP_ENTITIES].fileofs);
 	lump.filelen = LittleLong(dh->lumps[LUMP_ENTITIES].filelen);
@@ -1094,8 +1100,8 @@ static qboolean CL_CheckHLBspWads(char *file)
 
 		if (!strcmp(key, "wad"))
 		{
-			s = wads;
-			while ((s = COM_ParseToken(s, ";")))
+			char *p = wads;	//nettest P39: parse the wad list via a LOCAL cursor so the outer 's' (entity lump) survives - we keep scanning for "skyname" below instead of returning here
+			while ((p = COM_ParseToken(p, ";")))
 			{
 				if (!strcmp(com_token, ";"))
 					continue;
@@ -1108,9 +1114,35 @@ static qboolean CL_CheckHLBspWads(char *file)
 					CL_CheckOrEnqueDownloadFile(va("textures/%s", w), NULL, DLLF_REQUIRED);
 				}
 			}
-			return false;
+		}
+		else if (!strcmp(key, "skyname") || !strcmp(key, "sky"))	//nettest P39: GoldSrc/Source "skyname" (or Q1 "sky")
+			Q_strncpyz(skyname, wads, sizeof(skyname));
+	}
+
+	//nettest P39: a client without the mounted game (CS/HL/Source) has the map + wads but NOT the skybox
+	//faces, so the sky renders black ("Sky ... missing texture: materials/skybox/<name>..."). Request them
+	//here so they download (into nettest_downloads, P38) before the sky shader builds. We can't know which
+	//convention/extension the server stored, so ask for the two common ones for all 6 faces: GoldSrc
+	//gfx/env/<name><side>.tga and Source materials/skybox/<name><side>.vtf. The server serves whatever
+	//exists (it must permit them - see the SV_AllowDownload bypass under sv_allow_download_anything, P37);
+	//the other requests harmlessly resolve as not-found. DLLF_REQUIRED so the faces arrive before first
+	//render, matching the wad handling above (a not-found just resolves and is skipped, it does not hang).
+	if (*skyname)
+	{
+		static const char *skyside[6] = {"rt", "bk", "lf", "ft", "up", "dn"};
+		int f;
+		for (f = 0; f < 6; f++)
+		{
+			char gld[128], src[128];
+			Q_snprintfz(gld, sizeof(gld), "gfx/env/%s%s.tga", skyname, skyside[f]);
+			Q_snprintfz(src, sizeof(src), "materials/skybox/%s%s.vtf", skyname, skyside[f]);
+			if (!CL_CheckFile(gld))
+				CL_CheckOrEnqueDownloadFile(gld, NULL, DLLF_REQUIRED);
+			if (!CL_CheckFile(src))
+				CL_CheckOrEnqueDownloadFile(src, NULL, DLLF_REQUIRED);
 		}
 	}
+
 	return false;
 }
 
@@ -1300,6 +1332,23 @@ static int CL_LoadModels(int stage, qboolean dontactuallyload)
 					char *str = va("csprogsvers/%x.dat", chksum);
 					if (CL_IsDownloading(str))
 						return -1;	//don't progress to loading it while we're still downloading it.
+					//nettest: the file may already be on disk yet STILL fail CSQC_CheckDownload above — a
+					//corrupt / partial / bloated cached download whose bytes don't match the server's advertised
+					//*csprogs / *csprogssize.  Re-enqueuing WITHOUT DLLF_OVERWRITE re-validates the same bad bytes
+					//every frame => a SILENT DEADLOCK (client connects, "downloads" csprogs, then hangs forever
+					//with no map).  Self-heal: force ONE clean re-download; if the fresh copy still fails to
+					//validate, the server is genuinely a different build, so abort with a clear, actionable error
+					//instead of hanging.
+					if (CL_CheckDLFile(str))
+					{
+						static unsigned int csprogs_redl_hash;	//csprogs hash we've already force-re-pulled once
+						if (csprogs_redl_hash == chksum && chksum)
+							Host_EndGame("csprogs checksum mismatch: the server is serving a different csprogs.dat than the client.\nRebuild + RESTART the dedicated server with the current csprogs.dat (a recompiled csprogs needs a server restart), then reconnect.");
+						csprogs_redl_hash = chksum;
+						FS_Remove(str, FS_GAMEONLY);	//drop the stale/corrupt cache so the re-pull is clean
+						if (CL_CheckOrEnqueDownloadFile(csname, str, DLLF_REQUIRED|DLLF_OVERWRITE))
+							return -1;	//re-pulling a fresh copy
+					}
 					if (CL_CheckOrEnqueDownloadFile(csname, str, DLLF_REQUIRED))
 						return -1;	//its kinda required
 				}
@@ -2044,7 +2093,7 @@ qboolean DL_Begun(qdownload_t *dl)
 	else if (!strncmp(dl->tempname,"skins/",6))
 		dl->fsroot = FS_PUBBASEGAMEONLY;	//shared between gamedirs, so only use the basegame.
 	else
-		dl->fsroot = FS_PUBGAMEONLY;//FS_GAMEONLY;	//other files are relative to the active gamedir.
+		dl->fsroot = FS_GAMEDOWNLOADS;	//nettest P38: other files go to $gamedir_downloads/ (was FS_PUBGAMEONLY) to keep the active gamedir pure. Mounted as a searchpath in FS_ReloadPackFilesFlags so they still load.
 
 	Q_snprintfz(dl->dclname, sizeof(dl->dclname), "%s.dcl", dl->tempname);
 
@@ -4678,7 +4727,22 @@ static void CL_ParseModellist (qboolean lots)
 
 		//we have the names, we might as well START loading them now.
 		if (COM_HasWorkers(WG_LOADER))
-			Mod_ForName (cl.model_name[nummodels], MLV_SILENT);
+		{
+			if (nummodels == 1)
+			{	//nettest: the worldmodel (index 1) may be a same-named map present in several mounted games
+				//(e.g. cs_assault in CS:S *and* GoldSrc).  THIS async pre-load is what actually picks the copy,
+				//so it must carry the server's "*mappref" prefer-hint -- a later hinted load is too late once this
+				//one has already chosen.  MLV_SILENTSYNC blocks until the loader thread finishes (gl_model.c), so
+				//the hint -- a global the loader thread reads -- stays set across the whole locate; clear it after.
+				const char *mappref = InfoBuf_ValueForKey(&cl.serverinfo, "*mappref");
+				if (mappref && *mappref)
+					FS_SetPreferHint(mappref);
+				Mod_ForName (cl.model_name[nummodels], MLV_SILENTSYNC);
+				FS_ClearPreferHint();
+			}
+			else
+				Mod_ForName (cl.model_name[nummodels], MLV_SILENT);
+		}
 	}
 
 	n = (cl.protocol_qw>=26)?MSG_ReadByte():0;
@@ -4705,7 +4769,20 @@ static void CL_ParseModellist (qboolean lots)
 	SCR_SetLoadingFile("loading data");
 
 	//we need to try to load it now if we can, so any embedded archive will be loaded *before* we start looking for other content...
-	cl.model_precache[1] = cl.model_name[1]?Mod_ForName (cl.model_name[1], MLV_SILENTSYNC):NULL;
+	{
+		//nettest: the server advertises which game's copy of a same-named map it loaded via the "*mappref" serverinfo
+		//key (Patch 26 Part 2, extended to the client).  Bias ONLY this worldmodel locate to that game so we load the
+		//SAME physical BSP the server did -> matching worldmodel checksum -> SV_PreSpawn_f's mapcheck passes instead of
+		//kicking on a GoldSrc-vs-CS:S (or CoD) mount mismatch.  serverinfo is sent in the earlier PRESPAWN_SERVERINFO
+		//stage and processed inline into cl.serverinfo BEFORE this PRESPAWN_MODELLIST stage runs, so the key is present.
+		//(no-workers fallback: if the worldmodel wasn't pre-loaded above, this is its first + only load, so it
+		//still needs the hint.  When it WAS pre-loaded with the hint above, this returns the cached model.)
+		const char *mappref = InfoBuf_ValueForKey(&cl.serverinfo, "*mappref");
+		if (mappref && *mappref)
+			FS_SetPreferHint(mappref);	//resolve the spec into fs_preferhint (graceful no-op if that addon isn't mounted here)
+		cl.model_precache[1] = cl.model_name[1]?Mod_ForName (cl.model_name[1], MLV_SILENTSYNC):NULL;
+		FS_ClearPreferHint();			//ALWAYS clear so the hint never leaks into the model/sound content loads below
+	}
 	if (cl.model_precache[1] && cl.model_precache[1]->loadstate == MLS_LOADED)
 		FS_LoadMapPackFile(cl.model_precache[1]->name, cl.model_precache[1]->archive);
 

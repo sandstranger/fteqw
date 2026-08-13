@@ -150,6 +150,20 @@ typedef struct
 	float ang[3][3];
 } md3tag_t;
 
+#ifdef SKELETALMODELS
+//nettest Patch 36 Part B: per-bone hitbox for native IQM player hit detection.
+//Mirrors hlmdl_hitbox_t (gl/gl_hlmdl.c). IQM has no native hitbox chunk, so these
+//are registered at runtime from QC via the addmodelhitbox() builtin (which resolves
+//the bone name to an index against this surface's ofsbones).
+#define MAX_ALIASHITBOXES 32
+typedef struct
+{
+	int bone;			//0-based index into ofsbones
+	int hitgroup;		//1=head,2=chest,3=stomach,4=Larm,5=Rarm,6=Lleg,7=Rleg; returned via trace->surface_id
+	vec3_t mins, maxs;	//AABB in the bone's local frame
+} aliashitbox_t;
+#endif
+
 typedef struct galiasinfo_s
 {
 	char surfacename[MAX_QPATH];
@@ -202,6 +216,20 @@ typedef struct galiasinfo_s
 	int numbones;
 	galiasbone_t *ofsbones;
 
+	//nettest Patch 36: cached resolution of the player spine bones used by the
+	//engine-native view-pitch/twist bend (Alias_ApplySpineBend in com_mesh.c).
+	//spinebend_checked latches after the first scan; spinebend_bone[] holds the
+	//indices of Bip01 Spine/Spine1/Spine2/Spine3/Neck (-1 = absent).
+	qboolean spinebend_checked;
+	qboolean spinebend_any;
+	short spinebend_bone[5];
+
+	//nettest Patch 36 Part B: per-bone hitboxes (registered from QC via addmodelhitbox).
+	//When numhitboxes>0 the trace uses these boxes instead of the mesh triangles, and
+	//reports the struck box's hitgroup via trace->surface_id.
+	int numhitboxes;
+	aliashitbox_t hitbox[MAX_ALIASHITBOXES];
+
 	vecV_t *ofs_skel_xyz;
 	vec3_t *ofs_skel_norm;
 	vec3_t *ofs_skel_svect;
@@ -236,6 +264,7 @@ typedef struct galiasinfo_s
 
 	void *ctx;				//loader-specific stuff. must be ZG_Malloced if it lasts beyond the loader.
 	unsigned int warned;	//passed around at load time, so we don't spam warnings
+	int firstvert;			//nettest: APPEND-ONLY (prebuilt plugin ABI). this surface's base offset into the model's GLOBAL vertex arrays (IQM), for slicing baked RGBPROPLIGHT per-vertex colours (in global order).
 } galiasinfo_t;
 
 struct terrainfuncs_s;
@@ -308,6 +337,20 @@ void QDECL Mod_AccumulateTextureVectors(vecV_t *const vc, vec2_t *const tc, vec3
 void Mod_AccumulateMeshTextureVectors(mesh_t *mesh);
 void QDECL Mod_NormaliseTextureVectors(vec3_t *n, vec3_t *s, vec3_t *t, int v, qboolean calcnorms);
 void R_Generate_Mesh_ST_Vectors(mesh_t *mesh);
+
+//nettest Patch 103: shared collision-hull construction, so loaders OTHER than the IQM one can build
+//the same hull the IQM path has had since Patch 56. Both were static to com_mesh.c; gl_hlmdl.c (and
+//the Quake-alias loader) now call them, so they are exposed here rather than duplicated -- a second
+//implementation would drift from this one, which is exactly how the reverted offline .acd v2 baker
+//produced inflated hulls and lost Patch 63's bevels.
+//Mod_BuildConvHull: QuickHull over `verts` -> `out` (planes/tris/bounds), capped at `cap` planes
+//(over-cap faces merge into the most-parallel plane, conservative-outward). Verts MUST be in the
+//model space the renderer draws in -- a GoldSrc .mdl's raw studio verts are BONE-LOCAL and must be
+//bind-pose transformed first (see the Patch 60 block in gl_hlmdl.c).
+void Mod_BuildConvHull(model_t *mod, convhull_t *out, const vecV_t *verts, int num, const vec3_t mins, const vec3_t maxs, int cap);
+//Mod_SkipCollisionHulls: honours sv_prop_hull_exclude (Patch 102) - true = this model never collides
+//as a prop, so skip the whole hull build.
+qboolean Mod_SkipCollisionHulls(model_t *mod);
 
 #ifdef __cplusplus
 };

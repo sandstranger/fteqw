@@ -20,6 +20,7 @@ Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
 // common.c -- misc functions used in client and server
 
 #include "quakedef.h"
+#include "qkupdate.h"
 
 #include <wctype.h>
 #include <ctype.h>
@@ -2999,6 +3000,18 @@ void COM_CleanUpPath(char *str)
 	{
 		memmove(str, str+1, strlen(str+1)+1);
 		criticize = 4;
+	}
+	{	//nettest: collapse INTERIOR double-slashes ("a//b" -> "a/b"). The leading-slash strip above and the ".." resolver
+		//leave these alone; a stray "//" baked into a Source .vmt material ref otherwise produced an "empty directory
+		//name" error + a wasted ".vmt_glsl.vmt" lookup downstream. URL-style "://" never reaches here (handled earlier).
+		char *dst, *src;
+		for (dst = src = str; *src; )
+		{
+			if (src[0] == '/' && src[1] == '/')
+				{ src++; continue; }
+			*dst++ = *src++;
+		}
+		*dst = 0;
 	}
 /*	if(criticize)
 	{
@@ -6829,6 +6842,8 @@ void COM_Init (void)
 	Cmd_AddCommand ("errorme", COM_ErrorMe_f);
 #endif
 	COM_InitFilesystem ();
+
+	QKU_Init();	//quakers: in-game delta updater. after the filesystem, so com_gamepath is known.
 
 	Cvar_Register (&host_mapname, "Scripting");
 	Cvar_Register (&developer, "Debugging");

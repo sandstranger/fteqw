@@ -32,10 +32,25 @@ Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
 extern cvar_t r_shadow_bumpscale_basetexture;
 extern cvar_t r_replacemodels;
 extern cvar_t r_lightmap_average;
+extern cvar_t r_waterripple;
+extern cvar_t r_waterripple_tess;
+extern cvar_t r_waterripple_react;
 cvar_t mod_loadentfiles						= CVAR("sv_loadentfiles", "1");
 cvar_t mod_loadentfiles_dir					= CVAR("sv_loadentfiles_dir", "");
 cvar_t mod_external_vis						= CVARD("mod_external_vis", "1", "Attempt to load .vis patches for quake maps, allowing transparent water to work properly.");
 cvar_t mod_warnmodels						= CVARD("mod_warnmodels", "1", "Warn if any models failed to load. Set to 0 if your mod is likely to lack optional models (like its in development).");	//set to 0 for hexen2 and its otherwise-spammy-as-heck demo.
+//nettest Patch 102: read by Mod_SkipCollisionHulls (com_mesh.c) on the LOADER WORKER, so it MUST be
+//registered here on the main thread. A lazy Cvar_Get from the worker CRASHED every prop map: Cvar_Get
+//REGISTERS on first call, cvar.c has no locking at all, and dozens of IQMs precache at once across the
+//4 loader workers. Worse, registration ends in Cvar_SetCore -> InfoBuf_SetKey(&svs.info, ...) which
+//reallocs the serverinfo blob -- from the worker, while the main thread is inside SV_SpawnServer
+//writing its own keys. Hard crash, no error, log just stops.
+//
+//Deliberately NOT CVAR_SERVERINFO (that flag is what reached InfoBuf_SetKey above): the value is read
+//at model LOAD only, so pushing it live to clients buys nothing, and a live `serverinfo` set / QC
+//cvar_set would Z_Free the old ->string out from under a worker mid-read -- the same crash shape again.
+//It is plain CVAR_ARCHIVE: set it in a cfg, reload the map to apply.
+cvar_t mod_prop_hull_exclude				= CVARFD("sv_prop_hull_exclude", "models/player/;models/gibs/;models/nature/grass;models/nature/fern;models/nature/wheat", CVAR_ARCHIVE, "Semicolon-separated model-path prefixes that skip collision-hull + convex-decomposition construction at load. Pure load-time cost for models that are never SOLID_PHYSICS_TRIMESH/BOX props (player models, gibs, debris, foliage) - a player model is highly concave, so it pays the full recursive ACD for nothing, and grass/fern/wheat are spawned SOLID_NOT yet were each building THIRTY-TWO convex pieces. Prefix match, so 'models/nature/grass' covers grass_2.iqm etc. A model listed here that IS used as a prop degrades to the normal alias trace rather than losing collision (the hull trace is gated on numhullplanes>=4). Empty = build hulls for every model (the old behaviour). Read at model LOAD - reload the map to apply.");
 cvar_t mod_litsprites_force					= CVARFD("mod_litsprites_force", "0", CVAR_RENDERERLATCH, "If set to 1, sprites will be lit according to world lighting (including rtlights), like Tenebrae. Ideally use EF_ADDITIVE or EF_FULLBRIGHT to make emissive sprites instead.");
 cvar_t mod_loadmappackages					= CVARD ("mod_loadmappackages", "1", "Load additional content embedded within bsp files.");
 cvar_t mod_lightscale_broken				= CVARFD("mod_lightscale_broken", "0", CVAR_RENDERERLATCH, "When active, replicates a bug from vanilla - the radius of r_dynamic lights is scaled by per-surface texture scale rather than using actual distance.");
@@ -668,6 +683,7 @@ void Mod_Init (qboolean initial)
 	{
 		Cvar_Register(&mod_external_vis, "Graphical Nicaties");
 		Cvar_Register(&mod_warnmodels, "Graphical Nicaties");
+		Cvar_Register(&mod_prop_hull_exclude, NULL);	//nettest Patch 102 — MUST be registered here (main thread): the loader worker only reads it
 		Cvar_Register(&mod_litsprites_force, "Graphical Nicaties");
 		Cvar_Register(&mod_loadentfiles, NULL);
 		Cvar_Register(&mod_loadentfiles_dir, NULL);
@@ -1022,9 +1038,16 @@ void Mod_ModelLoaded(void *ctx, void *data, size_t a, size_t b)
 #endif
 #ifndef SERVERONLY
 	if (mod->type == mod_brush)
-		Surf_BuildModelLightmaps(mod);
+	{	//nettest Patch 120d: guarded, exactly like the alias branch below.  Lightmaps are purely
+		//visual and r_surf.c has no dedicated guards anywhere in it, so with no renderer this walked
+		//into the image/lightmap code with a zeroed sh_config and died.  A headless client has no use
+		//for them either -- Mod_LightmapAllocSurf already bails on isDedicated and stamps
+		//lightmaptexturenums = -1, so the rest of the engine is already expecting none.
+		if (qrenderer != QR_NONE)
+			Surf_BuildModelLightmaps(mod);
+	}
 	if (mod->type == mod_sprite)
-	{
+	{	//no guard needed: Mod_LoadSpriteModel returns a mod_dummy under QR_NONE, so this never fires.
 		Mod_LoadSpriteShaders(mod);
 	}
 	if (mod->type == mod_alias)
@@ -1082,6 +1105,79 @@ Mod_LoadModel
 Loads a model into the cache
 ==================
 */
+
+#ifndef SERVERONLY	//nettest P62: load a plain image (png/tga/jpg/…) as a 1-frame billboard sprite
+//So precache_model/setmodel of e.g. "sprites/light7.png" succeeds and the mod's env_sprite
+//renders it at the same world size a .spr of equal pixel dims would (env_sprite "scale" tunes it).
+//A bare image carries no sprite metadata, so dims are read SYNCHRONOUSLY from the file buffer;
+//the texture itself is (re)loaded async by Image_GetTexture, and the frame shader is built on
+//the main thread by Mod_ModelLoaded->Mod_LoadSpriteShaders (SPRITE_SHADER_UNLIT).  Mirrors the
+//external-image sprite path of Mod_LoadSprite2Model (.sp2).
+static qboolean Mod_LoadImageSprite (model_t *mod, void *buffer, size_t fsize)	//nettest P62
+{
+	extern qbyte *ReadRawImageFile(qbyte *buf, int len, int *width, int *height, uploadfmt_t *format, qboolean force_rgba8, const char *fname);	//image.c
+	msprite_t		*psprite;
+	mspriteframe_t	*frame;
+	int				w = 0, h = 0;
+	uploadfmt_t		fmt;
+	qbyte			*pix;
+
+	//Decode the in-hand buffer ONLY to learn the pixel dims synchronously (Image_GetTexture is
+	//async and never returns dims in time).  Discard the pixels — the GPU texture is loaded by
+	//Image_GetTexture below from the file on disk.
+	pix = ReadRawImageFile((qbyte*)buffer, (int)fsize, &w, &h, &fmt, true, mod->name);
+	if (!pix || w < 1 || h < 1)
+	{
+		if (pix)
+			BZ_Free(pix);
+		return false;	//not a decodable image -> caller emits the normal "Unrecognised model format" warning
+	}
+	BZ_Free(pix);
+
+	psprite = ZG_Malloc(&mod->memgroup, sizeof(msprite_t));	//msprite_t embeds frames[1]
+	mod->meshinfo = psprite;
+
+	psprite->type       = SPR_VP_PARALLEL;	//view-parallel billboard — correct for a light glow
+	psprite->maxwidth   = w;
+	psprite->maxheight  = h;
+	psprite->beamlength = 1;
+	psprite->numframes  = 1;
+	mod->synctype  = 0;
+	mod->numframes = 1;
+
+	//Origin-centered bbox, same convention as Mod_LoadSpriteModel (gl_model.c:6195).
+	mod->mins[0] = mod->mins[1] = -psprite->maxwidth/2;
+	mod->maxs[0] = mod->maxs[1] =  psprite->maxwidth/2;
+	mod->mins[2] = -psprite->maxheight/2;
+	mod->maxs[2] =  psprite->maxheight/2;
+
+	if (qrenderer == QR_NONE)
+	{	//headless client (no GPU): register a valid dummy model so precache still succeeds.
+		mod->type = mod_dummy;
+		return true;
+	}
+
+	psprite->frames[0].type = SPR_SINGLE;
+	frame = psprite->frames[0].frameptr = ZG_Malloc(&mod->memgroup, sizeof(mspriteframe_t));
+	memset(frame, 0, sizeof(*frame));
+
+	//Origin-centered frame bounds -> same world size as an equal-pixel .spr.
+	frame->up    =  h/2.0f;
+	frame->down  = -h/2.0f;
+	frame->left  = -w/2.0f;
+	frame->right =  w/2.0f;
+	frame->xmirror = false;
+
+	//Load the real image by name, async — like the .sp2 external-image path (gl_model.c:6359).
+	//IF_PREMULTIPLYALPHA: the image-sprite shader (SPRITE_SHADER_BLEND) blends GL_ONE,GL_1-SA
+	//(premultiplied) so the PNG's soft alpha edges are clean (no halo); see Mod_LoadSpriteFrameShader.
+	frame->image = Image_GetTexture(mod->name, NULL, IF_NOMIPMAP|IF_NOGAMMA|IF_CLAMP|IF_PREMULTIPLYALPHA, NULL, NULL, 0, 0, TF_INVALID);
+
+	mod->type = mod_sprite;	//Mod_ModelLoaded -> Mod_LoadSpriteShaders builds the frame shader (SPRITE_SHADER_UNLIT)
+	return true;
+}
+#endif	//!SERVERONLY
+
 static void Mod_LoadModelWorker (void *ctx, void *data, size_t a, size_t b)
 {
 	model_t *mod = ctx;
@@ -1337,9 +1433,22 @@ static void Mod_LoadModelWorker (void *ctx, void *data, size_t a, size_t b)
 			}
 			else
 			{
-				Con_Printf(CON_WARNING "Unrecognised model format %c%c%c%c\n", ((char*)buf)[0], ((char*)buf)[1], ((char*)buf)[2], ((char*)buf)[3]);
-				BZ_Free(buf);
-				continue;
+#ifndef SERVERONLY	//nettest P62: an image (png/tga/…) precached as a model -> synthesize a 1-frame billboard sprite
+				const char *imgext = COM_GetFileExtension(mod->name, NULL);	//returns the extension WITH the dot
+				if (imgext && (!Q_strcasecmp(imgext, ".png") || !Q_strcasecmp(imgext, ".tga") ||
+				               !Q_strcasecmp(imgext, ".jpg") || !Q_strcasecmp(imgext, ".jpeg") ||
+				               !Q_strcasecmp(imgext, ".pcx") || !Q_strcasecmp(imgext, ".bmp")) &&
+				    Mod_LoadImageSprite(mod, buf, filesize))
+				{
+					//loaded as a sprite -> fall through to the MLS_LOADED success path below
+				}
+				else
+#endif
+				{
+					Con_Printf(CON_WARNING "Unrecognised model format %c%c%c%c in \"%s\"\n", ((char*)buf)[0], ((char*)buf)[1], ((char*)buf)[2], ((char*)buf)[3], mod->name);	//nettest: name the offending file (was anonymous) — e.g. a Source sprite .vmt precached as a model
+					BZ_Free(buf);
+					continue;
+				}
 			}
 		}
 
@@ -1635,6 +1744,7 @@ void Mod_LoadLighting (model_t *loadmodel, bspx_header_t *bspx, qbyte *mod_base,
 
 #ifdef HAVE_CLIENT
 	BSPX_LightGridLoad(loadmodel, bspx, mod_base);
+	BSPX_PropLightLoad(loadmodel, bspx, mod_base);	//nettest: baked static-prop per-vertex lighting
 #endif
 
 	loadmodel->lightmaps.fmt = LM_L8;
@@ -1651,6 +1761,7 @@ void Mod_LoadLighting (model_t *loadmodel, bspx_header_t *bspx, qbyte *mod_base,
 
 	loadmodel->lightdata = NULL;
 	loadmodel->deluxdata = NULL;
+	loadmodel->sunvisdata = NULL;	//nettest: SUNVIS is optional; absent => fully-lit fallback
 	if (loadmodel->fromgame == fg_halflife || loadmodel->fromgame == fg_quake2 || loadmodel->fromgame == fg_quake3)
 	{
 		litdata = mod_base + l->fileofs;
@@ -2101,6 +2212,30 @@ void Mod_LoadLighting (model_t *loadmodel, bspx_header_t *bspx, qbyte *mod_base,
 	else if (interleaveddeluxe)
 		loadmodel->deluxdata = ZG_Malloc(&loadmodel->memgroup, samples*3);
 
+	//nettest: SUNVIS — one byte per luxel, how much of the sun that luxel sees (0 = fully
+	//occluded by world geometry, 255 = fully lit).  Baked by protoanus-tools `light -sunvis`.
+	//Lets the world shader scale the DYNAMIC r_shadows 2 sun shadow by the BAKED sun
+	//visibility, so a player's shadow falling inside an already-baked shadow stops darkening
+	//it a second time.  Optional: absent lump => NULL => the shader falls back to a white
+	//texture and behaves exactly as it did before.
+	//Sized like the vanilla lighting lump (1 byte/luxel) — the size check is what rejects a
+	//lump left over from a differently-lit compile.  Always a BSPX lump, so always a copy
+	//into the memgroup: the BSP file image is freed after load.
+	{
+		size_t sunvissize;
+		qbyte *sunvisdata = BSPX_FindLump(bspx, mod_base, "SUNVIS", &sunvissize);
+		if (sunvisdata && sunvissize == samples)
+		{
+			loadmodel->sunvisdata = ZG_Malloc(&loadmodel->memgroup, samples);
+			memcpy(loadmodel->sunvisdata, sunvisdata, samples);
+			//positive control: without this there is no way to tell "lump accepted" from
+			//"lump silently rejected" apart from staring at shadows. developer 1 to see it.
+			Con_DPrintf("SUNVIS: %u luxels loaded, dynamic sun shadows are now baked-shadow aware\n", (unsigned)samples);
+		}
+		else if (sunvisdata)
+			Con_DPrintf("SUNVIS lump size %u != %u luxels, ignored\n", (unsigned)sunvissize, (unsigned)samples);
+	}
+
 	if (expdata)
 	{
 		loadmodel->lightmaps.fmt = LM_E5BGR9;
@@ -2487,6 +2622,272 @@ qboolean Mod_LoadVertexNormals (model_t *loadmodel, bspx_header_t *bspx, qbyte *
 }
 
 #if defined(Q1BSPS) || defined(Q2BSPS)
+#ifndef SERVERONLY
+// --- rippling water -------------------------------------------------------------------
+// r_waterripple subdivides each turbulent (liquid) surface into a world-grid mesh at load so
+// the shader's "deformVertexes wave" can ripple it per-vertex. Subdivision is by grid planes
+// (classic GLQuake SubdividePolygon) so neighbouring water faces share edge vertices and stay
+// crack-free while displaced. The same routine runs in count mode (mesh==NULL) to size the VBO
+// and in emit mode to fill it, so the two passes always agree.
+#define WATERSUBDIV_SNAP     0.1f		// treat a vertex within this of a grid plane as ON it (kills slivers)
+#define WATERSUBDIV_MAXVERTS 16384		// per-surface safety cap (well under MAX_ARRAY_VERTS)
+#define WATERSUBDIV_MAXPTS   64			// working winding size
+
+typedef struct
+{
+	model_t		*mod;
+	msurface_t	*surf;
+	float		cellsize;
+	mesh_t		*mesh;		// NULL => count only
+	int			nv;			// running vertex count / write cursor
+	int			ni;			// running index count / write cursor
+} watersubdiv_t;
+
+static void Surf_WaterEmitVert(watersubdiv_t *w, const vec3_t pos)
+{
+	mesh_t *mesh = w->mesh;
+	msurface_t *surf = w->surf;
+	model_t *mod = w->mod;
+	int i = w->nv;
+	float s, t, d;
+
+	if (mesh)
+	{
+		VectorCopy(pos, mesh->xyz_array[i]);
+
+		s = DotProduct(pos, surf->texinfo->vecs[0]) + surf->texinfo->vecs[0][3];
+		t = DotProduct(pos, surf->texinfo->vecs[1]) + surf->texinfo->vecs[1][3];
+		mesh->st_array[i][0] = s;
+		mesh->st_array[i][1] = t;
+		if (surf->texinfo->texture->vwidth)
+			mesh->st_array[i][0] /= surf->texinfo->texture->vwidth;
+		if (surf->texinfo->texture->vheight)
+			mesh->st_array[i][1] /= surf->texinfo->texture->vheight;
+		if (surf->texinfo->flags & TI_N64_UV)
+		{
+			mesh->st_array[i][0] /= 2;
+			mesh->st_array[i][1] /= 2;
+		}
+
+		// Lightmap coords: the turb shader has a LIT permutation that multiplies by the
+		// lightmap, so these MUST match the normal world fill exactly (decoupled/facelmvecs
+		// maps use a different projection than the standard formula) or the water shows
+		// garbage lightmap data. Mirrors ModQ1_Batches_BuildQ1Q2Poly's per-vertex lm block.
+		if (mesh->lmst_array[0])
+		{
+			if (mod->lightmaps.width <= 0 || mod->lightmaps.height <= 0)
+			{
+				mesh->lmst_array[0][i][0] = 0;
+				mesh->lmst_array[0][i][1] = 0;
+			}
+			else
+			{
+				struct facelmvecs_s *flmv = mod->facelmvecs ? mod->facelmvecs + (surf - mod->surfaces) : NULL;
+				if (flmv)
+				{
+					float ls = DotProduct(pos, flmv->lmvecs[0]) + flmv->lmvecs[0][3];
+					float lt = DotProduct(pos, flmv->lmvecs[1]) + flmv->lmvecs[1][3];
+					if (r_lightmap_average.ival)
+					{
+						ls = surf->extents[0]*0.5;
+						lt = surf->extents[1]*0.5;
+					}
+					mesh->lmst_array[0][i][0] = (surf->light_s[0] + ls) / mod->lightmaps.width;
+					mesh->lmst_array[0][i][1] = (surf->light_t[0] + lt) / mod->lightmaps.height;
+				}
+				else if (r_lightmap_average.ival)
+				{
+					mesh->lmst_array[0][i][0] = (surf->extents[0]*0.5 + (surf->light_s[0]<<surf->lmshift) + (1<<surf->lmshift)*0.5) / (mod->lightmaps.width<<surf->lmshift);
+					mesh->lmst_array[0][i][1] = (surf->extents[1]*0.5 + (surf->light_t[0]<<surf->lmshift) + (1<<surf->lmshift)*0.5) / (mod->lightmaps.height<<surf->lmshift);
+				}
+				else
+				{
+					mesh->lmst_array[0][i][0] = (s - surf->texturemins[0] + (surf->light_s[0]<<surf->lmshift) + (1<<surf->lmshift)*0.5) / (mod->lightmaps.width<<surf->lmshift);
+					mesh->lmst_array[0][i][1] = (t - surf->texturemins[1] + (surf->light_t[0]<<surf->lmshift) + (1<<surf->lmshift)*0.5) / (mod->lightmaps.height<<surf->lmshift);
+				}
+			}
+		}
+
+		// flat surface normal - the ripple comes from the deform, not baked geometry
+		if (surf->flags & SURF_PLANEBACK)
+			VectorNegate(surf->plane->normal, mesh->normals_array[i]);
+		else
+			VectorCopy(surf->plane->normal, mesh->normals_array[i]);
+		VectorCopy(surf->texinfo->vecs[0], mesh->snormals_array[i]);
+		VectorNegate(surf->texinfo->vecs[1], mesh->tnormals_array[i]);
+		d = -DotProduct(mesh->normals_array[i], mesh->snormals_array[i]);
+		VectorMA(mesh->snormals_array[i], d, mesh->normals_array[i], mesh->snormals_array[i]);
+		d = -DotProduct(mesh->normals_array[i], mesh->tnormals_array[i]);
+		VectorMA(mesh->tnormals_array[i], d, mesh->normals_array[i], mesh->tnormals_array[i]);
+		VectorNormalize(mesh->snormals_array[i]);
+		VectorNormalize(mesh->tnormals_array[i]);
+
+		if (mesh->colors4f_array[0])
+		{
+			mesh->colors4f_array[0][i][0] = 1;
+			mesh->colors4f_array[0][i][1] = 1;
+			mesh->colors4f_array[0][i][2] = 1;
+			mesh->colors4f_array[0][i][3] = 1;
+		}
+	}
+	w->nv++;
+}
+
+static void Surf_WaterEmitPoly(watersubdiv_t *w, int numpts, vec3_t *pts)
+{
+	int i, base = w->nv;
+
+	if (numpts < 3)
+		return;
+	if (w->nv + numpts > WATERSUBDIV_MAXVERTS)
+		return;	// safety: drop overflow geometry rather than corrupt the VBO
+
+	for (i = 0; i < numpts; i++)
+		Surf_WaterEmitVert(w, pts[i]);
+
+	if (w->mesh)
+	{
+		for (i = 0; i < numpts-2; i++)
+		{
+			w->mesh->indexes[w->ni + i*3+0] = base;
+			w->mesh->indexes[w->ni + i*3+1] = base + i+1;
+			w->mesh->indexes[w->ni + i*3+2] = base + i+2;
+		}
+	}
+	w->ni += (numpts-2)*3;
+}
+
+static void Surf_WaterSubdividePoly(watersubdiv_t *w, int numpts, vec3_t *pts)
+{
+	vec3_t	mins, maxs;
+	int		i, j, axis, f, b;
+	float	m, frac;
+	float	dist[WATERSUBDIV_MAXPTS+1];
+	vec3_t	front[WATERSUBDIV_MAXPTS], back[WATERSUBDIV_MAXPTS];
+
+	if (numpts > WATERSUBDIV_MAXPTS-4)
+	{	// too complex to keep splitting safely - just emit it
+		Surf_WaterEmitPoly(w, numpts, pts);
+		return;
+	}
+
+	ClearBounds(mins, maxs);
+	for (i = 0; i < numpts; i++)
+		AddPointToBounds(pts[i], mins, maxs);
+
+	for (axis = 0; axis < 3; axis++)
+	{
+		// Split at the GLOBAL grid plane nearest this fragment's centre (binary subdivision, so the
+		// recursion stays O(log span) deep). Snapping the plane to the world lattice -- and NOT
+		// skipping one merely because it lands near an edge -- means both sides of every shared edge
+		// end up split at the identical set of planes: no fragment is ever left a vertex short of its
+		// neighbour, which was the T-junction that detached corner tris from the wave grid. Recursion
+		// keeps going until a fragment has no grid line strictly inside it, so every interior grid
+		// line is split regardless of the order they are picked in.
+		m = (mins[axis] + maxs[axis]) * 0.5f;
+		m = w->cellsize * floor(m/w->cellsize + 0.5f);	// nearest global grid plane
+		if (m <= mins[axis] + WATERSUBDIV_SNAP || m >= maxs[axis] - WATERSUBDIV_SNAP)
+			continue;	// plane sits at (or within snap of) an edge -> no interior split, and the
+						// edge vertex is already on the grid so its neighbour shares it (no T-junction)
+
+		for (i = 0; i < numpts; i++)
+		{
+			dist[i] = pts[i][axis] - m;
+			// A grid line grazing a boundary vertex would otherwise shave a near-degenerate sliver;
+			// snap the vertex onto the plane so the dist==0 path below shares it cleanly instead.
+			if (dist[i] > -WATERSUBDIV_SNAP && dist[i] < WATERSUBDIV_SNAP)
+				dist[i] = 0;
+		}
+		dist[numpts] = dist[0];		// wrap for the edge test
+
+		f = b = 0;
+		for (i = 0; i < numpts; i++)
+		{
+			if (dist[i] >= 0)
+			{
+				VectorCopy(pts[i], front[f]);
+				f++;
+			}
+			if (dist[i] <= 0)
+			{
+				VectorCopy(pts[i], back[b]);
+				b++;
+			}
+			if (dist[i] == 0 || dist[i+1] == 0)
+				continue;
+			if ((dist[i] > 0) != (dist[i+1] > 0))
+			{	// this edge crosses the plane - add the split point to both sides
+				frac = dist[i] / (dist[i] - dist[i+1]);
+				for (j = 0; j < 3; j++)
+					front[f][j] = back[b][j] = pts[i][j] + frac*(pts[(i+1)%numpts][j] - pts[i][j]);
+				f++;
+				b++;
+			}
+		}
+		Surf_WaterSubdividePoly(w, f, front);
+		Surf_WaterSubdividePoly(w, b, back);
+		return;
+	}
+
+	Surf_WaterEmitPoly(w, numpts, pts);	// small enough - emit as a fan
+}
+
+// Subdivide surf into w->mesh (or count into *out_nv/*out_ni when outmesh==NULL).
+static void Surf_WaterSubdivide(model_t *mod, msurface_t *surf, mesh_t *outmesh, int *out_nv, int *out_ni)
+{
+	watersubdiv_t w;
+	vec3_t	verts[WATERSUBDIV_MAXPTS];
+	unsigned int vertidx;
+	int		i, lindex, edgevert;
+	int		n = surf->numedges;
+
+	memset(&w, 0, sizeof(w));
+	w.mod = mod;
+	w.surf = surf;
+	w.mesh = outmesh;
+	w.cellsize = r_waterripple_tess.value;
+	if (w.cellsize < 16)
+		w.cellsize = 16;	// sane floor to bound the vertex count
+
+	if (n > WATERSUBDIV_MAXPTS)
+		n = WATERSUBDIV_MAXPTS;
+
+	for (i = 0; i < n; i++)
+	{
+		lindex = mod->surfedges[surf->firstedge + i];
+		edgevert = lindex <= 0;
+		if (edgevert)
+			lindex = -lindex;
+		if (lindex < 0 || lindex >= mod->numedges)
+			vertidx = 0;
+		else
+			vertidx = mod->edges[lindex].v[edgevert];
+		VectorCopy(mod->vertexes[vertidx].position, verts[i]);
+	}
+
+	Surf_WaterSubdividePoly(&w, n, verts);
+
+	if (out_nv) *out_nv = w.nv;
+	if (out_ni) *out_ni = w.ni;
+}
+
+static qboolean Surf_WaterShouldRipple(msurface_t *surf)
+{
+	float up;
+	//tessellate the surface if EITHER the ambient wave OR interactive reactions are enabled --
+	//reactive ripples need the same subdivided mesh, so you can have calm-but-reactive water.
+	if (!(surf->flags & SURF_DRAWTURB) || (r_waterripple.value <= 0 && r_waterripple_react.value <= 0))
+		return false;
+	// only the roughly-upward-facing (top) liquid surfaces get tessellated + rippled; the
+	// vertical side faces and the floor keep their flat corner mesh so they don't wobble
+	// sideways, and we don't spend vertices on faces you can't see the ripple on.
+	up = surf->plane->normal[2];
+	if (surf->flags & SURF_PLANEBACK)
+		up = -up;
+	return up > 0.5f;
+}
+#endif
+
 void ModQ1_Batches_BuildQ1Q2Poly(model_t *mod, msurface_t *surf, builddata_t *cookie)
 {
 	unsigned int vertidx;
@@ -2500,18 +2901,42 @@ void ModQ1_Batches_BuildQ1Q2Poly(model_t *mod, msurface_t *surf, builddata_t *co
 
 	if (!mesh)
 	{
-		mesh = surf->mesh = ZG_Malloc(&mod->memgroup, sizeof(mesh_t) + (sizeof(vecV_t)+sizeof(vec2_t)*(1+1)+sizeof(vec3_t)*3+sizeof(vec4_t)*1)* surf->numedges + sizeof(index_t)*(surf->numedges-2)*3);
-		mesh->numvertexes = surf->numedges;
-		mesh->numindexes = (mesh->numvertexes-2)*3;
+		int nverts = surf->numedges;
+		int nindexes = (surf->numedges-2)*3;
+#ifndef SERVERONLY
+		if (Surf_WaterShouldRipple(surf))
+		{	// size the standalone mesh for the subdivided grid (non-world/bmodel path)
+			int wnv, wni;
+			Surf_WaterSubdivide(mod, surf, NULL, &wnv, &wni);
+			if (wnv >= 3)
+			{
+				nverts = wnv;
+				nindexes = wni;
+			}
+		}
+#endif
+		mesh = surf->mesh = ZG_Malloc(&mod->memgroup, sizeof(mesh_t) + (sizeof(vecV_t)+sizeof(vec2_t)*(1+1)+sizeof(vec3_t)*3+sizeof(vec4_t)*1)* nverts + sizeof(index_t)*nindexes);
+		mesh->numvertexes = nverts;
+		mesh->numindexes = nindexes;
 		mesh->xyz_array = (vecV_t*)(mesh+1);
-		mesh->st_array = (vec2_t*)(mesh->xyz_array+mesh->numvertexes);
-		mesh->lmst_array[0] = (vec2_t*)(mesh->st_array+mesh->numvertexes);
-		mesh->normals_array = (vec3_t*)(mesh->lmst_array[0]+mesh->numvertexes);
-		mesh->snormals_array = (vec3_t*)(mesh->normals_array+mesh->numvertexes);
-		mesh->tnormals_array = (vec3_t*)(mesh->snormals_array+mesh->numvertexes);
-		mesh->colors4f_array[0] = (vec4_t*)(mesh->tnormals_array+mesh->numvertexes);
-		mesh->indexes = (index_t*)(mesh->colors4f_array[0]+mesh->numvertexes);
+		mesh->st_array = (vec2_t*)(mesh->xyz_array+nverts);
+		mesh->lmst_array[0] = (vec2_t*)(mesh->st_array+nverts);
+		mesh->normals_array = (vec3_t*)(mesh->lmst_array[0]+nverts);
+		mesh->snormals_array = (vec3_t*)(mesh->normals_array+nverts);
+		mesh->tnormals_array = (vec3_t*)(mesh->snormals_array+nverts);
+		mesh->colors4f_array[0] = (vec4_t*)(mesh->tnormals_array+nverts);
+		mesh->indexes = (index_t*)(mesh->colors4f_array[0]+nverts);
 	}
+
+#ifndef SERVERONLY
+	if (Surf_WaterShouldRipple(surf))
+	{	// rippling water: emit a subdivided grid (its own indices) instead of the corner trifan
+		int wnv, wni;
+		mesh->istrifan = false;
+		Surf_WaterSubdivide(mod, surf, mesh, &wnv, &wni);
+		return;
+	}
+#endif
 	mesh->istrifan = true;
 
 	//output the mesh's indicies
@@ -2547,12 +2972,17 @@ void ModQ1_Batches_BuildQ1Q2Poly(model_t *mod, msurface_t *surf, builddata_t *co
 		else
 */
 		{
+			//nettest Patch 120d: texinfo->texture is NULL with no renderer (a client build run with
+			//-dedicated never loads the miptextures), and SERVER QC reaches here through the
+			//getsurface* builtins -- PF_getsurfacenumpoints -> PF_BuildSurfaceMesh -- during entity
+			//spawn.  Leaving st unnormalised is the same thing the vwidth/vheight==0 case already does.
+			texture_t *stex = surf->texinfo->texture;
 			mesh->st_array[i][0] = s;
 			mesh->st_array[i][1] = t;
-			if (surf->texinfo->texture->vwidth)
-				mesh->st_array[i][0] /= surf->texinfo->texture->vwidth;
-			if (surf->texinfo->texture->vheight)
-				mesh->st_array[i][1] /= surf->texinfo->texture->vheight;
+			if (stex && stex->vwidth)
+				mesh->st_array[i][0] /= stex->vwidth;
+			if (stex && stex->vheight)
+				mesh->st_array[i][1] /= stex->vheight;
 
 			if (surf->texinfo->flags & TI_N64_UV)
 			{
@@ -3317,8 +3747,28 @@ void Mod_Batches_Build(model_t *mod, builddata_t *bd)
 		if (meshlist)
 		{
 			mesh = surf->mesh = &meshlist[i];
-			mesh->numvertexes = surf->numedges;
-			mesh->numindexes = (surf->numedges-2)*3;
+#ifndef SERVERONLY
+			if (Surf_WaterShouldRipple(surf))
+			{	// rippling water is tessellated - size the VBO for the subdivided grid
+				int wnv = 0, wni = 0;
+				Surf_WaterSubdivide(mod, surf, NULL, &wnv, &wni);
+				if (wnv >= 3)
+				{
+					mesh->numvertexes = wnv;
+					mesh->numindexes = wni;
+				}
+				else
+				{
+					mesh->numvertexes = surf->numedges;
+					mesh->numindexes = (surf->numedges-2)*3;
+				}
+			}
+			else
+#endif
+			{
+				mesh->numvertexes = surf->numedges;
+				mesh->numindexes = (surf->numedges-2)*3;
+			}
 		}
 		else
 			mesh = surf->mesh;
@@ -5347,6 +5797,7 @@ void ModBrush_LoadGLStuff(void *ctx, void *data, size_t a, size_t b)
 			if (!mod->fogs[a].shader->fog_dist)
 			{
 				//invalid fog shader, don't use.
+				Con_Printf("^1fog[%i] '%s' nulled by GL resolve (fog_dist=%g)\n", (int)a, mod->fogs[a].shadername, mod->fogs[a].shader->fog_dist);	//nettest diag (Patch 77)
 				mod->fogs[a].shader = NULL;
 				mod->fogs[a].numplanes = 0;
 			}
@@ -5497,6 +5948,261 @@ static void Mod_FindVisPatch(struct vispatch_s *patch, model_t *mod, size_t leaf
 		}
 		ofs += 36+len;
 	}
+}
+
+//nettest: Q1 (idBSP/HL) FOG VOLUMES.  Q1 has no Q3 fog lump, but the fog RENDER path is not
+//fromgame-gated -- if a Q1 world model's mod->fogs[] is populated and surfaces get surf->fog, it
+//fogs exactly like Q3.  So we source bounded fog volumes from `func_fogvolume` BRUSH entities: at
+//load, read each entity's inline-submodel AABB from the entity lump, build a 6-plane fog volume +
+//a synthesized `fogparms` shader (mirrors CModQ3_LoadFogs / the crepuscular runtime-shader trick),
+//and tag world surfaces whose CENTRE is inside the volume.  Called from Mod_LoadBrushModel after
+//submodels/planes/entities/faces load, BEFORE the async ModBrush_LoadGLStuff (which resolves fog
+//shaders by name) and Mod_Batches_Generate (which copies surf->fog into batch->fog).
+//v1: axis-aligned volumes; per-surface centroid test; visibleplane is an approximation.
+#define Q1FOG_MAX 64
+static void Mod_LoadQ1FogVolumes (model_t *mod)
+{
+	const char *data;
+	mfog_t tmp[Q1FOG_MAX];
+	int count = 0;
+	int i;
+	//nettest Patch 120d: parse into a LOCAL buffer, never com_token.
+	//COM_Parse(d) is a macro for COM_ParseOut(d, com_token, sizeof(com_token)), and com_token is ONE
+	//65536-byte global shared by the whole engine.  This function runs on a WORKER thread
+	//(Mod_LoadModelWorker -> Mod_LoadBrushModel), so every token it parsed was racing whatever the
+	//main thread happened to be parsing at the same moment.  _DEBUG builds catch it outright --
+	//"Not on main thread: COM_ParseOut: com_token" -- and release builds just corrupt each other's
+	//tokens, which is a map-load-time data race on EVERY map, not only in dedicated mode.
+	char token[1024];
+
+	if (!mod->entities_raw || !mod->submodels || mod->numsubmodels < 2)
+		return;
+
+	data = mod->entities_raw;
+	while (count < Q1FOG_MAX)
+	{
+		char classname[64] = "", modelkey[64] = "";
+		vec3_t colour = {0.5, 0.5, 0.6};
+		float dist = 256;
+
+		data = COM_ParseOut(data, token, sizeof(token));
+		if (!data || token[0] != '{')
+			break;
+		while (1)
+		{
+			char key[64];
+			data = COM_ParseOut(data, token, sizeof(token));
+			if (!data || token[0] == '}')
+				break;
+			Q_strncpyz(key, token, sizeof(key));
+			data = COM_ParseOut(data, token, sizeof(token));
+			if (!data)
+				break;
+			if (!strcmp(key, "classname"))
+				Q_strncpyz(classname, token, sizeof(classname));
+			else if (!strcmp(key, "model"))
+				Q_strncpyz(modelkey, token, sizeof(modelkey));
+			else if (!strcmp(key, "rendercolor"))
+			{
+				colour[0] = colour[1] = colour[2] = 0;
+				sscanf(token, "%f %f %f", &colour[0], &colour[1], &colour[2]);
+				VectorScale(colour, 1.0/255, colour);	//0..255 -> 0..1
+			}
+			else if (!strcmp(key, "fogdist"))
+				dist = atof(token);
+		}
+		if (!data)
+			break;
+
+		if (!strcmp(classname, "func_fogvolume") && modelkey[0] == '*')
+		{
+			int sm = atoi(modelkey+1);
+			if (sm > 0 && sm < mod->numsubmodels)
+			{
+				mfog_t *f = &tmp[count];
+				float *mins = mod->submodels[sm].mins;
+				float *maxs = mod->submodels[sm].maxs;
+				mplane_t *pl = ZG_Malloc(&mod->memgroup, 6*sizeof(mplane_t));
+				char sname[64], body[256];
+				int p;
+
+				memset(f, 0, sizeof(*f));
+				f->planes = ZG_Malloc(&mod->memgroup, 6*sizeof(mplane_t*));
+				//6 inward-facing axis-aligned planes bounding the box
+				VectorSet(pl[0].normal,  1, 0, 0);  pl[0].dist =  mins[0];
+				VectorSet(pl[1].normal, -1, 0, 0);  pl[1].dist = -maxs[0];
+				VectorSet(pl[2].normal,  0, 1, 0);  pl[2].dist =  mins[1];
+				VectorSet(pl[3].normal,  0,-1, 0);  pl[3].dist = -maxs[1];
+				VectorSet(pl[4].normal,  0, 0, 1);  pl[4].dist =  mins[2];
+				VectorSet(pl[5].normal,  0, 0,-1);  pl[5].dist = -maxs[2];
+				for (p = 0; p < 6; p++)
+				{
+					CategorizePlane(&pl[p]);
+					f->planes[p] = &pl[p];
+				}
+				f->numplanes = 6;
+				//visibleplane NULL => tcgen_fog uses plain DEPTH-based fog (st[1]=max) on tagged
+				//surfaces, which is what "stand inside the fog" wants.  A box face here instead makes
+				//the fog fade by height (Q3 "seen through the front face from outside") -> near-invisible.
+				f->visibleplane = NULL;
+
+				//synthesize a fogparms shader (Shader_FogParms fills fog_color + fog_dist); the
+				//:5429 resolve loop re-R_RegisterShader_Lightmap()s it by name -> returns this cached
+				//shader (fog_dist set -> kept).
+				Q_snprintfz(sname, sizeof(sname), "fogvolume_%i", count);
+				Q_snprintfz(body, sizeof(body), "{\nfogparms (%f %f %f) %f\n}\n",
+							colour[0], colour[1], colour[2], dist);
+				Q_strncpyz(f->shadername, sname, sizeof(f->shadername));
+#ifndef SERVERONLY
+				//R_RegisterShader is renderer-only; gl_model.c compiles into the headless dedicated
+				//server too, which has no renderer.  Fog is purely visual, so on the server leave
+				//f->shader NULL (memset above) - the fog data is just unused there.
+				f->shader = R_RegisterShader(sname, SUF_NONE, body);
+#endif
+				count++;
+			}
+		}
+	}
+
+	if (!count)
+		return;
+
+	mod->fogs = ZG_Malloc(&mod->memgroup, count*sizeof(mfog_t));
+	memcpy(mod->fogs, tmp, count*sizeof(mfog_t));
+	mod->numfogs = count;
+
+	//tag world surfaces whose bbox OVERLAPS a fog volume (surf->fog; Q3 sets this from a lump).
+	//AABB-overlap (not centroid) so a surface bigger than the box still gets tagged -- otherwise a
+	//fog box smaller than the room's walls/floor tags nothing and you see no fog.
+	{
+		int tagged = 0;
+		for (i = 0; i < mod->numsurfaces; i++)
+		{
+			msurface_t *surf = mod->surfaces + i;
+			vec3_t smin, smax;
+			int j, n = surf->numedges, fi, k;
+
+			if (!n)
+				continue;
+			smin[0] = smin[1] = smin[2] =  1e30;
+			smax[0] = smax[1] = smax[2] = -1e30;
+			for (j = 0; j < n; j++)
+			{
+				int se = mod->surfedges[surf->firstedge + j];
+				mvertex_t *v = (se >= 0) ? &mod->vertexes[mod->edges[se].v[0]]
+										 : &mod->vertexes[mod->edges[-se].v[1]];
+				for (k = 0; k < 3; k++)
+				{
+					if (v->position[k] < smin[k]) smin[k] = v->position[k];
+					if (v->position[k] > smax[k]) smax[k] = v->position[k];
+				}
+			}
+
+			for (fi = 0; fi < mod->numfogs; fi++)
+			{
+				mfog_t *f = &mod->fogs[fi];
+				//reconstruct the volume AABB from its 6 axis planes (see plane order above)
+				vec3_t vmin, vmax;
+				vmin[0] =  f->planes[0]->dist; vmax[0] = -f->planes[1]->dist;
+				vmin[1] =  f->planes[2]->dist; vmax[1] = -f->planes[3]->dist;
+				vmin[2] =  f->planes[4]->dist; vmax[2] = -f->planes[5]->dist;
+				if (smin[0] <= vmax[0] && smax[0] >= vmin[0] &&
+					smin[1] <= vmax[1] && smax[1] >= vmin[1] &&
+					smin[2] <= vmax[2] && smax[2] >= vmin[2])
+				{
+					surf->fog = f;
+					tagged++;
+					break;
+				}
+			}
+		}
+
+		//diagnostics (only fires on maps that have func_fogvolume, so no spam elsewhere)
+		Con_Printf("Q1 fog volumes: %i loaded, %i/%i surfaces tagged\n", count, tagged, mod->numsurfaces);
+		for (i = 0; i < count; i++)
+			Con_Printf("  fog[%i] '%s' fog_dist=%g planes=%i shader=%s\n", i,
+				mod->fogs[i].shadername,
+				mod->fogs[i].shader ? mod->fogs[i].shader->fog_dist : -1.0,
+				mod->fogs[i].numplanes,
+				mod->fogs[i].shader ? "ok" : "NULL");
+	}
+}
+
+//nettest: repair a brush model whose stored bounds are +-INFINITY.
+//
+//Some compilers write the WORLD model's bounds that way instead of the real extents --
+//fy_killzone.bsp (BSP2) ships mins=(-inf,-inf,-inf) maxs=(+inf,+inf,+inf) for model 0,
+//while 2fort.bsp (v29) has proper finite bounds.  Mod_LoadSubmodels passes them straight
+//through: its "spread the mins/maxs by a pixel" -1/+1 leaves an infinity untouched.
+//
+//Almost everything downstream tolerates that, which is why it went unnoticed.  What does
+//NOT is rigid-body physics: World_Box3D_Frame_BodyFromEntity takes
+//    geomcenter = (mins + maxs) / 2
+//and (-inf + +inf)/2 is NaN.  GenerateCollisionMesh_BSP (server/world.c) then subtracts
+//that geomcenter from EVERY world vertex, so the entire static world collision mesh comes
+//out NaN and Box3D can collide with none of it -- prop_physics falls straight through the
+//floor.  Brush ENTITIES keep finite bounds and still build valid meshes, so props land on
+//func_door and nothing else; turning such a door into func_detail merges it into the world
+//model and it stops catching them too.  That is exactly the reported symptom.
+//
+//Recompute from the model's own faces.  Deliberately the EDGE path rather than surf->mesh:
+//mesh->xyz_array is filled by the renderer, so a dedicated server has none -- and a
+//dedicated server is precisely where this must still work.  IS_NAN tests the exponent
+//mask, so it is true for infinities as well as NaNs, which is what we want.
+//
+//Called after the faces/edges/vertexes lumps are loaded and after firstmodelsurface /
+//nummodelsurfaces are assigned.
+static void Mod_FixNonFiniteModelBounds (model_t *submod, model_t *mod, int modelindex)
+{
+	int s, e, lindex;
+	float t;
+	qboolean bad = false, any = false;
+	vec3_t mins, maxs;
+	msurface_t *surf;
+
+	for (s = 0; s < 3; s++)
+	{
+		t = submod->mins[s];	if (IS_NAN(t)) bad = true;
+		t = submod->maxs[s];	if (IS_NAN(t)) bad = true;
+	}
+	if (!bad)
+		return;
+
+	VectorClear(mins);
+	VectorClear(maxs);
+	for (s = 0; s < submod->nummodelsurfaces; s++)
+	{
+		surf = &mod->surfaces[submod->firstmodelsurface + s];
+		for (e = 0; e < surf->numedges; e++)
+		{
+			float *v;
+			lindex = mod->surfedges[surf->firstedge + e];
+			if (lindex > 0)
+				v = mod->vertexes[mod->edges[lindex].v[0]].position;
+			else
+				v = mod->vertexes[mod->edges[-lindex].v[1]].position;
+			if (!any)
+			{
+				VectorCopy(v, mins);
+				VectorCopy(v, maxs);
+				any = true;
+			}
+			else
+				AddPointToBounds(v, mins, maxs);
+		}
+	}
+	//no faces at all -> leave a degenerate but FINITE box; anything is better than a NaN.
+
+	//Con_Printf, not Con_DPrintf: this is a defect in the BSP that the engine is papering
+	//over, and the mapper wants to know.  One line per affected model, only on maps that
+	//have the problem, so a healthy map stays silent.
+	Con_Printf("^3%s: model %i has non-finite bounds; recomputed from %i faces as "
+				"%g %g %g .. %g %g %g (recompile the map to fix properly)\n",
+				mod->name, modelindex, submod->nummodelsurfaces,
+				mins[0], mins[1], mins[2], maxs[0], maxs[1], maxs[2]);
+
+	VectorCopy(mins, submod->mins);
+	VectorCopy(maxs, submod->maxs);
 }
 
 /*
@@ -5720,6 +6426,8 @@ static qboolean QDECL Mod_LoadBrushModel (model_t *mod, void *buffer, size_t fsi
 	}
 
 	TRACE(("LoadBrushModel %i\n", __LINE__));
+	Mod_LoadQ1FogVolumes(mod);	//nettest: bounded fog volumes from func_fogvolume brush entities (before ModBrush_LoadGLStuff/Mod_Batches consume surf->fog)
+
 	Q1BSP_LoadBrushes(mod, bspx, mod_base);
 	TRACE(("LoadBrushModel %i\n", __LINE__));
 
@@ -5776,6 +6484,9 @@ TRACE(("LoadBrushModel %i\n", __LINE__));
 		
 		VectorCopy (bm->maxs, submod->maxs);
 		VectorCopy (bm->mins, submod->mins);
+
+		//must run BEFORE RadiusFromBounds, or the radius inherits the infinity too.
+		Mod_FixNonFiniteModelBounds (submod, mod, i);
 
 		submod->radius = RadiusFromBounds (submod->mins, submod->maxs);
 
@@ -5917,6 +6628,22 @@ void Mod_LoadDoomSprite (model_t *mod)
 						"blendfunc add\n"				\
 					"}\n"								\
 				"}\n")
+//nettest P62: a sprite whose MODEL is a plain image (Mod_LoadImageSprite, e.g. env_sprite glow)
+//forces a smooth PREMULTIPLIED alpha blend (texture loaded IF_PREMULTIPLYALPHA) regardless of
+//gl_blendsprites — otherwise the default gl_blendsprites 0 path alpha-TESTS (masks at ge128) and a
+//soft glow PNG renders as a hard circle.  Fullbright (rgbgen/alphagen vertex keep entity rendermode/alpha).
+#define SPRITE_SHADER_BLEND							\
+			"{\n"									\
+				"program defaultsprite\n"			\
+				"{\n"								\
+					"map $diffuse\n"				\
+					"blendfunc GL_ONE GL_ONE_MINUS_SRC_ALPHA\n"	\
+					"rgbgen vertex\n"				\
+					"alphagen vertex\n"				\
+				"}\n"								\
+				"surfaceparm noshadows\n"			\
+				"surfaceparm nodlight\n"			\
+			"}\n"
 
 void Mod_LoadSpriteFrameShader(model_t *spr, int frame, int subframe, mspriteframe_t *frameinfo)
 {
@@ -5924,6 +6651,7 @@ void Mod_LoadSpriteFrameShader(model_t *spr, int frame, int subframe, mspritefra
 	char *shadertext;
 	char name[MAX_QPATH];
 	qboolean litsprite = false;
+	const char *spx;	//nettest P62: model-name extension, for image-sprite detection
 
 	if (qrenderer == QR_NONE)
 		return;
@@ -5961,7 +6689,13 @@ void Mod_LoadSpriteFrameShader(model_t *spr, int frame, int subframe, mspritefra
 	}
 #endif
 
-	if (litsprite)	// a ! in the filename makes it non-fullbright (and can also be lit by rtlights too).
+	//nettest P62: an image-MODEL sprite (png/tga/…; synthesized by Mod_LoadImageSprite) forces a
+	//smooth alpha blend — else gl_blendsprites 0 would alpha-TEST it into a hard circle, not a glow.
+	spx = COM_GetFileExtension(spr->name, NULL);
+	if (spx && (!Q_strcasecmp(spx, ".png") || !Q_strcasecmp(spx, ".tga") || !Q_strcasecmp(spx, ".jpg") ||
+	            !Q_strcasecmp(spx, ".jpeg") || !Q_strcasecmp(spx, ".pcx") || !Q_strcasecmp(spx, ".bmp")))
+		shadertext = SPRITE_SHADER_BLEND;
+	else if (litsprite)	// a ! in the filename makes it non-fullbright (and can also be lit by rtlights too).
 		shadertext = SPRITE_SHADER_LIT;
 	else
 		shadertext = SPRITE_SHADER_UNLIT;

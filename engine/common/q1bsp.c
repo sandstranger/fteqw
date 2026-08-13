@@ -199,7 +199,14 @@ struct fragmentdecal_s
 
 	void (*callback)(void *ctx, vec3_t *fte_restrict points, size_t numpoints, shader_t *shader);
 	void *ctx;
+
+	const msurface_t *surf;	//nettest: surface being clipped against (for r_decal_lightmap)
 };
+
+//nettest: the surface the current decal fragment belongs to, threaded out-of-band so the
+//ABI-fixed decal callback signature stays unchanged.  Set right before each callback in
+//Fragment_ClipPoly; read by CL_AddDecal_Callback for per-pixel lightmap sampling.
+const msurface_t *Mod_Decal_CurrentSurface;
 
 //#define SHOWCLIPS
 //#define FRAGMENTASTRIANGLES	//works, but produces more fragments.
@@ -430,6 +437,7 @@ void Fragment_ClipPoly(fragmentdecal_t *dec, int numverts, float *inverts, shade
 	{
 		if (numtris == MAXFRAGMENTTRIS)
 		{
+			Mod_Decal_CurrentSurface = dec->surf;	//nettest: r_decal_lightmap
 			dec->callback(dec->ctx, decalfragmentverts, numtris, NULL);
 			numtris = 0;
 			break;
@@ -441,17 +449,22 @@ void Fragment_ClipPoly(fragmentdecal_t *dec, int numverts, float *inverts, shade
 		numtris++;
 	}
 	if (numtris)
+	{
+		Mod_Decal_CurrentSurface = dec->surf;	//nettest: r_decal_lightmap
 		dec->callback(dec->ctx, decalfragmentverts, numtris, surfshader);
+	}
 }
 
 #endif
 
 //this could be inlined, but I'm lazy.
-static void Fragment_Mesh (fragmentdecal_t *dec, mesh_t *mesh, mtexinfo_t *texinfo)
+static void Fragment_Mesh (fragmentdecal_t *dec, const msurface_t *surf, mesh_t *mesh, mtexinfo_t *texinfo)
 {
 	int i;
 	vecV_t verts[3];
 	shader_t *surfshader = texinfo->texture->shader;
+
+	dec->surf = surf;	//nettest: r_decal_lightmap — threaded to the callback via Mod_Decal_CurrentSurface
 
 	if ((surfshader->flags & SHADER_NOMARKS) || !mesh)
 		return;
@@ -522,13 +535,13 @@ static void Q1BSP_ClipDecalToNodes (model_t *mod, fragmentdecal_t *dec, mnode_t 
 				if (DotProduct(surf->plane->normal, dec->normal) > -0.5)
 					continue;
 			}
-			Fragment_Mesh(dec, surf->mesh, surf->texinfo);
+			Fragment_Mesh(dec, surf, surf->mesh, surf->texinfo);
 		}
 	}
 	else
 	{
 		for (i=0 ; i<node->numsurfaces ; i++, surf++)
-			Fragment_Mesh(dec, surf->mesh, surf->texinfo);
+			Fragment_Mesh(dec, surf, surf->mesh, surf->texinfo);
 	}
 
 	Q1BSP_ClipDecalToNodes (mod, dec, node->children[0]);
@@ -566,7 +579,7 @@ static void Q3BSP_ClipDecalToNodes (fragmentdecal_t *dec, mnode_t *node)
 				continue;
 			surf->shadowframe = sh_shadowframe;
 #endif
-			Fragment_Mesh(dec, surf->mesh, surf->texinfo);
+			Fragment_Mesh(dec, surf, surf->mesh, surf->texinfo);
 		}
 		return;
 	}
@@ -637,7 +650,7 @@ void Mod_ClipDecal(struct model_s *mod, vec3_t center, vec3_t normal, vec3_t tan
 		{
 			msurface_t *surf;
 			for (surf = mod->surfaces+mod->firstmodelsurface, p = 0; p < mod->nummodelsurfaces; p++, surf++)
-				Fragment_Mesh(&dec, surf->mesh, surf->texinfo);
+				Fragment_Mesh(&dec, surf, surf->mesh, surf->texinfo);
 		}
 		else
 			Q3BSP_ClipDecalToNodes(&dec, mod->rootnode);
@@ -1771,6 +1784,8 @@ struct q1bspprv_s
 	int visframecount;
 	int framecount;
 	int oldviewclusters[2];
+	qboolean detachedscanned;	//have we looked for non-coplanar (misc_external_mesh) faces yet?
+	qboolean hasdetachedsurfs;	//...and did we find any? (gates the extra PrepareFrame work)
 };
 #define BACKFACE_EPSILON	0.01
 static void Q1BSP_RecursiveWorldNode (mnode_t *node, unsigned int clipflags)
@@ -1868,8 +1883,17 @@ start:
 				if (surf->visframe != q1_framecount)
 					continue;
 
-				if (((dot < 0) ^ !!(surf->flags & SURF_PLANEBACK)))
-					continue;		// wrong side
+				//backface cull against the surface's OWN plane, not the node's. For a
+				//normal brush face those are the same plane so sdot==dot and this is
+				//identical; but a qbsp mesh importer (misc_external_mesh) can leave
+				//triangles on a node whose plane differs from the triangle's, and the
+				//node dot would then cull them by the wrong plane -- they vanish from one
+				//side of that plane and cast ghost shadows from the other.
+				{
+					double sdot = DotProduct(r_origin, surf->plane->normal) - surf->plane->dist;
+					if (((sdot < 0) ^ !!(surf->flags & SURF_PLANEBACK)))
+						continue;		// wrong side
+				}
 
 				Surf_RenderDynamicLightmaps (surf);
 				surf->sbatch->mesh[surf->sbatch->meshes++] = surf->mesh;
@@ -2008,13 +2032,96 @@ static qbyte *Q1BSP_MarkLeaves (model_t *model, int clusters[2])
 		}
 		else
 		{
+			// Opt-in via r_wateralpha_extendpvs because modern compilers
+			// (ericw-tools vis with transparent-water support, qbsp -trans,
+			// etc.) already produce BSPs whose vis data correctly accounts
+			// for transparent water surfaces.  On those maps the fluid
+			// merge is redundant AND harmful — it adds far-away leafs that
+			// the fluid leafs can see for unrelated reasons, blowing the
+			// PVS up to nearly r_novis levels and ruining culling.  Only
+			// enable on legacy maps (vanilla GoldSrc, q1 with classic vis)
+			// where the compiler treated water as opaque.
+			qboolean want_fluid_merge = (model->leafs &&
+			                             r_wateralpha.value < 1.0f &&
+			                             r_wateralpha_extendpvs.ival);
+
 			if (clusters[1] >= 0 && clusters[1] != clusters[0])
 			{
 				vis = cvis = model->funcs.ClusterPVS(model, clusters[0], &pvsbuf, PVM_REPLACE);
 				vis = cvis = model->funcs.ClusterPVS(model, clusters[1], &pvsbuf, PVM_MERGE);
 			}
+			else if (want_fluid_merge)
+			{
+				// PVM_FAST returns a pointer INTO model->pvs (shared
+				// persistent vis data).  Writing to it from the fluid
+				// merge below would corrupt the map's vis data and
+				// produce drifting rendering artifacts that compound
+				// across frames.  Force REPLACE into pvsbuf so we own
+				// the buffer and can OR fluid bits into it safely.
+				vis = cvis = model->funcs.ClusterPVS(model, clusters[0], &pvsbuf, PVM_REPLACE);
+			}
 			else
 				vis = cvis = model->funcs.ClusterPVS(model, clusters[0], &pvsbuf, PVM_FAST);
+
+			// Water transparency PVS extension: when r_wateralpha is < 1,
+			// the player can see THROUGH water surfaces from any angle,
+			// but the vis compiler treated those surfaces as opaque
+			// boundaries — meaning the water leafs themselves often
+			// aren't even in the camera's normal PVS until the camera
+			// gets right up against them, and underwater leafs are gated
+			// behind that.  Gating the merge on "fluid leaf already
+			// visible" therefore never fires from a distance, defeating
+			// the whole purpose.
+			//
+			// Instead: walk ALL leafs in the model, and for every fluid
+			// leaf, mark it visible AND OR its own PVS into the result.
+			// This treats every fluid leaf as "always potentially in
+			// PVS", and brings in everything reachable through the water
+			// (underwater geometry, pool floors, decorations, and any
+			// air leaf the water can see directly).  Effectively turns
+			// water surfaces into PVS-transparent surfaces globally,
+			// without modifying the on-disk vis data.
+			//
+			// Cost: O(numleafs) bitmap-set + one ClusterPVS call per
+			// fluid leaf in the entire map.  HL maps typically have
+			// 0-50 fluid leafs total, each ClusterPVS call is a
+			// decompress+OR over pvsbytes (~500 B for HL maps).
+			// Sub-millisecond.  Skipped entirely when wateralpha == 1
+			// so opaque-water rendering is bit-for-bit unchanged.
+			if (want_fluid_merge)
+			{
+				int nc = model->numclusters;
+				int j;
+				for (j = 0; j < nc; j++)
+				{
+					int contents = model->leafs[j+1].contents;
+					if (contents == Q1CONTENTS_WATER ||
+					    contents == Q1CONTENTS_SLIME ||
+					    contents == Q1CONTENTS_LAVA  ||
+					    contents == HLCONTENTS_CURRENT_0 ||
+					    contents == HLCONTENTS_CURRENT_90 ||
+					    contents == HLCONTENTS_CURRENT_180 ||
+					    contents == HLCONTENTS_CURRENT_270 ||
+					    contents == HLCONTENTS_CURRENT_UP ||
+					    contents == HLCONTENTS_CURRENT_DOWN)
+					{
+						// Mark this fluid leaf as visible itself so the
+						// water surface renders even when the camera's
+						// baked PVS would have culled it.
+						vis[j>>3] |= (1<<(j&7));
+						// Pull in anything the fluid leaf can see (the
+						// underwater geometry).
+						vis = cvis = model->funcs.ClusterPVS(model, j, &pvsbuf, PVM_MERGE);
+					}
+				}
+				// Force PVS recompute next frame even from the same
+				// camera position — the merge state above isn't
+				// captured by the (clusters[0], clusters[1]) cache key,
+				// so without this a stationary camera with wateralpha
+				// just toggled wouldn't pick up the change.
+				prv->oldviewclusters[0] = -1;
+				prv->oldviewclusters[1] = -2;
+			}
 		}
 	}
 
@@ -2063,9 +2170,41 @@ static qbyte *Q1BSP_MarkLeaves (model_t *model, int clusters[2])
 	return vis;
 }
 
+//misc_external_mesh bakes triangles into the world as faces that are NOT coplanar with any
+//BSP split, so qbsp files each under the deepest node containing its leafs, not a node on
+//its own plane. The perspective world walk (Q1BSP_RecursiveWorldNode) marks a surface
+//visible only when it reaches that surface's leaf, mid-traversal, and draws a node's faces
+//BETWEEN its front and back subtrees -- so a detached face can be drawn before its leaf has
+//been reached and gets skipped, popping in and out as the camera crosses the filed node's
+//plane. Flag those faces once here (a normal brush face shares its node's plane pointer; a
+//detached one does not) so PrepareFrame can mark them visible up-front, before the walk.
+static void Q1BSP_ScanDetachedSurfs (model_t *model)
+{
+	struct q1bspprv_s *prv = model->meshinfo;
+	int n;
+
+	prv->detachedscanned = true;
+	prv->hasdetachedsurfs = false;
+
+	for (n = 0; n < model->numnodes; n++)
+	{
+		mnode_t *node = model->nodes + n;
+		msurface_t *surf = model->surfaces + node->firstsurface;
+		unsigned int s;
+		for (s = 0; s < node->numsurfaces; s++, surf++)
+		{
+			if (surf->plane != node->plane)
+			{
+				surf->flags |= SURF_DETACHED;
+				prv->hasdetachedsurfs = true;
+			}
+		}
+	}
+}
+
 static void Q1BSP_PrepareFrame(model_t *model, refdef_t *refdef, int area, int clusters[2], pvsbuffer_t *vis, qbyte **entvis_out, qbyte **surfvis_out)
 {
-	*entvis_out = Q1BSP_MarkLeaves (model, clusters);
+	qbyte *entvis = *entvis_out = Q1BSP_MarkLeaves (model, clusters);
 
 	if (vis->buffersize < model->pvsbytes)
 		vis->buffer = BZ_Realloc(vis->buffer, vis->buffersize=model->pvsbytes);
@@ -2075,7 +2214,38 @@ static void Q1BSP_PrepareFrame(model_t *model, refdef_t *refdef, int area, int c
 	if (model != cl.worldmodel)
 		; //global abuse...
 	else if (r_refdef.useperspective)
+	{
+		//Mark detached (misc_external_mesh) faces visible from the PVS before the walk, so
+		//the node draw-loop picks them up regardless of traversal order. Done every frame
+		//(a cached-vis result can skip MarkLeaves' own node loop, but q1_framecount is
+		//still bumped, so it matches what the walk will test against). Gated on
+		//hasdetachedsurfs, so a map with no imported mesh pays only the one-time scan.
+		struct q1bspprv_s *prv = model->meshinfo;
+		if (!prv->detachedscanned)
+			Q1BSP_ScanDetachedSurfs (model);
+		if (prv->hasdetachedsurfs && entvis)
+		{
+			int i;
+			for (i = 0; i < model->numclusters; i++)
+			{
+				mleaf_t *leaf;
+				msurface_t **mark;
+				int c;
+				if (!(entvis[i>>3] & (1<<(i&7))))
+					continue;
+				leaf = &model->leafs[i+1];
+				mark = leaf->firstmarksurface;
+				c = leaf->nummarksurfaces;
+				while (c-- > 0)
+				{
+					msurface_t *surf = *mark++;
+					if (surf->flags & SURF_DETACHED)
+						surf->visframe = q1_framecount;
+				}
+			}
+		}
 		Q1BSP_RecursiveWorldNode (model->nodes, 0x1f);
+	}
 	else
 		Q1BSP_OrthoRecursiveWorldNode (model->nodes, 0x1f);
 	*surfvis_out = q1frustumvis;

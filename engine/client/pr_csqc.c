@@ -82,6 +82,7 @@ extern cvar_t	in_vraim;
 
 // standard effect cvars/sounds
 extern cvar_t r_explosionlight;
+extern cvar_t r_ragdoll_timescale;	//nettest: client ragdoll slow-mo/freeze (com_mesh.c)
 extern sfx_t			*cl_sfx_wizhit;
 extern sfx_t			*cl_sfx_knighthit;
 extern sfx_t			*cl_sfx_tink1;
@@ -792,6 +793,12 @@ static qboolean CopyCSQCEdictToEntity(csqcedict_t *fte_restrict in, entity_t *ft
 		//CSQCRF_USEAXIS is below
 		if (rflags & CSQCRF_NOSHADOW)
 			out->flags |= RF_NOSHADOW;
+		if (rflags & CSQCRF_NOSELFSHADOW)	//nettest: don't RECEIVE the fake-sun shadowmap (still casts) — drives e_noshadowrecv
+			out->flags |= RF_NOSHADOWRECV;
+		if (rflags & CSQCRF_FPFADE)			//nettest: first-person body — dither away above a height band — drives e_fpfade
+			out->flags |= RF_FPFADE;
+		if (rflags & CSQCRF_XFLIP)
+			out->flags |= RF_XFLIP;
 		//CSQCRF_FRAMETIMESARESTARTTIMES is handled by cs_getframestate below
 
 //		if (rflags & CSQCRF_REMOVED)
@@ -1077,7 +1084,7 @@ static void QCBUILTIN PF_R_RemoveEntity(pubprogfuncs_t *prinst, struct globalvar
 			i++;
 	}
 }
-void CL_AddDecal(shader_t *shader, vec3_t origin, vec3_t up, vec3_t side, vec3_t rgbvalue, float alphavalue);
+void CL_AddDecal(shader_t *shader, vec3_t origin, vec3_t up, vec3_t side, vec3_t rgbvalue, float alphavalue, float aspect);
 static void QCBUILTIN PF_R_AddDecal(pubprogfuncs_t *prinst, struct globalvars_s *pr_globals)
 {
 	shader_t *shader = R_RegisterShader(PR_GetStringOfs(prinst, OFS_PARM0), SUF_NONE, 
@@ -1096,8 +1103,32 @@ static void QCBUILTIN PF_R_AddDecal(pubprogfuncs_t *prinst, struct globalvars_s 
 	float *side = G_VECTOR(OFS_PARM3);
 	float *rgb = G_VECTOR(OFS_PARM4);
 	float alpha = G_FLOAT(OFS_PARM5);
+	float aspect = (prinst->callargc > 6) ? G_FLOAT(OFS_PARM6) : 1;	//nettest: optional width/height (default 1 = square)
 	if (shader)
-		CL_AddDecal(shader, org, up, side, rgb, alpha);
+		CL_AddDecal(shader, org, up, side, rgb, alpha, aspect);
+}
+
+//nettest: persistent lit decals — clip once + cache (with lightmap), re-render cheaply each frame.
+//adddecal_static returns a handle for removedecal/updatedecal; -1 = failed (QC falls back to adddecal).
+static void QCBUILTIN PF_R_AddDecalStatic(pubprogfuncs_t *prinst, struct globalvars_s *pr_globals)
+{	//float(string shader, vector org, vector up, vector side, vector rgb, float alpha, optional float aspect, optional float lifetime)
+	const char *shadername = PR_GetStringOfs(prinst, OFS_PARM0);
+	float *org = G_VECTOR(OFS_PARM1);
+	float *up = G_VECTOR(OFS_PARM2);
+	float *side = G_VECTOR(OFS_PARM3);
+	float *rgb = G_VECTOR(OFS_PARM4);
+	float alpha = G_FLOAT(OFS_PARM5);
+	float aspect = (prinst->callargc > 6) ? G_FLOAT(OFS_PARM6) : 1;
+	float lifetime = (prinst->callargc > 7) ? G_FLOAT(OFS_PARM7) : 0;
+	G_FLOAT(OFS_RETURN) = CL_AddPersistentDecal(shadername, org, up, side, rgb, alpha, aspect, lifetime);
+}
+static void QCBUILTIN PF_R_RemoveDecal(pubprogfuncs_t *prinst, struct globalvars_s *pr_globals)
+{	//void(float handle)
+	CL_RemovePersistentDecal((int)G_FLOAT(OFS_PARM0));
+}
+static void QCBUILTIN PF_R_UpdateDecal(pubprogfuncs_t *prinst, struct globalvars_s *pr_globals)
+{	//void(float handle, vector rgb, float alpha)
+	CL_UpdatePersistentDecal((int)G_FLOAT(OFS_PARM0), G_VECTOR(OFS_PARM1), G_FLOAT(OFS_PARM2));
 }
 
 static void QCBUILTIN PF_R_DynamicLight_Set(pubprogfuncs_t *prinst, struct globalvars_s *pr_globals)
@@ -1375,6 +1406,20 @@ void QCBUILTIN PF_R_DynamicLight_AddStatic(pubprogfuncs_t *prinst, struct global
 void QCBUILTIN PF_R_DynamicLight_AddDynamic(pubprogfuncs_t *prinst, struct globalvars_s *pr_globals)
 {
 	PF_R_DynamicLight_AddInternal(prinst, pr_globals, false);
+}
+
+//nettest: interactive water ripples.  QC spawns an expanding ring at a world point (a splash, a
+//bullet hitting water, a prop dropping in, a player wading); the renderer's DEFORMV_RIPPLE deform
+//sums it onto the tessellated liquid surface.  No-op unless r_waterripple_react > 0.
+//void(vector org, float amplitude, [float size, float speed, float lifetime]) addwaterripple
+void QCBUILTIN PF_cs_addwaterripple(pubprogfuncs_t *prinst, struct globalvars_s *pr_globals)
+{
+	float *org      = G_VECTOR(OFS_PARM0);
+	float amplitude = G_FLOAT(OFS_PARM1);
+	float size      = (prinst->callargc > 2)?G_FLOAT(OFS_PARM2):16;
+	float speed     = (prinst->callargc > 3)?G_FLOAT(OFS_PARM3):60;
+	float lifetime  = (prinst->callargc > 4)?G_FLOAT(OFS_PARM4):1.5;
+	R_AddWaterRipple(org, amplitude, size, speed, lifetime);
 }
 
 static void QCBUILTIN PF_R_AddEntityMask(pubprogfuncs_t *prinst, struct globalvars_s *pr_globals)
@@ -6943,6 +6988,7 @@ static struct {
 	{"argescape",				PF_argescape,				295},
 
 	{"modelframecount",			PF_modelframecount,			0},
+	{"addmodelhitbox",			PF_addmodelhitbox,			0},	//nettest Patch 36 Part B
 
 //300
 	{"clearscene",				PF_R_ClearScene,	300},				// #300 void() clearscene (EXT_CSQC)
@@ -7089,6 +7135,9 @@ static struct {
 	{"dynamiclight_set",		PF_R_DynamicLight_Set,		373},
 	{"particleeffectquery",		PF_cs_particleeffectquery,	374},
 	{"adddecal",				PF_R_AddDecal,				375},
+	{"adddecal_static",			PF_R_AddDecalStatic,		0},		//nettest: persistent lit decals
+	{"removedecal",				PF_R_RemoveDecal,			0},		//nettest
+	{"updatedecal",				PF_R_UpdateDecal,			0},		//nettest
 	{"setcustomskin",			PF_cs_setcustomskin,		376},
 	{"loadcustomskin",			PF_cs_loadcustomskin,		377},
 	{"applycustomskin",			PF_cs_applycustomskin,		378},
@@ -7421,6 +7470,8 @@ static struct {
 	{"gp_setledcolor",			PF_cl_gp_setledcolor,		0}, // #0 void(float devid, float red, float green, float blue) gp_setledcolor
 	{"gp_settriggerfx",			PF_cl_gp_settriggerfx,		0}, // #0 void(float devid, const void *data, int size) gp_settriggerfx
 
+	{"addwaterripple",			PF_cs_addwaterripple,		0}, // #0 void(vector org, float amplitude, float size, float speed, float lifetime) addwaterripple (nettest)
+
 	{NULL}
 };
 
@@ -7619,6 +7670,15 @@ static qboolean QDECL CSQC_Event_ContentsTransition(world_t *w, wedict_t *ent, i
 	return false;	//do legacy behaviour
 }
 
+//nettest Patch 101: non-blocking peek — see the Peek_CModel comment in world.h.  Never loads, never
+//COM_WorkerPartialSyncs; a still-loading model reads as "not ready yet".
+static model_t *QDECL CSQC_World_PeekModelForIndex(world_t *w, int modelindex)
+{
+	model_t *mod = CSQC_GetModelForIndex(modelindex);
+	if (mod && mod->loadstate == MLS_LOADED)
+		return mod;
+	return NULL;
+}
 static model_t *QDECL CSQC_World_ModelForIndex(world_t *w, int modelindex)
 {
 	model_t *mod = CSQC_GetModelForIndex(modelindex);
@@ -8149,6 +8209,7 @@ qboolean CSQC_Init (qboolean anycsqc, const char *csprogsname, unsigned int chec
 		csqc_world.Event_Sound = CSQC_Event_Sound;
 		csqc_world.Event_ContentsTransition = CSQC_Event_ContentsTransition;
 		csqc_world.Get_CModel = CSQC_World_ModelForIndex;
+		csqc_world.Peek_CModel = CSQC_World_PeekModelForIndex;	//nettest Patch 101 (non-blocking; debug viz)
 		csqc_world.Get_FrameState = CSQC_World_GetFrameState;
 		World_ClearWorld(&csqc_world, false);
 		CSQC_InitFields();	//let the qclib know the field order that the engine needs.
@@ -8788,10 +8849,15 @@ qboolean CSQC_DrawView(void)
 #ifdef USERBE
 			if (csqc_world.rbe)
 			{
+				double ragdt;
 #ifdef RAGDOLL
 				rag_doallanimations(&csqc_world);
 #endif
-				csqc_world.rbe->RunFrame(&csqc_world, host_frametime, 800);
+				//nettest: scale the ragdoll sim dt for slow-mo/freeze inspection (r_ragdoll_timescale;
+				//physicstime below still advances by the full host_frametime so the accumulator stays synced).
+				ragdt = host_frametime * r_ragdoll_timescale.value;
+				if (ragdt < 0) ragdt = 0;
+				csqc_world.rbe->RunFrame(&csqc_world, ragdt, 800);
 			}
 #endif
 
@@ -8828,11 +8894,22 @@ qboolean CSQC_DrawView(void)
 	if (csqcg.intermission_time)
 		*csqcg.intermission_time = cl.completed_time;
 
+	//nettest: PREDICTION bucket.  These three sit inside the CSQC Drawing bracket and in no child
+	//bucket, so they were part of the ~325us that CSQC Drawing carries above its measured children.
+	//Suspected to be dominated by CL_PredictMove tracing against every SOLID_PHYSICS_TRIMESH prop
+	//with no broadphase: PM_TransformedHullCheck's convex-hull branch (common/pmovetst.c ~407)
+	//calls PM_HullTrace and returns BEFORE the cheap AABB rejects at ~436, and the rotated-model
+	//path has no reject at all.  Bracketed to find out whether that is actually where the time is
+	//before writing a broadphase for it.
+	{
+	RSpeedMark();
 	//work out which packet entities are solid
 	CL_SetSolidEntities ();
 	CL_TransitionEntities();
 	if (cl.worldmodel)
 		CL_PredictMove ();
+	RSpeedEnd(RSPEED_CSQC_PREDICT);
+	}
 
 	if (csqcg.cltime)
 		*csqcg.cltime = realtime-cl.mapstarttime;
@@ -8888,10 +8965,29 @@ qboolean CSQC_DrawView(void)
 		}
 		G_FLOAT(OFS_PARM2) = !Key_Dest_Has(kdm_menu|kdm_cwindows) && !r_refdef.eyeoffset[0] && !r_refdef.eyeoffset[1];
 
+		//nettest: QCVIEW bucket.  CSQC Drawing carries ~434us above the sum of its measured
+		//children; that is the mod's QC plus this function's engine-side prologue/epilogue, and
+		//they want different fixes.  This bracket contains the QC AND every builtin it calls
+		//(addentities, renderscene, ...), so:
+		//    CSQC Drawing - QCVIEW              = engine-side setup outside the QC call
+		//    QCVIEW - (the renderscene children) = QC statement time + builtin overhead
+		//Note FTE charges builtin time to the QC function that called it (qclib/pr_comp.h:719-720
+		//-- profilechildtime excludes builtins; execloop.h:919-945 -- builtins bypass
+		//PR_EnterFunction), which is exactly why profile_csqc could never answer this on its own.
+		//MUST be a brace block with RSpeedMark(), NOT a bare RSpeedRemark().  RSpeedRemark only
+		//ASSIGNS the existing `rsp` (render.h), and CSQC_DrawView's own RSpeedRemark at the top of
+		//this function owns that variable for the whole RSPEED_CSQCREDRAW bracket -- remarking here
+		//silently reset the parent's start time, so "CSQC Drawing" measured from this call instead
+		//of from the top of the function and came out identical to this child.  RSpeedMark declares
+		//a fresh shadowing `rsp` scoped to the block, which is what nesting requires.
+		{
+		RSpeedMark();
 		if (csqcg.CSQC_UpdateViewLoading && ((cls.state && cls.state < ca_active) || scr_drawloading || loading_stage))
 			PR_ExecuteProgram(csqcprogs, csqcg.CSQC_UpdateViewLoading);
 		else
 			PR_ExecuteProgram(csqcprogs, csqcg.CSQC_UpdateView);
+		RSpeedEnd(RSPEED_CSQC_QCVIEW);
+		}
 	}
 
 	if (*r_refdef.rt_destcolour[0].texname)
@@ -9437,9 +9533,21 @@ void CSQC_Input_Frame(int seat, usercmd_t *cmd)
 
 //this protocol allows up to 32767 edicts.
 #ifdef PEXT_CSQC
-static void CSQC_EntityCheck(unsigned int entnum)
+//nettest: returns false on a corrupt/out-of-range entity index so callers recover gracefully.
+// The wire protocol tops out at 22-bit indices (PEXT2_REPLACEMENTDELTAS:
+// (entnum&0x3fff)|(MSG_ReadByte()<<14)); anything beyond 0x3fffff is a bad read at a packet
+// boundary -- a failed MSG_ReadByte() returns -1 and the <<14 sign-extends into the high bits,
+// yielding ~0xFFFFFFxx. Left unbounded, newmax*sizeof(ptr) reached tens of GB and the BZ_Realloc +
+// memset below OOM-crashed the client (the d1_canals_01 ~34GB balloon; also a remote-server DoS).
+// Returning false makes the entity-parse loop treat it as end-of-packet and the sound paths skip
+// the bad sound -- the connection stays alive (a prop-dense map that overflows the CSQC entity
+// datagram just renders the entities that fit, instead of disconnecting to a black screen).
+static qboolean CSQC_EntityCheck(unsigned int entnum)
 {
 	unsigned int newmax;
+
+	if (entnum > 0x3fffff)
+		return false;
 
 	if (entnum >= maxcsqcentities)
 	{
@@ -9448,6 +9556,7 @@ static void CSQC_EntityCheck(unsigned int entnum)
 		memset(csqcent + maxcsqcentities, 0, (newmax - maxcsqcentities)*sizeof(csqcent));
 		maxcsqcentities = newmax;
 	}
+	return true;
 }
 
 int CSQC_StartSound(int entnum, int channel, char *soundname, vec3_t pos, float vol, float attenuation, float pitchmod, float timeofs, unsigned int flags)
@@ -9461,7 +9570,8 @@ int CSQC_StartSound(int entnum, int channel, char *soundname, vec3_t pos, float 
 	{
 		pr_globals = PR_globals(csqcprogs, PR_CURRENT);
 
-		CSQC_EntityCheck(entnum);
+		if (!CSQC_EntityCheck(entnum))
+			return false;	//nettest: corrupt entnum -> let the engine play the sound normally
 		ent = csqcent[entnum];
 		if (ent)
 			*csqcg.self = EDICT_TO_PROG(csqcprogs, (void*)ent);
@@ -9484,7 +9594,8 @@ int CSQC_StartSound(int entnum, int channel, char *soundname, vec3_t pos, float 
 	}
 	else if (csqcg.CSQC_ServerSound)
 	{
-		CSQC_EntityCheck(entnum);
+		if (!CSQC_EntityCheck(entnum))
+			return false;	//nettest: corrupt entnum -> let the engine play the sound normally
 		ent = csqcent[entnum];
 		if (!ent)
 			return false;
@@ -9615,7 +9726,8 @@ void CSQC_ParseEntities(qboolean sized)
 			if (!entnum)
 				Host_EndGame("CSQC cannot remove world!\n");
 
-			CSQC_EntityCheck(entnum);
+			if (!CSQC_EntityCheck(entnum))
+				break;	//nettest: truncated/corrupt packet boundary -> stop parsing this packet, keep the connection
 
 			if (cl_shownet.ival == 3)
 				Con_Printf("%3i:     Remove %i\n", MSG_GetReadCount(), entnum);
@@ -9633,7 +9745,8 @@ void CSQC_ParseEntities(qboolean sized)
 		}
 		else
 		{
-			CSQC_EntityCheck(entnum);
+			if (!CSQC_EntityCheck(entnum))
+				break;	//nettest: truncated/corrupt packet boundary -> stop parsing this packet, keep the connection
 
 			if (sized)
 			{

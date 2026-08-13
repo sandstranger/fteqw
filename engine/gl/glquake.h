@@ -627,6 +627,30 @@ extern void (APIENTRY *qglDrawArrays) (GLenum mode, GLint first, GLsizei count);
 extern void (APIENTRY *qglDrawElements) (GLenum mode, GLsizei count, GLenum type, const GLvoid *indices);
 extern void (APIENTRY *qglEnable) (GLenum cap);
 extern void (APIENTRY *qglFinish) (void);
+/* GL_ARB_sync (core GL 3.2) — sys_framepacing 4 waits on a per-frame fence for THIS
+ * frame's GPU work, instead of a full qglFinish.  Optional: NULL on older contexts,
+ * in which case gl_screen.c falls back to qglFinish. */
+#ifndef FTE_GLSYNC_DEFINED
+#define FTE_GLSYNC_DEFINED
+typedef struct __GLsync *GLsync;
+#define GL_SYNC_GPU_COMMANDS_COMPLETE 0x9117
+#define GL_SYNC_FLUSH_COMMANDS_BIT    0x00000001
+#endif
+extern GLsync (APIENTRY *qglFenceSync) (GLenum condition, GLbitfield flags);
+extern GLenum (APIENTRY *qglClientWaitSync) (GLsync sync, GLbitfield flags, unsigned long long timeout);
+extern void   (APIENTRY *qglDeleteSync) (GLsync sync);
+/* nettest: rotating fence ring for sys_framepacing's drain.  Waiting on THIS frame's own fence
+ * (the original mode-4 behaviour) forbids frame N's GPU work from overlapping frame N+1's CPU
+ * work, which measured 623us/frame of pure stall on fy_killzone -- 22% of the frame -- even
+ * though the GPU had headroom (r_renderscale 2 vs 1 cost only 14.7us with the drain off).
+ * Waiting on frame N-1's fence instead still bounds queue depth, so the paced flip is still
+ * the real present and the cadence stays flat, but the pipeline keeps one frame of overlap.
+ * Owned by gl_vidcommon.c so the ring is zeroed in the same place the entry points are bound,
+ * i.e. on every context (re)creation -- a GLsync from a destroyed context must never be waited
+ * on.  Two slots covers the deepest supported depth (N-2). */
+#define GL_FRAMEPACE_SLOTS 2
+extern GLsync gl_framepace_fence[GL_FRAMEPACE_SLOTS];
+extern int    gl_framepace_slot;
 extern void (APIENTRY *qglFlush) (void);
 extern void (APIENTRY *qglFrontFace) (GLenum mode);
 extern void (APIENTRY *qglGenTextures) (GLsizei n, GLuint *textures);

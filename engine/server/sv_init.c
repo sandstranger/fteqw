@@ -851,6 +851,7 @@ void SV_SpawnServer (const char *server, const char *startspot, qboolean noents,
 	int			i, j;
 	extern int sv_allow_cheats;
 	size_t fsz;
+	char mappref_spec[MAX_OSPATH] = "";	//nettest: captured copy of the one-shot sv_mappreferhint (which is cleared mid-load); advertised to clients as the "*mappref" serverinfo key so a connecting client loads the SAME map copy -> matching worldmodel checksum -> no SV_PreSpawn_f kick on same-named CS:S/GoldSrc/CoD maps.
 
 #ifndef SERVERONLY
 	if (!isDedicated && qrenderer == QR_NONE)
@@ -1013,7 +1014,7 @@ void SV_SpawnServer (const char *server, const char *startspot, qboolean noents,
 	{
 		//.map is commented out because quite frankly, they're a bit annoying when the engine loads the gpled start.map when really you wanted to just play the damn game intead of take it apart.
 		//if you want to load a .map, just use 'map foo.map' instead.
-		char *exts[] = {"%s", "maps/%s", "maps/%s.bsp", "maps/%s.d3dbsp", "maps/%s.cm", "maps/%s.hmp", "maps/%s.bsp.gz", "maps/%s.bsp.xz", /*"maps/%s.map",*/ NULL}, *e;
+		char *exts[] = {"%s", "maps/%s", "maps/%s.bsp", "maps/%s.d3dbsp", "maps/mp/%s.bsp", "maps/mp/%s.d3dbsp", "maps/%s.cm", "maps/%s.hmp", "maps/%s.bsp.gz", "maps/%s.bsp.xz", /*"maps/%s.map",*/ NULL}, *e;
 		int depth, bestdepth = FDEPTH_MISSING;
 		flocation_t loc;
 		time_t filetime;
@@ -1072,17 +1073,30 @@ void SV_SpawnServer (const char *server, const char *startspot, qboolean noents,
 
 		Mod_SetModifier(mod);
 
-		sv.world.worldmodel = Mod_ForName (sv.modelname, MLV_ERROR);
-
-		if (FS_FLocateFile(sv.modelname,FSLF_IFFOUND, &loc) && FS_GetLocMTime(&loc, &filetime))
+		//nettest (P26 Part 2): bias ONLY this worldmodel BSP locate to the game named by a "map @spec/map"
+		//qualifier (stashed in sv_mappreferhint by SV_Map_f), so a same-named map loads that game's copy over
+		//a higher-priority one.  Mod_ForName(MLV_ERROR) blocks until loaded, so the hint covers the whole read;
+		//cleared right after so nothing else (precaches, the mod's own content) is biased.  One-shot.
 		{
-			if (filetime > sv.world.worldmodel->mtime && sv.world.worldmodel->mtime)
+			extern char sv_mappreferhint[];
+			FS_SetPreferHint(sv_mappreferhint);	//resolve the "@spec/map" qualifier into fs_preferhint
+			Q_strncpyz(mappref_spec, sv_mappreferhint, sizeof(mappref_spec));	//nettest: capture the spec BEFORE the one-shot global is cleared, to advertise to connecting clients so they prefer the SAME game's copy of a same-named map
+			sv_mappreferhint[0] = 0;			//consume the one-shot global NOW so it can never leak to a later spawn (savegame/changelevel cache hit etc.)
+
+			sv.world.worldmodel = Mod_ForName (sv.modelname, MLV_ERROR);
+
+			if (FS_FLocateFile(sv.modelname,FSLF_IFFOUND, &loc) && FS_GetLocMTime(&loc, &filetime))
 			{
-				COM_WorkerFullSync();	//sync all the workers, just in case.
-				Mod_PurgeModel(sv.world.worldmodel, MP_RESET);	//nuke it now
-				sv.world.worldmodel = Mod_ForName (sv.modelname, MLV_ERROR);	//and we can reload it now
+				if (filetime > sv.world.worldmodel->mtime && sv.world.worldmodel->mtime)
+				{
+					COM_WorkerFullSync();	//sync all the workers, just in case.
+					Mod_PurgeModel(sv.world.worldmodel, MP_RESET);	//nuke it now
+					sv.world.worldmodel = Mod_ForName (sv.modelname, MLV_ERROR);	//and we can reload it now
+				}
+				sv.world.worldmodel->mtime = filetime;
 			}
-			sv.world.worldmodel->mtime = filetime;
+
+			FS_ClearPreferHint();	//stop biasing once the worldmodel (+ any consistent mtime reload) is loaded
 		}
 
 		if (!sv.world.worldmodel || sv.world.worldmodel->loadstate != MLS_LOADED)
@@ -1131,6 +1145,7 @@ void SV_SpawnServer (const char *server, const char *startspot, qboolean noents,
 	else
 		InfoBuf_SetStarKey(&svs.info, "*bspversion", "");
 	InfoBuf_SetStarKey(&svs.info, "*startspot", (startspot?startspot:""));
+	InfoBuf_SetStarKey(&svs.info, "*mappref", mappref_spec);	//nettest: advertise the worldmodel prefer-hint so a connecting client loads the SAME map copy (matching worldmodel checksum -> no SV_PreSpawn_f kick on same-named CS:S/GoldSrc/CoD maps).  "" for plain/non-@ maps overwrites any stale value from a previous map.
 
 	//
 	// init physics interaction links

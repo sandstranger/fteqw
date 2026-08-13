@@ -70,7 +70,7 @@ static cvar_t		con_notify_y = CVAR("con_notify_y","0");
 static cvar_t		con_notify_w = CVAR("con_notify_w","1");
 static cvar_t		con_centernotify = CVAR("con_centernotify", "0");
 static cvar_t		con_displaypossibilities = CVAR("con_displaypossibilities", "1");
-static cvar_t		con_showcompletion = CVAR("con_showcompletion", "1");
+cvar_t				con_showcompletion = CVAR("con_showcompletion", "1");	//nettest: no longer static - keys.c gates right-arrow-accept on it
 static cvar_t		con_maxlines = CVAR("con_maxlines", "1024");
 cvar_t				cl_chatmode = CVARD("cl_chatmode", "2", "0(nq) - everything is assumed to be a console command. prefix with 'say', or just use a messagemode bind\n1(q3) - everything is assumed to be chat, unless its prefixed with a /\n2(qw) - anything explicitly recognised as a command will be used as a command, anything unrecognised will be a chat message.\n/ prefix is supported in all cases.\nctrl held when pressing enter always makes any implicit chat into team chat instead.");
 static cvar_t		con_numnotifylines_chat = CVAR("con_numnotifylines_chat", "8");
@@ -80,6 +80,10 @@ static cvar_t		con_timestamps = CVAR("con_timestamps", "0");
 static cvar_t		con_timeformat = CVAR("con_timeformat", "(%H:%M:%S) ");
 cvar_t				con_textsize = CVARD("con_textsize", "8", "Resize the console text to be a different height, scaled separately from the hud. The value is the height in (virtual) pixels.");
 static cvar_t		con_savehistory = CVARD("con_savehistory", "1", "Write/update conhistory.txt");
+//nettest: closing the console used to throw away where you were reading. It still has to DRAW the
+//live tail while hidden (that surface doubles as the notify overlay under con_window 1), so the
+//position is parked for the duration of the draw and restored immediately after.
+static cvar_t		con_keepscroll = CVARD("con_keepscroll", "1", "Remember the console scrollback position when you close the console, so reopening it lands where you left off. 0 = always reopen at the live end.");
 extern cvar_t log_developer;
 
 void con_window_cb(cvar_t *var, char *oldval)
@@ -553,7 +557,7 @@ void Con_History_Load(void)
 {
 	char line[8192];
 	char *cr;
-	vfsfile_t *file = FS_OpenVFS("conhistory.txt", "rb", FS_ROOT);
+	vfsfile_t *file = FS_OpenVFS("conhistory.txt", "rb", FS_GAMEONLY);	//nettest: was FS_ROOT (basedir) -> keep it inside the gamedir (nettest/) so the install root stays clean
 
 	for (edit_line=0 ; edit_line<=CON_EDIT_LINES_MASK ; edit_line++)
 	{
@@ -590,7 +594,7 @@ void Con_History_Save(void)
 	if (!con_savehistory.ival)
 		return;
 
-	file = FS_OpenVFS("conhistory.txt", "wb", FS_ROOT);
+	file = FS_OpenVFS("conhistory.txt", "wb", FS_GAMEONLY);	//nettest: was FS_ROOT (basedir) -> write into the gamedir (nettest/) instead
 	if (file)
 	{
 		line = edit_line - CON_EDIT_LINES_MASK;
@@ -692,6 +696,7 @@ void Con_ClearCon(console_t *con)
 		Z_Free(t);
 	}
 	con->display = con->current = con->oldest = NULL;
+	con->displayscroll = 0;	//nettest: reset the smooth-scroll offset too - else `clear` while scrolled up leaves the view stuck (a non-zero displayscroll fails the auto-scroll-to-bottom gate in Con_PrintCon)
 	con->selstartline = NULL;
 	con->selendline = NULL;
 
@@ -712,6 +717,50 @@ void Con_Clear_f (void)
 	Con_ClearCon(con);
 }
 
+//nettest: Ctrl+F find-in-scrollback (driven from keys.c Key_Console). Search the scrollback from
+//con->display in direction `dir` (-1 = older/up, +1 = newer/down) for the first line containing
+//`text` (case-insensitive). On a hit, scroll the view to it (con->display) and select the matched
+//span (+ CONF_KEEPSELECTION) so the existing selection-draw highlights it. Returns true on a hit.
+//Callers reset con->display = con->current first for an incremental "search from the bottom".
+qboolean Con_SearchText(console_t *con, const char *text, int dir)
+{
+	conline_t *l;
+	conchar_t *cc;
+	char buf[2048];
+	int i, n;
+	int tlen = text ? (int)strlen(text) : 0;
+	if (!tlen || !con->display)
+		return false;
+	for (l = (dir < 0) ? con->display->older : con->display->newer; l; l = (dir < 0) ? l->older : l->newer)
+	{
+		if (l == con->current)
+			continue;	//skip the live input line
+		cc = (conchar_t*)(l+1);
+		n = l->length;
+		if (n > (int)sizeof(buf)-1)
+			n = sizeof(buf)-1;
+		for (i = 0; i < n; i++)
+		{
+			int ch = cc[i] & CON_CHARMASK;
+			buf[i] = (ch >= 32 && ch < 127) ? ch : ' ';
+		}
+		buf[n] = 0;
+		for (i = 0; i + tlen <= n; i++)
+		{
+			if (!Q_strncasecmp(buf+i, text, tlen))
+			{	//hit - scroll to it + select the span
+				con->display = l;
+				con->displayscroll = 0;
+				con->selstartline = con->selendline = l;
+				con->selstartoffset = i;
+				con->selendoffset = i + tlen;
+				con->flags |= CONF_KEEPSELECTION;
+				return true;
+			}
+		}
+	}
+	return false;
+}
 
 void Cmd_ConEchoCenter_f(void)
 {
@@ -830,6 +879,7 @@ void Con_Init (void)
 	Cvar_Register (&con_textsize, "Console controls");
 	Cvar_Register (&con_window, "Console controls");
 	Cvar_Register (&con_savehistory, "Console controls");
+	Cvar_Register (&con_keepscroll, "Console controls");
 	Cvar_ForceCallback(&con_window);
 
 	Cmd_AddCommand ("toggleconsole", Con_ToggleConsole_f);
@@ -3102,6 +3152,8 @@ void Con_DrawConsole (int lines, qboolean noback)
 	for (w = con_head; w; w = w->next)
 	{
 		srect_t srect;
+		int keepback = -1;	//nettest: con_keepscroll - how many lines above the live tail the user was reading. -1 = not scrolled / disabled.
+		float keepscroll = 0;
 		if ((w->flags & (CONF_HIDDEN|CONF_ISWINDOW)) != CONF_ISWINDOW)
 			continue;
 
@@ -3255,11 +3307,32 @@ void Con_DrawConsole (int lines, qboolean noback)
 			w->unseentext = false;
 		}
 		else
+		{
 			w->buttonsdown = 0;
+			//nettest: a closed/unfocused console still DRAWS the live tail -- that is not cosmetic.
+			//With con_window 1, con_window_cb clears CONF_NOTIFY from con_main, so Con_DrawNotify
+			//skips it and this faded hidden window IS the in-game notify overlay. Con_DrawConsoleLines
+			//only ever walks OLDER than the line it is given, so drawing from a scrolled-up display
+			//would make every new print invisible in game. And its ^^^^ backscroll marker is emitted
+			//before any age-fade test, so a stale display also parks a permanent full-brightness row
+			//of '^' over the view. Hence: snap to the tail for the draw, then put the user's reading
+			//position back afterwards so reopening lands where they left off (con_keepscroll).
+			if (con_keepscroll.ival && w->display && w->display != w->current)
+			{	//store it as a DISTANCE, not a pointer: Con_DrawConsoleLines can Con_Printf (failed
+				//link-image registration), which can evict and free a line out from under us.
+				conline_t *cl;
+				keepback = 0;
+				for (cl = w->display; cl && cl != w->current; cl = cl->newer)
+					keepback++;
+				keepscroll = w->displayscroll;
+			}
+			w->display = w->current;
+			w->displayscroll = 0;
+		}
 
 		srect.x = (w->wnd_x+8) / vid.width;
 		srect.y = (w->wnd_y+8) / vid.height;
-		srect.width = (w->wnd_w-16) / vid.width;
+		srect.width = (w->wnd_w-24) / vid.width;	//nettest: -24 (was -16) leaves an 8px strip on the right for the scrollbar
 		srect.height = (w->wnd_h-16) / vid.height;
 		srect.dmin = -99999;
 		srect.dmax = 99999;
@@ -3276,13 +3349,56 @@ void Con_DrawConsole (int lines, qboolean noback)
 				if ((w->buttonsdown & CB_SIZEBOTTOM) || (con_curwindow==w && w->mousecursor[0] >= -8 && w->mousecursor[0] < w->wnd_w-8 && w->mousecursor[1] >= w->wnd_h-8 && w->mousecursor[1] < w->wnd_h))
 					R2D_FillBlock(w->wnd_x, w->wnd_y+w->wnd_h-8, w->wnd_w, 8);
 			}
+			//nettest: scrollbar in the 8px strip on the right (freed by narrowing the text to wnd_w-24). That
+			//strip is already the CB_SCROLL drag region, so dragging it scrolls; the thumb tracks con->display.
+			if (Key_Dest_Has(kdm_cwindows) && w->linecount > 0)	//nettest: only show the scrollbar while the console is focused/open
+			{
+				float trkx = w->wnd_x + w->wnd_w - 16;
+				float trky = w->wnd_y + 8;
+				float trkh = w->wnd_h - 16;
+				int total = w->linecount, above = 0;
+				conline_t *cl;
+				float vis, thumbh, thumby, pos, ch;
+				for (cl = w->oldest; cl && cl != w->display; cl = cl->newer)
+					above++;
+				ch = Font_CharVHeight(font_console);	//nettest: explicit font - Font_CharHeight() derefs the global curfont, which is NOT bound at this point in Con_DrawConsole (was a NULL-deref crash on the first frame)
+				if (ch < 1) ch = 1;
+				vis = trkh / ch;
+				if (vis < 1) vis = 1;
+				thumbh = (total > vis) ? (vis / (float)total) * trkh : trkh;
+				if (thumbh < 8) thumbh = 8;
+				if (thumbh > trkh) thumbh = trkh;
+				pos = (total > 1) ? (above / (float)(total-1)) : 0;
+				if (pos < 0) pos = 0;
+				if (pos > 1) pos = 1;
+				thumby = trky + pos * (trkh - thumbh);
+				R2D_ImageColours(SRGBA(1,1,1,0.10));		//track
+				R2D_FillBlock(trkx+1, trky, 6, trkh);
+				R2D_ImageColours(SRGBA(0.55,0.7,0.95,0.85));	//thumb
+				R2D_FillBlock(trkx+1, thumby, 6, thumbh);
+				R2D_ImageColours(1,1,1,1);
+			}
 			if (R2D_Flush)
 				R2D_Flush();
 			BE_Scissor(&srect);
-			Con_DrawOneConsole(w, con_curwindow == w && Key_Dest_Has(kdm_console|kdm_cwindows) == kdm_cwindows, font_console, w->wnd_x+8, w->wnd_y, w->wnd_w-16, w->wnd_h-8, fadetime);
+			Con_DrawOneConsole(w, con_curwindow == w && Key_Dest_Has(kdm_console|kdm_cwindows) == kdm_cwindows, font_console, w->wnd_x+8, w->wnd_y, w->wnd_w-24, w->wnd_h-8, fadetime);
 			if (R2D_Flush)
 				R2D_Flush();
 			BE_Scissor(NULL);
+		}
+
+		if (keepback >= 0)
+		{	//nettest: put the reading position back now the draw is done, so reopening the console
+			//lands where the user left off. Walking older from the (never-freed) current line means
+			//an eviction mid-draw just costs us a row or two of accuracy instead of a dangling pointer.
+			conline_t *cl = w->current;
+			while (keepback-- > 0 && cl && cl->older)
+				cl = cl->older;
+			if (cl)
+			{
+				w->display = cl;
+				w->displayscroll = keepscroll;
+			}
 		}
 
 		if (w->selstartline)

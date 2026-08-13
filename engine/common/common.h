@@ -616,6 +616,9 @@ struct vfsfile_s;
 //if loc is valid, loc->search is always filled in, the others are filled on success.
 //standard return value is 0 on failure, or depth on success.
 int FS_FLocateFile(const char *filename, unsigned int flags, flocation_t *loc);
+qboolean FS_FileIsAddonOnly(const char *name);	//nettest: file's top hit is in a low-priority fs_load addon dir
+void FS_SetPreferHint(const char *spec);		//nettest (P26 Part 2): bias the NEXT locate to a game spec's resolved dir
+void FS_ClearPreferHint(void);					//nettest (P26 Part 2): stop biasing (call right after the BSP load)
 struct vfsfile_s *FS_OpenReadLocation(const char *fname, flocation_t *location);	//fname used for extension-based filters
 #define WP_REFERENCE	1
 #define WP_FULLPATH		2
@@ -691,7 +694,8 @@ enum fs_relative{
 	FS_GAMEONLY,	//$gamedir/
 	FS_BASEGAMEONLY,	//fte/
 	FS_PUBGAMEONLY,		//$gamedir/ or qw/ but not fte/
-	FS_PUBBASEGAMEONLY	//qw/ (fixme: should be the last non-private basedir)
+	FS_PUBBASEGAMEONLY,	//qw/ (fixme: should be the last non-private basedir)
+	FS_GAMEDOWNLOADS	//nettest P38: $gamedir_downloads/ - sibling of the active gamedir; client downloads land here so the gamedir stays pure.
 };
 
 qboolean COM_WriteFile (const char *filename, enum fs_relative fsroot, const void *data, int len);
@@ -990,7 +994,11 @@ extern hashfunc_t hash_sha2_384;
 extern hashfunc_t hash_sha2_512;
 extern hashfunc_t hash_crc16;		//aka ccitt, required for qw's clc_move and various bits of dp compat
 extern hashfunc_t hash_crc16_lower;
+extern hashfunc_t hash_blake2b_256;	//quakers: the content-distribution manifest names every object by this hash. see common/blake2b.c
 #define hash_certfp hash_sha2_256	//This is the hash function we're using to compute *fp serverinfo. we can detect 1/2-256/2-512 by sizes, but we need consistency to avoid confusion in clientside things too.
+//wrap a writable file so that VFS_CLOSE fails unless the bytes written match both the
+//expected size and the expected (hex) digest. lives in common/fs.c.
+vfsfile_t *FS_Hash_ValidateWrites(vfsfile_t *f, const char *fname, qofs_t needsize, hashfunc_t *hashfunc, const char *hash);
 unsigned int hashfunc_terminate_uint(const hashfunc_t *hash, void *context); //terminate, except returning the digest as a uint instead of a blob. folds the digest if longer than 4 bytes.
 unsigned int CalcHashInt(const hashfunc_t *hash, const void *data, size_t datasize);
 size_t CalcHash(const hashfunc_t *hash, unsigned char *digest, size_t maxdigestsize, const unsigned char *data, size_t datasize);
