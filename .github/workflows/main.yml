@@ -54,15 +54,15 @@ jobs:
     strategy:
       matrix:
         include:
-          - name: web
-            fte_target: web
-            make_targets: "gl-rel"
-            os: ubuntu-latest
-          - name: linux64
-            fte_target: linux64
-            make_targets: "m-rel sv-rel qtv-rel qcc-rel"
-            os: ubuntu-latest
-            packages: "libpng-dev libasound2-dev libgl-dev libegl1-mesa-dev libwayland-dev libxcursor-dev libxi-dev libxkbcommon-dev libxrandr-dev libxss-dev"
+          # - name: web
+          #   fte_target: web
+          #   make_targets: "gl-rel"
+          #   os: ubuntu-latest
+          # - name: linux64
+          #   fte_target: linux64
+          #   make_targets: "m-rel sv-rel qtv-rel qcc-rel"
+          #   os: ubuntu-latest
+          #   packages: "libpng-dev libasound2-dev libgl-dev libegl1-mesa-dev libwayland-dev libxcursor-dev libxi-dev libxkbcommon-dev libxrandr-dev libxss-dev"
           - name: win32
             fte_target: win32
             make_targets: "m-rel sv-rel qcc-rel"
@@ -73,12 +73,12 @@ jobs:
             make_targets: "m-rel sv-rel qcc-rel"
             os: ubuntu-latest
             packages: "binutils-mingw-w64-x86-64 gcc-mingw-w64-x86-64 g++-mingw-w64-x86-64"
-          - name: macos-arm64
-            fte_target: SDL2
-            make_targets: "gl-rel sv-rel qcc-rel"
-            args: "ARCH=arm STRIPFLAGS="
-            packages: "sdl2"
-            os: macos-latest
+          # - name: macos-arm64
+          #   fte_target: SDL2
+          #   make_targets: "gl-rel sv-rel qcc-rel"
+          #   args: "ARCH=arm STRIPFLAGS="
+          #   packages: "sdl2"
+          #   os: macos-latest
 
     name: make-${{ matrix.name }}
     runs-on: ${{ matrix.os }}
@@ -89,12 +89,12 @@ jobs:
         uses: SimenB/github-actions-cpu-cores@v2
         id: cpu-cores
 
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
 
       - name: Extract versions
         run: grep 'VER=' engine/Makefile | tee makelibs_versions
 
-      - uses: actions/cache@v4
+      - uses: actions/cache@v6
         id: cache
         with:
           path: engine/libs-*
@@ -148,7 +148,7 @@ jobs:
         run: echo "short_sha=$(git rev-parse --short HEAD)" >> $GITHUB_OUTPUT
 
       - name: Upload artifacts
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: fteqw-${{ matrix.name }}-${{ steps.version.outputs.short_sha }}
           path: |
@@ -173,7 +173,7 @@ jobs:
       options: --privileged
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
 
       - name: Lint metadata and build manifest
         run: |

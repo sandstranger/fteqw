@@ -3563,7 +3563,7 @@ YOU SHOULD NOT EDIT THIS FILE BY HAND
 "outp.pos = mul(m_view, outp.pos);\n"
 "outp.pos = mul(m_projection, outp.pos);\n"
 
-"float d = dot(inp.normal, e_light_dir);\n"
+"float d = max(0.0, dot(normalize(inp.normal), e_light_dir));\n"
 "outp.light = e_light_ambient + (d * e_light_mul);\n"
 "outp.tc = inp.tc.xy;\n"
 "return outp;\n"

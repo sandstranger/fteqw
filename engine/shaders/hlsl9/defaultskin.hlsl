@@ -45,7 +45,7 @@ float4x4  m_projection;
 		outp.pos = mul(m_view, outp.pos);
 		outp.pos = mul(m_projection, outp.pos);
 
-		float d = dot(inp.normal, e_light_dir);
+		float d = max(0.0, dot(normalize(inp.normal), e_light_dir));
 		outp.light = e_light_ambient + (d * e_light_mul);
 		outp.tc = inp.tc.xy;
 		return outp;

@@ -790,6 +790,11 @@ void R_LightArraysByte_BGR(const entity_t *entity, vecV_t *coords, byte_vec4_t *
 		for (i = vertcount-1; i >= 0; i--)
 		{
 			l = DotProduct(normals[i], lightdir);
+			/* Keep the back-facing side at the sampled ambient level.  This
+			 * mirrors R_LightArrays below; otherwise the negative directional
+			 * contribution is clamped to black. */
+			if (l < 0)
+				l = 0;
 			c = l*shadelightb[0];
 			c += ambientlightb[0];
 			colours[i][0] = bound(0, c, 255);
