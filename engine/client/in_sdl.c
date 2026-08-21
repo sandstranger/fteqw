@@ -2216,6 +2216,10 @@ void Sys_SendKeyEvents(void)
 	}
 }
 
+#ifdef ANDROID
+static int SDLCALL AndroidLifeCycleEventFilter(void*, SDL_Event* event);
+#endif
+
 void INS_Shutdown (void)
 {
 	IN_DeactivateMouse();
@@ -2230,6 +2234,7 @@ void INS_Shutdown (void)
 #endif
 #if ANDROID
     controlsWereReinit = true;
+	SDL_DelEventWatch(AndroidLifeCycleEventFilter, nullptr);
 #endif
 }
 
@@ -2285,6 +2290,9 @@ void INS_ReInit (void)
 #elif SDL_VERSION_ATLEAST(2, 0, 0)
 	SDL_EventState(SDL_DROPFILE, SDL_ENABLE);
 #endif
+#ifdef ANDROID
+    SDL_AddEventWatch(AndroidLifeCycleEventFilter, nullptr);
+#endif
 }
 
 #if ANDROID
@@ -2300,6 +2308,20 @@ bool needToReInitGameControllers (){
 __attribute__((used)) __attribute__((visibility("default")))
 void rescanGameControllersForced(){
     rescanGameControllers();
+}
+
+static int SDLCALL AndroidLifeCycleEventFilter(void*, SDL_Event* event)
+{
+	switch (event->type)
+	{
+		case SDL_APP_WILLENTERBACKGROUND:
+			vid.activeapp = false;
+			break;
+		case SDL_APP_DIDENTERFOREGROUND:
+			vid.activeapp = true;
+			break;
+	}
+	return 1;
 }
 #endif
 
