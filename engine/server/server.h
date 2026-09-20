@@ -456,6 +456,8 @@ enum serverprotocols_e
 	//note, nq is nq+
 };
 
+#define SV_PMPIN_COUNT 70	//FTESurf Patch 346: entries in sv_pmpin_names (sv_user.c)
+
 typedef struct client_s
 {
 	client_conn_state_t	state;
@@ -488,6 +490,7 @@ typedef struct client_s
 	usercmd_t		lastcmd;			// for filling in big drops and partial predictions
 	double			localtime;			// of last message
 	qboolean jump_held;
+	pmsourcestate_t	pmsrc;	//FTESurf: pm_source.c cross-command state (duck, tick carry)
 	unsigned int	lockanglesseq;		//mod is spamming angle changes, don't do relative changes. outgoing sequence. v_angles isn't really known until netchan.incoming_acknowledged>=lockangles
 
 	float			maxspeed;			// localized maxspeed
@@ -747,6 +750,35 @@ typedef struct client_s
 	int hideentity;
 	qboolean hideplayers;
 #endif
+
+	/*FTESurf Patch 325: mover ticks run for this client since the map loaded.
+
+	  APPENDED, not inserted: this struct is compiled by the hl2 plugin through
+	  quakedef.h, and engine and plugin demonstrably reach a player out of step on
+	  this project, so nothing above may shift.
+
+	  A DOUBLE, deliberately, and the reason is the publish and not the counter.
+	  QC floats are 32-bit, so a value handed to QC is exact only to 2^24 ticks --
+	  69.9 h at pm_ticrate 0.015, 46.6 h at the 0.010 a bhop map uses.  Keeping the
+	  accumulator itself in double means the engine side can never be the limit
+	  (2^53 ticks is millions of years), and RESETTING IT PER MAP rather than per
+	  connection means the published float never approaches its ceiling either:
+	  client_t is memset at CONNECT, not at map change, so a counter left to run
+	  for the life of a connection would cross every map a lobby cycles through.
+	  Above 2^24 the failure is not a frozen counter but a QUANTISING one -- it
+	  would step 0,2,4 and bias every run by a tick or so, silently, which is
+	  strictly worse than stopping.  Hence the per-map reset in SV_SpawnServer. */
+	double			movetickcount;
+
+	/* FTESurf Patch 346: what the mover was handed on this client's last move, for
+	   the recorder (see SV_PMPinFill in sv_user.c).  pmepoch is 0 until the first
+	   Source move and then bumps whenever pmpin changes -- QC reads a nonzero
+	   epoch as "this engine publishes the pin", which a client cannot forge. */
+	float			pmpin[SV_PMPIN_COUNT];
+	unsigned int	pmepoch;
+	unsigned int	physcrc;		//24-bit digest of the last move's physent list
+	unsigned int	portalx;		//linked-portal crossings, cumulative; reset per map
+	vec3_t			portalorg, portalvel;	//post-move state of the last crossing move
 } client_t;
 
 #if defined(NQPROT) || defined(Q2SERVER) || defined(Q3SERVER)
@@ -1083,6 +1115,37 @@ typedef enum multicast_e
 
 //============================================================================
 
+/*
+FTESurf Patch 273 -- SPLITTING THE `Server` BUCKET, BECAUSE IT IS 37% OF THE FRAME
+AND NOBODY COULD SEE IT.
+
+r_speeds' `Server` row is one number wrapped around the whole of SV_Frame
+(cl_main.c:7457/7592/7663).  On surf_tensor2 it reads 1790us/frame against 37.9us
+on surf_tensor -- a 47x gap between two Source maps on the same listen server with
+one player -- and one number cannot say which half of SV_Frame owns it.
+
+Ruled out before writing this, so the instrument does not re-litigate them: it is
+not live edict count (tensor2 runs `entities 28 (brush 17)`, props 12), and it is
+not a free-running tick (sv_mintic/sv_maxtic are pinned to 0.015 in default.fmf,
+so physics is 66.67Hz even at 1000fps -- which ALSO means most SV_Frame calls do
+no tick at all and the average smears a rare expensive tick over many cheap
+frames.  `ticks` is here to measure exactly that smear).
+
+Accumulated in nanosecond-ish doubles rather than sampled, because the per-frame
+figure is noise and the question is the ratio.  `sv_perfdump` prints and clears.
+Zero cost when never dumped: two Sys_DoubleTime calls per tick, not per frame.
+*/
+typedef struct
+{
+	double	startframe;		//the QC's StartFrame chain (SV_ProgStartFrame)
+	double	physics;		//World_Physics_Frame -- entity movement and collision
+	double	send;			//SV_SendClientMessages -- snapshot build + PVS
+	unsigned int ticks;		//physics ticks actually run
+	unsigned int frames;	//SV_Frame calls (ticks/frames = how often a tick fires)
+} sv_perf_t;
+extern sv_perf_t sv_perf;
+#define SV_PERF(acc, call) do { double t_ = Sys_DoubleTime(); call; (acc) += Sys_DoubleTime() - t_; } while(0)
+
 extern	cvar_t	sv_mintic, sv_maxtic, sv_limittics;
 extern	cvar_t	sv_maxspeed;
 extern	cvar_t	sv_antilag;
@@ -1393,6 +1456,16 @@ void SV_PreRunCmd(void);
 void SV_RunCmd (usercmd_t *ucmd, qboolean recurse);
 void SV_PostRunCmd(void);
 void SV_RunCmdCleanup(void);
+void SV_FS_ResetFieldCaches(void);	//FTESurf P139: drop the board/ramp evalc_t caches; MUST run on every progs load
+//FTESurf Patch 346: the pin -- one name table, one fill order, one text form.
+extern const char *sv_pmpin_names[SV_PMPIN_COUNT];
+size_t SV_PMPinText(const float *v, char *out, size_t outsz);
+size_t SV_PMStateText(const pmsourcestate_t *st, char *out, size_t outsz);
+qboolean SV_PMTextChunk(const char *text, int idx, char *out, size_t outsz);
+int SV_PMPinParse(const char *text, float *v);
+void SV_PMPinApply(const float *v);
+qboolean SV_PMStateParse(const char *text, pmsourcestate_t *st);
+unsigned int SV_PhysentDigest(void);
 
 void SV_SendClientPrespawnInfo(client_t *client);
 void SV_ClientProtocolExtensionsChanged(client_t *client);

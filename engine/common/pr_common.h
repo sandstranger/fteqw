@@ -386,6 +386,8 @@ int PR_QCFile_From_Buffer (pubprogfuncs_t *prinst, const char *name, void *buffe
 void QCBUILTIN PF_fopen (pubprogfuncs_t *prinst, struct globalvars_s *pr_globals);
 
 void QCBUILTIN PF_fcopy (pubprogfuncs_t *prinst, struct globalvars_s *pr_globals);
+void QCBUILTIN PF_fcopyrange (pubprogfuncs_t *prinst, struct globalvars_s *pr_globals);	//FTESurf Patch 375
+void QCBUILTIN PF_fappendrange (pubprogfuncs_t *prinst, struct globalvars_s *pr_globals);
 void QCBUILTIN PF_frename (pubprogfuncs_t *prinst, struct globalvars_s *pr_globals);
 void QCBUILTIN PF_fremove (pubprogfuncs_t *prinst, struct globalvars_s *pr_globals);
 void QCBUILTIN PF_fexists (pubprogfuncs_t *prinst, struct globalvars_s *pr_globals);
@@ -446,6 +448,20 @@ void QCBUILTIN PF_cvar_description (pubprogfuncs_t *prinst, struct globalvars_s 
 #define DRAWFLAG_2D			(1u<<2)
 #define DRAWFLAG_TWOSIDED	0x400
 #define DRAWFLAG_LINES		0x800
+/*
+FTESurf Patch 274: draw this polygon with NO DEPTH TEST, i.e. over the world.
+
+BEF_FORCENODEPTH already exists and every backend already honours it (gl, d3d8,
+d3d9, d3d11, vk); there was simply no way for CSQC to ask for it on a polygon.
+The only route was to name a gamedir .shader carrying `nodepthtest` -- which
+works, and ftesurf's zones.shader does exactly that -- but a shader is a fixed
+texture, so it cannot express "this sprite's own material, drawn over the world".
+
+That is precisely what a light glare needs: Source draws its glows with
+sprites/light_glow02_add_noz, and the _noz suffix is the whole trick.  With this
+flag the QC can do it per polygon and keep the map's own material.
+*/
+#define DRAWFLAG_NODEPTHTEST 0x1000
 void QCBUILTIN PF_SubConGetSet (pubprogfuncs_t *prinst, struct globalvars_s *pr_globals);
 void QCBUILTIN PF_SubConPrintf (pubprogfuncs_t *prinst, struct globalvars_s *pr_globals);
 void QCBUILTIN PF_SubConDraw (pubprogfuncs_t *prinst, struct globalvars_s *pr_globals);
@@ -902,6 +918,42 @@ typedef enum
 #define FRIK_FILE_READ_DELAY (7) /*internal special mode where the file is not read until the first read. this avoids extra slowness with xonotic (where it uses fopen to see if (large) binary file exists, resulting in large binary files getting decompressed repeatedly then discarded without reading)*/
 #define FRIK_FILE_STREAM	(8) /*access goes via the vfs, we don't need to track the read/write info here*/
 
+/*
+  FTESurf Patch 316 -- write-only, STRAIGHT TO DISK.  Requestable from QC.
+
+  FRIK_FILE_WRITE does not stream and never has: PF_fopen gives it an 8 KB
+  BZ_Malloc that PF_fresizebuffer_internal grows on every fputs, and the file is
+  not touched until PF_fclose_i calls COM_WriteFile with the whole thing.  So a
+  QC writer that runs for minutes holds its entire output in engine memory until
+  the moment it finishes, and there is no way to ask it not to.  FRIK_FILE_APPEND
+  is worse rather than better -- it FS_LoadMallocFile's the existing file in at
+  open, so a chunked writer re-reads and re-writes everything it has produced so
+  far on every chunk.
+
+  That is a real ceiling and not a tidiness complaint.  FTESurf records a run as
+  a line of text per physics sample, ~98 bytes at ~65 Hz -- about 6.5 KB per
+  second of play, measured over 83 real recordings.  One player is nothing.
+  Thirty-two players on a public lobby, on an SBC with no swap, is not: the
+  recorder's own line cap allows a 50-minute run, which is ~26 MB each, and the
+  reason server-side recording is switched off on every lobby today is that
+  nobody wanted to find out what 32 of those does to the box.
+
+  Everything needed to do it properly was already here and only reachable for
+  sockets: PF_fwrite_internal already write-throughs with VFS_WRITE for
+  FRIK_FILE_STREAM, PF_fclose_i already VFS_CLOSEs it, and PF_fseek64 already
+  works on any handle with a .file -- so a writer can even seek back and correct
+  a header field it reserved, which is the one thing a stream is usually assumed
+  to give up.  What was missing was an fopen mode that opens a FILE this way.
+
+  It is a DISTINCT accessmode rather than reusing FRIK_FILE_STREAM, for two
+  reasons that are both about not quietly changing the socket path: a network
+  stream is bidirectional and this is not (fgets on it should fail, and it does,
+  because only the write side names this mode), and a file written into the
+  gamedir has to tell the filesystem hash it now exists -- FS_FlushFSHashWritten,
+  which COM_WriteFile does and which a tcp:// stream must never do.
+*/
+#define FRIK_FILE_WRITESTREAM (9) /*write-only, no buffering: every fputs is a VFS_WRITE. For a writer that runs for a long time and does not know its final size.*/
+
 #define MASK_DELTA 1
 #define MASK_STDVIEWMODEL 2
 
@@ -1093,6 +1145,7 @@ enum
 	globalfunction(CSQC_Parse_Event,		"void()")	\
 	globalfunction(CSQC_Parse_Damage,		"float(float save, float take, vector inflictororg)")	\
 	globalfunction(CSQC_Parse_SetAngles,	"float(vector angles, float isdelta)")	\
+	globalfunction(CSQC_PredictPlayerMove,	"void(float seat, float cmdsequence, float msec)")/*FTESurf Patch 335: per-predicted-usercmd trigger hook*/	\
 	globalfunction(CSQC_PlayerInfoChanged,	"void(float playernum)")	\
 	globalfunction(CSQC_ServerInfoChanged,	"void()")	\
 	globalfunction(CSQC_InputEvent,			"float(float evtype, float scanx, float chary, float devid)")	\
@@ -1100,6 +1153,7 @@ enum
 	globalfunction(CSQC_RendererRestarted,	"void(string rendererdescription)")	\
 	globalfunction(CSQC_GenerateMaterial,	"string(string shadername)")	\
 	globalfunction(CSQC_ConsoleCommand,		"float(string cmd)")	\
+	globalfunction(CSQC_ChatSay,			"float(string args, float team)")	/*FTESurf Patch 341: csprogs' own chat draft takes `say`*/	\
 	globalfunction(CSQC_ConsoleLink,		"float(string text, string info)")	\
 	globalfunction(GameCommand,				"void(string cmdtext)")	/*DP extension*/\
 	\
@@ -1175,6 +1229,20 @@ enum
 	globalfloat (pmove_jump_held)			/*deprecated. read/written by runplayerphysics*/ \
 	globalfloat (pmove_waterjumptime)		/*deprecated. read/written by runplayerphysics*/ \
 	globalfloat (pmove_onground)			/*deprecated. read/written by runplayerphysics*/ \
+	\
+	globalvector(predmove_org0)				/*FTESurf P335: origin at the START of the predicted command (ro)*/ \
+	globalvector(predmove_org)				/*FTESurf P335: origin after PM_PlayerMove; QC may rewrite (rw)*/ \
+	globalvector(predmove_vel)				/*FTESurf P335: velocity after PM_PlayerMove; QC may rewrite (rw)*/ \
+	globalvector(predmove_basevel)			/*FTESurf P335: this command's net trigger_push write; the engine holds it across commands as the mirror of the server's .run_basevel and pays the Patch 249 cash-out (w)*/ \
+	globalfloat (predmove_bvfired)			/*FTESurf P337: set nonzero when a continuous push fired this command, even if the net vector cancelled to zero -- the server's armed flag is set unconditionally by the touch (w)*/ \
+	globalfloat (predmove_onground)			/*FTESurf P335: rw*/ \
+	globalvector(predmove_mins)				/*FTESurf P335: player hull (ro)*/ \
+	globalvector(predmove_maxs)				/*FTESurf P335: player hull (ro)*/ \
+	globalfloat (predmove_pmtype)			/*FTESurf P335: pmove.pm_type of the command just run (ro)*/ \
+	globalfloat (predmove_buttons)			/*FTESurf P335: cmd.buttons of the command just run (ro)*/ \
+	globalvector(predmove_cmdangles)		/*FTESurf P335: pmove.angles of the command just run, i.e. the usercmd's own view angles (ro)*/ \
+	globalvector(predmove_anglesnap)		/*FTESurf P335: absolute view angles, applied when predmove_fixangle is set (w)*/ \
+	globalfloat (predmove_fixangle)			/*FTESurf P335: set to 1 to apply predmove_anglesnap; engine clears (w)*/ \
 	\
 	globalfloat (input_sequence)			/*float		filled by getinputstate, read by runplayerphysics*/ \
 	globalfloat (input_timelength)			/*float		filled by getinputstate, read by runplayerphysics*/ \

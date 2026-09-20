@@ -839,6 +839,7 @@ This is only called from the SV_Map_f() function.
 void SV_SpawnServer (const char *server, const char *startspot, qboolean noents, qboolean usecinematic, int playerslots)
 {
 	extern cvar_t allow_download_refpackages;
+	extern cvar_t fs_maploadhash;	//ftesurf (P180), lives in fs.c
 	func_t f;
 	const char *file, *csprogsname;
 
@@ -965,6 +966,29 @@ void SV_SpawnServer (const char *server, const char *startspot, qboolean noents,
 	#define SCR_SetLoadingFile(s)
 #endif
 
+	/*
+	FTESurf Patch 224: decide THIS map's movement ruleset, as early as the map
+	name allows.
+
+	Every later reader has to see the final values, and they are further apart
+	than they look:
+
+	  the two settle frames below run StartFrame, which reaches the gamecode's
+	    own once-per-map init -- and that LATCHES pm_ticrate into the run timer
+	    (src/server/sv_timer.qc, fs_t_tick).  Applied any later and the timer
+	    converts this map's ticks with the previous map's rate.
+	  SV_SetMoveVars / SV_ReportMoveVars read the cvars into movevars.
+	  SV_New_f writes movevars into each client's serverdata message, which is
+	    the whole of what a client predicts with.
+
+	Before Cvar_ApplyLatches on purpose, so a ruleset that sets a CVAR_MAPLATCH
+	cvar takes effect on THIS map rather than the next one.  sv.state is still
+	ss_dead here, so Patch 170's per-cvar callback returns early and does not
+	fight the values being installed; SV_LockMovementVars later in this function
+	is what makes them stick.
+	*/
+	SV_ApplyGamemode(svs.name);
+
 	Cvar_ApplyLatches(CVAR_MAPLATCH, false);
 
 //work out the gamespeed
@@ -974,7 +998,59 @@ void SV_SpawnServer (const char *server, const char *startspot, qboolean noents,
 					//NQ uses 1, QW uses 0. Awkward.
 	sv.starttime = Sys_DoubleTime();
 
+	FS_LoadStats_Begin();	//ftesurf (P180): bracket from here, because the line below is where it goes wrong
 	COM_FlushTempoaryPacks();
+
+	/*
+	ftesurf (P180): rebuild the filesystem name hash HERE, not only in SV_Map_f.
+
+	COM_FlushTempoaryPacks above drops the PREVIOUS map's embedded pakfile, and in
+	doing so calls FS_FlushFSHashFull -- which does not actually flush anything, it
+	just sets com_fschanged.  com_fschanged is cleared in exactly one place in the
+	engine (FS_RebuildFSHash, fs.c), reachable only from COM_FlushFSCache, and on the
+	map path that already ran back in SV_Map_f -- BEFORE this function.  Nothing
+	clears it again until the NEXT map load.
+
+	So from this line until the end of the map load -- which is to say for
+	Mod_ForName below and every .vmt, .vtf and .mdl it pulls in -- the hashed lookup
+	at FS_FLocateFile is disabled and every single lookup falls into the linear walk
+	that asks each archive in turn to strcmp its entire file list.  With CS:S + HL2 +
+	Momentum that is ~67k comparisons per lookup; with an automounted TF2 or CS:GO on
+	top it is 215k-349k.  A Source map does thousands of lookups.
+
+	It only bites when a temporary pack was actually dropped, i.e. when the PREVIOUS
+	map had an embedded pakfile -- which is nearly every Source map.  That is exactly
+	why the first map of a session loads fine and the second one crawls.
+
+	The rebuild is O(total files) once, which is strictly better than O(total files)
+	thousands of times.  It also calls FS_FlushFSHashReally, which nulls the buckets
+	that COM_FlushTempoaryPacks just freed out from under the hash -- those otherwise
+	stay linked, and the next incremental BuildHash (the map's own pakfile, or an
+	fs_automount) walks them via FS_AddFileHashUnsafe.  That is the Patch 27 crash
+	signature, and it is reachable today.
+
+	FS_RehashIfStale rather than COM_FlushFSCache on purpose: the latter polls every
+	searchpath for external changes first, and one directory answering "changed"
+	forces a full rebuild we did not need.  Measured at +1.5s on a cold map whose
+	hash was already valid.  We are not looking for external edits, we are repairing
+	an invalidation we just caused two lines up.
+
+	The cvar is an escape hatch and an A/B handle, not a preference: set it to 0 to
+	get the old behaviour back and measure the difference with fs_loadstats.
+	*/
+	/* ftesurf (P184): give back the asset packs the PREVIOUS map needed and this one
+	does not, before the rehash below rather than after, so the rebuild and then the
+	whole asset phase both walk the smaller index.
+
+	This is deliberately here and not in FS_AutoMountForMap, where the mounting side
+	lives.  That runs from SV_Map_f BEFORE the COM_FCheckExists loop that decides
+	whether the map exists at all, so dropping there meant a mistyped `map` name
+	unmounted the packs of the map you were still playing and nothing put them back.
+	SV_SpawnServer is only reached once the load is committed. */
+	FS_AutoUnmountStale();
+
+	if (fs_maploadhash.ival)
+		FS_RehashIfStale();
 
 	if (sv_cheats.ival)
 	{
@@ -1178,6 +1254,28 @@ void SV_SpawnServer (const char *server, const char *startspot, qboolean noents,
 	}
 	else
 	{
+		/*
+		  ftesurf (P282): the server half of the silent HUD loss.
+
+		  Publishing "" here tells every connecting client "this server has no
+		  client gamecode", and the client then never even opens its OWN copy --
+		  see CSQC_Init's csqc_nogameaccess branch. For a game whose entire HUD is
+		  CSQC that means the player gets the engine's status bar instead, with
+		  nothing said on either side.
+
+		  This runs inside SV_SpawnServer, i.e. on EVERY map load. So a deploy
+		  that is not atomic -- an scp landing while a rotation happens to be
+		  changing map -- reads a half-written file, publishes "", and recovers
+		  on the next map. "Sometimes, and it depends on the map" is exactly what
+		  that looks like from the player's side.
+
+		  Only the could-not-read case is reported. A server deliberately running
+		  without CSQC has an empty sv_csqc_progname and is not a misconfiguration.
+		*/
+		if (*csprogsname)
+			Con_Printf(CON_ERROR"csprogs: \"%s\" could not be read -- connecting clients "
+					   "will get NO client gamecode (and so no HUD) until this is fixed.\n",
+					   csprogsname);
 		sv.csqcchecksum = 0;
 		InfoBuf_SetValueForStarKey(&svs.info, "*csprogs", "");
 		InfoBuf_SetValueForStarKey(&svs.info, "*csprogssize", "");
@@ -1375,6 +1473,16 @@ MSV_OpenUserDatabase();
 		svs.clients[i].edict = NULL;
 		svs.clients[i].name = svs.clients[i].namebuf;
 		svs.clients[i].team = svs.clients[i].teambuf;
+		/*FTESurf Patch 325: the mover-tick counter is PER MAP, not per connection.
+		  client_t is memset at connect, so leaving this to run would carry it
+		  across every map a lobby cycles through -- and the value is published to
+		  QC as a 32-bit float, exact only to 2^24 ticks (69.9 h at 0.015, 46.6 h
+		  at 0.010).  Past that it quantises rather than stops, biasing every run
+		  silently, which is worse than a counter that visibly dies.  Resetting
+		  here costs nothing: QC re-latches per run and the edicts are respawned
+		  anyway, so no run can straddle this.*/
+		svs.clients[i].movetickcount = 0;
+		svs.clients[i].portalx = 0;	//FTESurf Patch 346: same float ceiling, same reset
 		InfoSync_Clear(&svs.clients[i].infosync);	//we'll mark all the info as dirty at some point while connecting.
 	}
 
@@ -1841,8 +1949,25 @@ MSV_OpenUserDatabase();
 
 	SSV_UpdateAddresses();
 
+	//FTESurf Patch 170: restore the movement ruleset before the authoritative
+	//refresh below reads it, so a map always starts on this game's numbers
+	//however the previous one ended.  Inert unless the game asked for it.
+	SV_LockMovementVars();
+
+	//FTESurf Patch 313: publish the lock predicate AFTER the restore above and
+	//after the gamemode/per-map overrides are in, because *ruleset's `off`
+	//field is a census against SV_MovementCanonical and both of those move it.
+	//The spawn write is the one that matters most: it is the only one that can
+	//report an off-canonical value nobody set during the run, which is exactly
+	//the state an unlocked ruleset inherits from the config it was started with.
+	SV_PublishRuleset();
+
 	//some mods stuffcmd these, and it would be a shame if they didn't work. we still need the earlier call in case the mod does extra stuff.
 	SV_SetMoveVars();
+
+	//FTESurf Patch 133: report AFTER the authoritative refresh, and only here --
+	//SV_SetMoveVars is called twice per spawn and used to print from inside.
+	SV_ReportMoveVars();
 
 	sv.starttime = Sys_DoubleTime() - sv.time;
 #ifdef SAVEDGAMES
@@ -1858,6 +1983,8 @@ MSV_OpenUserDatabase();
 	if (isDedicated)
 		malloc_trim(0);
 #endif
+
+	FS_LoadStats_End(sv.modelname);	//ftesurf (P180)
 }
 
 #endif

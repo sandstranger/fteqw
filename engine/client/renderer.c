@@ -142,7 +142,18 @@ cvar_t r_bloodstains						= CVARF  ("r_bloodstains", "1", CVAR_ARCHIVE);
 cvar_t r_bouncysparks						= CVARFD ("r_bouncysparks", "1",
 													CVAR_ARCHIVE,
 													"Enables particle interaction with world surfaces, allowing for bouncy particles, stains, and decals.");
-cvar_t r_drawentities						= CVARFD  ("r_drawentities", "1", CVAR_CHEAT, "Controls whether to draw entities or not.\n0: Draw no entities.\n1: Draw everything as normal.\n2: Draw everything but bmodels.\n3: Draw bmodels only.");
+/*
+FTESurf Patch 153: no longer CVAR_CHEAT.
+
+Mode 2 is the only one with any cheat value -- it hides bmodels, which DO
+normally occlude, so it is a wallhack.  That mode is already gated at the draw
+site, on cls.allow_cheats (gl_alias.c:3353), and that gate is the one that
+matters because it cannot be worked around by setting the cvar before
+connecting.  Modes 0 and 3 hide MORE than normal, not less; flagging them as
+cheats only stopped them being used for what they are, which is finding out
+what a frame is actually spending its time on.
+*/
+cvar_t r_drawentities						= CVARFD  ("r_drawentities", "1", 0, "Controls whether to draw entities or not.\n0: Draw no entities.\n1: Draw everything as normal.\n2: Draw everything but bmodels -- still requires sv_cheats, since hiding solid geometry is a wallhack.\n3: Draw bmodels only.");
 cvar_t r_max_gpu_bones						= CVARD  ("r_max_gpu_bones", "", "Specifies the maximum number of bones that can be handled on the GPU. If empty, will guess.");
 cvar_t r_drawflat							= CVARAF ("r_drawflat", "0", "gl_textureless",
 													CVAR_ARCHIVE | CVAR_SEMICHEAT | CVAR_RENDERERCALLBACK | CVAR_SHADERSYSTEM);
@@ -180,6 +191,13 @@ cvar_t r_propvertexlight_min				= CVARFD("r_propvertexlight_min", "0.3", CVAR_AR
 cvar_t r_propvertexlight_max				= CVARFD("r_propvertexlight_max", "3", CVAR_ARCHIVE, "Upper clamp on the baked static-prop per-vertex multiplier, so bright vertices cannot blow out. Applied at map load. See r_propvertexlight.");
 cvar_t r_propvertexlight_minlight			= CVARFD("r_propvertexlight_minlight", "0.1", CVAR_ARCHIVE, "Minimum base brightness (0..1) for a static prop lit by RGBPROPLIGHT. The prop's overall brightness comes from its own baked mean (not the world lightmap sample, which would read the prop's own cast shadow and go too dark); this floors that so a prop in deep shadow never renders pure black. 0 = no floor. See r_propvertexlight.");
 cvar_t r_prop_minlight						= CVARFD("r_prop_minlight", "0", CVAR_ARCHIVE, "Minimum ambient brightness (0..1) for world-placed models that do NOT have baked RGBPROPLIGHT vertex lighting (a non-IQM prop, or any prop when -propvertexlight wasn't baked or r_propvertexlight is 0), so they never sit pure black in shadow. Complements r_propvertexlight_minlight (which floors props that DO have baked lighting). 0 = off (default). Applies to all non-player, non-viewmodel models, not only props.");
+//nettest: draw every visible GoldSrc studio model's own per-bone hitboxes.  These
+//are the EXACT boxes HLMDL_Trace clips a MOVE_HITMODEL trace against, built from
+//the same entity framestate the trace poses from, so the overlay is self-validating:
+//if the boxes look wrong, the hit detection IS wrong.  Nothing in QuakeC can draw
+//these - addmodelhitbox refuses HL .mdl (com_mesh.c:3786, "HL .mdl has native
+//hitboxes") and no builtin exposes the model's own table - so it has to live here.
+cvar_t r_showhitboxes						= CVARFD("r_showhitboxes", "0", CVAR_SEMICHEAT, "Draw the per-bone hitboxes of every visible GoldSrc (.mdl) model. These are the boxes bullets are actually tested against, posed from the same framestate the trace uses. 0 = off.");
 //cvar_t r_skin_overlays						= CVARF  ("r_skin_overlays", "1",
 //													CVAR_SEMICHEAT|CVAR_RENDERERLATCH);
 cvar_t r_globalskin_first					= CVARFD  ("r_globalskin_first", "100", CVAR_RENDERERLATCH, "Specifies the first .skin value that is a global skin. Entities within this range will use the shader/image called 'gfx/skinSKIN.lmp' instead of their regular skin. See also: r_globalskin_count.");
@@ -229,6 +247,187 @@ cvar_t r_nolerp								= CVARF	("r_nolerp", "0", CVAR_ARCHIVE);
 cvar_t r_noframegrouplerp					= CVARF	("r_noframegrouplerp", "0", CVAR_ARCHIVE);
 cvar_t r_nolightdir							= CVARF	("r_nolightdir", "0", CVAR_ARCHIVE);
 cvar_t r_novis								= CVARF	("r_novis", "0", CVAR_ARCHIVE);
+/*
+FTESurf.  Noclipping in the void: draw the whole world, drop the entities.
+
+Patch 138 does the opposite, on purpose.  When the view leaves the world
+r_viewcluster goes to -1, VBSP's PrepareFrame bails and the whole model is drawn
+with no PVS test AND no frustum test -- 35,302 faces and 653 props on surf_666
+against the 1.6% an average cluster sees -- so it keeps the last cluster that
+resolved and you carry on seeing what you could see indoors.
+
+That is right for FALLING into the void and wrong for FLYING out of it, which is
+a different gesture with the opposite need: you are out there to look at the map
+and pick somewhere to go, and the map is the one thing Patch 138 hides.  So this
+reverses it, for noclip only.
+
+BUILD 19 REMOVED THE ENTITY MODES, and it is worth saying why, because they were
+the whole of this cvar's original justification.  It shipped as 0/1/2, where 1
+"skips models and static props" and 2 "skips every entity", on the reasoning that
+the props are per-instance lit models and the world is one batched EBO -- so the
+props must be where the cost is.  Reported as "1 and 2 look the same and cost the
+same", and the measurement agrees, for a reason neither mode anticipated:
+
+  surf_666, noclipping at z 17000 -- 1,640 units above the spawn, and the probe
+  proved that reads cluster -1 -- AIMED AT THE MAP, so the frustum cannot be what
+  is doing the rejecting.  Best of five interleaved 512-frame passes:
+
+    looking down-and-east across the map     0: 3355.8   1: 480.5   2: 492.8
+    looking straight down over the start     0: 3338.5   1: 328.0   2: 327.3
+
+  and the entity census on every one of those frames, at every mode INCLUDING
+  mode 0, where the gates do not run at all:   entities 0 (brush 0)
+
+There are no entities in the void to drop.  The props never become visedicts out
+there -- VBSP's own PVS and radius culls reject them before an entity gate could
+have an opinion -- so both gates were inert, and the whole difference between 0
+and 1 is the world, i.e. Patch 178's forcevis.  Mode 2 reading FASTER than mode 1
+at one vantage is the noise floor saying the same thing.
+
+So the gates are gone rather than tuned.  A switch that cannot be shown to do
+anything is worse than no switch: it invites exactly the "is this actually doing
+anything" question that cost two benchmark runs to answer.  Any nonzero value
+still means on, so a config carrying `r_voidvis 2` behaves identically.
+
+0 is exactly Patch 138 as shipped, so this is a one-command A/B.
+*/
+cvar_t r_voidvis							= CVARFD ("r_voidvis", "1", CVAR_ARCHIVE,
+												"What to draw when the view is in the void AND the player is noclipping.\n"
+												"0: Patch 138 -- keep the last visible cluster you could see from.\n"
+												"1: Draw the whole world, with the frustum and area culls kept.\n"
+												"Has no effect anywhere except in the void while noclipping.");
+/*
+FTESurf Patch 329: no fog while the view is in the void.
+
+r_voidvis draws the WHOLE world for a noclipping player out in the void, and
+fog then does the one thing that undoes it.  Source fog is authored for the
+playable space -- surf_tensor2 runs a negative fogstart, and the census' p90
+fogend is a few thousand units -- so from a vantage thousands of units ABOVE
+the map, every surface of it sits past fogend and the player who flew out to
+look at the map sees a silhouette in fog colour instead.  The complaint: "if
+you noclip into the void with a foggy map, the game leaves the fog on, making
+it really hard to see the part of the map you're noclipping to."
+
+The fog is not something the map can be re-authored around, and it is not a
+bug in the fog maths either -- cl_fog.qc reproduces Source's min() curve
+exactly, and Source itself would draw the same soup from this vantage.  It is
+a vantage Source never lets you have.  So the void view, which is already a
+deliberate departure from Source (r_voidvis), departs once more: while
+r_voidview is true the frame's blended globalfog density is zeroed, which is
+not merely transparent fog -- density 0 is what gates PERMUTATION_FOG, so the
+fog is not compiled into the shaders at all that frame.
+
+Gated on r_voidview and not on a fresh contents test because every input to
+"in the void, noclipping, and being shown the whole world" is already fused
+there, once per primary view, in Surf_SetupFrame: a player who merely FELL out
+of the map keeps their fog (and their Patch 138 last-good-cluster view), and
+recursive views -- skyrooms, mirrors, portals -- never inherit the main view's
+answer.  Zeroed per frame AFTER CL_BlendFog rather than by touching cl.fog,
+so the player's fog state is never modified: fly back inside and the very
+next frame blends and draws the map's own fog again, with no edge to re-emit
+and nothing for the QC in cl_fog.qc to know about.
+
+Deliberately NOT declared in render.h: the two readers (gl_rmain.c, vk_init.c)
+carry a local extern beside their existing `extern cvar_t r_fog_linear` in the
+same block, so this patch changes no engine header and an incremental m-rel
+build is trustworthy -- the makefiles do not track header deps, and a cvar
+that costs one line per backend is not worth a forced full recompile.
+*/
+cvar_t r_voidfog							= CVARFD ("r_voidfog", "1", CVAR_ARCHIVE,
+												"Whether fog is drawn while the view is in the void and the player is noclipping.\n"
+												"0: keep the map's fog -- everything you flew out to see is past fogend, so it is fog colour.\n"
+												"1: no fog in the void (default).  Fog returns the frame you are back inside.\n"
+												"Has no effect anywhere r_voidvis does not.");
+/*
+FTESurf Patch 218: blended world surfaces were drawn FRONT-TO-BACK.
+
+Every BSP world walk in this engine visits the near child of a node first, then
+that node's own surfaces, then the far child -- Surf_RecursiveQ2WorldNode
+(gl_q2bsp.c:7988-8009), and the VBSP plugin's own VBSP_RecursiveWorldNode
+(mod_vbsp.c:4378-4398) does the same.  That is the right order for opaque
+geometry: it is a painter's order run nearest-first, which is what makes early-z
+work.  Surfaces are appended to their batch in exactly that order.
+
+For a BLENDED surface it is precisely backwards.  Alpha blending is not
+commutative, so a translucent surface has to be composited over what is behind
+it, which means drawing far-to-near.  Drawn near-to-far, a pane in front is laid
+down before the pane behind it and the nearer one ends up UNDER.  Reported as
+"there is a lot of glass / alpha textures in this map ... and it seems to get the
+ordering of these alphas wrong, almost backwards" -- which is not almost, it is
+exactly backwards, and the word is the diagnosis.
+
+The fix is a reversal rather than a sort, and that is the point: BSP front-to-back
+order is an EXACT painter's order for the surfaces the tree separates, so reading
+it backwards is an exact back-to-front order.  No distance comparisons, no
+per-frame qsort, no tie-breaking -- one pass swapping ends of an array the walk
+has already ordered for us.
+
+WHAT IT DOES NOT FIX, stated because it is visible on the same maps.  Batches are
+grouped by shader AND lightmap, so this orders surfaces WITHIN a batch and leaves
+the order BETWEEN batches as the batch list's.  Two overlapping translucent
+surfaces wearing different materials can still composite in the wrong order.
+That is a real remaining case and needs a cross-batch sort, which is a different
+and much more expensive change.
+
+Only SHADER_SORT_BLEND is touched.  Additive blending IS commutative so it does
+not care, alpha-tested surfaces write depth and do not care, and the water and
+banner sorts are left alone because nothing has measured them.
+*/
+cvar_t r_blendsort							= CVARFD ("r_blendsort", "1", CVAR_ARCHIVE,
+												"Draw blended world surfaces back-to-front.\n"
+												"0: emit order (nearest first) -- the pre-Patch-218 behaviour, wrong for alpha.\n"
+												"1: reverse the world walk's order, which is exact back-to-front.");
+/*
+FTESurf Patch: r_reflectcube -- one switch that every cubemap reflection obeys.
+
+Reported as "with Cubemaps off and Env maps off I have no reflections on the
+world textures, except on one map".  Both of those cvars belong to the hl2
+plugin and both act while a MATERIAL IS BEING GENERATED, which turns out not to
+be enough for either of two independent reasons:
+
+  hl2_cubemaps is CVAR_MAPLATCH and decides what VBSP_LoadCubemaps puts into
+  mod->envmaps while the BSP is parsed.  Mod_LoadModel skips that parse entirely
+  for a model that is already MLS_LOADED, so a map still resident from earlier in
+  the session keeps whatever the FIRST parse produced.
+
+  hl2_envmap clears $envmap before the material is emitted, so the regenerated
+  script carries no `reflectcube` line -- but Shader_Reset PRESERVES
+  shader->defaulttextures across a regenerate (it detaches the block, memsets the
+  shader, and reattaches it intact), so the texid the previous generation loaded
+  is still there.  BE_RenderMeshProgram decides the cubemap permutation from
+  those texnums, not from the script, so the reflection outlives its own cvar.
+
+Neither is fixable where it happens: the first is inherent to a load-time cvar,
+and clearing defaulttextures on a regenerate would also drop the base, bump and
+luma the MODEL loader puts there, repainting every Q1BSP wall in the shared game.
+
+So this sits at the point of USE instead -- in the backends, downstream of
+generation, loading and caching alike.  It cannot be outrun by a stale shader, a
+resident BSP, a literal .shader script that never went through the plugin, or a
+Q1BSP dpreflectcube.  Not CVAR_SHADERSYSTEM: needing a reload is the failure it
+exists to fix, and it would cost the ~600ms full re-parse to boot.
+
+1 is byte-for-byte the previous build, so this is inert in quakers and a
+one-command A/B here.
+*/
+cvar_t r_reflectcube						= CVARAFD ("r_reflectcube", "1", NULL, CVAR_ARCHIVE,
+													"Cubemap and envmap reflections on world and model surfaces.\n"
+													"0: off everywhere, whatever the material or the map asks for.\n"
+													"1: normal (default).");
+//FTESurf Patch 268 B: the same runtime-gate argument, one level down.  These two
+//sit beside r_reflectcube because they are read in the same two places it is
+//(the permutation gate and T_GEN_REFLECTCUBE in the backends).
+cvar_t r_envcubemap							= CVARAFD ("r_envcubemap", "1", NULL, CVAR_ARCHIVE,
+													"$envmap env_cubemap materials reflect the map's nearest baked cubemap when the hl2 plugin asks for it. 0 = compile the reflection out, as before Patch 268 B.");
+cvar_t r_reflectcube_nosky					= CVARAFD ("r_reflectcube_nosky", "0", NULL, CVAR_ARCHIVE,
+													"1 = when a surface's nearest baked cubemap is missing or not yet loaded, reflect neutral grey instead of the sky/black.");
+//FTESurf Patch 268 C: the same runtime-gate argument again.  hl2_cubelight decides what
+//the plugin COMPILES (#BUMPCUBE); this decides, at the uniform upload, whether the cube
+//the shader reads is the entity's or all zeros.  An all-zero cube makes the shader's
+//ratio e/e -- exactly 1.0 -- so 0 is the pre-268-C picture to the bit, on a loaded map,
+//with no regenerate and no reload.
+cvar_t r_cubelight							= CVARAFD ("r_cubelight", "1", NULL, CVAR_ARCHIVE,
+													"Per-pixel ambient-cube relief on bumped Source props, where the hl2 plugin compiles it in (hl2_cubelight). 0 = upload an empty cube, which makes the shader's ratio exactly 1 -- the picture before Patch 268 C. 2 = a synthetic cube lit hard from above, to check the bumped-normal path works at all where the map's own cube is nearly uniform (a diagnostic, not a look).");
 cvar_t r_part_rain							= CVARFD ("r_part_rain", "0",
 												CVAR_ARCHIVE,
 												"Enable particle effects to emit off of surfaces. Mainly used for weather or lava/slime effects.");
@@ -244,6 +443,22 @@ cvar_t r_renderscale						= CVARFD("r_renderscale", "1", CVAR_ARCHIVE, "Provides
 cvar_t r_fxaa								= CVARFD("r_fxaa", "0", CVAR_ARCHIVE, "Runs a post-procesing pass to strip the jaggies.");
 cvar_t r_graphics							= CVARFD("r_graphics", "1", CVAR_ARCHIVE, "Turning this off will result in ascii-style rendering.");
 cvar_t r_postprocshader						= CVARD("r_postprocshader", "", "Specifies a custom shader to use as a post-processing shader");
+/*
+FTESurf Patch 288: the colour-correction stage's shader name.
+
+MACHINE-SET, not a setting.  A Source map's colour_correction entities name one
+or more 32x32x32 LUTs and a weight for each, so the shader that applies them is
+per-map and content-derived; the hl2 plugin generates it at map load and writes
+its name here, and clears this back to "" for a map that has none.  It is a cvar
+rather than an internal pointer because the renderer and the plugin have no other
+channel, and it is SEPARATE from r_postprocshader for the reason recorded beside
+RDF_COLOURCORRECT: a user who has set a post-process shader must not lose it the
+moment they load a graded map.
+
+Not CVAR_ARCHIVE: saving a per-map generated shader name into config.cfg would
+apply one map's grade to the next one loaded.
+*/
+cvar_t r_colourcorrection					= CVARAD("r_colourcorrection", "", "r_colorcorrection", "Names the shader used by the colour-correction post-process stage.  Set by the hl2 plugin from a Source map's color_correction entities; setting it by hand is supported but it is overwritten at the next map load.  Switch the feature off with hl2_colourcorrection 0, which is what leaves this empty.");
 cvar_t r_wallcolour							= CVARAF ("r_wallcolour", "128 128 128",
 													  "r_wallcolor", CVAR_RENDERERCALLBACK|CVAR_SHADERSYSTEM);//FIXME: broken
 //cvar_t r_walltexture						= CVARF ("r_walltexture", "",
@@ -256,9 +471,15 @@ cvar_t r_slimealpha							= CVARF  ("r_slimealpha", "",
 												CVAR_ARCHIVE | CVAR_SHADERSYSTEM);
 cvar_t r_telealpha							= CVARF  ("r_telealpha", "",
 												CVAR_ARCHIVE | CVAR_SHADERSYSTEM);
+cvar_t r_hlwater_hidesides					= CVARFD ("r_hlwater_hidesides", "1",
+												CVAR_ARCHIVE,
+												"Half-Life BSPs only. Hides the vertical and downward-facing faces of a water volume, keeping only the surface you can actually swim through - GoldSrc never showed the sides, and with the sky writing no depth on a HL map they are visible straight through the skybox.\nFTE has always done this for water built as a brush ENTITY (func_water etc); this extends it to water built into worldspawn, which is where 338 such faces live across the Sven Co-op map set (58 in th_ep1_00 alone).\nTurn this off if a map builds a WATERFALL out of vertical water faces, which this would hide.\nTakes effect on the next map load.");
+cvar_t r_hlwater_entalpha					= CVARFD ("r_hlwater_entalpha", "0",
+												CVAR_ARCHIVE,
+												"Whether a liquid brush ENTITY (func_water and friends) multiplies its own entity alpha into the water shader on top of r_wateralpha.\n0 (default): it does not. A pool draws at exactly r_wateralpha, identical to water built into worldspawn.\n1: legacy. The GoldSrc \"renderamt\" key becomes an entity alpha, and defaultwarp.glsl multiplies it by r_wateralpha - so a func_water with renderamt 128 renders at HALF the alpha of worldspawn water beside it, and needs r_wateralpha 2 to look as solid. renderamt values from 65 to 255 are common across the Sven Co-op map set, so how transparent a pool looked depended on which map it was in.\nTurn this on if you want a mapper's per-pool renderamt back.");
 cvar_t r_wateralpha_extendpvs				= CVARFD ("r_wateralpha_extendpvs", "0",
 												CVAR_ARCHIVE,
-												"When 1 and r_wateralpha < 1, the renderer ORs every fluid leaf's PVS into the visible set so transparent water shows the geometry on the other side from any distance. ONLY needed for legacy maps compiled without transparent-water vis support (vanilla GoldSrc maps, q1bsp compiled with classic vis). Modern maps compiled with ericw-tools vis or any vis tool that handles transparent water at compile time already have correct PVS — leave this 0 for those, otherwise rendering will pull in far-away unrelated leafs.");
+												"When 1 and r_wateralpha < 1, the renderer ORs the PVS of every fluid leaf THE CAMERA CAN SEE into the visible set, so transparent water shows the geometry on the other side. ONLY needed for legacy maps compiled without transparent-water vis support (vanilla GoldSrc maps, q1bsp compiled with classic vis). Modern maps compiled with ericw-tools vis or any vis tool that handles transparent water at compile time already have correct PVS — leave this 0 for those.\n2: as 1, plus a console readout of how many fluid leafs are being merged.\nWhile this is on and r_wateralpha < 1, the temporal scene cache is forced OFF on q1/hl maps (see r_temporalscenecache): the cache returns a PVS built without the fluid merge, which made this cvar inert and left translucent water blending over unpainted framebuffer. Set this to 0 to get the cache, and its performance, back.");
 cvar_t r_waterwarp							= CVARFD ("r_waterwarp", "1",
 												CVAR_ARCHIVE, "Enables fullscreen warp, preferably via glsl. -1 specifies to force the fov warp fallback instead which can give a smidge more performance.");
 cvar_t r_waterripple						= CVARFD ("r_waterripple", "3",
@@ -321,6 +542,8 @@ cvar_t scr_turtlefps						= CVAR  ("scr_turtlefps", "10");
 cvar_t scr_sshot_compression				= CVARD  ("scr_sshot_compression", "75", "Requsted compression ratio as a percentage. For jpeg this is the quantisation quality and has a direct impact on image quality vs size. For png this ranges between 0 for best and 100 for worst with final image quality being unchanged because png is loseless.");
 cvar_t scr_sshot_type						= CVARD  ("scr_sshot_type", "png", "This specifies the default extension(and thus file format) for screenshots.\nKnown extensions are: png, jpg/jpeg, bmp, pcx, tga, ktx, dds.");
 cvar_t scr_sshot_prefix						= CVARF  ("scr_sshot_prefix", "screenshots/fte-", CVAR_NOTFROMSERVER);
+//FTESurf Patch 211
+cvar_t scr_sshot_mapname					= CVARFD ("scr_sshot_mapname", "1", CVAR_NOTFROMSERVER, "Names an unnamed screenshot after the current map, counting up per map.\n0: <scr_sshot_prefix><date>-<n> (the stock name).\n1: <directory of scr_sshot_prefix><mapname>_000, then _001, and so on. `menu` is used when no map is loaded.");
 cvar_t scr_viewsize							= CVARFC("viewsize", "100", CVAR_ARCHIVE, SCR_Viewsize_Callback);
 
 #ifdef ANDROID
@@ -351,8 +574,16 @@ cvar_t vid_desktopsettings					= CVARFD ("vid_desktopsettings", "0",
 #ifdef FTE_TARGET_WEB
 cvar_t vid_fullscreen						= CVARF ("vid_fullscreen", "0",	CVAR_ARCHIVE|CVAR_VIDEOLATCH);
 #else
-cvar_t vid_fullscreen						= CVARFD ("vid_fullscreen", "1",	CVAR_ARCHIVE|CVAR_VIDEOLATCH, "Specifies whether the game should be fullscreen or not (requires vid_restart).\n0: Run in a resizable window, which can be manually maximized (with borders).\n1: Traditional fullscreen-exclusive video mode with mode switching and everything.\n2: Simply maximize the window and hide any borders without interfering with any other parts of the system.");
+//FTESurf Patch 268: the numbering is borderless-before-exclusive now.  See
+//VID_InternalFullscreenMode below for why the value is translated rather than
+//the engine renumbered, and vid_fullscreen_order for how to get the old order.
+cvar_t vid_fullscreen						= CVARFD ("vid_fullscreen", "1",	CVAR_ARCHIVE|CVAR_VIDEOLATCH, "Specifies whether the game should be fullscreen or not (requires vid_restart).\n0: Windowed. Maximized to the desktop work area unless a vid_width/vid_height was asked for - see vid_winmaximize.\n1: Borderless fullscreen. Fills the screen without changing the display mode or interfering with anything else.\n2: Traditional fullscreen-exclusive video mode, with a real mode switch.\nSet vid_fullscreen_order 0 to get FTE's upstream numbering instead, where 1 and 2 are the other way round.");
 #endif
+//FTESurf Patch 268
+cvar_t vid_fullscreen_order					= CVARFD ("vid_fullscreen_order", "1", CVAR_ARCHIVE, "Which numbering vid_fullscreen uses.\n0: FTE upstream - 0 windowed, 1 exclusive, 2 borderless.\n1: FTESurf - 0 windowed, 1 borderless, 2 exclusive.\nOnly the cvar's meaning changes; the engine's internal modes are the same either way.");
+cvar_t vid_winmaximize						= CVARFD ("vid_winmaximize", "2", CVAR_ARCHIVE, "Whether a windowed session (vid_fullscreen 0, and anything that toggles back to windowed) is maximized.\n2: Always maximize - a normal window with a title bar, filling the desktop, with the taskbar still visible. vid_width/vid_height are ignored for this mode only; they still control borderless and exclusive fullscreen.\n1: Maximize when no size was asked for, or when the requested size plus its border and caption will not fit on the usable desktop. A size that does fit is used exactly.\n0: Never. A window whose client area is exactly vid_width*vid_height, even if that is larger than the screen and puts its title bar out of reach.\nUse 1 or 0 if you need a windowed capture at a specific resolution.");
+cvar_t vid_minonfocusloss					= CVARFD ("vid_minonfocusloss", "1", CVAR_ARCHIVE, "Minimize the window when it loses focus.\n0: Never - alt-tabbing out of a borderless window leaves it where it is.\n1: Minimize whenever the window is not a plain window, which includes borderless.\n2: Minimize only for a real exclusive-fullscreen mode switch, which is the only mode that has to give the display back.");
+cvar_t vid_exclusive_desktopres				= CVARFD ("vid_exclusive_desktopres", "1", CVAR_ARCHIVE|CVAR_VIDEOLATCH, "What resolution exclusive fullscreen uses.\n0: Whatever vid_width/vid_height say, which will mode-switch the monitor if that is not what it is already running.\n1: Detect the display's current resolution and refresh rate and use that, so going exclusive does not change your mode. vid_width/vid_height still apply to the other modes.");
 cvar_t vid_height							= CVARFD ("vid_height", "0",
 												CVAR_ARCHIVE | CVAR_VIDEOLATCH, "The screen height to attempt to use, in physical pixels. 0 means use desktop resolution.");
 cvar_t vid_multisample						= CVARAFD ("vid_multisample", "0", "vid_samples",
@@ -523,6 +754,56 @@ cvar_t vid_triplebuffer						= CVARAFD ("vid_triplebuffer", "1", "gl_triplebuffe
 cvar_t r_portalrecursion					= CVARD  ("r_portalrecursion", "1", "The number of portals the camera is allowed to recurse through.");
 cvar_t r_portaldrawplanes					= CVARD  ("r_portaldrawplanes", "0", "Draw front and back planes in portals. Debug feature.");
 cvar_t r_portalonly							= CVARD  ("r_portalonly", "0", "Don't draw things which are not portals. Debug feature.");
+/* FTESurf Patch 206.  r_portalrecursion bounds the DEPTH of the portal tree and
+   nothing has ever bounded its WIDTH, so the cost is portals-visible ^ depth: on
+   surf_kitsune's eighteen doors at recursion 2 that is roughly 342 complete
+   R_RenderScene calls per frame, each re-running the world walk, batch
+   generation and lighting from scratch.  It is not a slow frame, it is an
+   unplayable one, and it is why the feature reads as "laggy" rather than as
+   "expensive".
+
+   Bounding the width is also what gives the intended LOOK.  A portal that is
+   not recursed into is not a hole: GLBE_SubmitMeshesPortals is skipped for it
+   entirely, so neither a scene nor a depth mask is emitted, the batch falls
+   through to the ordinary sort list, and a zero-pass portal shader draws
+   nothing -- leaving the wall behind it intact.  Closed, in other words, which
+   is exactly what a portal too far down the chain should look like. */
+cvar_t r_portalmaxviews						= CVARFD ("r_portalmaxviews", "2", CVAR_ARCHIVE, "How many portals may be rendered as portals in any one view, largest-on-screen first. The rest render closed. 0 removes the limit, which is the pre-Patch-206 behaviour and is quadratic in the number of visible portals.");
+/* FTESurf Patch 206.  A release mingw build has no symbols and there is no
+   debugger here, so the way to find out which of three interleaved stages is
+   responsible for a wrong PICTURE is the same as for a crash: remove one stage
+   at a time and look.  This found the answer in one launch after four spent
+   reading the code, and it is kept for the next time a backend disagrees. */
+cvar_t r_portaldebug						= CVARD  ("r_portaldebug", "0", "Portal rendering bisect. 0 normal. 1 skip the recursed scene (aperture drawn but empty). 2 skip the depth mask that protects a portal's contents. 3 skip the inner mask that hides other portals from this one's scene. 4 skip Patch 220's rebuild-after-recursion, restoring the pre-220 submit.");
+/* FTESurf Patch 208.  FTE paints a portal's far scene over the whole screen and
+   trusts the world to repaint everywhere but the hole; where that repaint fails,
+   the far room covers the entire wall.  Confining the recursed frame to the
+   aperture's projected rectangle makes that impossible instead of unlikely.
+   Kept as a switch because it CONTAINS a bug rather than curing it -- 0 is how
+   you get the raw symptom back to look at. */
+cvar_t r_portalscissor						= CVARFD ("r_portalscissor", "1", CVAR_ARCHIVE, "Clip a portal's recursed view to the aperture's projected rectangle, so the far side cannot paint outside the doorway. 0 renders it over the whole screen, which is the pre-Patch-208 behaviour. Has no effect on a portal material that uses `portalfbo` -- see r_portalfbo.");
+/* FTESurf Patch 210.  Patches 206-208 all worked on the same design: paint the
+   far room over the whole screen, then try to confine it.  This one changes the
+   design -- the far room goes into a texture and the aperture polygon paints
+   itself with it, so "outside the doorway" is not a place the far room can
+   reach.  Read at SHADER PARSE time, so a change needs r_restart (or a map
+   deliberate, and CVAR_RENDERERLATCH is what keeps it honest: the value cannot
+   change without the vid_reload that reparses the shaders, so what the cvar says
+   and what the materials were built for can never disagree. */
+cvar_t r_portalfbo							= CVARFD ("r_portalfbo", "1", CVAR_ARCHIVE|CVAR_RENDERERLATCH, "Portal materials declaring `portalfbo` render their far view to a texture and paint it on the aperture polygon, exactly filling the doorway. 0 falls back to the Patch 206-208 design: the far view is painted over the whole screen and masked back off, bounded by r_portalscissor. Read when materials are parsed, so a change applies on vid_reload.");
+/* FTESurf Patch 287 -- a portal's far view was culled by the NEAR view's areas.
+   Source BSPs partition the world into areas joined by areaportals, and
+   r_refdef.areabits says which are reachable from the camera.  It is computed
+   once per view, from r_refdef.vieworg, and latched by areabitsknown
+   (r_surf.c:3676 for the engine loaders, mod_vbsp.c:7409 for Source).
+   GLR_DrawPortal moves vieworg to the far side of the link but never cleared
+   that latch, so the recursed view inherited the areabits belonging to the room
+   the player is standing in -- and every leaf on the far side whose area is not
+   reachable from HERE was refused, leaving the doorway black.
+   R_DrawSkyroom has always cleared it (gl_warp.c:365, "recalculate areas
+   clientside"), which is why the 3D skybox never had this and portals did.
+   0 is the old behaviour exactly.  Not RENDERERLATCH: it is read per frame. */
+cvar_t r_portalareas						= CVARFD ("r_portalareas", "0", CVAR_ARCHIVE, "Recompute Source areaportal visibility from a portal's own far-side viewpoint. 0 inherits the near view's areabits, which culls any far-side area that is not reachable from where the player stands (a black doorway). Has no effect on maps without areas.");
 cvar_t r_noaliasshadows						= CVARF ("r_noaliasshadows", "0", CVAR_ARCHIVE);
 cvar_t r_lodscale							= CVARFD ("r_lodscale", "5", CVAR_ARCHIVE, "Scales the level-of-detail reduction on models (for those that have lod).");
 cvar_t r_lodbias							= CVARFD ("r_lodbias", "0", CVAR_ARCHIVE, "Biases the level-of-detail on models (for those that have lod).");
@@ -531,8 +812,14 @@ cvar_t r_lodbias							= CVARFD ("r_lodbias", "0", CVAR_ARCHIVE, "Biases the lev
 //while covering almost no pixels.  This culls a model entity once its projected on-screen size drops
 //below the threshold.  Size-aware for free (it is screen coverage, not raw distance), so a van stays
 //visible far out while a grass tuft drops early.  0 = off (the stock behaviour).
-cvar_t r_model_mincoverage					= CVARFD ("r_model_mincoverage", "0", CVAR_ARCHIVE, "Cull model entities whose projected on-screen size (fraction of screen height, as used by the LOD selector) falls below this. Players, viewmodels and skeletal-object entities are never culled. 0 = off. Try 0.002-0.01 on prop-dense maps.");
+cvar_t r_model_mincoverage					= CVARFD ("r_model_mincoverage", "0", CVAR_ARCHIVE, "Cull model entities whose projected on-screen size (fraction of screen height, as used by the LOD selector) falls below this. Players, viewmodels and skeletal-object entities are exempt from this AND from the near-plane reject it enables (their e->origin is not a world position). 0 = off. Try 0.002-0.01 on prop-dense maps.");
 cvar_t r_shadows							= CVARFD ("r_shadows", "0", CVAR_ARCHIVE, "Draw basic blob shadows underneath entities without using realtime lighting.");
+//nettest: whether BRUSH entities (the inline "*N" submodels a map's func_ classes are made of)
+//cast shadows at all.  DEFAULT 0 = models only: doors, lifts, crates, buttons and invisible
+//clip/trigger brushwork stop casting, while the world itself and every model entity keep doing
+//so.  Consumed in Surf_GenBrushBatches (r_surf.c), which every brush-model entity passes through
+//regardless of whether it was drawn by CSQC or by engine entity replication.
+cvar_t r_shadows_bmodels					= CVARFD ("r_shadows_bmodels", "0", CVAR_ARCHIVE, "Whether brush entities (func_door, func_wall, func_train, func_pushable ... - the map's inline *N submodels) cast shadows. 0 = models only (default): only model entities and the world itself cast. 1 = brush entities cast too, the stock behaviour.");
 cvar_t r_showbboxes							= CVARFD("r_showbboxes", "0", CVAR_CHEAT, "Debugging. Shows bounding boxes. 1=ssqc, 2=csqc. Red=solid, Green=stepping/toss/bounce, Blue=onground.");
 cvar_t r_showhull							= CVARFD("r_showhull", "0", CVAR_CHEAT, "Debugging. Draws the convex-hull collision geometry of SOLID_PHYSICS_TRIMESH props as green lines. 1=ssqc, 2=csqc.");
 cvar_t r_showhull_maxdist					= CVARFD("r_showhull_maxdist", "1024", CVAR_CHEAT, "r_showhull: only draw the hulls of props within this many units of the view, so a prop-dense scene doesn't overflow the line buffer (distant hulls would stop drawing). 0 = unlimited.");
@@ -573,6 +860,9 @@ cvar_t r_fog_cullentities					= CVARD ("r_fog_cullentities", "1", "0: Never cull
 cvar_t r_fog_linear							= CVARD ("r_fog_linear", "0", "0: Use Exp/Exp2 fog. 1: Use linear fog.");
 cvar_t r_fog_exp2							= CVARD ("r_fog_exp2", "1", "Expresses how fog fades with distance. 0 (matching DarkPlaces's default) is typically more realistic, while 1 (matching FitzQuake and others) is more common.");
 cvar_t r_fog_permutation					= CVARFD ("r_fog_permutation", "1", CVAR_SHADERSYSTEM, "Renders fog using a material permutation. 0 plays nicer with q3 shaders, but 1 is otherwise a better choice.");
+//FTESurf Patch 266: r_fog_permutation only reaches shaders that HAVE a program.
+//This covers the ones that do not, which until now were never fogged at all.
+cvar_t r_fog_progless						= CVARFD ("r_fog_progless", "1", CVAR_ARCHIVE, "Fog surfaces whose material has no GLSL program (Source UnlitGeneric, q3 shaders, anything drawn through the fixed-function path) using fixed-function fog. 0 restores the pre-Patch-266 behaviour, in which those surfaces took no distance fog.");
 
 extern cvar_t gl_dither;
 cvar_t	gl_screenangle = CVAR("gl_screenangle", "0");
@@ -634,6 +924,11 @@ void GLRenderer_Init(void)
 	Cvar_Register (&r_portalrecursion, GLRENDEREROPTIONS);
 	Cvar_Register (&r_portaldrawplanes, GLRENDEREROPTIONS);
 	Cvar_Register (&r_portalonly, GLRENDEREROPTIONS);
+	Cvar_Register (&r_portalmaxviews, GLRENDEREROPTIONS);
+	Cvar_Register (&r_portaldebug, GLRENDEREROPTIONS);
+	Cvar_Register (&r_portalscissor, GLRENDEREROPTIONS);
+	Cvar_Register (&r_portalfbo, GLRENDEREROPTIONS);	//FTESurf Patch 210
+	Cvar_Register (&r_portalareas, GLRENDEREROPTIONS);	//FTESurf Patch 287
 	Cvar_Register (&r_noaliasshadows, GLRENDEREROPTIONS);
 
 	Cvar_Register (&r_lodscale, GRAPHICALNICETIES);
@@ -666,6 +961,7 @@ void GLRenderer_Init(void)
 	Cvar_Register (&r_fog_linear, GLRENDEREROPTIONS);
 	Cvar_Register (&r_fog_exp2, GLRENDEREROPTIONS);
 	Cvar_Register (&r_fog_permutation, GLRENDEREROPTIONS);
+	Cvar_Register (&r_fog_progless, GLRENDEREROPTIONS);	//FTESurf Patch 266
 
 	Cvar_Register (&r_tessellation, GRAPHICALNICETIES);
 	Cvar_Register (&gl_ati_truform_type, GRAPHICALNICETIES);
@@ -756,7 +1052,106 @@ static void R_ShowBatches_f(void)
 }
 #endif
 
-void R_ToggleFullscreen_f(void)
+/*
+FTESurf Patch 268: vid_fullscreen's numbering, translated at the boundary.
+
+The user-facing order is 0=windowed, 1=borderless, 2=exclusive -- borderless
+ahead of exclusive, because borderless is what you want almost always and
+exclusive is the one you reach for deliberately.  FTE upstream numbers the last
+two the other way round.
+
+The translation happens HERE and at the two other places that read the CVAR, and
+nowhere else.  rendererstate_t::fullscreen keeps upstream's numbering all the way
+down, so every backend, the fallback ladder in R_ApplyRenderer (which hardcodes
+1->2->1->0), and D3D9's `d3dpp.Windowed = !info->fullscreen` -- which treats the
+field as a boolean -- keep meaning exactly what they meant.  Renumbering the
+internals instead would have touched five files and would have silently handed
+D3D9 an exclusive mode whenever borderless was asked for.
+
+vid_fullscreen_order 0 restores upstream's numbering.  That is what makes the
+change falsifiable: with it off, the same cvar value must produce the old mode.
+*/
+int VID_InternalFullscreenMode(int userval)
+{
+	if (!vid_fullscreen_order.ival)
+		return userval;		//upstream numbering, untouched
+	switch(userval)
+	{
+	case 1:		return 2;	//user "borderless" is upstream's 2
+	case 2:		return 1;	//user "exclusive"  is upstream's 1
+	default:	return userval;	//0 is windowed either way
+	}
+}
+
+/*
+FTESurf Patch 268: does a windowed session want to start maximized?
+
+vid_fullscreen 0 used to build a window whose CLIENT area was vid_width by
+vid_height, then grow it by the border and caption with AdjustWindowRectEx and
+centre it.  At 1920x1200 on a 1920x1200 desktop that is a 1936x1239 window at
+(-8,-19): the title bar is off the top of the screen and it covers everything,
+which is why "windowed" looked like a broken fullscreen.
+
+Mode 1 was first written as "maximize only when no explicit size was asked for",
+to keep the screenshot harness exact.  That was too weak, and it shipped the bug
+back: ftesurf.cfg archives vid_width 1920 / vid_height 1200, so BOTH a windowed
+startup and `fullscreen_toggle` on the way out of borderless asked for a
+1920x1200 client, never maximized, and produced the off-screen-bordered window
+described above.  The report was "fullscreen_toggle goes windowed but it's at
+full res, so it's borderless to borderless".
+
+Mode 1 was then rewritten as "honour the requested size only if the DECORATED
+window fits on the usable desktop", and that failed the SAME user a second time,
+from the other direction: something had left vid_width at 640x480 in their
+session, 640x480 fits comfortably, so the rule dutifully honoured it and F11
+produced a postage stamp.  Report: "it windows at like 640x480, can't you make it
+windowed but full screen, but not boarderless? like with the top menu bar, but
+maximized?"
+
+Both failures are the same mistake -- inferring intent from vid_width, which is a
+stale archived number, not a statement about the window the player wants right
+now.  So the DEFAULT is now 2, maximize outright, which is what was asked for both
+times and what "windowed" means for a game rather than a tool.  vid_width and
+vid_height still fully control the exclusive and borderless modes; they are only
+ignored for the windowed one, and only at the default setting.
+
+Mode 1 is kept because the fit rule is genuinely the right answer for a capture
+harness that wants an exact window when it can have one, and mode 0 is kept as the
+never-touch-it escape hatch.  The fit test is necessarily platform code; this
+function only says which of the three answers to use.
+
+	0 = never maximize (exact size, wherever it lands -- upstream's behaviour)
+	1 = the caller must run the fit test and decide
+	2 = maximize outright
+*/
+int VID_WindowMaximizePolicy(void)
+{
+	if (vid_winmaximize.ival >= 2)
+		return 2;
+	if (vid_winmaximize.ival <= 0)
+		return 0;
+	if (!(vid_width.ival > 0 && vid_height.ival > 0))
+		return 2;	//no size asked for at all -- nothing to honour
+	return 1;		//a size was asked for: honour it if it fits, maximize if it cannot
+}
+
+/*
+FTESurf Patch 268: vid_toggle and fullscreen_toggle stop being the same thing.
+
+Patch 211 gave R_ToggleFullscreen_f a second name because `bind f11 fullscreen`
+had been a silent no-op for six builds.  One behaviour under two names was right
+then and is wrong now: upstream's toggle goes to whatever vid_fullscreen says, so
+with the cvar at 2 a user pressing F11 gets a real exclusive mode switch out of a
+key they pressed expecting the window to grow.
+
+	vid_toggle			windowed <-> your configured vid_fullscreen mode
+	fullscreen_toggle	windowed <-> BORDERLESS, always
+
+Borderless is the mode worth a keybind: nothing is mode-switched, there is no
+display to hand back, alt-tab stays instant, and it is what "make this fill the
+screen" means to anyone not thinking about video modes.
+*/
+static void R_SetFullscreenMode(int targetinternal)
 {
 #ifndef ANDROID
 	double time;
@@ -774,12 +1169,7 @@ void R_ToggleFullscreen_f(void)
 	Cvar_ApplyLatches(CVAR_VIDEOLATCH|CVAR_RENDERERLATCH, false);
 
 	newr = currentrendererstate;
-	if (newr.fullscreen)
-		newr.fullscreen = 0;	//if we're currently any sort of fullscreen then go windowed
-	else if (vid_fullscreen.ival)
-		newr.fullscreen = vid_fullscreen.ival;	//if we're normally meant to be fullscreen, use that
-	else
-		newr.fullscreen = 2;	//otherwise use native resolution
+	newr.fullscreen = targetinternal;
 	if (newr.fullscreen)
 	{
 		int dbpp, dheight, dwidth, drate;
@@ -791,19 +1181,24 @@ void R_ToggleFullscreen_f(void)
 			drate = 0;
 		}
 
-		if (newr.fullscreen == 1 && vid_width.ival>0)
+		//FTESurf Patch 268: vid_exclusive_desktopres makes exclusive match the display
+		//here too, or vid_toggle would mode-switch where a vid_restart would not.
+		if (newr.fullscreen == 1 && vid_width.ival>0 && !vid_exclusive_desktopres.ival)
 			newr.width = vid_width.ival;
 		else
 			newr.width = dwidth;
-		if (newr.fullscreen == 1 && vid_height.ival>0)
+		if (newr.fullscreen == 1 && vid_height.ival>0 && !vid_exclusive_desktopres.ival)
 			newr.height = vid_height.ival;
 		else
 			newr.height = dheight;
 	}
 	else
 	{
-		newr.width = DEFAULT_WIDTH;
-		newr.height = DEFAULT_HEIGHT;
+		//FTESurf Patch 268: honour the configured window size instead of dropping to
+		//640x480 every time you toggle out of fullscreen.  VID_WantMaximizedWindow
+		//still decides whether it opens maximized.
+		newr.width = (vid_width.ival > 0)?vid_width.ival:DEFAULT_WIDTH;
+		newr.height = (vid_height.ival > 0)?vid_height.ival:DEFAULT_HEIGHT;
 	}
 
 	time = Sys_DoubleTime();
@@ -812,6 +1207,25 @@ void R_ToggleFullscreen_f(void)
 //	COM_WorkerFullSync();
 //	Con_Printf("full video restart took %f secs\n", Sys_DoubleTime() - time);
 #endif
+}
+
+//vid_toggle: upstream's behaviour, windowed <-> whatever vid_fullscreen names.
+void R_ToggleFullscreen_f(void)
+{
+	int target;
+	if (currentrendererstate.fullscreen)
+		target = 0;					//any sort of fullscreen -> windowed
+	else if (vid_fullscreen.ival)
+		target = VID_InternalFullscreenMode(vid_fullscreen.ival);	//the SECOND cvar boundary, easily missed
+	else
+		target = 2;					//internal 2 is borderless
+	R_SetFullscreenMode(target);
+}
+
+//fullscreen_toggle (F11): windowed <-> borderless, regardless of vid_fullscreen.
+void R_ToggleBorderless_f(void)
+{
+	R_SetFullscreenMode(currentrendererstate.fullscreen?0:2);
 }
 
 //nettest: a real "flushshaders" command.  Drops the shader cache + rescans the filesystem so freshly-written
@@ -841,7 +1255,31 @@ void Renderer_Init(void)
 	Cmd_AddCommand("vid_restart", R_RestartRenderer_f);
 	Cmd_AddCommand("vid_reload", R_ReloadRenderer_f);
 	Cmd_AddCommand("flushshaders", R_FlushShaders_f);	//nettest: real shader-cache flush (fixes connect-water + spray refresh; see R_FlushShaders_f above)
+#if defined(HALFLIFEMODELS) && !defined(SERVERONLY)
+	{	//nettest: on-demand studio-skin dump.  Must be a command, not the r_texdiag cvar:
+		//image uploads are async, so at model-load time `bound` is still 0x0 and the one
+		//number worth reading does not exist yet.  See R_TexDiagNow_f in gl_hlmdl.c.
+		extern void R_TexDiagNow_f(void);
+		Cmd_AddCommand("r_texdiag_now", R_TexDiagNow_f);
+	}
+#endif
+	{	//nettest: live lightstyle values.  A GoldSrc face lit only by a switchable
+		//style (32+) is EXACTLY black when that style was never announced, because
+		//Surf_BuildLightMap skips a zero-scale style outright (r_surf.c:1571) - and
+		//"never announced" is invisible from the map, the texture and the shader
+		//alike.  See R_LightStyles_f in gl_rlight.c.
+		extern void R_LightStyles_f(void);
+		Cmd_AddCommand("r_lightstyles", R_LightStyles_f);
+	}
 	Cmd_AddCommand("vid_toggle", R_ToggleFullscreen_f);
+	//FTESurf Patch 211: a findable name for it.  cfg/default.cfg has carried
+	//`bind f11 fullscreen` since build 21 and `fullscreen` is not a command in this
+	//engine -- the only hit anywhere in the tree is sys_plugfte.c's browser-plugin
+	//parameter table, which maps the WORD "fullscreen" onto the vid_fullscreen
+	//cvar and has nothing to do with the console.  So F11 has been a silent no-op.
+	//FTESurf Patch 268: no longer the same function as vid_toggle.  This one is
+	//windowed <-> BORDERLESS specifically -- see R_SetFullscreenMode.
+	Cmd_AddCommandD("fullscreen_toggle", R_ToggleBorderless_f, "Switches between windowed and borderless fullscreen immediately, without needing a vid_restart. Unlike vid_toggle this never enters an exclusive video mode, so it will not mode-switch your display.");
 
 #ifdef RTLIGHTS
 	R_EditLights_RegisterCommands();
@@ -851,6 +1289,16 @@ void Renderer_Init(void)
 	Cmd_AddCommand("r_remapshader", Shader_RemapShader_f);
 	Cmd_AddCommand("r_showshader", Shader_ShowShader_f);
 	Cmd_AddCommandD("r_shaderlist", Shader_ShaderList_f, "Prints out a list of the currently-loaded shaders.");
+	{	//nettest: the RESOLVED passes (texgen/tcgen) of a shader, for diffing a masked
+		//'{' bsp shader against the ordinary wall beside it.  See Shader_ShaderPasses_f.
+		extern void Shader_ShaderPasses_f(void);
+		Cmd_AddCommandD("r_shaderpasses", Shader_ShaderPasses_f, "Prints the resolved passes of matching shaders.");
+	}
+	{	//nettest: every independent off-switch for translucent GoldSrc water, in one
+		//readout.  See the long note above R_WaterInfo_f in r_surf.c.
+		extern void R_WaterInfo_f(void);
+		Cmd_AddCommandD("r_waterinfo", R_WaterInfo_f, "Reports why transparent water is or is not working: effective alpha, the server's watervis permission, the temporal scene cache, whether the PVS extension is running, and how much of the map's water is worldspawn versus brush-entity.");
+	}
 
 #ifdef _DEBUG
 	Cmd_AddCommand("r_showbatches", R_ShowBatches_f);
@@ -871,6 +1319,13 @@ void Renderer_Init(void)
 	Cvar_Register (&r_builtinpalette, GRAPHICALNICETIES);	//nettest
 
 	Cvar_Register (&r_novis, GLRENDEREROPTIONS);
+	Cvar_Register (&r_voidvis, GLRENDEREROPTIONS);
+	Cvar_Register (&r_voidfog, GLRENDEREROPTIONS);	//FTESurf Patch 329
+	Cvar_Register (&r_blendsort, GLRENDEREROPTIONS);
+	Cvar_Register (&r_reflectcube, GLRENDEREROPTIONS);
+	Cvar_Register (&r_envcubemap, GLRENDEREROPTIONS);			//FTESurf Patch 268 B
+	Cvar_Register (&r_reflectcube_nosky, GLRENDEREROPTIONS);	//FTESurf Patch 268 B
+	Cvar_Register (&r_cubelight, GLRENDEREROPTIONS);			//FTESurf Patch 268 C
 
 	//but register ALL vid_ commands.
 	Cvar_Register (&gl_driver, VIDCOMMANDGROUP);
@@ -888,6 +1343,10 @@ void Renderer_Init(void)
 	Cvar_Register (&vid_renderer_opts, VIDCOMMANDGROUP);
 
 	Cvar_Register (&vid_fullscreen, VIDCOMMANDGROUP);
+	Cvar_Register (&vid_fullscreen_order, VIDCOMMANDGROUP);	//FTESurf Patch 268
+	Cvar_Register (&vid_winmaximize, VIDCOMMANDGROUP);		//FTESurf Patch 268
+	Cvar_Register (&vid_minonfocusloss, VIDCOMMANDGROUP);	//FTESurf Patch 268
+	Cvar_Register (&vid_exclusive_desktopres, VIDCOMMANDGROUP);	//FTESurf Patch 268
 	Cvar_Register (&vid_bpp, VIDCOMMANDGROUP);
 	Cvar_Register (&vid_depthbits, VIDCOMMANDGROUP);
 
@@ -980,6 +1439,7 @@ void Renderer_Init(void)
 	Cvar_Register (&r_refract_fbo, GRAPHICALNICETIES);
 	Cvar_Register (&r_refractreflect_scale, GRAPHICALNICETIES);
 	Cvar_Register (&r_postprocshader, GRAPHICALNICETIES);
+	Cvar_Register (&r_colourcorrection, GRAPHICALNICETIES);	//FTESurf Patch 288
 	Cvar_Register (&r_fxaa, GRAPHICALNICETIES);
 	Cvar_Register (&r_graphics, GRAPHICALNICETIES);
 	Cvar_Register (&r_renderscale, GRAPHICALNICETIES);
@@ -1007,6 +1467,7 @@ void Renderer_Init(void)
 	Cvar_Register (&scr_sshot_type, SCREENOPTIONS);
 	Cvar_Register (&scr_sshot_compression, SCREENOPTIONS);
 	Cvar_Register (&scr_sshot_prefix, SCREENOPTIONS);
+	Cvar_Register (&scr_sshot_mapname, SCREENOPTIONS);	//FTESurf Patch 211
 
 	Cvar_Register(&cl_cursor,	SCREENOPTIONS);
 	Cvar_Register(&cl_cursorscale,	SCREENOPTIONS);
@@ -1064,7 +1525,12 @@ void Renderer_Init(void)
 	Cvar_Register (&r_slimealpha, GRAPHICALNICETIES);
 	Cvar_Register (&r_telealpha, GRAPHICALNICETIES);
 	Cvar_Register (&r_wateralpha_extendpvs, GRAPHICALNICETIES);
+	Cvar_Register (&r_hlwater_hidesides, GRAPHICALNICETIES);
+	Cvar_Register (&r_hlwater_entalpha, GRAPHICALNICETIES);
 	Cvar_Register (&gl_shadeq1_name, GLRENDEREROPTIONS);
+	Cvar_Register (&r_hidetextures, GLRENDEREROPTIONS);	//nettest: BSP texture names to draw as nothing
+	Cvar_Register (&r_goldsrc_worldmask, GLRENDEREROPTIONS);	//nettest: '{' textures are opaque on GoldSrc world faces
+	Cvar_Register (&r_texdiag, GLRENDEREROPTIONS);	//nettest: per-texture load diagnostic
 
 	Cvar_Register (&gl_mindist, GLRENDEREROPTIONS);
 	Cvar_Register (&gl_load24bit, GRAPHICALNICETIES);
@@ -1105,17 +1571,28 @@ void Renderer_Init(void)
 	Cvar_Register (&r_propvertexlight_max, GRAPHICALNICETIES);
 	Cvar_Register (&r_propvertexlight_minlight, GRAPHICALNICETIES);
 	Cvar_Register (&r_prop_minlight, GRAPHICALNICETIES);
+	Cvar_Register (&r_showhitboxes, GRAPHICALNICETIES);
 //	Cvar_Register (&r_fullbrights, GRAPHICALNICETIES);	//dpcompat: 1 if r_fb_bmodels&&r_fb_models
 //	Cvar_Register (&r_skin_overlays, GRAPHICALNICETIES);
 	Cvar_Register (&r_globalskin_first, GRAPHICALNICETIES);
 	Cvar_Register (&r_globalskin_count, GRAPHICALNICETIES);
 	Cvar_Register (&r_shadows, GRAPHICALNICETIES);
+	Cvar_Register (&r_shadows_bmodels, GRAPHICALNICETIES);
 
 	Cvar_Register (&r_replacemodels, GRAPHICALNICETIES);
 
 	Cvar_Register (&r_showbboxes, GLRENDEREROPTIONS);
 	Cvar_Register (&r_showhull, GLRENDEREROPTIONS);
 	Cvar_Register (&r_showhull_maxdist, GLRENDEREROPTIONS);
+	{	//FTESurf Patch 319. Defined in cl_ents.c next to the BIH walk they drive,
+		//because the essay explaining why a nodraw clip brush cannot be drawn any
+		//other way belongs with the code, not with the registration.
+		extern cvar_t r_showbrushes, r_showbrushes_dist, r_showbrushes_mask, r_showbrushes_fill;
+		Cvar_Register (&r_showbrushes, GLRENDEREROPTIONS);
+		Cvar_Register (&r_showbrushes_dist, GLRENDEREROPTIONS);
+		Cvar_Register (&r_showbrushes_mask, GLRENDEREROPTIONS);
+		Cvar_Register (&r_showbrushes_fill, GLRENDEREROPTIONS);	//FTESurf Patch 331
+	}
 	Cvar_Register (&r_showfields, GLRENDEREROPTIONS);
 	Cvar_Register (&r_showshaders, GLRENDEREROPTIONS);
 #ifdef BEF_PUSHDEPTH
@@ -2016,6 +2493,7 @@ TRACE(("dbg: R_ApplyRenderer: efrags\n"));
 	skel_reload();
 #endif
 #ifdef CSQC_DAT
+	shader_reload_why = "R_RestartRenderer";
 	Shader_DoReload();
 	CSQC_RendererRestarted(false);
 #endif
@@ -2106,7 +2584,7 @@ qboolean R_BuildRenderstate(rendererstate_t *newr, char *rendererstring)
 	newr->multisample = vid_multisample.value;
 	newr->bpp = vid_bpp.value;
 	newr->depthbits = vid_depthbits.value;
-	newr->fullscreen = vid_fullscreen.value;
+	newr->fullscreen = VID_InternalFullscreenMode(vid_fullscreen.ival);	//FTESurf Patch 268: the main cvar boundary
 	newr->rate = vid_refreshrate.value;
 	newr->stereo = (r_stereo_method.ival == 1);
 	newr->srgb = vid_srgb.ival;
@@ -2254,10 +2732,43 @@ qboolean R_BuildRenderstate(rendererstate_t *newr, char *rendererstring)
 			newr->rate = 0;
 		}
 
+		/*
+		FTESurf Patch 268: exclusive fullscreen matches the display it takes over.
+
+		Exclusive is the one mode that performs a real ChangeDisplaySettings, so a
+		width/height that disagrees with the desktop makes the monitor physically
+		switch mode and then rescale everything.  Every other mode ignores
+		vid_width/vid_height anyway (only the internal exclusive mode reads them),
+		which meant a stale archived resolution silently became the mode you got --
+		measured: with vid_width 1280 archived, asking for exclusive on a 1920x1200
+		desktop switched the display to 1280x800.
+
+		So by default exclusive asks the display what it is currently running and
+		takes that, refresh rate included.  vid_exclusive_desktopres 0 restores
+		honouring vid_width/vid_height, which is what you want if you are
+		deliberately dropping resolution for framerate.
+
+		newr->fullscreen is the INTERNAL mode here -- the cvar was translated at the
+		top of this function -- so 1 is exclusive regardless of vid_fullscreen_order.
+		*/
+		if (newr->fullscreen == 1 && vid_exclusive_desktopres.ival && !isPlugin)
+		{
+			int dbpp, dheight, dwidth, drate;
+			if (Sys_GetDesktopParameters(&dwidth, &dheight, &dbpp, &drate))
+			{
+				newr->width = dwidth;
+				newr->height = dheight;
+				if (newr->bpp <= 0)
+					newr->bpp = dbpp;
+				if (newr->rate <= 0)
+					newr->rate = drate;
+			}
+		}
+
 		if (newr->width <= 0 || newr->height <= 0 || newr->bpp <= 0)
 		{
 			int dbpp, dheight, dwidth, drate;
-			
+
 			if (!newr->fullscreen || isPlugin || !Sys_GetDesktopParameters(&dwidth, &dheight, &dbpp, &drate))
 			{
 				dwidth = DEFAULT_WIDTH;
@@ -2816,6 +3327,35 @@ qboolean R_CullEntityBox(entity_t *e, vec3_t modmins, vec3_t modmaxs)
 				mrad = v;
 		}
 		mrad *= e->scale;
+
+		/* FTESurf Patch 203: the axis rows can carry scale, and this did not know.
+
+		   e->scale is not the only place an entity's size lives.  CSQCRF_USEAXIS
+		   copies v_forward/-v_right/v_up straight into axis[] WITHOUT normalising
+		   (pr_csqc.c:838-844) and forces scale to 1, so a non-unit axis row IS a
+		   per-axis scale -- the only non-uniform scale the renderer offers, and
+		   what Patch 205's portal apertures are built from: one unit quad drawn at
+		   88x88, or 304x208, or 1000x1000.
+
+		   Culled against the raw model bounds, an 88x88 aperture was a 2-unit cube,
+		   so the doorway vanished the moment its CENTRE left the frustum -- which,
+		   standing in a doorway looking at its edge, is most of the time it matters.
+
+		   Every ordinary entity gets its axis from AngleVectors, so amaxsq is
+		   exactly 1 for them and nothing here changes; the sqrt is skipped in that
+		   case, which is the case that runs 2350 times a frame on surf_demise. */
+		{
+			float amaxsq = 1, d;
+			for (i = 0; i < 3; i++)
+			{
+				d = DotProduct(e->axis[i], e->axis[i]);
+				if (d > amaxsq)
+					amaxsq = d;
+			}
+			if (amaxsq > 1)
+				mrad *= sqrt(amaxsq);
+		}
+
 		for (i = 0; i < 3; i++)
 		{
 			wmin[i] = e->origin[i]-mrad;
@@ -2935,7 +3475,21 @@ void R_SetFrustum (float projmat[16], float viewmat[16])
 
 	//do far plane
 	//fog will logically not actually reach 0, though precision issues will force it. we cut off at an exponant of -500
-	if (r_refdef.globalfog.density && r_refdef.globalfog.alpha>=1 && (r_fog_cullentities.ival==2||(r_fog_cullentities.ival&&r_skyfog.value>=1)) && !r_refdef.globalfog.depthbias)
+	/*
+	  FTESurf Patch 254: `&& !r_fog_linear.ival` added.  Everything below solves
+	  the EXP/EXP2 equation for the distance at which fog reaches 2/255, and
+	  reads globalfog.density as a rate to do it.  Under r_fog_linear that field
+	  is the fog END DISTANCE instead, so the solve returns nonsense: with a
+	  Source fogend of 12000 it yields sqrt(log(2/255)/-12000^2) = 0.0004 units
+	  and the far plane lands in front of the eye -- the entire world is culled.
+
+	  The existing gate hides it under FTESurf's shipped defaults (it wants
+	  r_fog_cullentities 2 or r_skyfog>=1, and neither is set in any cfg), and
+	  the !depthbias term hides it again on most maps -- but 22 of the 244 fog
+	  controllers in the library have fogstart 0, so a player who raises
+	  r_skyfog would reach it.  A latent whole-screen bug is worth one term.
+	*/
+	if (r_refdef.globalfog.density && !r_fog_linear.ival && r_refdef.globalfog.alpha>=1 && (r_fog_cullentities.ival==2||(r_fog_cullentities.ival&&r_skyfog.value>=1)) && !r_refdef.globalfog.depthbias)
 	{
 		float culldist;
 		float fog;

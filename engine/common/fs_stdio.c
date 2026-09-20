@@ -111,6 +111,23 @@ static qboolean QDECL VFSSTDIO_Close(vfsfile_t *file)
 	return success;
 }
 
+#if !defined(_WIN32) && !defined(WEBSVONLY)
+#include <unistd.h>
+//FTESurf Patch 375: cut an open file of this type to len and put the pointer
+//there (a lobby save-load rewinds its streamed recording).  false for any other
+//vfsfile_t: this type is known by its Close.
+qboolean VFSSTDIO_TruncateOS(vfsfile_t *file, qofs_t len)
+{
+	vfsstdiofile_t *intfile = (vfsstdiofile_t*)file;
+	if (file->Close != VFSSTDIO_Close)
+		return false;
+	fflush(intfile->handle);
+	if (ftruncate(fileno(intfile->handle), (off_t)len))
+		return false;
+	return VFSSTDIO_Seek(file, len);
+}
+#endif
+
 #ifdef _WIN32
 static qboolean QDECL VFSSTDIO_CloseTemp(vfsfile_t *file)
 {
@@ -303,7 +320,12 @@ static vfsfile_t *QDECL FSSTDIO_OpenVFS(searchpathfuncs_t *handle, flocation_t *
 
 	f = VFSSTDIO_Open(loc->rawname, mode, &needsflush);
 	if (needsflush && sp->AddFileHash)
-		sp->AddFileHash(sp->depth, loc->rawname, NULL, sp);
+	{	//Patch 388: key the game-relative name, as fs_win32.c does; the OS path was never looked up,
+		//so a file created this session was invisible to hashed lookups until the next rebuild.
+		size_t rl = strlen(sp->rootpath);
+		if (!strncmp(loc->rawname, sp->rootpath, rl) && loc->rawname[rl] == '/')
+			sp->AddFileHash(sp->depth, loc->rawname+rl+1, NULL, sp);
+	}
 	return f;
 }
 

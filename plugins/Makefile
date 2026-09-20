@@ -13,6 +13,11 @@ ifeq ($(FTE_TARGET),win64)
 	PLUG_NATIVE_EXT=_x64.dll
 	PLUG_LDFLAGS=-Wl,--support-old-code -static-libgcc
 	PLUG_LDFLAGS_ZLIB=-L../engine/libs/mingw64-libs -lz
+	#FTESurf Patch 292: Strata's VTF 7.6 auxiliary compression is Zstandard.  msys2's ucrt64
+	#ships zstd.h and a static libzstd.a, so the hl2 plugin links it in whole: no DLL to ship.
+	#Other targets leave both empty and img_vtf.c reports a compressed VTF instead of decoding it.
+	HL2_ZSTD_CFLAGS=-DHAVE_ZSTD
+	HL2_ZSTD_LDFLAGS=-l:libzstd.a
 	BITS=64
 	PLUG_LDFLAGS_DL=
 	CMAKERULES=$(OUT_DIR)/toolchain_$(FTE_TARGET).cmake
@@ -63,6 +68,16 @@ ifeq ($(PLUG_NATIVE_EXT),)
 
 	ifneq ($(shell echo|$(CC) -E -dM -|grep __i386__),)
 		PLUG_NATIVE_EXT=_x86.so
+	endif
+
+	#FTESurf Patch 270: aarch64 was missing entirely, so a native build on an
+	#arm64 box fell through to the bare `.so` fallback below while the engine
+	#looks for ARCH_CPU_POSTFIX "arm64" (bothdefs.h:656-657).  The plugin built
+	#fine and was then never loaded -- which reads as "every Source map is
+	#missing", not as a build problem.  Tested before __arm__ to match the
+	#order bothdefs.h uses; gcc does not define __arm__ on aarch64 anyway.
+	ifneq ($(shell echo|$(CC) -E -dM -|grep __aarch64__),)
+		PLUG_NATIVE_EXT=_arm64.so
 	endif
 
 	ifneq ($(shell echo|$(CC) -E -dM -|grep __arm__),)
@@ -533,8 +548,21 @@ endif
 
 ######################################
 #for compat with half-life 2's file formats
-$(PLUG_PREFIX)hl2$(PLUG_NATIVE_EXT): hl2/fs_vpk.c hl2/fs_vpk_vtmb.c hl2/fs_gma.c hl2/img_tth.c hl2/img_vtf.c hl2/mod_hl2.c hl2/mat_vmt.c hl2/mod_vbsp.c hl2/LzmaDec.c hl2/hl2.c plugin.c
-	$(CC) $(BASE_CFLAGS) $(CFLAGS) -DFTEPLUGIN -DMULTITHREAD -o $@ -shared $(PLUG_CFLAGS) $^ $(PLUG_DEFFILE) $(PLUG_LDFLAGS_ZLIB) $(PLUG_LDFLAGS)
+# FTESurf: mat_vmt_progs.h IS a prerequisite, and $^ is filtered to .c files.
+#
+# The header is generated from hl2/glsl/vmt/*.glsl by hl2/Makefile, and it was
+# not listed here at all -- so editing or adding a GLSL program left this DLL up
+# to date as far as make was concerned, the plugin linked against the stale
+# header, and the program was simply absent at runtime with no error anywhere.
+# Build 12 shipped vmt/flatdither missing exactly once that way.
+#
+# It has to be a REAL prerequisite, not an order-only one, because the failure
+# is the header CHANGING rather than being absent -- order-only would guarantee
+# it exists and still relink nothing when it is rewritten.  Which means it lands
+# in $^, and a .h on the command line makes gcc build a precompiled header
+# instead of compiling, so the recipe takes $(filter %.c,$^) instead.
+$(PLUG_PREFIX)hl2$(PLUG_NATIVE_EXT): hl2/fs_vpk.c hl2/fs_vpk_vtmb.c hl2/fs_gma.c hl2/img_tth.c hl2/img_vtf.c hl2/img_ccraw.c hl2/mod_hl2.c hl2/mod_phy.c hl2/mat_vmt.c hl2/mod_vbsp.c hl2/LzmaDec.c hl2/hl2.c plugin.c hl2/mat_vmt_progs.h
+	$(CC) $(BASE_CFLAGS) $(CFLAGS) -DFTEPLUGIN -DMULTITHREAD $(HL2_ZSTD_CFLAGS) -o $@ -shared $(PLUG_CFLAGS) $(filter %.c,$^) $(PLUG_DEFFILE) $(PLUG_LDFLAGS_ZLIB) $(HL2_ZSTD_LDFLAGS) $(PLUG_LDFLAGS)
 	$(call EMBEDMETA,hl2,$@,HL2 Formats,Provides support for various formats used by Valve's Source engine.)
 NATIVE_PLUGINS+=hl2
 ######################################

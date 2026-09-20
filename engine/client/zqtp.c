@@ -3766,9 +3766,33 @@ void CL_Say (qboolean team, char *extra)
 	char	text[2048], sendtext[2048], *s;
 	playerview_t *pv = &cl.playerview[CL_TargettedSplit(false)];
 
+	/*
+	FTESurf Patch 341: csprogs' chat draft gets the command first, bare `say`
+	and `say text` alike -- see CSQC_ChatSay in pr_csqc.c.  `extra` is the
+	/me prefix (CL_SayMe_f), which is not chat the draft owns.
+	*/
+	if (!isDedicated && !extra && CSQC_ChatSay(team, Cmd_Args()))
+		return;
+
 	if (Cmd_Argc() < 2)
 	{
-		if (team)
+		/*
+		FTESurf Patch 134: bare `say` opens the chat prompt, as it does in the
+		Source engine.
+
+		This branch previously did nothing whatsoever for `say` -- no message,
+		no usage line, no "not connected" (that check is below this one), just a
+		silent return -- so nothing that worked before can change.  `messagemode`
+		and `messagemode2` are untouched and still the canonical binds; this
+		simply makes the name Source players reach for do the same thing.
+		*/
+		if (!isDedicated)
+		{
+			chat_team = team;
+			Key_Dest_Add(kdm_message);
+			Key_Dest_Remove(kdm_console);
+		}
+		else if (team)
 			Con_Printf ("%s <text>: send a team message\n", Cmd_Argv(0));
 		return;
 	}

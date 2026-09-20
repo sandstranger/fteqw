@@ -34,6 +34,290 @@ edict_t	*sv_player;
 
 static usercmd_t	cmd;
 
+/*
+FTESurf Patch 139 -- THE MAP-SWITCH CRASH.
+
+These five cache the field lookups for the board/ramp telemetry SV_RunCmd
+publishes (see the PHYSMODE_SOURCE block near the end of this file).  They were
+function statics there, and that is a use-after-free that took roughly five map
+switches in seven.
+
+QC_GetEdictFieldValue (qclib/initlib.c:929-958) memoises a field by storing
+`cache->ofs32 = var` -- a POINTER INTO prinst.field[], the progs' own field
+table -- and every later call does
+
+	if (cache->ofs32 == NULL) return NULL;
+	return &ed->fields[cache->ofs32->ofs];
+
+with no check that the progs are still the ones the pointer came from.  Load a
+new map, the server progs are reloaded, that table is freed and rebuilt, and the
+cache is left holding a dangling pointer that is NOT null -- so the guard passes,
+a garbage offset comes back, and the write lands on a wild address.  The stack
+recorded it exactly: SV_RunCmd+0xe1c, reached from SV_Begin_Core -> SV_Begin_f,
+i.e. the client's very first usercmd after `begin` -- which is why it always
+landed on "Player entered the game".  Intermittent because it depends on what
+the freed table happens to still contain, which is also why it never reproduced
+under a debugger.
+
+The engine already knew about this trap: PR_LoadGlabalStruct memsets its own two
+file-scope caches (pr_cmds.c:1028-1029) on every progs load.  Ours simply were
+not on that list.  Every other evalc_t in the tree is a local, zeroed per use.
+*/
+evalc_t	evalc_bnorm, evalc_bvel, evalc_bcount, evalc_rcontact, evalc_rnorm;
+evalc_t	evalc_forceduck;	//FTESurf Patch 142
+evalc_t	evalc_basevel;		//FTESurf Patch 240
+evalc_t	evalc_mtick, evalc_mtickrate, evalc_mcarry;	//FTESurf Patch 325
+evalc_t	evalc_pmepoch, evalc_physcrc, evalc_portalx, evalc_portalorg, evalc_portalvel;	//FTESurf Patch 346
+evalc_t	evalc_pmhold;		//FTESurf Patch 380
+
+void SV_FS_ResetFieldCaches(void)
+{
+	memset(&evalc_pmepoch,   0, sizeof(evalc_pmepoch));		//FTESurf Patch 346
+	memset(&evalc_physcrc,   0, sizeof(evalc_physcrc));
+	memset(&evalc_portalx,   0, sizeof(evalc_portalx));
+	memset(&evalc_portalorg, 0, sizeof(evalc_portalorg));
+	memset(&evalc_portalvel, 0, sizeof(evalc_portalvel));
+	memset(&evalc_bnorm,     0, sizeof(evalc_bnorm));
+	memset(&evalc_bvel,      0, sizeof(evalc_bvel));
+	memset(&evalc_bcount,    0, sizeof(evalc_bcount));
+	memset(&evalc_rcontact,  0, sizeof(evalc_rcontact));
+	memset(&evalc_rnorm,     0, sizeof(evalc_rnorm));
+	memset(&evalc_forceduck, 0, sizeof(evalc_forceduck));
+	memset(&evalc_basevel,   0, sizeof(evalc_basevel));
+	memset(&evalc_mtick,     0, sizeof(evalc_mtick));		//FTESurf Patch 325
+	memset(&evalc_mtickrate, 0, sizeof(evalc_mtickrate));	//FTESurf Patch 325
+	memset(&evalc_mcarry,    0, sizeof(evalc_mcarry));		//FTESurf Patch 325
+	memset(&evalc_pmhold,    0, sizeof(evalc_pmhold));		//FTESurf Patch 380
+}
+
+/*
+  FTESurf Patch 346 -- THE PIN: every value PM_PlayerMove is handed that the usercmd
+  does not carry, snapshotted per move from the variables the mover actually reads
+  (movevars/pmove after SV_SetSourceMoveVars), never from cvars: five movevars are
+  latched at spawn and entgravity/maxspeed lag by a send frame.  One table, one
+  order, one text form, shared by the recorder's infokeys and by pm_recsim.
+  APPEND ONLY: a reader matches tokens by name, but the fill order is the table.
+*/
+extern cvar_t sv_maxvelocity, pm_trisoup_bevels, pm_rotatedboxhulls, pm_portalcsg_scanall;
+const char *sv_pmpin_names[SV_PMPIN_COUNT] =
+{
+	"pmsrcver", "physmode", "pmtype", "gamespeed",
+	"hullx0", "hully0", "hullx1", "hully1", "capsule",
+	"svmaxvel", "trisoup", "rotboxes", "portalcsg",
+	"gravity", "stopspeed", "maxspeed", "spectatormaxspeed", "accelerate",
+	"airaccelerate", "wateraccelerate", "friction", "waterfriction", "flyfriction",
+	"entgravity", "bunnyspeedcap", "watersinkspeed", "ktjump", "edgefriction",
+	"walljump", "slidefix", "airstep", "pground", "stepdown",
+	"slidyslopes", "autobunny", "bunnyfriction", "stepheight", "ticrate",
+	"maxairspeed", "jumpvelocity", "standablenormal", "bounce", "maxvelocity",
+	"standheight", "duckheight", "duckspeed", "viewheight", "duckviewheight",
+	"noclipspeed", "stamina", "staminajumpcost", "staminalandcost", "staminarecovery",
+	"normalizejump", "jumpaddrise", "jumpzoffset", "walkspeed", "groundtracedist",
+	"bumpcount", "snaptoground", "groundquadrants", "fixslopes", "fixedges",
+	"fixrampbugs", "rampretrace", "viewscale", "ladders", "ladderdampen",
+	"ladderangle", "slide"
+};
+
+static void SV_PMPinFill(float *v)
+{
+	float *o = v;
+	*o++ = PMSRC_VERSION;	*o++ = movevars.physicsmode;	*o++ = pmove.pm_type;	*o++ = sv.gamespeed;
+	*o++ = pmove.player_mins[0];	*o++ = pmove.player_mins[1];
+	*o++ = pmove.player_maxs[0];	*o++ = pmove.player_maxs[1];	*o++ = pmove.capsule;
+	*o++ = sv_maxvelocity.value;	*o++ = pm_trisoup_bevels.value;	*o++ = pm_rotatedboxhulls.value;	*o++ = pm_portalcsg_scanall.value;
+	*o++ = movevars.gravity;	*o++ = movevars.stopspeed;	*o++ = movevars.maxspeed;	*o++ = movevars.spectatormaxspeed;
+	*o++ = movevars.accelerate;	*o++ = movevars.airaccelerate;	*o++ = movevars.wateraccelerate;	*o++ = movevars.friction;
+	*o++ = movevars.waterfriction;	*o++ = movevars.flyfriction;	*o++ = movevars.entgravity;	*o++ = movevars.bunnyspeedcap;
+	*o++ = movevars.watersinkspeed;	*o++ = movevars.ktjump;	*o++ = movevars.edgefriction;	*o++ = movevars.walljump;
+	*o++ = movevars.slidefix;	*o++ = movevars.airstep;	*o++ = movevars.pground;	*o++ = movevars.stepdown;
+	*o++ = movevars.slidyslopes;	*o++ = movevars.autobunny;	*o++ = movevars.bunnyfriction;	*o++ = movevars.stepheight;
+	*o++ = movevars.ticrate;	*o++ = movevars.maxairspeed;	*o++ = movevars.jumpvelocity;	*o++ = movevars.standablenormal;
+	*o++ = movevars.bounce;	*o++ = movevars.maxvelocity;	*o++ = movevars.standheight;	*o++ = movevars.duckheight;
+	*o++ = movevars.duckspeed;	*o++ = movevars.viewheight;	*o++ = movevars.duckviewheight;	*o++ = movevars.noclipspeed;
+	*o++ = movevars.stamina;	*o++ = movevars.staminajumpcost;	*o++ = movevars.staminalandcost;	*o++ = movevars.staminarecovery;
+	*o++ = movevars.normalizejump;	*o++ = movevars.jumpaddrise;	*o++ = movevars.jumpzoffset;	*o++ = movevars.walkspeed;
+	*o++ = movevars.groundtracedist;	*o++ = movevars.bumpcount;	*o++ = movevars.snaptoground;	*o++ = movevars.groundquadrants;
+	*o++ = movevars.fixslopes;	*o++ = movevars.fixedges;	*o++ = movevars.fixrampbugs;	*o++ = movevars.rampretrace;
+	*o++ = movevars.viewscale;	*o++ = movevars.ladders;	*o++ = movevars.ladderdampen;	*o++ = movevars.ladderangle;
+	*o++ = movevars.slide;
+	if (o - v != SV_PMPIN_COUNT)
+		Sys_Error("SV_PMPinFill: %i values for %i names", (int)(o - v), SV_PMPIN_COUNT);
+}
+
+//name=value, %.9g: every float32 round-trips.  Returns 0 if it would not fit.
+static size_t SV_PMTokens(const char *const *names, const float *v, int n, char *out, size_t outsz)
+{
+	size_t len = 0;
+	int i;
+	for (i = 0; i < n; i++)
+	{
+		if (Q_snprintfz(out+len, outsz-len, "%s%s=%.9g", i?" ":"", names[i], v[i]))
+			{ *out = 0; return 0; }	//truncated
+		len += strlen(out+len);
+	}
+	return len;
+}
+size_t SV_PMPinText(const float *v, char *out, size_t outsz)
+{
+	return SV_PMTokens(sv_pmpin_names, v, SV_PMPIN_COUNT, out, outsz);
+}
+size_t SV_PMStateText(const pmsourcestate_t *st, char *out, size_t outsz)
+{
+	static const char *names[] = {"surfacefriction", "ducktime", "ducking", "ducked",
+		"msec_carry", "oldbuttons", "stamina", "rampoff", "boardcount", "rampcontact",
+		"srcladder", "ladnx", "ladny", "ladnz"};
+	float v[countof(names)];
+	v[0] = st->surfacefriction;	v[1] = st->ducktime;	v[2] = st->ducking;	v[3] = st->ducked;
+	v[4] = st->msec_carry;	v[5] = st->oldbuttons;	v[6] = st->stamina;	v[7] = st->rampoff;
+	v[8] = st->boardcount;	v[9] = st->rampcontact;	v[10] = st->srcladder;
+	VectorCopy(st->srcladdernormal, v+11);
+	return SV_PMTokens(names, v, countof(names), out, outsz);
+}
+
+//Chunk idx of text, split at spaces, each at most 240 chars: infokey's buffer is 256.
+qboolean SV_PMTextChunk(const char *text, int idx, char *out, size_t outsz)
+{
+	const char *s = text, *e, *brk;
+	*out = 0;
+	for (;;)
+	{
+		if (!*s)
+			return false;
+		e = s;
+		brk = NULL;
+		while (*e && e - s < 240)
+		{
+			if (*e == ' ')
+				brk = e;
+			e++;
+		}
+		if (*e && brk)
+			e = brk;	//cut at the last token boundary
+		if (!idx--)
+		{
+			if ((size_t)(e - s) >= outsz)
+				return false;
+			memcpy(out, s, e - s);
+			out[e - s] = 0;
+			return true;
+		}
+		s = (*e == ' ') ? e+1 : e;
+	}
+}
+
+/* The reader's half (pm_recsim).  Tokens matched BY NAME; returns how many of
+   the table's names the text supplied (missing ones keep *v's prior value). */
+int SV_PMPinParse(const char *text, float *v)
+{
+	int i, found = 0;
+	char tok[64];
+	const char *s = text;
+	while (*s)
+	{
+		const char *e = s, *eq;
+		while (*e && *e != ' ') e++;
+		if (e - s > 0 && e - s < (int)sizeof(tok))
+		{
+			memcpy(tok, s, e - s);
+			tok[e - s] = 0;
+			eq = strchr(tok, '=');
+			if (eq)
+				for (i = 0; i < SV_PMPIN_COUNT; i++)
+					if (!strncmp(tok, sv_pmpin_names[i], eq - tok) && !sv_pmpin_names[i][eq - tok])
+						{ v[i] = atof(eq + 1); found++; break; }
+		}
+		s = *e ? e + 1 : e;
+	}
+	return found;
+}
+
+//The inverse of SV_PMPinFill, for a replay: movevars and the pmove inputs.
+//gamespeed, svmaxvel and the trace cvars are the caller's (not movevars).
+void SV_PMPinApply(const float *v)
+{
+	const float *o = v + 4;
+	movevars.physicsmode = v[1];	pmove.pm_type = v[2];
+	pmove.player_mins[0] = *o++;	pmove.player_mins[1] = *o++;
+	pmove.player_maxs[0] = *o++;	pmove.player_maxs[1] = *o++;	pmove.capsule = *o++;
+	o += 4;	//svmaxvel trisoup rotboxes portalcsg
+	movevars.gravity = *o++;	movevars.stopspeed = *o++;	movevars.maxspeed = *o++;	movevars.spectatormaxspeed = *o++;
+	movevars.accelerate = *o++;	movevars.airaccelerate = *o++;	movevars.wateraccelerate = *o++;	movevars.friction = *o++;
+	movevars.waterfriction = *o++;	movevars.flyfriction = *o++;	movevars.entgravity = *o++;	movevars.bunnyspeedcap = *o++;
+	movevars.watersinkspeed = *o++;	movevars.ktjump = *o++;	movevars.edgefriction = *o++;	movevars.walljump = *o++;
+	movevars.slidefix = *o++;	movevars.airstep = *o++;	movevars.pground = *o++;	movevars.stepdown = *o++;
+	movevars.slidyslopes = *o++;	movevars.autobunny = *o++;	movevars.bunnyfriction = *o++;	movevars.stepheight = *o++;
+	movevars.ticrate = *o++;	movevars.maxairspeed = *o++;	movevars.jumpvelocity = *o++;	movevars.standablenormal = *o++;
+	movevars.bounce = *o++;	movevars.maxvelocity = *o++;	movevars.standheight = *o++;	movevars.duckheight = *o++;
+	movevars.duckspeed = *o++;	movevars.viewheight = *o++;	movevars.duckviewheight = *o++;	movevars.noclipspeed = *o++;
+	movevars.stamina = *o++;	movevars.staminajumpcost = *o++;	movevars.staminalandcost = *o++;	movevars.staminarecovery = *o++;
+	movevars.normalizejump = *o++;	movevars.jumpaddrise = *o++;	movevars.jumpzoffset = *o++;	movevars.walkspeed = *o++;
+	movevars.groundtracedist = *o++;	movevars.bumpcount = *o++;	movevars.snaptoground = *o++;	movevars.groundquadrants = *o++;
+	movevars.fixslopes = *o++;	movevars.fixedges = *o++;	movevars.fixrampbugs = *o++;	movevars.rampretrace = *o++;
+	movevars.viewscale = *o++;	movevars.ladders = *o++;	movevars.ladderdampen = *o++;	movevars.ladderangle = *o++;
+	movevars.slide = *o++;
+	if (o - v != SV_PMPIN_COUNT)
+		Sys_Error("SV_PMPinApply: %i values for %i names", (int)(o - v), SV_PMPIN_COUNT);
+}
+
+//pm_source's carried state from SV_PMStateText's tokens; false if any is missing.
+qboolean SV_PMStateParse(const char *text, pmsourcestate_t *st)
+{
+	static const char *names[] = {"surfacefriction", "ducktime", "ducking", "ducked",
+		"msec_carry", "oldbuttons", "stamina", "rampoff", "boardcount", "rampcontact",
+		"srcladder", "ladnx", "ladny", "ladnz"};
+	float v[countof(names)];
+	int i, found = 0;
+	for (i = 0; i < (int)countof(names); i++)
+	{
+		const char *p = text;
+		size_t n = strlen(names[i]);
+		v[i] = 0;
+		while ((p = strstr(p, names[i])))
+		{
+			if ((p == text || p[-1] == ' ') && p[n] == '=')
+				{ v[i] = atof(p + n + 1); found++; break; }
+			p += n;
+		}
+	}
+	memset(st, 0, sizeof(*st));
+	st->surfacefriction = v[0];	st->ducktime = v[1];	st->ducking = v[2] != 0;	st->ducked = v[3] != 0;
+	st->msec_carry = v[4];	st->oldbuttons = v[5];	st->stamina = v[6];	st->rampoff = v[7];
+	st->boardcount = v[8];	st->rampcontact = v[9];	st->srcladder = v[10] != 0;
+	VectorCopy(v+11, st->srcladdernormal);
+	return found == (int)countof(names);
+}
+
+//FNV-1a over the physent list AddAllLinksToPmove built (the world, [0], is fixed),
+//field by field so struct padding cannot enter it.  Folded to 24 bits: QC floats.
+unsigned int SV_PhysentDigest(void)
+{
+	unsigned int h = 2166136261u;
+	int i;
+#define PD(p,n) do { const qbyte *b_ = (const qbyte*)(p); size_t n_ = (n); while (n_--) { h ^= *b_++; h *= 16777619u; } } while(0)
+	PD(&pmove.onladder, sizeof(pmove.onladder));
+	for (i = 1; i < pmove.numphysent; i++)
+	{
+		const physent_t *pe = &pmove.physents[i];
+		const char *mn = pe->model ? pe->model->name : "";
+		/* Patch 352: numbered from the first non-client edict, not absolutely --
+		   map entities follow the reserved player slots (32 on a lobby, 2 by
+		   default), and a digest that changes with the slot count checks nothing. */
+		{
+			unsigned int rel = pe->info > (unsigned int)sv.allocated_client_slots
+			                 ? pe->info - sv.allocated_client_slots : (pe->info | 0x80000000u);
+			PD(&rel, sizeof(rel));
+		}
+		PD(&pe->nonsolid, 1);	PD(&pe->isportal, 1);	PD(&pe->slideflags, 1);
+		PD(&pe->forcecontentsmask, sizeof(pe->forcecontentsmask));
+		PD(pe->origin, sizeof(vec3_t));	PD(pe->angles, sizeof(vec3_t));
+		PD(pe->mins, sizeof(vec3_t));	PD(pe->maxs, sizeof(vec3_t));
+		PD(&pe->scale, sizeof(pe->scale));
+		PD(mn, strlen(mn));
+	}
+#undef PD
+	return (h ^ (h >> 24)) & 0xffffff;
+}
+
 void QDECL SV_NQPhysicsUpdate(cvar_t *var, char *oldvalue)
 {
 	if (svs.gametype != GT_PROGS)
@@ -1362,6 +1646,11 @@ void SV_SendClientPrespawnInfo(client_t *client)
 	}
 #endif
 
+	//FTESurf Patch 362: the list stages write straight into the message, so without this they
+	//overtake a fullserverinfo that went to the backbuf.  The client's csprogs download check and
+	//CSQC start both read serverinfo when the lists complete, and found none (measured: 0 keys).
+	if (client->num_backbuf)
+		return;
 	if (client->prespawn_stage == PRESPAWN_SOUNDLIST)
 	{
 		if (ISQWCLIENT(client))
@@ -1501,6 +1790,8 @@ void SV_SendClientPrespawnInfo(client_t *client)
 	}
 #endif
 
+	if (client->num_backbuf)
+		return;	//Patch 362: see PRESPAWN_SOUNDLIST
 	if (client->prespawn_stage == PRESPAWN_MODELLIST)
 	{
 		if (ISQWCLIENT(client))
@@ -3046,7 +3337,12 @@ void SV_VoiceReadPacket(void)
 		}
 		else if (vt == VT_NONMUTED)
 		{
-			if (host_client->voice_mute[j>>3] & (1<<(j&3)))
+			//FTESurf Patch 270: &7, not &3.  The array is (MAX_CLIENTS+7)/8
+			//bytes, i.e. EIGHT bits per byte, and >>3 already picked the byte --
+			//so the bit index has to be the low THREE bits.  With &3 only bits
+			//0-3 of each byte are ever touched and clients 4-7 alias onto 0-3,
+			//12-15 onto 8-11, and so on.  Eight sites, all of them this typo.
+			if (host_client->voice_mute[j>>3] & (1<<(j&7)))
 				continue;
 		}
 		else if (vt == VT_SPECSELF)
@@ -3063,7 +3359,7 @@ void SV_VoiceReadPacket(void)
 				continue;
 		}
 
-		ring->receiver[j>>3] |= 1<<(j&3);
+		ring->receiver[j>>3] |= 1<<(j&7);	//FTESurf Patch 270: &7 -- see above
 	}
 
 #ifdef MVD_RECORDING
@@ -3130,16 +3426,16 @@ void SV_VoiceSendPacket(client_t *client, sizebuf_t *buf)
 
 		/*figure out if it was for us*/
 		send = false;
-		if (ring->receiver[clno>>3] & (1<<(clno&3)))
+		if (ring->receiver[clno>>3] & (1<<(clno&7)))	//FTESurf Patch 270: &7
 			send = true;
 
 		/*if you're spectating, you can hear whatever your tracked player can hear*/
 		if (host_client->spectator && host_client->spec_track && host_client->spec_track <= sv.allocated_client_slots)
-			if (ring->receiver[(host_client->spec_track-1)>>3] & (1<<((host_client->spec_track-1)&3)))
+			if (ring->receiver[(host_client->spec_track-1)>>3] & (1<<((host_client->spec_track-1)&7)))	//FTESurf Patch 270: &7
 				send = true;
 
 
-		if (client->voice_mute[ring->sender>>3] & (1<<(ring->sender&3)))
+		if (client->voice_mute[ring->sender>>3] & (1<<(ring->sender&7)))	//FTESurf Patch 270: &7
 			send = false;
 
 		if (ring->sender == clno && !sv_voip_echo.ival)
@@ -3189,13 +3485,13 @@ void SV_Voice_Ignore_f(void)
 	switch(type)
 	{
 	case -1:
-		host_client->voice_mute[other>>3] &= ~(1<<(other&3));
+		host_client->voice_mute[other>>3] &= ~(1<<(other&7));	//FTESurf Patch 270: &7
 		break;
 	case 0:
-		host_client->voice_mute[other>>3] ^= (1<<(other&3));
+		host_client->voice_mute[other>>3] ^= (1<<(other&7));	//FTESurf Patch 270: &7
 		break;
 	case 1:
-		host_client->voice_mute[other>>3] |= (1<<(other&3));
+		host_client->voice_mute[other>>3] |= (1<<(other&7));	//FTESurf Patch 270: &7
 	}
 }
 void SV_Voice_Target_f(void)
@@ -5562,9 +5858,27 @@ void Cmd_SetPos_f(void)
 
 	if (Cmd_Argc() > 4)
 	{
-		sv_player->v->angles[0] = atof(Cmd_Argv(4));
-		sv_player->v->angles[1] = atof(Cmd_Argv(5));
-		sv_player->v->angles[2] = atof(Cmd_Argv(6));
+		/*
+		FTESurf Patch 165: v_angle as well, or the view snaps straight back.
+
+		.angles on a player is the MODEL's orientation.  The view is .v_angle,
+		which SV_RunCmd refills from the usercmd every frame -- and then
+		re-derives .angles from it.  So writing .angles alone survives exactly
+		until the next usercmd arrives, which is about 15ms: the position moves
+		and the view does not.  `setpos x y z pitch yaw roll` has therefore
+		never been able to aim, which makes it useless for the one thing it is
+		reached for, namely "put me exactly here looking at exactly that".
+
+		Identical to the fix Build 13 made for trigger_teleport_touch, and for
+		the same reason -- SV_ZoneGotoAng writes both, which is why `!s` and
+		zone_goto have always aimed correctly and these two never did.
+
+		The angle order is pitch/yaw/roll, matching what the no-argument form
+		above prints, so its output can be pasted straight back in.
+		*/
+		sv_player->v->v_angle[0] = sv_player->v->angles[0] = atof(Cmd_Argv(4));
+		sv_player->v->v_angle[1] = sv_player->v->angles[1] = atof(Cmd_Argv(5));
+		sv_player->v->v_angle[2] = sv_player->v->angles[2] = atof(Cmd_Argv(6));
 		sv_player->v->fixangle = FIXANGLE_FIXED;
 	}
 }
@@ -6995,6 +7309,14 @@ static qboolean AddEntityToPmove(world_t *w, wedict_t *player, wedict_t *check)
 	pe->nonsolid = solid == SOLID_TRIGGER;
 	pe->isportal = solid == SOLID_PORTAL;
 	q1contents = (int)check->v->skin;
+	/* FTESurf Patch 280: a func_slide.  Its skin is a TAG, not a contents
+	   override -- the brush must collide exactly as a skin-0 SOLID_BSP does, so
+	   the switch below is fed 0 (safedefault: forcecontentsmask 0, solid) and
+	   only the flag byte remembers what it was.  pe is not memset (see the
+	   Patch 203 note below), so this is written on every path through here. */
+	pe->slideflags = PMSLIDE_FLAGS_FROM_SKIN((int)q1contents);
+	if (pe->slideflags)
+		q1contents = 0;
 	if (solid == SOLID_LADDER)
 		q1contents = Q1CONTENTS_LADDER;	//legacy crap
 	else if (solid == SOLID_CORPSE)
@@ -7023,12 +7345,103 @@ static qboolean AddEntityToPmove(world_t *w, wedict_t *player, wedict_t *check)
 		pe->forcecontentsmask = 0;
 		break;
 	}
+	/* FTESurf Patch 203.  pe is taken raw out of the array at :7045 and is NOT
+	   memset, so every field this function does not write is whatever the last
+	   occupant of the slot left there.  scale is one of those: nothing in this
+	   file has ever set it, and PM_TransformedHullCheck passes it to
+	   PM_HullTrace.  That path needs model->numhullplanes >= 4, which no
+	   SOLID_BSP brush has and no prop reaches (the filters above admit only
+	   TRIGGER/BSP/PORTAL/BBOX/SLIDEBOX/LADDER), so the garbage has never been
+	   read -- but it is one `if` away from being read, and PM_HullTrace's own
+	   `if (scale <= 0) scale = 1` says what the intended value is. */
+	pe->scale = 1;
+
 	if (solid == SOLID_PORTAL || solid == SOLID_BSP || solid == SOLID_BSPTRIGGER)
 	{
 		if(progstype != PROG_H2)
 			pe->angles[0]*=r_meshpitch.value;	//quake is wierd. I guess someone fixed it hexen2... or my code is buggy or something...
 		pe->model = sv.models[(int)(check->v->modelindex)];
 		VectorCopy (check->v->angles, pe->angles);
+
+		/* FTESurf Patch 203, gap G3 -- a modelless SOLID_PORTAL got garbage bounds.
+
+		   This branch never wrote mins/maxs; the `else` below was the only place
+		   they were set.  For a SOLID_BSP that is harmless, because pe->model is
+		   non-NULL and PM_PlayerTrace then takes a path that never reads them.
+
+		   A portal does not have to have a model.  Source's linked_portal_door is
+		   a point entity whose aperture comes from setsize, so modelindex is 0,
+		   pe->model comes back NULL, and PM_PlayerTrace fell into its `!pe->model`
+		   branch -- which read the stale mins/maxs as a box (a random size, at the
+		   portal's origin) and, worse, did not call PM_PortalCSG at all.  So the
+		   portal both blocked like a wall and never carved the wall behind it.
+
+		   Copying them here is free for the model case (still never read) and is
+		   the entire aperture for the modelless one.  NULL the model explicitly
+		   instead of trusting sv.models[0]: index 0 is the empty precache slot and
+		   nothing in the loader promises what sits in it. */
+		if (!(int)check->v->modelindex)
+			pe->model = NULL;
+		VectorCopy (check->v->mins, pe->mins);
+		VectorCopy (check->v->maxs, pe->maxs);
+	}
+	/*
+	FTESurf Patch 229 -- the server never gave a prop to its own pmove.
+
+	SOLID_PHYSICS_TRIMESH props were absent from AddLinksToPmove's solid filter
+	entirely, so they never got here; and this function only ever attached a
+	model in the SOLID_BSP branch above, so even once admitted they would have
+	collided as a bounding box.  Both halves are needed and either alone is inert.
+
+	The CLIENT has predicted these props as solid all along -- CL_SetSolidEntities
+	accepts an alias model that exposes NativeTrace (cl_ents.c:7232-7241) -- so the
+	disagreement ran the surprising way round: the client stopped the player at the
+	prop and the server, which had nothing there at all, said they never stopped.
+	That is the rubber-band, and it is a total absence rather than a mismatch.
+	Server-side traceline/bullets always worked, because those go through
+	World_Move (world.c:1268), which is why the code reads as though it were fine.
+
+	Everything downstream already exists from Patches 54-64: sv_ents.c:3601 encodes
+	this solid as ES_SOLID_BSP so the client predicts it, and PM_TransformedHullCheck
+	handles NativeTrace + hull + scale (pmovetst.c:304, 384-443).  pmovetst.c lives
+	in common/ and is compiled into both sides, so once pe->{model,origin,angles,
+	scale} match, both run the same function on the same data and agree by
+	construction.  This is only the wiring.
+
+	SEPARATE BRANCH, not an extension of the one above, for two reasons.  That one
+	multiplies pe->angles[0] by r_meshpitch BEFORE its VectorCopy overwrites it --
+	dead code operating on the previous slot's occupant, left alone here because
+	fixing it is not this patch's job.  And the order below is deliberate: it
+	mirrors CL_SetSolidEntities (cl_ents.c:7246-7248) EXACTLY, copy-then-multiply,
+	because prediction parity is between these two pmove feeds and nothing else.
+	(Note for whoever reads this next: pmovetst.c then calls AngleVectorsMesh, which
+	applies r_meshpitch AGAIN, while the server's non-pmove path in world.c:1156
+	applies it once to raw angles.  So pmove and World_Move already disagree for a
+	PITCHED or ROLLED prop.  Invisible today -- props are yaw-only -- and it is a
+	pre-existing inconsistency in the other path, not one introduced here.  Matching
+	the client is unambiguously right for THIS function.)
+	*/
+	else if (solid == SOLID_PHYSICS_TRIMESH || solid == SOLID_PHYSICS_BOX)
+	{
+		pe->model = ((int)check->v->modelindex) ? sv.models[(int)check->v->modelindex] : NULL;
+
+		VectorCopy (check->v->angles, pe->angles);
+		pe->angles[0] *= r_meshpitch.value;
+		pe->angles[2] *= r_meshroll.value;
+
+		//The value the CLIENT DECODES, not the raw float: sv_ents.c:3909-3912 sends
+		//`!scale ? 16 : bound(1, scale*16, 255)` and cl_ents.c:7251 divides by 16.
+		//Using the raw float here would desync any non-dyadic modelscale by up to
+		//1/16 -- and 52% of the props in this library carry a modelscale != 1.
+		if (!check->xv->scale)
+			pe->scale = 1;
+		else
+			pe->scale = bound(1, check->xv->scale*16, 255) / 16.0;
+
+		//Kept for the model-less case: PM_PlayerTrace falls back to a box, exactly
+		//as the client does when its own model_precache slot is not loaded yet.
+		VectorCopy (check->v->mins, pe->mins);
+		VectorCopy (check->v->maxs, pe->maxs);
 	}
 	else
 	{
@@ -7076,6 +7489,11 @@ static void AddLinksToPmove (world_t *w, wedict_t *player, areagridlink_t *node)
 			|| solid == SOLID_BBOX
 			|| solid == SOLID_SLIDEBOX
 			|| solid == SOLID_LADDER
+			//FTESurf Patch 229: Source props. Without these two the player's move
+			//never even considers a prop_dynamic/prop_physics on the SERVER, while
+			//the client predicts it solid -- see AddEntityToPmove for the whole story.
+			|| solid == SOLID_PHYSICS_TRIMESH
+			|| solid == SOLID_PHYSICS_BOX
 			//|| (solid == SOLID_PHASEH2 && progstype == PROG_H2) //logically matches hexen2, but I hate it
 			)
 		{
@@ -7127,6 +7545,11 @@ static void AddPortalsToPmove (world_t *w, wedict_t *player, areagridlink_t *nod
 			|| solid == SOLID_BBOX
 			|| solid == SOLID_SLIDEBOX
 			|| solid == SOLID_LADDER
+			//FTESurf Patch 229: Source props. Without these two the player's move
+			//never even considers a prop_dynamic/prop_physics on the SERVER, while
+			//the client predicts it solid -- see AddEntityToPmove for the whole story.
+			|| solid == SOLID_PHYSICS_TRIMESH
+			|| solid == SOLID_PHYSICS_BOX
 			//|| (solid == SOLID_PHASEH2 && progstype == PROG_H2) //logically matches hexen2, but I hate it
 			)
 		{
@@ -7185,6 +7608,11 @@ void AddLinksToPmove (world_t *w, wedict_t *player, areanode_t *node)
 			|| solid == SOLID_BBOX
 			|| solid == SOLID_SLIDEBOX
 			|| solid == SOLID_LADDER
+			//FTESurf Patch 229: Source props. Without these two the player's move
+			//never even considers a prop_dynamic/prop_physics on the SERVER, while
+			//the client predicts it solid -- see AddEntityToPmove for the whole story.
+			|| solid == SOLID_PHYSICS_TRIMESH
+			|| solid == SOLID_PHYSICS_BOX
 			//|| (solid == SOLID_PHASEH2 && progstype == PROG_H2) //logically matches hexen2, but I hate it
 			)
 		{
@@ -7241,6 +7669,11 @@ void AddLinksToPmove_Force (world_t *w, wedict_t *player, areanode_t *node)
 			|| solid == SOLID_BBOX
 			|| solid == SOLID_SLIDEBOX
 			|| solid == SOLID_LADDER
+			//FTESurf Patch 229: Source props. Without these two the player's move
+			//never even considers a prop_dynamic/prop_physics on the SERVER, while
+			//the client predicts it solid -- see AddEntityToPmove for the whole story.
+			|| solid == SOLID_PHYSICS_TRIMESH
+			|| solid == SOLID_PHYSICS_BOX
 			//|| (solid == SOLID_PHASEH2 && progstype == PROG_H2) //logically matches hexen2, but I hate it
 			)
 		{
@@ -7413,6 +7846,7 @@ void SV_RunCmd (usercmd_t *ucmd, qboolean recurse)
 	int			i, n;
 	int			oldmsec;
 	qboolean jumpable;
+	qboolean held = false;	//FTESurf Patch 380
 	vec3_t new_vel;
 	vec3_t old_vel;
 
@@ -7531,6 +7965,7 @@ void SV_RunCmd (usercmd_t *ucmd, qboolean recurse)
 
 		VectorCopy (host_client->specorigin, pmove.origin);
 		VectorCopy (host_client->specvelocity, pmove.velocity);
+		VectorClear (pmove.basevelocity);	//FTESurf Patch 240: pmove is one global -- a spectator must not inherit a player's carrier velocity
 
 		if (host_client->zquake_extensions & Z_EXT_PM_TYPE_NEW)
 			pmove.pm_type = PM_SPECTATOR;
@@ -7772,6 +8207,100 @@ void SV_RunCmd (usercmd_t *ucmd, qboolean recurse)
 	pmove.pm_type = SV_PMTypeForClient (host_client, sv_player);
 	pmove.onground = ((int)sv_player->v->flags & FL_ONGROUND) != 0;
 	pmove.jump_held = host_client->jump_held;
+	PMSrc_LoadState(&host_client->pmsrc);	//FTESurf: duck/tick state carried between commands
+
+	/*
+	FTESurf Patch 240 -- basevelocity, Source's carrier velocity.
+
+	pm_source.c has consumed pmove.basevelocity all along, in eleven places: the
+	Z half-step in PMSrc_StartGravity, and the add-move-subtract sandwiches
+	around PMSrc_WalkMove and PMSrc_AirMove.  What was missing was a WRITER.
+	The only one in the tree is svhl_game.c's, behind a GT_HALFLIFE-only
+	FL_BASEVELOCITY test, so for a GT_PROGS game the field was permanently
+	'0 0 0' and all eleven of those sites were dead code.  (Two comments I wrote
+	in Build 37 said pm_source.c had no basevelocity concept at all.  They were
+	wrong; they are corrected where they stand.)
+
+	OPTIONAL FIELD, the fs_forceduck idiom above: a mod that does not declare
+	fs_basevelocity gets NULL back from GetEdictFieldValue -- cached NULL, so it
+	costs one failed lookup for the life of the progs -- and nothing happens.
+	quakers, sharing this tree, does not declare it.
+
+	READ AND CLEAR, AND THE ORDER IS THE WHOLE DESIGN.  The field is zeroed
+	HERE, before the move, not after it.  The touch loop runs AFTER
+	PM_PlayerMove, so a trigger's .touch writes the field and the NEXT command
+	consumes it and destroys it as it does.  Zero it after the touch loop
+	instead and you erase what QC has just written, and basevelocity reads zero
+	forever while looking perfectly correct.  One touch buys one command of
+	push; standing in the volume re-arms it every command.  That is Source's
+	"recomputed, not accumulated" without needing anything to remember to switch
+	it off.
+
+	THE ELSE-BRANCH IS NOT OPTIONAL.  pmove is a single global shared by every
+	client's SV_RunCmd, and pm_source.c clears only basevelocity[2] -- X and Y
+	are never cleared there at all.  Without the else, client B inherits client
+	A's booster and rides it forever, and it only shows up with more than one
+	player.  svhl_game.c and SV_AntiKnockBack both clear it for the same reason.
+
+	NOT PREDICTED, and saying so is part of shipping it.  basevelocity is not in
+	pmsourcestate_t and is not networked; cl_pred.c does not mention it.  So the
+	client replays unacked commands with no push and trails the server by about
+	(push speed * unacked time) inside a volume.  The error is bounded by the
+	unacked window and resets on every server packet rather than integrating,
+	but it is visible on entry and exit.  Predicting it needs the field in
+	pmsourcestate_t, a network path, and CSQC knowledge of the volume -- or the
+	trigger moved into the engine's physent set, which is what Source does.
+	*/
+	{
+		eval_t *ev = svprogfuncs->GetEdictFieldValue(svprogfuncs, sv_player, "run_basevelocity", ev_vector, &evalc_basevel);
+		if (ev)
+		{
+			VectorCopy(ev->_vector, pmove.basevelocity);
+			VectorClear(ev->_vector);
+		}
+		else
+			VectorClear(pmove.basevelocity);
+	}
+
+	{
+		eval_t *ev = svprogfuncs->GetEdictFieldValue(svprogfuncs, sv_player, "run_pmhold", ev_float, &evalc_pmhold);
+		held = ev && ev->_float;
+	}
+
+	//FTESurf Patch 142 -- let QC hand the duck state back.
+	//
+	//pmove.ducked is carried across commands inside host_client->pmsrc and is
+	//the one part of a player's position QC cannot save or restore. That is
+	//fine for movement and fatal for a save-lock: save while crouched under a
+	//lip, load standing, and the 72-unit hull spawns inside the ceiling.
+	//
+	//OPTIONAL FIELD, same idiom as the Patch 131 telemetry below: a mod that
+	//does not declare fs_forceduck gets NULL from GetEdictFieldValue and this
+	//costs one cached lookup per command. quakers, sharing this tree, does not
+	//declare it.
+	//
+	//ONE-SHOT, AND ZERO IS THE NO-OP. 1 stands the player up, 2 crouches them,
+	//0 does nothing -- deliberately that way round rather than "-1 means leave
+	//it alone", because a QC field is ZERO when the edict is spawned and this
+	//has to be inert without anything remembering to initialise it. The engine
+	//clears the field itself, so QC cannot leave it latched and pin a player
+	//crouched forever.
+	//
+	//ducking/ducktime are cleared with it: those describe a transition IN
+	//PROGRESS, and a restored state is a finished one. PMSrc_ApplyHull rebuilds
+	//player_maxs from pmove.ducked at the top of PM_PlayerMove, so the hull
+	//follows without anything here touching it.
+	{
+		eval_t *ev = svprogfuncs->GetEdictFieldValue(svprogfuncs, sv_player, "run_forceduck", ev_float, &evalc_forceduck);
+		if (ev && ev->_float)
+		{
+			pmove.ducked   = (ev->_float == 2);
+			pmove.ducking  = false;
+			pmove.ducktime = 0;
+			ev->_float = 0;
+		}
+	}
+
 	pmove.jump_msec = 0;
 	if (progstype != PROG_QW)	//this is just annoying.
 		pmove.waterjumptime = sv_player->v->teleport_time - sv.time;
@@ -7780,6 +8309,11 @@ void SV_RunCmd (usercmd_t *ucmd, qboolean recurse)
 	pmove.numphysent = 1;
 	pmove.physents[0].model = sv.world.worldmodel;
 	pmove.cmd = *ucmd;
+	//FTESurf Patch 380: a held body (QC .run_pmhold, a spectate) runs ZERO mover ticks.
+	//Zeroed here, after the anti-hover debit above, so the budget and back-fill are
+	//untouched; with no tick nothing in pmsrc, origin, velocity or the tick count moves.
+	if (held)
+		pmove.cmd.msec = 0;
 	pmove.skipent = -1;
 	pmove.capsule = (sv_player->xv->geomtype == GEOMTYPE_CAPSULE);
 
@@ -7800,6 +8334,7 @@ void SV_RunCmd (usercmd_t *ucmd, qboolean recurse)
 	movevars.edgefriction = *pm_edgefriction.string?pm_edgefriction.value:2;
 	movevars.coordtype = host_client->netchan.netprim.coordtype;
 	movevars.flags				= MOVEFLAG_VALID|MOVEFLAG_NOGRAVITYONGROUND|(*pm_edgefriction.string?0:MOVEFLAG_QWEDGEBOX);
+	SV_SetSourceMoveVars();	//FTESurf: pm_source.c parameters
 
 // should already be folded into host_client->maxspeed
 //	if (sv_player->xv->hasted)
@@ -7819,6 +8354,21 @@ void SV_RunCmd (usercmd_t *ucmd, qboolean recurse)
 		pmove.onladder = false;
 
 	pmove.world = &sv.world;
+
+	//FTESurf Patch 346: snapshot what the mover is about to be handed -- after every
+	//input above is final, so the pin is what ran and not what was configured.
+	//Not while held (Patch 380): the pin carries pmtype, and a held move is not a move.
+	if (movevars.physicsmode == PHYSMODE_SOURCE && !held)
+	{
+		float pin[SV_PMPIN_COUNT];
+		SV_PMPinFill(pin);
+		if (!host_client->pmepoch || memcmp(pin, host_client->pmpin, sizeof(pin)))
+		{
+			memcpy(host_client->pmpin, pin, sizeof(pin));
+			host_client->pmepoch++;
+		}
+		host_client->physcrc = SV_PhysentDigest();
+	}
 #if 0
 {
 	int before, after;
@@ -7860,6 +8410,145 @@ if (sv_player->v->health > 0 && before && !after )
 	}
 
 	host_client->jump_held = pmove.jump_held;
+	PMSrc_SaveState(&host_client->pmsrc);	//FTESurf
+
+	//FTESurf: the engine owns the hull while pm_source is driving, so push
+	//the ducked size back onto the edict.  Without this the entity keeps its
+	//standing bbox and trigger/touch tests use the wrong box while crouched.
+	if (movevars.physicsmode == PHYSMODE_SOURCE)
+	{
+		if (sv_player->v->maxs[2] != pmove.player_maxs[2])
+		{
+			VectorCopy(pmove.player_mins, sv_player->v->mins);
+			VectorCopy(pmove.player_maxs, sv_player->v->maxs);
+			VectorSubtract(sv_player->v->maxs, sv_player->v->mins, sv_player->v->size);
+		}
+		sv_player->xv->pmove_flags = (int)sv_player->xv->pmove_flags & ~PMF_DUCKED;
+		if (pmove.ducked)
+			sv_player->xv->pmove_flags = (int)sv_player->xv->pmove_flags | PMF_DUCKED;
+
+		//...and the eye height, which unlike the hull moves SMOOTHLY through
+		//the crouch (Source's SetDuckedEyeOffset on a SimpleSpline).  It has
+		//to come from here rather than from QC because the fraction lives in
+		//pmove's carried duck state and nothing else can reconstruct it.
+		//SV_UpdateClientStats copies view_ofs[2] into STAT_VIEWHEIGHT as a
+		//float (sv_send.c:2221), so the whole curve survives to the client.
+		sv_player->v->view_ofs[2] = pmove.viewheight;
+
+		//FTESurf board telemetry (Patch 131).  These are published into
+		//OPTIONAL QC fields, which is what makes the patch inert for every
+		//other game sharing this tree: a mod that does not declare them gets
+		//NULL back from GetEdictFieldValue and nothing is written at all.
+		//Same idiom as the playermodel/ping lookups at sv_user.c:2346-2354.
+		//
+		//The normal and the entry velocity are only meaningful on the move
+		//where fs_boardcount changed, and QC is written to read them only
+		//then -- so a value left over from another client's move is never
+		//consulted.
+		//
+		//THE CACHES ARE FILE-SCOPE AND ARE RESET ON PROGS LOAD.  See
+		//SV_FS_ResetFieldCaches below; do not move them back inside this
+		//block as function statics, which is what they were and which is
+		//what crashed.
+		{
+			eval_t *ev;
+
+			ev = svprogfuncs->GetEdictFieldValue(svprogfuncs, sv_player, "run_boardnormal", ev_vector, &evalc_bnorm);
+			if (ev)
+				VectorCopy(pmove.boardnormal, ev->_vector);
+			ev = svprogfuncs->GetEdictFieldValue(svprogfuncs, sv_player, "run_boardvelocity", ev_vector, &evalc_bvel);
+			if (ev)
+				VectorCopy(pmove.boardvelocity, ev->_vector);
+			ev = svprogfuncs->GetEdictFieldValue(svprogfuncs, sv_player, "run_boardcount", ev_float, &evalc_bcount);
+			if (ev)
+				ev->_float = pmove.boardcount;
+			ev = svprogfuncs->GetEdictFieldValue(svprogfuncs, sv_player, "run_rampcontact", ev_float, &evalc_rcontact);
+			if (ev)
+				ev->_float = pmove.rampcontact;
+
+			//Patch 137.  Unlike fs_boardnormal above this one is valid EVERY
+			//move rampcontact is set, not only on the move the count changed,
+			//because it answers "which plane am I on now" rather than "what
+			//did I land on".  The strafe bar reads it; the board grade does
+			//not, and must not.
+			ev = svprogfuncs->GetEdictFieldValue(svprogfuncs, sv_player, "run_rampnormal", ev_vector, &evalc_rnorm);
+			if (ev)
+				VectorCopy(pmove.rampnormal, ev->_vector);
+
+			/*
+			  FTESurf Patch 325 -- THE RUN CLOCK, COUNTED.
+
+			  The run clock has always been SAMPLED: SV_TimerTicks is
+			  floor((time - run_t_start)/tick + 0.5), `time` in a think hook is
+			  sv.time, and sv.time advances ONCE PER SERVER FRAME.  So every
+			  usercmd inside one frame reads the same clock, and the stored time
+			  is a function of when packets happened to arrive and where the
+			  frame loop happened to land -- neither of which is in the input
+			  stream.  A run time therefore cannot be reproduced by re-simulating
+			  the usercmds that produced it, which is what a verifier must do.
+			  It is worse than one frame, too: PlayerPostThink is called from
+			  SV_PostRunCmd, which sits OUTSIDE the per-usercmd loop, so the QC
+			  timer runs once per PACKET.
+
+			  This is the same run measured in the unit the mover actually works
+			  in.  Accumulated HERE, in the caller, because `pmove` is one global
+			  shared by every client -- see the note on playermove_t.ticksrun.
+
+			  THREE FIELDS, NOT ONE, and the second is the one that prevents a
+			  silent disaster.  A tick count is not a duration without a rate,
+			  and QC gets its rate from `cvar("pm_ticrate")` with a compile-time
+			  fallback of 0.015 while the mover uses movevars.ticrate with a
+			  fallback of its own.  While the clock was seconds, a disagreement
+			  cost rounding; once the stored quantity IS ticks, the same
+			  disagreement MULTIPLIES every leaderboard time by their ratio.
+			  This tree has already shipped that bug once in the other direction
+			  (build 64, bhop maps at 0.01 read against a 0.015 constant), so the
+			  rate the mover really used is published beside the count rather than
+			  left to be re-derived.  The third is the sub-tick remainder, which
+			  is what lets an elapsed SECONDS reading stay exact -- without it a
+			  counted clock can only answer in whole ticks, and the recorder's
+			  timestamps and the save-state resume both need finer than that.
+
+			  OUTPUT ONLY and optional, on the Patch 131 precedent: a mod that
+			  does not declare these fields gets NULL and nothing is written.
+			*/
+			host_client->movetickcount += pmove.ticksrun;
+			ev = svprogfuncs->GetEdictFieldValue(svprogfuncs, sv_player, "run_movetick", ev_float, &evalc_mtick);
+			if (ev)
+				ev->_float = host_client->movetickcount;
+			ev = svprogfuncs->GetEdictFieldValue(svprogfuncs, sv_player, "run_movetickrate", ev_float, &evalc_mtickrate);
+			if (ev)
+				ev->_float = pmove.tickused;
+			ev = svprogfuncs->GetEdictFieldValue(svprogfuncs, sv_player, "run_movecarry", ev_float, &evalc_mcarry);
+			if (ev)
+				ev->_float = pmove.msec_carry;
+
+			//FTESurf Patch 346: the pin's epoch, the physent digest, and the
+			//portal crossings the mover committed (with their post-move state).
+			host_client->portalx += pmove.portalcrossings;
+			if (pmove.portalcrossings)
+			{
+				VectorCopy(pmove.origin, host_client->portalorg);
+				VectorCopy(pmove.velocity, host_client->portalvel);
+			}
+			ev = svprogfuncs->GetEdictFieldValue(svprogfuncs, sv_player, "run_pmepoch", ev_float, &evalc_pmepoch);
+			if (ev)
+				ev->_float = host_client->pmepoch;
+			ev = svprogfuncs->GetEdictFieldValue(svprogfuncs, sv_player, "run_physcrc", ev_float, &evalc_physcrc);
+			if (ev)
+				ev->_float = host_client->physcrc;
+			ev = svprogfuncs->GetEdictFieldValue(svprogfuncs, sv_player, "run_portalx", ev_float, &evalc_portalx);
+			if (ev)
+				ev->_float = host_client->portalx;
+			ev = svprogfuncs->GetEdictFieldValue(svprogfuncs, sv_player, "run_portalorg", ev_vector, &evalc_portalorg);
+			if (ev)
+				VectorCopy(host_client->portalorg, ev->_vector);
+			ev = svprogfuncs->GetEdictFieldValue(svprogfuncs, sv_player, "run_portalvel", ev_vector, &evalc_portalvel);
+			if (ev)
+				VectorCopy(host_client->portalvel, ev->_vector);
+		}
+	}
+
 	if (progstype != PROG_QW)	//this is just annoying.
 	{
 		if (pmove.waterjumptime)
@@ -7950,8 +8639,8 @@ if (sv_player->v->health > 0 && before && !after )
 
 	if (!host_client->spectator)
 	{
-		// link into place and touch triggers
-		World_LinkEdict (&sv.world, (wedict_t*)sv_player, true);
+		// link into place and touch triggers -- none while held (Patch 380)
+		World_LinkEdict (&sv.world, (wedict_t*)sv_player, !held);
 
 /*		for (i = 0; i < pmove.numphysent; i++)
 		{

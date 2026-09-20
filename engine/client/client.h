@@ -85,6 +85,7 @@ typedef struct
 	qboolean	jump_held;	//networked with Z_EXT_PM_TYPE
 	int			jump_msec;	// hack for fixing bunny-hop flickering on non-ZQuake servers
 	vec3_t		gravitydir;	//networked with replacementdeltas
+	pmsourcestate_t	pmsrc;	//FTESurf: never networked; replayed forward by prediction
 } player_state_t;
 
 
@@ -639,6 +640,37 @@ typedef struct {
 	float oldframestarttime[FS_COUNT];
 	int oldframe[FS_COUNT];
 	qbyte basebone;
+	//nettest Patch 125: HL bone controllers, carried here so CL_LerpNetFrameState
+	//can hand them to framestate_t alongside the frame data.
+	//
+	//Patch 126 CORRECTS Patch 125's note here, which said these must never be
+	//lerped because blending across a wrap-around (255 -> 0 is one step, not 255)
+	//would make a turret sweep the long way round.  That hazard is real but it
+	//applies ONLY to controllers the model marks as wrapping (type & 0x8000).
+	//Every controller this mod actually drives - the head yaw at -60..60 and the
+	//jaw at 0..45 - is a BOUNDED rotation that HL_CalcBoneAdj already clamps to
+	//the model's own start..end, and those blend perfectly well.  Taking the raw
+	//newest value meant a server-driven head turned in visible steps at the AI
+	//think rate (10Hz) while the body it is attached to interpolated smoothly.
+	//
+	//So both ends are kept and the blend is done in HL_CalcBoneAdj, which is the
+	//only place that can see the per-controller type and skip the wrapping ones.
+	short bonecontrol[5];		//degrees * ES_BONECONTROL_SCALE, newest snapshot
+	short bonecontrol_old[5];	//...and the one before it
+	float bonecontrolstarttime;	//when the newest arrived
+	//nettest Patch 155: the animation playback rate, and the phase bookkeeping
+	//that lets it change mid-sequence without the pose jumping.
+	//
+	//frametime is not simply elapsed*rate, because the rate can change while a
+	//sequence is still playing - HL's tentacle sweeps faster the more recently
+	//it heard something (tentacle.cpp) - and rescaling the whole elapsed time
+	//would teleport the pose.  So the clock is rebased on every rate change:
+	//animphase remembers the frametime reached at animphasetime, and playback
+	//continues from there at the new rate.  Continuous by construction.
+	float animrate;					//playback multiplier, 1 = normal
+	float animphase[FS_COUNT];		//frametime reached at animphasetime
+	float animphasetime[FS_COUNT];	//when the phase was last rebased
+	float bonecontroldeltatime;	//how long the previous pair took to arrive
 
 	//intermediate values for origin lerping of stepping things
 	int newsequence;
@@ -743,6 +775,21 @@ struct playerview_s
 		vec3_t		gravitydir;
 		qboolean	jump_held;
 		int			jump_msec;		// hack for fixing bunny-hop flickering on non-ZQuake servers
+		pmsourcestate_t	pmsrc;		//FTESurf: pm_source.c duck/tick state
+		vec3_t		velocity;		//FTESurf Patch 269c: the velocity this client
+									//PREDICTED for `sequence`.  Belongs in this
+									//struct by its own definition -- under
+									//PEXT2_REPLACEMENTDELTAS the local player's
+									//velocity is not maintained in the acked
+									//playerstate, so it does NOT regenerate from
+									//networked state and has to be carried.  Read
+									//only to build the REPORTED velocity; the mover
+					//still seeds from from.state as delivered.
+		vec3_t		origin;			//FTESurf Patch 335: the origin this client
+									//PREDICTED for `sequence`, kept only so the
+									//ack can be compared against it -- the
+									//snap-back meter (cl_prederror).  Never
+									//read by the mover.
 
 		int			sequence;
 	} prop;
@@ -1075,6 +1122,7 @@ extern	cvar_t	cl_backspeed;
 extern	cvar_t	cl_sidespeed;
 
 extern	cvar_t	cl_movespeedkey;
+extern	cvar_t	in_speedbutton;	//FTESurf
 
 extern	cvar_t	cl_yawspeed;
 extern	cvar_t	cl_pitchspeed;
@@ -1233,7 +1281,7 @@ extern unsigned int cl_maxstris;
 */	} while(0)
 
 //nettest: persistent lit decals (cl_ents.c) — clip once + cache, re-emit cheaply each frame.
-int CL_AddPersistentDecal(const char *shadername, const vec3_t origin, const vec3_t up, const vec3_t side, const vec3_t rgb, float alpha, float aspect, float lifetime);
+int CL_AddPersistentDecal(const char *shadername, const vec3_t origin, const vec3_t up, const vec3_t side, const vec3_t rgb, float alpha, float aspect, float lifetime, const float *texrange);
 void CL_RemovePersistentDecal(int handle);
 void CL_UpdatePersistentDecal(int handle, const vec3_t rgb, float alpha);
 void CL_EmitPersistentDecals(void);	//called from the world draw (r_surf.c) before BE_DrawWorld
@@ -1263,6 +1311,16 @@ extern 	kbutton_t 	in_strafe;
 extern 	kbutton_t 	in_speed;
 
 extern	float in_sensitivityscale;
+/*FTESurf Patch 301: the raw-input GRANT, as opposed to the in_rawinput* cvars, which are
+  the request.  -1 means the platform backend does not report it; 0 means raw input ran and
+  bound nothing (so the legacy OS-summed path is live).  Maintained by in_win.c, declared in
+  in_generic.c -- see the essay there.*/
+extern	int in_rawmice_live;
+extern	int in_rawkbd_live;
+extern	int in_raw_injected;	/*Patch 306: WM_INPUT reports with NO device handle -- synthesized input, rejected*/
+extern	int in_raw_unenum;		/*Patch 306: ...and reports from a real device we never enumerated, also rejected*/
+extern	int in_raw_legacybtn;	/*Patch 307: legacy mouse buttons ACCEPTED with no raw corroboration -- these DID reach the game*/
+extern	int in_raw_nolegacy_live;	/*Patch 307: whether legacy mouse messages are ACTUALLY suppressed right now (-1 unknown)*/
 
 void CL_MakeActive(char *gamename);
 void CL_UpdateWindowTitle(void);
@@ -1276,6 +1334,7 @@ qboolean IN_WeaponWheelIsShown(void);	//to decide when the game should be auto-p
 void CL_InitInput (void);
 void CL_SendCmd (double frametime, qboolean mainloop);
 void CL_SendMove (usercmd_t *cmd);
+void CL_AngleHistoryFollow(int plnum, const vec3_t before);	//FTESurf Patch 396
 #ifdef NQPROT
 void CL_ParseTEnt (qboolean nqprot);
 #else
@@ -1492,6 +1551,9 @@ void CL_ParseClientPersist(void);
 //these last ones are needed for csqc handling of engine-bound ents.
 void CL_ClearEntityLists(void);
 void CL_FreeVisEdicts(void);
+//FTESurf Patch 270: received-delta counters, for the CSQC getdeltacount builtin.
+void CL_ClearDeltaCounts(void);
+unsigned int CL_GetDeltaCount(unsigned int modelindex);
 void CL_LinkViewModel(void);
 void CL_LinkPlayers (void);
 void CL_LinkPacketEntities (void);
@@ -1509,6 +1571,7 @@ qboolean CSQC_UnconnectedOkay(qboolean inprinciple);
 qboolean CSQC_UnconnectedInit(void);
 qboolean CSQC_CheckDownload(const char *name, unsigned int checksum, size_t checksize);	//reports whether we already have a usable csprogs.dat
 qboolean CSQC_Init (qboolean anycsqc, const char *csprogsname, unsigned int checksum, size_t progssize);
+const char *CSQC_FailReason(void);	//ftesurf (P282): why the last CSQC_Init returned false, for the caller that knows the consequence
 qboolean CSQC_ConsoleLink(char *text, char *info);
 void	 CSQC_RegisterCvarsAndThings(void);
 qboolean CSQC_SetupToRenderPortal(int entnum);
@@ -1527,10 +1590,18 @@ void	 CSQC_ServerInfoChanged(void);
 void	 CSQC_PlayerInfoChanged(int player);
 qboolean CSQC_Parse_Damage(int seat, float save, float take, vec3_t source);
 qboolean CSQC_Parse_SetAngles(int seat, vec3_t newangles, qboolean wasdelta);
+//FTESurf Patch 335: per-predicted-usercmd CSQC trigger hook.
+void	 CSQC_PredictPlayerMove(int seat, const usercmd_t *cmd, const float *preorigin);
+void	 CSQC_PredictConsumeBaseVel(int seat, int sequence);
+void	 CSQC_PredictBaseVelFlush(void);
+void	 CSQC_PredictAngleCorrect(int seat, vec3_t delta);
+void	 CSQC_PredictAngleFlush(int seat);
+void	 CSQC_PredictAngleAbsolute(int seat, vec3_t ang);	//FTESurf Patch 396: may redirect ang to a newer predicted snap
 void	 CSQC_Input_Frame(int seat, usercmd_t *cmd);
 void	 CSQC_WorldLoaded(void);
 qboolean CSQC_ParseTempEntity(void);
 qboolean CSQC_ConsoleCommand(int seat, const char *cmd);
+qboolean CSQC_ChatSay(qboolean team, const char *args);
 qboolean CSQC_KeyPress(int key, int unicode, qboolean down, unsigned int devid);
 qboolean CSQC_MouseMove(float xdelta, float ydelta, unsigned int devid);
 qboolean CSQC_MousePosition(float xabs, float yabs, unsigned int devid);
@@ -1553,6 +1624,12 @@ void	 CSQC_CvarChanged(cvar_t *var);
 #define CSQC_UnconnectedInit() false
 #define CSQC_UseGamecodeLoadingScreen() false
 #define CSQC_Parse_SetAngles(seat,newangles,wasdelta) false
+#define CSQC_PredictPlayerMove(seat,cmd,preorigin)
+#define CSQC_PredictConsumeBaseVel(seat,sequence)
+#define CSQC_PredictBaseVelFlush()
+#define CSQC_PredictAngleCorrect(seat,delta)
+#define CSQC_PredictAngleFlush(seat)
+#define CSQC_PredictAngleAbsolute(seat,ang)
 #define CSQC_ServerInfoChanged()
 #define CSQC_PlayerInfoChanged(player)
 #endif

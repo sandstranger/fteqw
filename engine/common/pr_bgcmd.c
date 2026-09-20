@@ -33,9 +33,15 @@ cvar_t	pr_fixbrokenqccarrays = CVARFD("pr_fixbrokenqccarrays", "0", CVAR_MAPLATC
 cvar_t pr_tempstringcount = CVARD("pr_tempstringcount", "", "Obsolete. Set to 16 if you want to recycle+reuse the same 16 tempstring references and break lots of mods.");
 cvar_t pr_tempstringsize = CVARD("pr_tempstringsize", "4096", "Obsolete");
 #ifdef MULTITHREAD
-cvar_t pr_gc_threaded = CVARD("pr_gc_threaded", "1", "Says whether to use a separate thread for tempstring garbage collections. This avoids main-thread stalls but at the expense of more memory usage.");
+//FTESurf Patch 222: CVAR_NOSAVE.  Value 2 disables the collector for BOTH VMs
+//(pr_csqc.c and pr_cmds.c latch it at VM creation) and leaks every tempstring for the
+//life of the VM -- fine for a 30-second diagnostic run, unbounded for a server or a long
+//session, and this binary is shared with the game at C:\FTEQuake.  cfg_save writes any
+//changed non-default cvar unless it is NOSET/NOSAVE (cvar.c), so without this flag a
+//diagnostic run could bake "2" into a config and quietly disable the GC forever.
+cvar_t pr_gc_threaded = CVARFD("pr_gc_threaded", "1", CVAR_NOSAVE, "Says whether to use a separate thread for tempstring garbage collections. This avoids main-thread stalls but at the expense of more memory usage. 2 is a FTESurf DIAGNOSTIC value that disables the collector outright, leaking every tempstring for the life of the VM -- see PR_RunGC.");
 #else
-cvar_t pr_gc_threaded = CVARFD("pr_gc_threaded", "0", CVAR_NOSET|CVAR_NOSAVE, "Says whether to use a separate thread for tempstring garbage collections. This avoids main-thread stalls but at the expense of more memory usage.");
+cvar_t pr_gc_threaded = CVARFD("pr_gc_threaded", "0", CVAR_NOSET|CVAR_NOSAVE, "Says whether to use a separate thread for tempstring garbage collections. This avoids main-thread stalls but at the expense of more memory usage. 2 is a FTESurf DIAGNOSTIC value that disables the collector outright, leaking every tempstring for the life of the VM -- see PR_RunGC.");
 #endif
 cvar_t	pr_sourcedir = CVARD("pr_sourcedir", "src", "Subdirectory where your qc source is located. Used by the internal compiler and qc debugging functionality.");
 cvar_t pr_enable_uriget = CVARD("pr_enable_uriget", "1", "Allows gamecode to make direct http requests");
@@ -2001,7 +2007,15 @@ void QCBUILTIN PF_cvar_setf (pubprogfuncs_t *prinst, struct globalvars_s *pr_glo
 void QCBUILTIN PF_registercvar (pubprogfuncs_t *prinst, struct globalvars_s *pr_globals)
 {
 	const char *name = PR_GetStringOfs(prinst, OFS_PARM0);
-	const char *value = (prinst->callargc>2)?PR_GetStringOfs(prinst, OFS_PARM1):"";
+	//The default value is PARM1, so it must be gated on callargc>1, not >2.
+	//With the >2 test the documented two-argument DP_QC_REGISTERCVAR form
+	//	registercvar("hud_scale", "2")
+	//silently created the cvar as the EMPTY STRING -- so every QC that used
+	//the standard signature got 0 back from cvar() forever after, with no
+	//warning. (nettest works around this in CVar_DoRegister by force-setting
+	//when cvar_string() comes back empty; that workaround simply stops firing
+	//now.) dpflags below IS at PARM2 and its >2 test is correct.
+	const char *value = (prinst->callargc>1)?PR_GetStringOfs(prinst, OFS_PARM1):"";
 	int dpflags = (prinst->callargc>2)?G_FLOAT(OFS_PARM2):0;
 	int realflags = 0;
 	name = PR_GetStringOfs(prinst, OFS_PARM0);
@@ -2809,6 +2823,27 @@ void QCBUILTIN PF_fopen (pubprogfuncs_t *prinst, struct globalvars_s *pr_globals
 		G_FLOAT(OFS_RETURN) = i + FIRST_QC_FILE_INDEX;
 		pf_fopen_files[i].prinst = prinst;
 		break;
+
+	//FTESurf Patch 316: write-only, straight to disk -- see pr_common.h.
+	//Mirrors COM_WriteFile's own two lines (FS_CreatePath then "wb" under
+	//FS_GAMEONLY), because that is exactly what the buffered modes do at
+	//fclose and a stream that landed somewhere else would be a second rule.
+	//FS_CreatePath matters more here than it looks: the buffered modes get
+	//it for free at close, and without it the first recording into a map
+	//directory that does not exist yet would fail at OPEN -- which reads as
+	//"recording is broken" rather than "the folder was not there".
+	case FRIK_FILE_WRITESTREAM:
+		FS_CreatePath(pf_fopen_files[i].name, FS_GAMEONLY);
+		pf_fopen_files[i].file = FS_OpenVFS(pf_fopen_files[i].name, "wb", FS_GAMEONLY);
+		if (!pf_fopen_files[i].file)
+			break;			//leaves accessmode set but prinst NULL, i.e. the slot stays free
+		pf_fopen_files[i].data = NULL;
+		pf_fopen_files[i].bufferlen = 0;
+		pf_fopen_files[i].len = 0;
+		pf_fopen_files[i].ofs = 0;
+		G_FLOAT(OFS_RETURN) = i + FIRST_QC_FILE_INDEX;
+		pf_fopen_files[i].prinst = prinst;
+		break;
 	case FRIK_FILE_INVALID:
 		pf_fopen_files[i].bufferlen = 0;
 		pf_fopen_files[i].data = "";
@@ -2941,6 +2976,15 @@ void PF_fclose_i (int fnum)
 	case FRIK_FILE_STREAM:
 	case FRIK_FILE_READ_DELAY:
 		VFS_CLOSE(pf_fopen_files[fnum].file);
+		break;
+
+	//FTESurf Patch 316.  The bytes are already on disk; what is left is the
+	//bookkeeping COM_WriteFile does for the buffered modes and a socket must
+	//not -- tell the filesystem hash the file now exists, or the very next
+	//fopen-for-read of a file this VM just wrote can miss it.
+	case FRIK_FILE_WRITESTREAM:
+		VFS_CLOSE(pf_fopen_files[fnum].file);
+		FS_FlushFSHashWritten(pf_fopen_files[fnum].name);
 		break;
 
 	case FRIK_FILE_READ:
@@ -3137,7 +3181,12 @@ static int PF_fwrite_internal (pubprogfuncs_t *prinst, int fnum, const char *msg
 		return 0;	//this just isn't ours.
 	}
 
-	if (pf_fopen_files[fnum].accessmode == FRIK_FILE_STREAM)
+	//FTESurf Patch 316 adds WRITESTREAM here, which is the whole of its write
+	//path: no buffer to grow, no size-overflow test below to reach, just the
+	//bytes going out.  Everything else in this function exists to manage a
+	//buffer these two modes do not have.
+	if (pf_fopen_files[fnum].accessmode == FRIK_FILE_STREAM ||
+		pf_fopen_files[fnum].accessmode == FRIK_FILE_WRITESTREAM)
 		return VFS_WRITE(pf_fopen_files[fnum].file, msg, len);
 
 	if (pf_fopen_files[fnum].ofs + len < pf_fopen_files[fnum].ofs)
@@ -3301,6 +3350,16 @@ void QCBUILTIN PF_fseek32 (pubprogfuncs_t *prinst, struct globalvars_s *pr_globa
 	PF_fseek64(prinst, pr_globals);
 	G_INT(OFS_RETURN) = G_INT64(OFS_RETURN);
 }
+//FTESurf Patch 375: the OS truncate for the file types QC write streams use.
+#if defined(_WIN32) && !defined(FTE_SDL) && !defined(WINRT) && !defined(_XBOX)
+qboolean VFSW32_TruncateOS(vfsfile_t *file, qofs_t len);
+#define VFS_TRUNCATEOS VFSW32_TruncateOS
+#elif !defined(_WIN32) && !defined(FTE_TARGET_WEB)
+qboolean VFSSTDIO_TruncateOS(vfsfile_t *file, qofs_t len);
+#define VFS_TRUNCATEOS VFSSTDIO_TruncateOS
+#else
+#define VFS_TRUNCATEOS(f,l) false
+#endif
 void QCBUILTIN PF_fsize64 (pubprogfuncs_t *prinst, struct globalvars_s *pr_globals)
 {
 	int fnum = G_FLOAT(OFS_PARM0) - FIRST_QC_FILE_INDEX;
@@ -3333,6 +3392,19 @@ void QCBUILTIN PF_fsize64 (pubprogfuncs_t *prinst, struct globalvars_s *pr_globa
 
 	if (pf_fopen_files[fnum].file)
 	{
+		//FTESurf Patch 375: a write stream flushes first, so the size is what is on disk,
+		//and can be cut back (a lobby save-load rewinds its streamed recording).
+		if (pf_fopen_files[fnum].accessmode == FRIK_FILE_WRITESTREAM)
+		{
+			VFS_FLUSH(pf_fopen_files[fnum].file);
+			if (prinst->callargc>1 && G_INT64(OFS_PARM1) >= 0)
+			{
+				if (!VFS_TRUNCATEOS(pf_fopen_files[fnum].file, G_INT64(OFS_PARM1)))
+					PF_Warningf(prinst, "PF_fsize: cannot truncate %s\n", pf_fopen_files[fnum].name);
+				G_INT64(OFS_RETURN) = VFS_GETLEN(pf_fopen_files[fnum].file);
+				return;
+			}
+		}
 		G_INT64(OFS_RETURN) = VFS_GETLEN(pf_fopen_files[fnum].file);
 		if (prinst->callargc>1 && G_INT64(OFS_PARM1) >= 0)
 			PF_Warningf(prinst, "PF_fsize: truncation/extension is not supported for stream file types\n");
@@ -3367,6 +3439,7 @@ void PF_fcloseall (pubprogfuncs_t *prinst)
 		switch(pf_fopen_files[i].accessmode)
 		{
 		case FRIK_FILE_STREAM:
+		case FRIK_FILE_WRITESTREAM:	//FTESurf Patch 316
 		case FRIK_FILE_APPEND:
 		case FRIK_FILE_WRITE:
 		case FRIK_FILE_MMAP_RW:
@@ -3402,15 +3475,22 @@ void QCBUILTIN PF_fcopy (pubprogfuncs_t *prinst, struct globalvars_s *pr_globals
 				src = FS_OpenVFS(fallbackread, "rb", FS_GAME);
 			if (src)
 			{
-				dst = FS_OpenVFS(srcname, "wbp", FS_GAMEONLY);	//lets mark it as persistent. this is probably profile data after all.
+				//FTESurf Patch 143: this said srcname, so fcopy(a,b) opened
+				//A for writing -- truncating the file it was asked to copy and
+				//then reading its own empty output. dstname is the whole point
+				//of the builtin.
+				dst = FS_OpenVFS(dstname, "wbp", FS_GAMEONLY);	//lets mark it as persistent. this is probably profile data after all.
 				if (dst)
 				{
+					G_FLOAT(OFS_RETURN) = 0;	//success, unless a write says otherwise below
 					while ((sz = VFS_READ(src, buffer, sizeof(buffer)))>0)
 					{
 						if (sz != VFS_WRITE(dst, buffer, sz))
 							G_FLOAT(OFS_RETURN) = -3;	//weird errors...
 					}
-					G_FLOAT(OFS_RETURN) = 0;	//success...
+					//FTESurf Patch 143: the success assignment was AFTER the
+					//loop, so it overwrote the -3 a short write had just set
+					//and a truncated copy reported success.
 					VFS_CLOSE(dst);
 				}
 				else
@@ -3419,6 +3499,85 @@ void QCBUILTIN PF_fcopy (pubprogfuncs_t *prinst, struct globalvars_s *pr_globals
 			}
 		}
 	}
+}
+/* FTESurf Patch 375: a byte range of one file onto another (fcopyrange) or onto an
+   open write stream (fappendrange).  A lobby streams its recordings: a save copies
+   the stream's prefix a chunk per frame, and a load that cannot truncate rebuilds
+   the stream from that copy.  The source is read by OS path (FS_GAMEONLY), not the
+   name hash, because another lobby process may have written it.  Both return the
+   bytes moved, or -1. */
+static int PF_CopyRange_Internal(vfsfile_t *src, qofs_t ofs, int len, vfsfile_t *dst)
+{
+	char buffer[65536];
+	int got, want, done = 0;
+	if (!VFS_SEEK(src, ofs))
+		return -1;
+	while (done < len)
+	{
+		want = len - done;
+		if (want > (int)sizeof(buffer))
+			want = sizeof(buffer);
+		got = VFS_READ(src, buffer, want);
+		if (got <= 0)
+			break;
+		if (VFS_WRITE(dst, buffer, got) != got)
+			return -1;
+		done += got;
+	}
+	return done;
+}
+void QCBUILTIN PF_fcopyrange (pubprogfuncs_t *prinst, struct globalvars_s *pr_globals)
+{
+	const char *srcname = PR_GetStringOfs(prinst, OFS_PARM0);
+	int ofs = G_INT(OFS_PARM1), len = G_INT(OFS_PARM2);
+	const char *dstname = PR_GetStringOfs(prinst, OFS_PARM3);
+	qboolean append = G_FLOAT(OFS_PARM4) != 0;
+	const char *fallback;
+	vfsfile_t *src, *dst;
+	G_INT(OFS_RETURN) = -1;
+	if (ofs < 0 || len < 0 || !QC_FixFileName(srcname, &srcname, &fallback) || !QC_FixFileName(dstname, &dstname, &fallback))
+		return;
+	src = FS_OpenVFS(srcname, "rb", FS_GAMEONLY);
+	if (!src)
+	{
+		Con_DPrintf("fcopyrange: cannot read %s\n", srcname);
+		return;
+	}
+	FS_CreatePath(dstname, FS_GAMEONLY);
+	dst = FS_OpenVFS(dstname, append ? "ab" : "wb", FS_GAMEONLY);
+	if (dst)
+	{
+		G_INT(OFS_RETURN) = PF_CopyRange_Internal(src, ofs, len, dst);
+		VFS_CLOSE(dst);
+	}
+	else
+		Con_DPrintf("fcopyrange: cannot write %s\n", dstname);
+	VFS_CLOSE(src);
+}
+void QCBUILTIN PF_fappendrange (pubprogfuncs_t *prinst, struct globalvars_s *pr_globals)
+{
+	int fnum = G_FLOAT(OFS_PARM0) - FIRST_QC_FILE_INDEX;
+	const char *srcname = PR_GetStringOfs(prinst, OFS_PARM1);
+	int ofs = G_INT(OFS_PARM2), len = G_INT(OFS_PARM3);
+	const char *fallback;
+	vfsfile_t *src;
+	G_INT(OFS_RETURN) = -1;
+	if (fnum < 0 || fnum >= MAX_QC_FILES || pf_fopen_files[fnum].prinst != prinst
+	    || pf_fopen_files[fnum].accessmode != FRIK_FILE_WRITESTREAM || !pf_fopen_files[fnum].file)
+	{
+		PF_Warningf(prinst, "PF_fappendrange: not an open write stream\n");
+		return;
+	}
+	if (ofs < 0 || len < 0 || !QC_FixFileName(srcname, &srcname, &fallback))
+		return;
+	src = FS_OpenVFS(srcname, "rb", FS_GAMEONLY);
+	if (!src)
+	{
+		Con_DPrintf("fappendrange: cannot read %s\n", srcname);
+		return;
+	}
+	G_INT(OFS_RETURN) = PF_CopyRange_Internal(src, ofs, len, pf_fopen_files[fnum].file);
+	VFS_CLOSE(src);
 }
 void QCBUILTIN PF_frename (pubprogfuncs_t *prinst, struct globalvars_s *pr_globals)
 {

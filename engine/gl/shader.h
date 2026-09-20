@@ -244,6 +244,9 @@ typedef struct shaderpass_s {
 		TC_GEN_SKYBOX,
 		TC_GEN_WOBBLESKY,
 		TC_GEN_REFLECT,
+		//nettest: GoldSrc's studio "chrome" mapping.  Not the same thing as
+		//TC_GEN_ENVIRONMENT and it has to be its own mode - see tcgen_chrome.
+		TC_GEN_CHROME,
 
 		TC_GEN_UNSPECIFIED
 	} tcgen;
@@ -344,6 +347,13 @@ typedef struct
 {
 	texid_t			farbox_textures[6];
 	texid_t			nearbox_textures[6];
+	//ftesurf (P181): Source packs the four side faces of a skybox as HALF-HEIGHT
+	//images and puts the missing half back with "$basetexturetransform ... scale
+	//1 2", which pushes the image into the top half of the square face and lets
+	//CLAMPT smear its last row down over the rest.  We honour that here rather
+	//than in the image loader because the file is a perfectly ordinary 512x256
+	//texture -- nothing about it says it is half a face.  1 means "no transform".
+	float			farbox_tscale[6];
 } skydome_t;
 
 enum{
@@ -447,6 +457,7 @@ typedef struct {
 		SP_E_L_DIR, /*these light values are non-dynamic light as in classic quake*/
 		SP_E_L_MUL,
 		SP_E_L_AMBIENT,
+		SP_E_L_AMBIENTCUBE,	//FTESurf Patch 268 C: vec3[6], Source's six-face ambient cube (entity_t::light_cube), world axes. GL only.
 		SP_E_EYEPOS, /*viewer's eyepos, in model space*/
 		SP_V_EYEPOS, /*viewer's eyepos, in world space*/
 		SP_W_FOG,
@@ -787,6 +798,11 @@ void Shader_PolygonShader		(struct shaderparsestate_s *ps, const char *shortname
 
 void Shader_ResetRemaps(void);	//called on map changes to reset remapped shaders.
 void Shader_DoReload(void);		//called when the shader system dies.
+//nettest Patch 141: set this to a literal right before calling Shader_DoReload,
+//so its timing print can say which of the six call sites paid the cost.
+extern const char *shader_reload_why;
+//nettest Patch 141: likewise, but for whoever RAISED the flag.
+extern const char *shader_needreload_why;
 void Shader_Shutdown (void);
 qboolean Shader_Init (void);
 void Shader_NeedReload(qboolean rescanfs);

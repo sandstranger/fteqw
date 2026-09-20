@@ -26,6 +26,64 @@ cvar_t	cl_lerp_smooth = CVARD("cl_lerp_smooth", "2", "If 2, will act as 1 when p
 static cvar_t	cl_lerp_driftbias = CVARD("cl_lerp_driftbias", "0", "Additional bias, can be set to a negative value to hold interpolation in the past.");
 static cvar_t	cl_lerp_driftfrac = CVARD("cl_lerp_driftfrac", "0", "Proportion of the latest time vs the older time to favour drifting towards.");
 cvar_t	cl_nopred = CVARD("cl_nopred","0", "Disables clientside movement prediction.");
+/*FTESurf Patch 269.  The instrument that found the standing-still velocity
+  flicker.  CSQC's hud_veltrace can see that pmove_vel moves between rendered
+  frames while pmove_org does not, but it cannot see WHY, because everything
+  that produces that pair happens here.  This dumps the final arithmetic of
+  CL_PredictMovePNum once per rendered frame: how many replayed commands ran,
+  whether the extrapolated partial command ran and which usercmd it copied,
+  the movement values in that command, the two velocities being blended and
+  the blend fraction.  Self-clearing, like hud_veltrace, so it cannot be left
+  on by accident.*/
+static cvar_t	cl_predtrace = CVARD("cl_predtrace","0", "Debugging aid: dump this many rendered frames of the prediction's replay/extrapolate/blend arithmetic, then switch itself off.");
+/*The trace is RECORDED to memory and printed afterwards, which is not a nicety.
+  The first version of this printed four lines per rendered frame as it went and
+  measured 200 rendered frames against 199 command frames -- about 50fps, one
+  render per command.  That is precisely the regime in which the defect cannot
+  occur, because the defect needs MANY rendered frames per command; the console
+  writes had throttled the framerate into a clean result.  An instrument that
+  destroys the condition it measures reports a pass.  So: record cheaply, dump
+  once, and never print from inside the measured window.*/
+/*Patch 269b: 512 was sized for ~1300fps, where it spans about 27 command
+  frames.  The user reports the defect is worst at ~12000fps, which is ~180
+  rendered frames per command -- 512 records would cover under three commands
+  and could not show a per-command pattern at all.  4096 spans ~23 commands
+  there, and the whole array is a fixed ~500KB of BSS that only exists in a
+  debug build's data segment.*/
+#define PT_MAX 4096
+static struct
+{
+	int		seq, replays, extrap, btn, cmdmsec;
+	int		nopred;		/*Patch 269b: the fix is gated on !nopred, so a frame
+						  that took the nopred path still runs the old blend.
+						  Not recording this was the hole in 269's verification:
+						  a clean dump could have meant "fixed" or "the bad
+						  frames were never sampled".*/
+	float	msec, f;
+	float	cmdf, cmds, cmdu;
+	vec3_t	fromvel, tovel, simvel;
+	vec3_t	fromorg, toorg, simorg;
+	float	viewheight, crouch;	/*Patch 269b: the reported symptom is "position
+								  flickers 0-4", and these two are the only
+								  per-frame offsets between simorg and the eye.
+								  crouch is the stair smoother; it sweeps.*/
+} pt_recs[PT_MAX];
+static int pt_count = 0;
+static double pt_time0 = 0;	/*Patch 269b: wall clock at the first record, so the
+							  verdict reports a MEASURED framerate rather than one
+							  inferred from an assumed command rate.*/
+/*FTESurf Patch 243.  See the block that reads it in CL_PredictMove.*/
+/*FTESurf Patch 269.  See the block that reads it at the end of
+  CL_PredictMovePNum.*/
+static cvar_t	cl_predict_velblend = CVARD("cl_predict_velblend","2", "How the REPORTED velocity is interpolated across a rendered frame. 2 (default, Patch 269c) blends between the velocity this client PREDICTED for the earlier state and the freshly predicted one, so the reported speed and the reported position are the same instant and energy is conserved to 0.02 units across a jump. 1 blends against the last acked network velocity instead, which is what builds before Patch 269 did: correct while you are moving, but that field is not maintained for your own player and freezes when you stand still, making the speed readout sweep 0..5 at high framerates. 0 does not blend at all (Patch 269): the speed readout is clean, but the reported position is still interpolated, so energy is read from two different instants and climbs about 4 units over a jump.");
+static cvar_t	cl_predict_freshtype = CVARD("cl_predict_freshtype","1", "Take the decision to predict or interpolate from the newest received player state rather than from the previous frame's copy of it. 0 restores the historical one-frame-stale behaviour, in which the frame a freeze (MOVETYPE_NONE, PM_FREEZE) begins still predicts and the frame it ends still interpolates.");
+/*FTESurf Patch 335: master gate on the CSQC per-command prediction hook. The
+  hook itself is inert unless the csprogs exports CSQC_PredictPlayerMove; this
+  cvar exists so an engine-side 0 is still a bisectable answer.*/
+cvar_t	cl_predict_qchook = CVARD("cl_predict_qchook","1", "Call CSQC_PredictPlayerMove once per predicted usercmd, letting CSQC run map triggers inside client prediction (FTESurf Patch 335). 0 restores the historical behaviour where only the server's touches exist and every trigger costs a round trip.");
+cvar_t	cl_predict_angleexact = CVARD("cl_predict_angleexact","1", "Reconcile a predicted teleport's view snap with the server's setangle by absolute target and command sequence (FTESurf Patch 396). 0 restores Patch 335's arithmetic, which rotates twice or not at all depending on frame rate and timing.");
+cvar_t	cl_predict_angledebug = CVARD("cl_predict_angledebug","0", "FTESurf Patch 396: 1 records every predicted-snap and setangle decision into a memory log; 2 also each sent command's yaw and the view yaw for 1 s after each. predangle_dump prints and clears it. Nothing prints while recording.");
+static cvar_t	cl_prederror = CVARD("cl_prederror","4", "Print one line per acked command whose server origin differs from what this client predicted for it by more than this many units (FTESurf Patch 335). 0 disables. The line IS the snap-back report: it names the sequence and both origins, so a disagreement between the client's trigger mirror and the server's is a quotable number instead of a feeling.");
 static cvar_t	cl_pushlatency = CVAR("pushlatency","-999");
 
 extern float	pm_airaccelerate;
@@ -374,6 +432,14 @@ void CL_NudgePosition (void)
 CL_PredictUsercmd
 ==============
 */
+/*FTESurf Patch 335: CL_PredictUsercmd runs for MORE than the local player --
+  cl_ents.c pose-predicts every other predicted entity through it with a
+  synthetic command whose sequence is 0, and pr_csqc's runplayerphysics has
+  its own copy.  The CSQC trigger hook must fire ONLY for the seat's own
+  replay chain: its angle snap writes the real view, and its per-chain state
+  is keyed on the chain's sequences.  Set around the two calls in
+  CL_PredictMovePNum and tested beside the hook.*/
+static qboolean cl_pred_localchain;
 void CL_PredictUsercmd (int pnum, int entnum, player_state_t *from, player_state_t *to, usercmd_t *u)
 {
 	// split up very long moves
@@ -404,6 +470,23 @@ void CL_PredictUsercmd (int pnum, int entnum, player_state_t *from, player_state
 	VectorCopy (from->origin, pmove.origin);
 	VectorCopy (u->angles, pmove.angles);
 	VectorCopy (from->velocity, pmove.velocity);
+	/*
+	FTESurf Patch 240: basevelocity is server-only.  It is not in
+	pmsourcestate_t and is not networked, so there is nothing here to replay --
+	but pmove is ONE global, and on a listen server SV_RunCmd has just written
+	the local player's carrier velocity into it.  Left alone, the client would
+	predict a push it is also about to be told about, i.e. apply it twice, and
+	only in singleplayer.  Clearing it makes the prediction honestly ignorant
+	instead of wrong.
+	*/
+	VectorClear (pmove.basevelocity);
+	/*FTESurf Patch 337: the frame half of the basevelocity mirror -- restore
+	  the held carrier/armed state the previous command's hook left in the
+	  sequence-keyed ring, pay the Patch 249 cash-out if nothing re-armed it,
+	  and hand the window to pmove.basevelocity, exactly as the server's
+	  SV_BaseVelocityFrame does in PreThink before SV_RunCmd.*/
+	if (cl_pred_localchain)
+		CSQC_PredictConsumeBaseVel(pnum, u->sequence);
 	VectorCopy (from->gravitydir, pmove.gravitydir);
 
 	if (IS_NAN(pmove.velocity[0]))
@@ -419,6 +502,7 @@ void CL_PredictUsercmd (int pnum, int entnum, player_state_t *from, player_state
 	pmove.jump_held = from->jump_held;
 	pmove.waterjumptime = from->waterjumptime;
 	pmove.pm_type = from->pm_type;
+	PMSrc_LoadState(&from->pmsrc);	//FTESurf: duck/tick state, replayed forward
 
 	pmove.cmd = *u;
 	pmove.skipent = entnum;
@@ -435,9 +519,17 @@ void CL_PredictUsercmd (int pnum, int entnum, player_state_t *from, player_state
 
 	PM_PlayerMove (cl.gamespeed);
 
+	/*FTESurf Patch 335: the CSQC trigger hook, between the move and the
+	  writeback, so anything QC imposes on predmove_* lands in to->state and
+	  propagates down the rest of the replay chain.  Local chain only -- see
+	  cl_pred_localchain.*/
+	if (cl_pred_localchain)
+		CSQC_PredictPlayerMove(pnum, u, from->origin);
+
 	to->waterjumptime = pmove.waterjumptime;
 	to->jump_held = pmove.jump_held;
 	to->jump_msec = pmove.jump_msec;
+	PMSrc_SaveState(&to->pmsrc);	//FTESurf
 	pmove.jump_msec = 0;
 
 	VectorCopy (pmove.origin, to->origin);
@@ -995,7 +1087,12 @@ void CL_PredictMovePNum (int seat)
 	int			trackent;
 	qboolean	cam_nowlocked = false;
 	usercmd_t indcmd;
-	
+	/*FTESurf Patch 269 instrumentation -- see cl_predtrace.*/
+	int			pt_replays = 0;		/*commands re-simulated from the last ack*/
+	int			pt_extrap = 0;		/*0 none, 1 copied cl_pendingcmd, 2 copied the last sent cmd*/
+	float		pt_msec = 0;		/*the partial command's duration*/
+	float		pt_f = -1;			/*the blend fraction, -1 if no blend happened*/
+
 	simtime = CL_GetPredictionRealtime(pv);
 
 	pv->nolocalplayer = !!(cls.fteprotocolextensions2 & PEXT2_REPLACEMENTDELTAS) || (cls.protocol != CP_QUAKEWORLD);
@@ -1085,6 +1182,44 @@ void CL_PredictMovePNum (int seat)
 		nopred = true;
 	else if (cl.movesequence - cl.ackedmovesequence >= UPDATE_BACKUP-1)
 		nopred = true;
+
+	/*FTESurf Patch 243: DECIDE WITH THE MOVETYPE WE WERE JUST SENT, not with
+	  the one we decided with last frame.
+
+	  pv->pmovetype is read by the test immediately below and assigned only at
+	  the two sites further down this same function (from to.state->pm_type,
+	  and again after the prediction loop) -- both AFTER the read.  So the value
+	  tested has always been the PREVIOUS call's, one frame stale, and stale in
+	  both directions:
+
+	    * the frame a freeze BEGINS still predicts, running pmove forward
+	      against a player the server has already pinned;
+	    * the frame a freeze ENDS still takes the interpolating branch below,
+	      which lerps simorg and simvel between the frozen state and the
+	      released one with frac < 1.  The 128-unit teleport guard in that
+	      branch does not save it, because a player released from a freeze has
+	      not moved anywhere.  CSQC reads that blend as pmove_vel, which is how
+	      FTESurf's HUD came to print exactly one frame of a speed that was
+	      neither the parked value nor the live one every time a save-lock hold
+	      was let go -- reported as "it will say the wrong value for a frame,
+	      but switch to the correct value".
+
+	  This does not invent a value: it reads the same newest state that the
+	  assignment further down is about to use, only earlier.  Camera-locked
+	  views are excluded because their pmovetype legitimately comes from the
+	  TRACKED player's state rather than our own, and CAM_ISLOCKED forces
+	  nopred below in any case; nolocalplayer protocols have no player state to
+	  read; and the demo/MVD paths pick their states differently.
+
+	  cl_predict_freshtype 0 restores the historical behaviour exactly.*/
+	if (cl_predict_freshtype.ival && !pv->nolocalplayer && !CAM_ISLOCKED(pv) &&
+		cls.demoplayback != DPB_MVD && cl.validsequence &&
+		(unsigned int)pv->playernum < (unsigned int)cl.allocated_client_slots)
+	{
+		player_state_t *fresh = &cl.inframes[cl.validsequence & UPDATE_MASK].playerstate[pv->playernum];
+		if (fresh->messagenum == cl.validsequence)
+			pv->pmovetype = fresh->pm_type;
+	}
 
 	//these things also force-disable prediction
 	if (cls.demoplayback==DPB_MVD ||
@@ -1269,6 +1404,13 @@ void CL_PredictMovePNum (int seat)
 	if (!nopred)
 	{
 		int stopframe;
+		/*FTESurf Patch 337: no chain reset here any more.  The chain restarts
+		  every rendered frame, and everything the hook leaves behind -- the
+		  basevelocity ring, the angle-snap ring -- is keyed by command sequence
+		  precisely so restarts cannot corrupt it.  Patch 335's ResetChain call
+		  cleared the carrier every frame and cost the first replayed command
+		  one command of push (a stable 4.00 u error on 400 u/s boosters,
+		  measured in play on bhop_mom_training_beta).*/
 		//Con_Printf("Pred %i to %i\n", to.frame+1, min(from.frame+UPDATE_BACKUP, cl.movesequence));
 
 		//fix up sequence numbers for nq
@@ -1295,23 +1437,66 @@ void CL_PredictMovePNum (int seat)
 
 			if (from.frame == pv->prop.sequence && pv->prop.sequence)
 			{
+				/*FTESurf Patch 335: THE SNAP-BACK METER.  from.state here is the
+				  server's own state for a command this client already predicted,
+				  and pv->prop.origin is what the prediction said -- so their
+				  difference IS the correction the renderer is about to swallow.
+				  Small is the ordinary residue of packet quantisation; big is
+				  the two simulations disagreeing, which on a game whose whole
+				  promise is "a snap-back is a bug" has to be a NUMBER somebody
+				  can quote, not a vibe.  One line per acked command, gated on
+				  cl_prederror (units, 0 = off).*/
+				if (cl_prederror.value > 0)
+				{
+					static int pt_err_lastseq[MAX_SPLITS];
+					vec3_t perr;
+					float e;
+					VectorSubtract(from.state->origin, pv->prop.origin, perr);
+					e = DotProduct(perr, perr);
+					if (e > cl_prederror.value * cl_prederror.value && pt_err_lastseq[seat] != from.frame)
+					{
+						pt_err_lastseq[seat] = from.frame;
+						Con_Printf("prederr: seq %i origin off by %.2f (predicted %.1f %.1f %.1f, server %.1f %.1f %.1f)\n",
+								from.frame, sqrt(e),
+								pv->prop.origin[0], pv->prop.origin[1], pv->prop.origin[2],
+								from.state->origin[0], from.state->origin[1], from.state->origin[2]);
+					}
+				}
 				if (!(cls.z_ext & Z_EXT_PF_ONGROUND))
 					from.state->onground = pv->prop.onground;
 				if (!(cls.z_ext & Z_EXT_PM_TYPE))
 					from.state->jump_held = pv->prop.jump_held;
 				from.state->jump_msec = pv->prop.jump_msec;
 				from.state->waterjumptime = pv->prop.waterjumptime;
+				//FTESurf Patch 132: duck/tick state, exactly as the extrapolation
+				//block below does it.  Omitting it here is not a missing nicety --
+				//pmsrc is never networked, so from.state is whatever the snapshot
+				//ring slot last held, i.e. ducked==false.  The origin arriving from
+				//the server ALREADY contains the mid-air duck's +18
+				//(pm_source.c:1123), so a replay seeded with ducked==false runs
+				//PMSrc_FinishDuck a second time and adds another 18 units.  Whether
+				//a rendered frame takes this path or the extrapolation one alternates
+				//with whether this loop runs any iterations at all, which is why the
+				//symptom was a camera shaking at exactly frame rate, and why it only
+				//showed in mid-air: the origin bump is gated on !onground.
+				from.state->pmsrc = pv->prop.pmsrc;
 				if (!(cls.fteprotocolextensions2 & PEXT2_REPLACEMENTDELTAS))
 					VectorCopy(pv->prop.gravitydir, from.state->gravitydir);
 			}
+			cl_pred_localchain = true;	//FTESurf Patch 335
 			CL_PredictUsercmd (seat, trackent, from.state, to.state, to.cmd);
+			cl_pred_localchain = false;
+			pt_replays++;	//FTESurf Patch 269
 			if (i <= validsequence && simtime >= to.time)
 			{	//this frame is final keep track of our propagated values.
 				pv->prop.onground = pmove.onground;
 				pv->prop.jump_held = pmove.jump_held;
 				pv->prop.jump_msec = pmove.jump_msec;
 				pv->prop.waterjumptime = pmove.waterjumptime;
+				PMSrc_SaveState(&pv->prop.pmsrc);	//FTESurf
 				VectorCopy(pmove.gravitydir, pv->prop.gravitydir);
+				VectorCopy(pmove.velocity, pv->prop.velocity);	//FTESurf Patch 269c
+				VectorCopy(to.state->origin, pv->prop.origin);	//FTESurf Patch 335: for cl_prederror
 				pv->prop.sequence = i;
 			}
 		}
@@ -1327,9 +1512,10 @@ void CL_PredictMovePNum (int seat)
 				from = to;
 
 				if (cl_pendingcmd[seat].msec && !cls.demoplayback)
-					indcmd = cl_pendingcmd[seat];
+					indcmd = cl_pendingcmd[seat], pt_extrap = 1;	//FTESurf Patch 269
 				else
-					indcmd = *to.cmd;
+					indcmd = *to.cmd, pt_extrap = 2;
+				pt_msec = msec;
 				to.cmd = &indcmd;
 				to.time = simtime;
 				to.frame+=1;
@@ -1351,15 +1537,29 @@ void CL_PredictMovePNum (int seat)
 						from.state->jump_held = pv->prop.jump_held;
 					from.state->jump_msec = pv->prop.jump_msec;
 					from.state->waterjumptime = pv->prop.waterjumptime;
+					from.state->pmsrc = pv->prop.pmsrc;	//FTESurf: duck/tick state
 					if (!(cls.fteprotocolextensions2 & PEXT2_REPLACEMENTDELTAS))
 						VectorCopy(pv->prop.gravitydir, from.state->gravitydir);
 				}
 //				Con_DPrintf(" extrap %i: %f-%f (%g)\n", toframe, fromtime, simtime, simtime-fromtime);
+				cl_pred_localchain = true;	//FTESurf Patch 335
 				CL_PredictUsercmd (seat, trackent, from.state, to.state, to.cmd);
+				cl_pred_localchain = false;
 			}
 		}
 		pv->onground = pmove.onground;
 		pv->pmovetype = to.state->pm_type;
+
+		//FTESurf Patch 132b: take the PREDICTED eye height rather than the stat.
+		//pmove.viewheight is derived once per PM_PlayerMove (pm_source.c:1789) and
+		//was then thrown away here, so the eye only ever moved when a snapshot
+		//arrived -- one server frame after the origin it belongs to.  Ducking in
+		//mid-air raises the origin by 18 and drops the eye by 18 in the same tick
+		//(the absolute eye position must not move at all), so a one-snapshot lag
+		//between the two halves is a visible 18-unit pop.  Only the Source module
+		//writes this field; every other physicsmode leaves the stat in charge.
+		if (movevars.physicsmode == PHYSMODE_SOURCE)
+			pv->viewheight = pmove.viewheight;
 	}
 
 	pmove.numphysent = oldphysent;
@@ -1376,6 +1576,7 @@ void CL_PredictMovePNum (int seat)
 	else
 	{
 		vec3_t move;
+		vec3_t blendfromvel;	/*FTESurf Patch 269c -- see the essay below*/
 		// now interpolate some fraction of the final frame
 		f = (simtime - from.time) / (to.time - from.time);
 
@@ -1383,6 +1584,7 @@ void CL_PredictMovePNum (int seat)
 			f = 0;
 		if (f > 1)
 			f = 1;
+		pt_f = f;	//FTESurf Patch 269
 //Con_DPrintf("%i:%f %f %i:%f (%f)\n", fromframe, fromtime, simtime, toframe, totime, f);
 		VectorSubtract(to.state->origin, from.state->origin, move);
 		if (DotProduct(move, move) > 128*128)
@@ -1393,10 +1595,66 @@ void CL_PredictMovePNum (int seat)
 		}
 		else
 		{
+			/*FTESurf Patch 269c: BLEND AGAINST A VELOCITY THAT EXISTS.
+
+			  Patch 269 removed this blend outright and that was too big a
+			  hammer.  The blend was never wrong; one of its two inputs was.
+
+			  from.state is the last ACKED player state.  Its origin is
+			  maintained.  Its VELOCITY, for your own player under
+			  PEXT2_REPLACEMENTDELTAS, is not always -- the client predicts its
+			  own velocity, so the server has no reason to keep sending it, and
+			  the field can sit at whatever it last held.  Measured standing
+			  still after a tap: frozen at 5.2500 for 380 consecutive frames
+			  while the true velocity was 0, which blended to the reported
+			  "speedometer sweeps 0..4 and never settles".
+
+			  But measured during a JUMP the same field is correct -- 0 at the
+			  takeoff tick, 289.993 at its end, which is exactly what happened
+			  -- and the blend built the right answer from it.  So 269 threw
+			  out a blend that was doing real work everywhere except the one
+			  case that motivated removing it.
+
+			  WHAT REMOVING IT COST, and it is not subtle.  simorg is still
+			  blended; 269 left simvel unblended.  That makes the reported
+			  position and the reported velocity two different instants, and
+			  energy -- E = z + |v|^2/2g -- is the one readout that combines
+			  them, so it inherits the gap:
+
+			      E_error = -(1-f) * v_z * dt
+
+			  Measured across a jump (logs/jit12.log, per command frame): with
+			  269 the reported energy sweeps 3.6 units LOW at takeoff, through
+			  0 at the apex, to 4.1 units HIGH on the way down -- a readout
+			  that climbs about 4 units over a jump that conserves energy
+			  exactly.  With the blend restored the same jump holds it to 0.02.
+			  The user reported precisely that: "a jump starts at 57 and rises
+			  to 60, Momentum holds 57".
+
+			  THE FIX: keep the blend, and give it a from-velocity that is
+			  real.  pv->prop already exists for exactly this class of problem
+			  -- "values that are propagated from one frame to the next"
+			  because they do not survive the network round trip -- and
+			  onground, jump_held, jump_msec, waterjumptime, pmsrc and
+			  gravitydir are already carried through it under the same
+			  from.frame == prop.sequence guard used here.  Velocity belongs in
+			  that set for the local player, and adding it needs no new
+			  bookkeeping.
+
+			  This does NOT touch the mover.  prop.velocity is read only to
+			  build the reported value; from.state is left exactly as the
+			  network delivered it, so CL_PredictUsercmd still seeds from the
+			  server's own state and no movement outcome or run time can move.*/
+			if (!nopred && pv->prop.sequence && from.frame == pv->prop.sequence &&
+				cl_predict_velblend.ival >= 2)
+				VectorCopy(pv->prop.velocity, blendfromvel);
+			else
+				VectorCopy(from.state->velocity, blendfromvel);
+
 			for (i=0 ; i<3 ; i++)
 			{
 				pv->simorg[i] = (1-f)*from.state->origin[i]   + f*to.state->origin[i];
-				pv->simvel[i] = (1-f)*from.state->velocity[i] + f*to.state->velocity[i];
+				pv->simvel[i] = (1-f)*blendfromvel[i]         + f*to.state->velocity[i];
 
 				if (trackent && trackent != pv->playernum+1 && pv->cam_state == CAM_EYECAM)
 				{
@@ -1406,8 +1664,205 @@ void CL_PredictMovePNum (int seat)
 				else if (lerpangles)
 					pv->simangles[i] = LerpAngles16(from.cmd->angles[i], to.cmd->angles[i], f) * (360.0/65535);
 			}
+
+			/*FTESurf Patch 269, SUPERSEDED BY 269c ABOVE and kept only as
+			  cl_predict_velblend 0, because it is still the cleanest way to
+			  demonstrate what the blend is for: at 0 the speed readout is
+			  correct and the ENERGY readout climbs 4 units over a jump.  The
+			  original reasoning follows, and the part of it that is wrong is
+			  the claim that nothing downstream cares -- energy does.
+
+			  ORIGINAL NOTE (269): DO NOT BLEND VELOCITY WHILE PREDICTING.
+
+			  The origin blend above is right and stays: position must be
+			  continuous across a rendered frame, and both endpoints are real
+			  positions.  Velocity is a different quantity with a different
+			  provenance, and blending it here mixes two clocks:
+
+			    to.state   is the PREDICTED state, freshly simulated this frame
+			               and correct by construction;
+			    from.state is the last ACKED state, taken from the network
+			               snapshot -- and under PEXT2_REPLACEMENTDELTAS the
+			               velocity field of your OWN player is not maintained
+			               there at all.  Nothing needs it: the client predicts
+			               its own velocity, so the server has no reason to keep
+			               sending it, and the client's copy simply stops being
+			               updated.  It freezes at whatever you were last moving
+			               at and stays there indefinitely.
+
+			  Measured (logs/jit05.log, 400 rendered frames at ~19 frames per
+			  command, one second after a key release, standing still):
+
+			      fromvel frozen at 5.2500 on 380 of 400 frames -- one value,
+			      never changing;  tovel 0.0000 on all 400;  fromorg == toorg
+			      on all 380, so the player provably did not move;
+			      f ramping 0.087, 0.135, 0.178, 0.221 ... per rendered frame.
+
+			  simvel = (1-f)*5.25 therefore swept 0..4.958 forever, which is the
+			  reported "speedometer flickers 0-4 and never settles".  It scales
+			  with framerate because f is recomputed per RENDERED frame: at 60fps
+			  you sample the ramp once per command and it looks steady, at 1300
+			  you sample it twenty times and see the whole sweep.  It needs a
+			  prior tap because until you move once the stale field is still 0 --
+			  the same run's untouched control was 0 nonzero in 400 frames.
+
+			  Every consumer of simvel wants the player's actual velocity: the
+			  CSQC pmove_vel the HUD reads (pr_csqc.c), the engine speedometer
+			  (sbar.c), audio doppler (r_surf.c) and view bob/roll/kick (view.c).
+			  None of them wants a sub-command interpolation, and none of them
+			  feeds back into the mover -- pmove runs off to.state, not off
+			  simvel -- so this cannot change a movement outcome or a run time.
+
+			  Scoped to the predicting case on purpose.  When nopred is set we
+			  are interpolating somebody else's player between two genuine
+			  snapshots, both real network values at known times, and blending
+			  their velocity is meaningful; that path is left exactly as it was.
+
+			  The to.time == from.time branch above already took to.state's
+			  velocity wholesale, so this also makes the two branches agree
+			  rather than having the answer depend on which one a frame took.*/
+			if (!nopred && cl_predict_velblend.ival == 0)
+				VectorCopy(to.state->velocity, pv->simvel);
 		}
 	}
+	/*FTESurf Patch 269: the dump.  Everything above is final by here -- simorg
+	  and simvel are what CSQC will be handed as pmove_org/pmove_vel.*/
+	if (cl_predtrace.ival != 0 && seat == 0)
+	{
+		/*Patch 269b: a NEGATIVE count records the same frames but prints a
+		  six-line verdict instead of thousands of rows.  This exists because
+		  the machine that reproduces the defect is the user's, not mine -- my
+		  capture instance tops out near 1300fps and the report is about 12000 --
+		  so the measurement has to be something a person can run in their own
+		  session and read without an analyser.  Same recording path, same
+		  window, only the presentation differs.*/
+		int want = cl_predtrace.ival;
+		if (want < 0)
+			want = -want;
+		want = min(want, PT_MAX);
+		if (pt_count < want)
+		{	//record only -- no console traffic inside the measured window.
+			int n = pt_count++;
+			if (!n)
+				pt_time0 = realtime;	//so the verdict can state a real framerate
+
+			pt_recs[n].seq = cl.movesequence;
+			pt_recs[n].replays = pt_replays;
+			pt_recs[n].extrap = pt_extrap;
+			pt_recs[n].msec = pt_msec;
+			pt_recs[n].f = pt_f;
+			pt_recs[n].cmdf = to.cmd->forwardmove;
+			pt_recs[n].cmds = to.cmd->sidemove;
+			pt_recs[n].cmdu = to.cmd->upmove;
+			pt_recs[n].btn = to.cmd->buttons;
+			pt_recs[n].cmdmsec = to.cmd->msec;
+			VectorCopy(from.state->velocity, pt_recs[n].fromvel);
+			VectorCopy(to.state->velocity, pt_recs[n].tovel);
+			VectorCopy(pv->simvel, pt_recs[n].simvel);
+			VectorCopy(from.state->origin, pt_recs[n].fromorg);
+			VectorCopy(to.state->origin, pt_recs[n].toorg);
+			VectorCopy(pv->simorg, pt_recs[n].simorg);
+			pt_recs[n].nopred = nopred;
+			pt_recs[n].viewheight = pv->viewheight;
+			pt_recs[n].crouch = pv->crouch;
+		}
+		else
+		{	//window closed: dump it all at once, then disarm.
+			int n;
+			/*Patch 269b: ONE line per record, not five.  The five-line form took
+			  100 seconds to write 4096 records -- about 5ms per Con_Printf once
+			  the console and the log file are both in the path -- which ran off
+			  the end of the script's waits and killed the rest of the capture.
+			  The dump is outside the measured window so its cost cannot corrupt
+			  a measurement, but it can still destroy the RUN, which is the same
+			  problem wearing a different hat.  Field order is fixed and named in
+			  the header line so the analyser does not have to guess.*/
+			if (cl_predtrace.ival < 0)
+			{	/*Patch 269b: the verdict, not the evidence.*/
+				int	nz = 0, np = 0, ex = 0, ncmd = 0, lastseq = -999999;
+				double	elapsed;
+				float	svmax = 0, fvmax = 0, tvmax = 0, ospread = 0;
+				float	oxmin=0,oxmax=0,oymin=0,oymax=0,ozmin=0,ozmax=0;
+				for (n = 0; n < pt_count; n++)
+				{
+					float sh = sqrt(pt_recs[n].simvel[0]*pt_recs[n].simvel[0] + pt_recs[n].simvel[1]*pt_recs[n].simvel[1]);
+					float fh = sqrt(pt_recs[n].fromvel[0]*pt_recs[n].fromvel[0] + pt_recs[n].fromvel[1]*pt_recs[n].fromvel[1]);
+					float th = sqrt(pt_recs[n].tovel[0]*pt_recs[n].tovel[0] + pt_recs[n].tovel[1]*pt_recs[n].tovel[1]);
+					if (sh > 0.0001)	nz++;
+					if (sh > svmax)		svmax = sh;
+					if (fh > fvmax)		fvmax = fh;
+					if (th > tvmax)		tvmax = th;
+					if (pt_recs[n].nopred)	np++;
+					if (pt_recs[n].extrap)	ex++;
+					if (pt_recs[n].seq != lastseq)
+					{	//new command frame: close the previous one's spread
+						if (n)
+						{
+							if (oxmax-oxmin > ospread) ospread = oxmax-oxmin;
+							if (oymax-oymin > ospread) ospread = oymax-oymin;
+							if (ozmax-ozmin > ospread) ospread = ozmax-ozmin;
+						}
+						oxmin=oxmax=pt_recs[n].simorg[0];
+						oymin=oymax=pt_recs[n].simorg[1];
+						ozmin=ozmax=pt_recs[n].simorg[2];
+						lastseq = pt_recs[n].seq;
+						ncmd++;
+					}
+					if (pt_recs[n].simorg[0]<oxmin) oxmin=pt_recs[n].simorg[0];
+					if (pt_recs[n].simorg[0]>oxmax) oxmax=pt_recs[n].simorg[0];
+					if (pt_recs[n].simorg[1]<oymin) oymin=pt_recs[n].simorg[1];
+					if (pt_recs[n].simorg[1]>oymax) oymax=pt_recs[n].simorg[1];
+					if (pt_recs[n].simorg[2]<ozmin) ozmin=pt_recs[n].simorg[2];
+					if (pt_recs[n].simorg[2]>ozmax) ozmax=pt_recs[n].simorg[2];
+				}
+				if (oxmax-oxmin > ospread) ospread = oxmax-oxmin;
+				if (oymax-oymin > ospread) ospread = oymax-oymin;
+				if (ozmax-ozmin > ospread) ospread = ozmax-ozmin;
+
+				elapsed = realtime - pt_time0;
+				Con_Printf("^5---- cl_predtrace verdict ----\n");
+				Con_Printf("%i frames over %i command frames = ^3%.1f rendered frames per command^7, ^3%.0f fps^7 measured\n",
+						pt_count, ncmd, ncmd?(float)pt_count/ncmd:0,
+						(elapsed > 0)?pt_count/elapsed:0);
+				Con_Printf("velocity blend: cl_predict_velblend %i   nopred frames %i   extrapolated frames %i\n",
+						cl_predict_velblend.ival, np, ex);
+				Con_Printf("reported speed nonzero on ^3%i of %i^7 frames, max ^3%.4f^7\n", nz, pt_count, svmax);
+				Con_Printf("  (acked/from %.4f   predicted/to %.4f)\n", fvmax, tvmax);
+				Con_Printf("position moved at most %.4f units within a single command frame\n", ospread);
+				if (!nz && ospread < 0.05)
+					Con_Printf("^2VERDICT: clean. The engine is not producing a flicker in this window.^7\n");
+				else if (nz)
+					Con_Printf("^1VERDICT: the engine IS producing it -- reported speed is moving while you stand still.^7\n");
+				else
+					Con_Printf("^3VERDICT: speed is clean but POSITION is moving within a command frame.^7\n");
+			}
+			else
+			{
+			Con_Printf("^5cl_predtrace: %i rendered frames\n", pt_count);
+			Con_Printf("^5ptcols: seq f nopred replays extrap cmdmsec btn cmdf cmds simvel3 fromvel3 tovel3 simorg3 vh crouch\n");
+			for (n = 0; n < pt_count; n++)
+			{
+				Con_Printf("ptr %i %.4f %i %i %i %i %i %.2f %.2f "
+						"%.4f %.4f %.4f %.4f %.4f %.4f %.4f %.4f %.4f "
+						"%.3f %.3f %.3f %.3f %.3f\n",
+						pt_recs[n].seq, pt_recs[n].f, pt_recs[n].nopred,
+						pt_recs[n].replays, pt_recs[n].extrap,
+						pt_recs[n].cmdmsec, pt_recs[n].btn,
+						pt_recs[n].cmdf, pt_recs[n].cmds,
+						pt_recs[n].simvel[0], pt_recs[n].simvel[1], pt_recs[n].simvel[2],
+						pt_recs[n].fromvel[0], pt_recs[n].fromvel[1], pt_recs[n].fromvel[2],
+						pt_recs[n].tovel[0], pt_recs[n].tovel[1], pt_recs[n].tovel[2],
+						pt_recs[n].simorg[0], pt_recs[n].simorg[1], pt_recs[n].simorg[2],
+						pt_recs[n].viewheight, pt_recs[n].crouch);
+			}
+			}
+			pt_count = 0;
+			Cvar_SetValue(&cl_predtrace, 0);
+		}
+	}
+	else
+		pt_count = 0;
+
 	if (cls.protocol == CP_NETQUAKE && nopred)
 	{
 		pv->onground = to.state->onground;
@@ -1504,6 +1959,13 @@ void CL_InitPrediction (void)
 	extern char cl_predictiongroup[];
 	Cvar_Register (&cl_pushlatency, cl_predictiongroup);
 	Cvar_Register (&cl_nopred,	cl_predictiongroup);
+	Cvar_Register (&cl_predtrace,	cl_predictiongroup);	//FTESurf Patch 269
+	Cvar_Register (&cl_predict_velblend,	cl_predictiongroup);	//FTESurf Patch 269
+	Cvar_Register (&cl_predict_freshtype,	cl_predictiongroup);	//FTESurf Patch 243
+	Cvar_Register (&cl_predict_qchook,	cl_predictiongroup);	//FTESurf Patch 335
+	Cvar_Register (&cl_prederror,	cl_predictiongroup);	//FTESurf Patch 335
+	Cvar_Register (&cl_predict_angleexact,	cl_predictiongroup);	//FTESurf Patch 396
+	Cvar_Register (&cl_predict_angledebug,	cl_predictiongroup);	//FTESurf Patch 396
 	Cvar_Register (&cl_predict_extrapolate,	cl_predictiongroup);
 	Cvar_Register (&cl_predict_timenudge,	cl_predictiongroup);
 	Cvar_Register (&cl_lerp_smooth,	cl_predictiongroup);

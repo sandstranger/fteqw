@@ -38,6 +38,43 @@ extern cvar_t con_textsize;
 //with -condebug this lands in qconsole.log as exact text, which is what the reconciliation
 //arithmetic actually needs.  One-shot: set the flag, next RSpeedShow prints and clears it.
 static int rspeed_dumpreq;
+
+/*
+FTESurf Patch 273 -- "Framerate (refresh only)" MEANT IT, AND NOBODY READ IT.
+
+RSPEED_TOTALREFRESH is closed around SCR_UpdateScreen alone (cl_main.c:7761).
+The listen server gets its OWN bracket around SV_Frame, three of them
+(cl_main.c:7457, :7592, :7663), and SV_Frame is called once per Host_Frame
+BESIDE the refresh, not inside it.  So the headline framerate this table has
+always printed is 1/refresh, and on a listen server -- which is every single
+-player session this game has -- it omits the server entirely.
+
+MEASURED on surf_tensor2 at the spawn, post-Patch-271, uncapped.  The refresh
+sub-buckets reconcile against their parent, which is how we know Server is the
+one sitting outside:
+
+    CSQC Drawing 2590.94 + 2d 256.78 + Present 178.27 + Protocol 3.76
+      + overhead 58.92 + setup 0.55 + composite 0.11 + GL reset 3.40
+      + Audio 0.58                                    = 3093.31
+    Total refresh (reported)                            3094.03   <- closed
+    Server                                              1790.68   <- OUTSIDE
+
+    "Framerate (refresh only)"   323 fps
+    what the frame actually is   1/(3094+1791) = 205 fps
+
+The user reported "200-300" on this map and the counter said 323.  The counter
+was not wrong, it was answering a different question, and the 1790us of server
+-- 37% of the frame, the single largest item -- was invisible to every A/B this
+project has ever run.  That is why this prints BOTH: the old number stays so
+old measurements remain comparable, and the honest one sits under it in caps.
+
+Deliberately just refresh+server rather than a sum over every bucket: those two
+are the only top-level brackets in the host frame, and summing the array would
+double-count every nested child.  If a third top-level bracket is ever added,
+add it here or this line quietly starts lying the same way.
+*/
+#define RSPEED_REALFRAME(a) ((a)[RSPEED_TOTALREFRESH] + (a)[RSPEED_SERVER])
+
 static void RSpeed_Dump_f(void)
 {
 	if (r_speeds.ival <= 1)
@@ -144,6 +181,8 @@ void RSpeedShow(void)
 	{
 		s = va("%f %-24s", (frameinterval*1000*1000.0f)/samplerspeeds[RSPEED_TOTALREFRESH], "Framerate (refresh only)");
 		Draw_FunStringWidthFont(font_console, 0, (i+RSPEED_MAX)*tsize, s, vid.width, true, false);
+		s = va("%f %-24s", (frameinterval*1000*1000.0f)/RSPEED_REALFRAME(samplerspeeds), "Framerate (INCL. SERVER)");
+		Draw_FunStringWidthFont(font_console, 0, (i+RSPEED_MAX+1)*tsize, s, vid.width, true, false);
 	}
 	memcpy(rquant, savedsamplerquant, sizeof(rquant));
 
@@ -159,6 +198,11 @@ void RSpeedShow(void)
 				Con_Printf("%12u %s\n", samplerquant[i]/frameinterval, RQntNames[i]);
 		if (samplerspeeds[RSPEED_TOTALREFRESH])
 			Con_Printf("%12.2f %s\n", (frameinterval*1000*1000.0f)/samplerspeeds[RSPEED_TOTALREFRESH], "Framerate (refresh only)");
+		if (RSPEED_REALFRAME(samplerspeeds))
+		{
+			Con_Printf("%12.2f %s\n", RSPEED_REALFRAME(samplerspeeds)/(float)frameinterval, "REAL frame (refresh+server)");
+			Con_Printf("%12.2f %s\n", (frameinterval*1000*1000.0f)/RSPEED_REALFRAME(samplerspeeds), "Framerate (INCL. SERVER)");
+		}
 		Con_Printf("---- end r_speeds_dump ----\n");
 	}
 
@@ -253,6 +297,7 @@ extern cvar_t			scr_printspeed;
 extern cvar_t			scr_allowsnap;
 extern cvar_t			scr_sshot_type;
 extern cvar_t			scr_sshot_prefix;
+extern cvar_t			scr_sshot_mapname;	//FTESurf Patch 211
 extern cvar_t			crosshair;
 extern cvar_t			scr_consize;
 cvar_t			scr_neticontimeout = CVAR("scr_neticontimeout", "0.3");
@@ -2695,26 +2740,81 @@ static void SCR_ScreenShot_f (void)
 
 	if (Cmd_Argc() == 2)
 	{
-		Q_strncpyz(pcxname, Cmd_Argv(1), sizeof(pcxname));
-		if (strstr (pcxname, "..") || strchr(pcxname, ':') || *pcxname == '.' || *pcxname == '/')
+		/*
+		  FTESurf: a NAMED screenshot honours scr_sshot_prefix's directory, the
+		  same way every sibling command already does.
+
+		  This branch used to copy the argument straight into pcxname and add an
+		  extension, ignoring the prefix entirely -- so `screenshot` with no
+		  argument wrote screenshots/fte-<date>-0.png while `screenshot foo`
+		  wrote foo.png into the gamedir ROOT.  Two commands, one name, two
+		  destinations, and the odd one out is the one every script uses.
+
+		  screenshot_mega, _stereo, _360 and _vr all resolve this by keeping the
+		  prefix's path and replacing only its basename (COM_SkipPath), which is
+		  what makes "screenshots/fte-" mean a folder AND a filename stem.  This
+		  is that idiom, copied verbatim rather than reinvented.
+
+		  The name check moved onto the ARGUMENT because pcxname now holds the
+		  prefix by the time the name goes in -- checking the joined string would
+		  test our own prefix rather than the user's input.
+		*/
+		char *mangle;
+		if (strstr (Cmd_Argv(1), "..") || strchr(Cmd_Argv(1), ':') || *Cmd_Argv(1) == '.' || *Cmd_Argv(1) == '/')
 		{
 			Con_Printf("Screenshot name refused\n");
 			return;
 		}
+		Q_strncpyz(pcxname, scr_sshot_prefix.string, sizeof(pcxname));
+		mangle = COM_SkipPath(pcxname);
+		Q_snprintfz(mangle, sizeof(pcxname) - (mangle - pcxname), "%s", Cmd_Argv(1));
 		COM_DefaultExtension (pcxname, scr_sshot_type.string, sizeof(pcxname));
 	}
 	else
 	{
 		int stop = 1000;
-		char date[MAX_QPATH];
-		time_t tm = time(NULL);
-		strftime(date, sizeof(date), "%Y%m%d%H%M%S", localtime(&tm));
+		char stem[MAX_QPATH];
+		/*
+		FTESurf Patch 211: name an unnamed screenshot after the map, <map>_000.png,
+		counting up per map.
+
+		The COUNTER IS THE PROBE, not stored state.  The loop below already walks
+		i upward until a name is free, so numbering per map falls out of changing
+		the stem: nothing to persist, nothing to reset on a map change, it survives
+		a restart, and deleting _001 refills 001 rather than leaving a hole.  That
+		is why this is three lines and not a table of per-map counters.
+
+		The prefix contributes its DIRECTORY only.  scr_sshot_prefix is a directory
+		AND a filename stem ("screenshots/fte-"), and <map> is already the stem we
+		want, so keeping "fte-" would produce screenshots/fte-surf_666_000.png.
+		COM_SkipPath is the same call the named branch above uses to split the two
+		halves, so both branches agree about what the cvar means.
+
+		scr_sshot_mapname 0 restores the <date>-<n> form byte for byte.
+		*/
+		if (scr_sshot_mapname.ival && cl.worldmodel && *cl.worldmodel->name)
+			COM_FileBase(cl.worldmodel->name, stem, sizeof(stem));	//maps/surf_666.bsp -> surf_666
+		else if (scr_sshot_mapname.ival)
+			Q_strncpyz(stem, "menu", sizeof(stem));	//no map loaded: cl.worldmodel is NULL at the menu
+		else
+		{
+			time_t tm = time(NULL);
+			strftime(stem, sizeof(stem), "%Y%m%d%H%M%S", localtime(&tm));
+		}
 	//
 	// find a file name to save it to
 	//
 		for (i=0 ; i<stop ; i++)
 		{
-			Q_snprintfz(pcxname, sizeof(pcxname), "%s%s-%i.%s", scr_sshot_prefix.string, date, i, scr_sshot_type.string);
+			if (scr_sshot_mapname.ival)
+			{
+				char dir[MAX_QPATH];
+				Q_strncpyz(dir, scr_sshot_prefix.string, sizeof(dir));
+				*COM_SkipPath(dir) = 0;	//"screenshots/fte-" -> "screenshots/"
+				Q_snprintfz(pcxname, sizeof(pcxname), "%s%s_%03i.%s", dir, stem, i, scr_sshot_type.string);
+			}
+			else
+				Q_snprintfz(pcxname, sizeof(pcxname), "%s%s-%i.%s", scr_sshot_prefix.string, stem, i, scr_sshot_type.string);
 
 			if (!(vfs = FS_OpenVFS(pcxname, "rb", FS_GAMEONLY)))
 				break;  // file doesn't exist

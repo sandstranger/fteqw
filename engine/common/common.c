@@ -90,7 +90,43 @@ cvar_t	host_mapname			= CVARAFD("mapname", "", "host_mapname", 0, "Cvar that hol
 #ifdef HAVE_LEGACY
 cvar_t	ezcompat_markup			= CVARD("ezcompat_markup", "1", "Attempt compatibility with ezquake's text markup.0: disabled.\n1: Handle markup ampersand markup.\n2: Handle chevron markup (only in echo commands, for config compat, because its just too unreliable otherwise).");
 cvar_t	pm_noround				= CVARD("pm_noround", "0", "Disables player prediction snapping, in a way that cannot be reliably predicted but may be needed to avoid map bugs.");
+//FTESurf Patch 256, TEMPORARY.  Lives here beside pm_noround rather than with the
+//other pm_ cvars in sv_phys.c because pm_source.c reads it directly and that file
+//is linked into the client too -- a server-side definition would not link.
+cvar_t	pm_dispprobe			= CVARFD("pm_dispprobe", "0", CVAR_NOSAVE, "FTESurf Patch 256/317, temporary instrument. Print the movement sweep, and any rejected step-down, whenever a player's move is stopped, together with the identity of what stopped it (BIH_ProbeReport: leaf type, model name, triangle, surface, and which of BIH_ClipToTriangle's planes).\n1: GROUNDED only, every stopped tick -- Patch 256's behaviour, unchanged, and loud by design.\n2: grounded or not, CHANGE-LATCHED. Use this for surf: a ramp steeper than pm_standablenormal means the rider is NOT grounded, so mode 1 is switched off for every surf ramp in the game -- which is why Patch 258's snag01 run probed surf_boreas and printed nothing.\n3: grounded or not, every tick. A surfer clips every tick, so this really is 66 lines a second.\nReading it: a clean 4-6 unit lip with an up normal that a winding cvar toggles away is the winding (`via plane 1 BACK-SLAB(+4)` on a surface you are standing on is that signature); a stop whose normal.z sits between 0.2 and 0.7 over ground that is much flatter is the separating planes BIH_ClipToTriangle does not build (`via plane 2/3/4`).");
+//FTESurf Patch 258.  Same reason as pm_dispprobe above: com_bih.c reads this and
+//is linked into the client as well as the server, so it cannot live with the
+//other pm_ cvars in sv_phys.c.  CVAR_SERVERINFO so a dedicated server publishes
+//the value -- note that publishing is all it does; a remote client does not adopt
+//it, so client and server must agree or prediction will disagree about geometry.
+cvar_t	pm_trisoup_bevels		= CVARFD("pm_trisoup_bevels", "1", CVAR_SERVERINFO, "FTESurf Patch 258. Build the nine edge-cross-axis bevel planes an AABB sweep against a triangle needs. Without them BIH_ClipToTriangle's swept volume bulges past the true Minkowski sum along every triangle edge, and a player walking a displacement seam is stopped dead by an in-plane edge plane whose normal is far too steep to stand on or step onto. 0 restores the old 11-plane set exactly, for A/B against recorded times; it does not restore correctness.");
+//FTESurf Patch 260, TEMPORARY.  Here for the same linkage reason as the two above.
+//This one exists to settle a question that cannot be settled by reading: the QC's
+//ladder essay (sv_entities.qc) asserts that Source ladder brushes "already report
+//FTECONTENTS_LADDER to every trace", but MASK_PLAYERSOLID is SOLID|PLAYERCLIP|
+//WINDOW|BODY and does NOT contain LADDER (0x4000) -- so a brush whose only contents
+//is LADDER is not merely unreported, it is not hit at all.  Whether the bit reaches
+//a Source-mode trace therefore depends on what else the mapper put on the brush,
+//which is map data, not code.  Measure it before porting a mover against it.
+//FTESurf Patch 320.  Here for the same linkage reason as the two above: com_bih.c
+//is linked into client and server alike.  CVAR_SERVERINFO so a dedicated server
+//publishes it -- client and server MUST agree or prediction disagrees about where
+//every rotated prop's surface is.
+cvar_t	pm_rotatedboxhulls		= CVARFD("pm_rotatedboxhulls", "1", CVAR_SERVERINFO, "FTESurf Patch 320. Treat the player's box as the ORIENTED box it is when tracing inside a rotated submodel. BIH_RecursiveTrace rotates the trace's start/end into the submodel's frame but hands the box through as an AABB, so a prop placed at a diagonal yaw collided against a box that had rotated with it -- zero error at 0/90/180/270, worst at 45. On surf_boreas's ramps (yaw -135) it put the player 7.73 units too deep in every ramp, which is why fixing the .phy winding in Patch 317 made the ride worse instead of better: the two errors had been cancelling. 0 restores the old behaviour exactly, for A/B against recorded times; it does not restore correctness.");
+cvar_t	pm_ladderprobe			= CVARFD("pm_ladderprobe", "0", CVAR_NOSAVE, "FTESurf Patch 260, temporary instrument. Fire the ladder-detection traces a Source-mode mover would fire, at the point in PMSrc_Tick where the ladder hook would live, and print what each one sees: a zero-length box trace at the origin and a forward trace, each run under MASK_PLAYERSOLID, under MASK_PLAYERSOLID|LADDER, and under an all-bits mask, plus PM_ExtraBoxContents for the entity path. Answers three questions at once -- does a ladder brush exist here, does the default mask hit it, and does trace.contents carry the LADDER bit when it does. 4Hz, and it prints even when nothing is hit so a negative is legible.");
 cvar_t	scr_usekfont			= CVARD("scr_usekfont"/*kex*/, "0", "Exists for compat with the quake rerelease, changing the behaviour of QC's sprint/bprint/centerprint builtins.");
+
+/*
+  FTESurf Patch 283 -- the two halves of the portal-doorway rubber-band.
+
+  Both default 0, i.e. today's behaviour byte for byte, and BOTH ARE PROVABLY
+  NO-OPS ON THE SERVER -- see the essays at their use sites in pmovetst.c. Only
+  the client's prediction can change, which is exactly where the bug lives:
+  at ~0 ping the client replays zero commands and any pmove disagreement is
+  arithmetically invisible, so this only ever showed up on a real server.
+*/
+cvar_t	pm_portalcsg_scanall	= CVARFD("pm_portalcsg_scanall", "0", CVAR_SERVERINFO, "FTESurf Patch 283. When a solid goes allsolid, look for a portal to carve it with among ALL physents rather than only those after it in the array. The client builds portals BEFORE packet entities and the server builds them LAST, so a forward-only scan means a networked brush entity can be carved on the server and not on the client -- which is a per-tick position disagreement exactly in a portal doorway. 0 restores the forward-only scan.");
+cvar_t	pm_skipent_portals		= CVARFD("pm_skipent_portals", "0", CVAR_SERVERINFO, "FTESurf Patch 283. Never let pmove.skipent skip a SOLID_PORTAL. skipent is the player's own entity number so that you do not collide with yourself, but on the client it is an SSQC number compared against CSQC edict numbers, so a portal that happens to share the number vanishes from prediction entirely. A portal is never the entity you are trying to skip. 0 restores the old test.");
 #endif
 
 qboolean	com_modified;	// set true if using non-id files
@@ -6859,6 +6895,12 @@ void COM_Init (void)
 	Cvar_Register (&scr_usekfont, NULL);
 	Cvar_Register (&ezcompat_markup, NULL);
 	Cvar_Register (&pm_noround, NULL);
+	Cvar_Register (&pm_dispprobe, NULL);	//Patch 256, temporary
+	Cvar_Register (&pm_trisoup_bevels, NULL);	//Patch 258
+	Cvar_Register (&pm_rotatedboxhulls, NULL);	//Patch 320
+	Cvar_Register (&pm_ladderprobe, NULL);	//Patch 260, temporary
+	Cvar_Register (&pm_portalcsg_scanall, NULL);	//Patch 283
+	Cvar_Register (&pm_skipent_portals, NULL);		//Patch 283
 #endif
 	Cvar_Register (&com_highlightcolor, "Internationalisation");
 	com_parseutf8.ival = 1;
