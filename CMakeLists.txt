@@ -571,6 +571,7 @@ SET(FTE_COMMON_FILES
 	engine/common/plugin.c
 	engine/common/pmove.c
 	engine/common/pmovetst.c
+	engine/common/pm_source.c
 	engine/common/pr_bgcmd.c
 	engine/common/q1bsp.c
 	engine/common/q2pmove.c
@@ -758,7 +759,9 @@ SET(FTE_CLIENT_FILES
 	engine/client/skin.c
 	engine/client/snd_dma.c
 	engine/client/snd_mem.c
-	engine/client/snd_mix.c
+	engine/client/snd_mix.c	
+	engine/client/snd_flac.c
+	engine/client/snd_minimp3.c
 	engine/client/snd_mp3.c
 	engine/client/snd_ov.c
 	engine/client/textedit.c
