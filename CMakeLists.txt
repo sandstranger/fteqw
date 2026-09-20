@@ -1443,8 +1443,8 @@ ENDIF()
 ENDIF()
 
 #vpk package format plugin (halflife2)
-SET(FTE_PLUG_HL2 true CACHE BOOL "Compile support for hl2 file formats.")
-IF(FTE_PLUG_HL2)
+SET(FTE_PLUG_HL2 false CACHE BOOL "Compile support for hl2 file formats.")
+IF(FTE_PLUG_HL2 AND NOT ANDROID)
 	ADD_LIBRARY(plug_hl2 MODULE
 		plugins/plugin.c
 		plugins/hl2/hl2.c

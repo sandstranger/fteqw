@@ -204,7 +204,7 @@ void QDECL Q_strncpyz(char *d, const char *s, int n)
 {
 	int i;
 	n--;
-	if (n < 0)
+	if (n < 0 || !d || !s)
 		return;	//this could be an error
 
 	for (i=0; *s; i++)

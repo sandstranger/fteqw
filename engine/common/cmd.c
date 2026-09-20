@@ -1143,7 +1143,6 @@ static void Cmd_Exec_f (void)
 	}
 
 	if (Cmd_ExecLocate(name, &loc, skipped, sizeof(skipped)))
->>>>>>> github.com/engine-patches
 	{
 		file = FS_OpenReadLocation(name, &loc);
 		if (!file)
