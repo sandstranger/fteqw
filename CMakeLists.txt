@@ -580,6 +580,7 @@ SET(FTE_COMMON_FILES
 	engine/common/sha2.c
 	engine/common/translate.c
 	engine/common/zone.c
+	engine/common/ed25519.c
 
 	#important headers
 	engine/common/bothdefs.h
@@ -732,7 +733,6 @@ SET(FTE_CLIENT_FILES
 	engine/client/image.c
 	engine/client/in_generic.c
 	engine/client/cl_receipt.c
-	engine/client/ed25519.c
 	engine/client/keys.c
 	engine/client/m_items.c
 	engine/client/m_master.c
