@@ -731,6 +731,8 @@ SET(FTE_CLIENT_FILES
 	engine/client/fragstats.c
 	engine/client/image.c
 	engine/client/in_generic.c
+	engine/client/cl_receipt.c
+	engine/client/ed25519.c
 	engine/client/keys.c
 	engine/client/m_items.c
 	engine/client/m_master.c
