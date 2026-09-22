@@ -30447,6 +30447,10 @@ note) -- parenthesised.  Not verified: a real keyboard (the harness feeds
 
 ## Patch 403 — a push may not carry a run out of the start box  *(APPLIED -- mod-side only, no engine change: FTESurf `src/server/sv_timer.qc` (SV_StartCapClamp, SV_TimerFrame, SV_TimerStart) + `cfg/default.cfg`. VERIFIED: FTESurf `cfg/test/p403cap0.cfg`, `p403capverify.cfg`, `p403compat.cfg`; the bug itself in `p403stage.cfg`.)*
 
+**DEPLOYED 2026-09-20** -- twice over: `c3cf81c` (Patch 412) carried it to all 12
+lobbies earlier that day, and `8c09730` re-shipped it at ~05:30 UTC.  `run_startcap`
+is 0 on the fleet, which is this patch's clamp OFF; see the note at the cvar.
+
 **Problem.** A clean ranked personal best could begin at 1800 u/s, and pm_verify
 PASSed it.  Measured on HEAD (Patch 400 included), sv_cheats 0, `!r` the only
 input, a start box drawn around bhop_arcane's *88 booster: `flags 4` (TF_HAVEPB
@@ -32327,6 +32331,221 @@ reads "no id". p340pi against a live lobby post-deploy: hook alive, ranked
 board fetched and absorbed, a real second player's row correct, no prederr.
 0 new warnings across the three progs.
 
+## Patch 409 — a booster is not a jump, the jump button is  *(APPLIED -- mod-side only, no engine change: FTESurf `src/server/sv_entities.qc`, `sv_player.qc`, `sv_timer.qc`. Fixture `cfg/test/p409hop.cfg`.)*
+
+**Problem.** Reported live on surf_666 bonus 3: *"When you fall onto the booster
+at the start of B3 you still get pred error AND you get flagged for practice! you
+have to 'fall' there is a pit you need to fall into and this caused it to believe
+you 'hopped'?"* `SV_TimerJumpWatch` has exactly one way to see a jump --
+`velocity_z` crossing `PM_NONJUMP_VEL` -- and one exclusion, `run_rampcontact`. A
+`trigger_push` produces the rise by the same path a ramp does:
+`PMSrc_TryPlayerMove` clips velocity+basevelocity against the plane and only the
+carrier is subtracted back out, so every unit of Z the clip made stays in
+`.velocity`. But `pm_source.c` sets rampcontact only for `|n_z|` in [0.1, 0.7] and
+B3's pit floor is STANDABLE at 26.57 degrees, so nothing excused it. From the
+player's own prederr log the server is doing (133, 2920, 1453) u/s -- the map's
+3000 u/s pad clipped 2:1 -- decaying at ~240 u/s² against gravity's 800, i.e. a
+body held on a surface, not one that jumped. Census over 1316 bsps: 21 maps have
+a `trigger_push` overlapping a start zone and 36 more within 300 units.
+
+**Change.** Gate the hopped-start accusation on the INPUT rather than the number:
+`!run_pushed || run_jumpcmd`. `CheckJumpButton` is the only path to a commanded
+rise and it needs the jump button and pre-move ground; a body falling into a pit
+has neither, and no floor angle changes that. `.run_pushed` is set on every
+command the mover was handed a carrier, on a cash-out, and in the `SF_PUSH_ONCE`
+arm; `.run_jumpcmd` is latched per command beside the `run_wasground` stamp. Both
+are read once per packet by the hopped-start branch alone and cleared at the foot
+of `SV_TimerJumpWatch`. `jumped` itself is untouched, so the bhop launch latch,
+`run_t_jumps`, `SV_StageTakeoff` and `SV_StageJump` are unchanged.
+
+TWO DRAFTS WERE REVIEWED OUT, both by reviewers who saw the code and not the
+conclusion. `!run_pushed` alone is far too wide -- a continuous pad re-arms the
+carrier every command you touch it, so it switched the hop rule OFF for as long as
+you stood in the volume and a deliberate bhop start on those 21 maps would have
+ranked. `vz <= PM_JUMP_IMPULSE * 1.05` is beaten -- `CheckJumpButton` runs BEFORE
+`AirMove`, which is where the carrier is added, clipped and subtracted back, so
+the impulse and the clip's gain land in the same tick and ADD: a bhop out of this
+very start box reads ~1259 (296 of jump, ~963 of clip) against a bound of 317.
+
+**Verified.** `cfg/test/p409hop.cfg`, both arms on the patched build, differing in
+one input with the verdict flipping: J1 carrier, no jump -> jumps 1, ramp contact
+0, hopped 0; J2 carrier, +jump held -> jumps 2, hopped 1. Draft 1 gives hopped 0
+on both and an unpatched build gives hopped 1 on both, so only this gate separates
+them. J2 also prints `basevel: OnJump ... vz 290`, an independent witness that the
+jump was commanded at a value draft 2's bound could not distinguish.
+
+**Known residual**, stated in the source: grounded on a pad with jump held while
+the clip lifts you is still read as a hop. That is the genuinely ambiguous case
+and it keeps the pre-409 answer. The harness drives the gesture with `setpos`
+rather than by falling down the pit, so a human retest of B3 is the confirmation
+that matters.
+
+**DEPLOYED 2026-09-20** with `c3cf81c` (the Patch 412 deploy) to all 12 lobbies,
+and re-shipped at ~05:30 UTC with `8c09730`; fleet record under Patch 415.
+
+## Patch 410 — the client's push accumulator compounded; the server's never did  *(APPLIED -- mod-side only, no engine change: FTESurf `src/client/cl_triggers.qc`, `ftesurf/cfg/default.cfg`. No harness arm -- see Verified.)*
+
+**Problem.** The prediction error the same player reported on surf_666 bonus 3,
+and NOT what commit `341341b` blamed it on: turning `run_startcap` off did not fix
+it because the cap was never causing it -- the server was doing 3243 u/s past a
+cap of 290, so the clamp was not engaging at all.
+`CSQC_PredictPlayerMove` cleared `tg_pusharmed`/`tg_pushvec` only on
+`seq != tg_pushseq`, while the server clears `run_basevel_armed` UNCONDITIONALLY
+every command and the comment on that line reads *"Drop it and a push compounds
+forever"*. The accumulator exists to sum OVERLAPPING pads within ONE command --
+written and re-read inside the trigger loop of a single call, read by nothing
+outside it -- so keying it on the sequence assumed one hook call per sequence. The
+engine makes two kinds of repeat call: `CL_PredictUsercmd` splits any command over
+50 ms and recurses with the SAME sequence, and the `pt_extrap=2` branch re-runs the
+last replayed command verbatim. Each repeat folded the previous call's push into
+the new one.
+
+**Change.** Clear the mirror unconditionally, as the server does. `tg_pushseq` is
+deleted; nothing else referenced it. `default.cfg`'s `run_startcap` note is
+corrected in the same commit because it is where a future reader would go and it
+asserted the wrong cause; the cvar stays 0, since capping the map's intended
+booster is still the wrong half.
+
+**Verified -- BY ARITHMETIC, NOT BY AN ARM, and that is the weakest part of it.**
+From the player's own 15 consecutive acked commands, each error vector divided by
+one command of the pad's ramp-clipped carrier, (0, 36, 18) u at `pm_ticrate`
+0.015: 9, 7, 9, 8, 8, 8, 9, 0, 8, 0, 8, 0, 8, 0, -1 -- integers on both components
+to three decimal places. `dx` is exactly 0.0 on all fifteen, which kills the
+alternative I had favoured: a client running ahead in TIME would have shown 2.007 u
+of x error per command. The offset is parallel to the CARRIER, not to the
+trajectory, and the large error begins and ends exactly at the boundary of the
+pad's real brush box. Plus the player's retest. This patch has no `cfg/test/` arm.
+
+**NOT FIXED HERE**, recorded in the source beside the change: the same repeat calls
+have two older victims. `TG_FirePush`'s once arm tests `seq > tg_onceseq[i]`, so a
+repeat call at the same seq re-adds a one-shot impulse the server fires once ever;
+and `if (seq <= tg_lastseq) TG_ChainStart(seq)` reads a repeat call as a new chain,
+so `TG_IOCommit` folds still-unacked IO edges into the committed state permanently.
+Both need a hitch or an extrapolated frame to fire, so neither is the reported bug,
+and both want their own falsifier.
+
+**DEPLOYED 2026-09-20** with `c3cf81c` to all 12 lobbies, re-shipped with
+`8c09730`; fleet record under Patch 415. csprogs-side, so it reached players only
+once `seed_csprogs.py` had run.
+
+## Patch 411 — an upward pad takes the ground flag before the jump test can read it  *(APPLIED -- mod-side only, no engine change: FTESurf `src/server/sv_entities.qc`, `sv_player.qc`, `sv_timer.qc`. Fixture `cfg/test/p411push.cfg`, which records a FAILED harness.)*
+
+**Problem.** Patch 409 gates the accusation on `!run_pushed || run_jumpcmd`, and
+`run_jumpcmd` is latched in PlayerPreThink as `run_wasground && button2`.
+`trigger_push_touch` strips `FL_ONGROUND` on an upward push -- both arms, the
+continuous one and `SF_PUSH_ONCE` -- and the touch loop runs AFTER the move, so the
+next command's `run_wasground` stamp reads FALSE for a body the mover re-grounds
+inside pmove anyway (`PMSrc_Tick` -> `CategorizePosition`, a 2 u ground band
+against the 1 u lift). `run_jumpcmd` never latches, the gate reads
+`!TRUE || FALSE`, and the hop rule is switched off for the whole ride: draft 1's
+hole by another route, in code that shipped that morning.
+
+**Change.** `.run_pushlift` is set in each strip and spent one command later beside
+the stamp it repairs, including on the `run_pmhold` path, whose two early returns
+sit above both clears. Also `SV_StageTakeoff`, which Patch 407 missed: it stored
+bare `.velocity` as `run_st_tkspd` while `SV_StageLaunch` -- fixed by 407 one
+function below -- reads its launch speed straight back out of it on the airborne
+branch. That moves `stagepost <launch>`, so: no grammar or REC change (still three
+fields, reccheck never recomputes it), byte-identical on maps with no push, and
+P407's corpus scan does NOT transfer, because it sampled the box exit and not the
+takeoff.
+
+**Verified -- AND THE FIXTURE RECORDS A FAILURE, DELIBERATELY.**
+`cfg/test/p411push.cfg`'s arms printed the predicted flip and are worthless: the
+pad never armed (zero basevel lines, `run_pushed` FALSE throughout), because
+surf_polygon's brush does not fill model `*198`'s 2048³ AABB -- the same lesson
+surf_666 taught p409hop. So `run_pushlift` is verified BY CONSTRUCTION ONLY. What
+the run does establish is the regression that matters: p409hop on this build is
+unchanged -- J1 pad armed at 3000 u/s and hopped 0, J2 hopped 1 -- so 411 does not
+disturb 409 on the map the player retested. Follow-up `452cef4` withdrew the
+reachability claim outright: a 45-point viewpos sweep finds surf_polygon's pad
+inert everywhere in its box, so the census figure "4 upward pads on 3 maps" is an
+AABB claim and no map is currently known where a human could test this. It also
+records the detector trap that cost two attempts -- `basevel: paid` prints on
+CASH-OUT only, and `setpos`-ing out of a volume clears the carrier rather than
+cashing it, so both earlier harnesses printed nothing on a pad that demonstrably
+works. Read the player's position back instead.
+
+**NOT DONE**, deliberately, and written up where the code is: a booster is still
+credited as a stage start. A clear reading `run_pushed && !run_jumpcmd` was
+implemented and withdrawn on review, for two reasons worth keeping. It was not
+takeoff-scoped -- `SV_TimerJumpWatch` runs every packet while `run_st_tkok` lives
+from takeoff to landing, `run_pushed` is set by the cash-out one command AFTER you
+leave a volume, and `run_jumpcmd` cannot latch airborne, so jumping honestly out of
+a stage box that holds a pad silently deleted the split with no way to restore it.
+And it does not survive the sign flip: for 409 `run_jumpcmd` TRUE means "press on
+with the accusation", but reused for CREDIT it means "grant it", so holding +jump
+on a pad buys the mover's rise. What it needs is a takeoff-scoped refusal that
+never consults the jump button, and the cost has to be measured first -- the 409
+census counted pushes overlapping START zones, not STAGE boundaries.
+
+**DEPLOYED 2026-09-20** with `c3cf81c` to all 12 lobbies, re-shipped with
+`8c09730`; fleet record under Patch 415.
+
+## Patch 412 — a setspeed pad forces velocity_z, and the hop rule called it a jump  *(APPLIED -- mod-side only, no engine change: FTESurf `src/server/sv_entities.qc`, `sv_timer.qc` (comments), `tools/census/`. Fixture `cfg/test/p412speed.cfg`.)*
+
+**Problem.** `trigger_setspeed_touch` writes `other.velocity_z` directly and was
+not a `run_pushed` writer, so Patch 409's gate passed on a rise nobody commanded.
+`SSV_SET` forces the value whatever you arrived with. AND IT NEEDS NO GROUND
+CONTACT, which is what makes it ordinary rather than exotic: dwell is 0 when
+`run_t_groundsec` is 0, and 0 < want (0.25). So an AIRBORNE player who crosses the
+pad is accused -- jump legitimately inside the start box, fly through the curtain,
+get told "hopped start". No bhop, no timing, no ground phase at all.
+
+**Change.** The pad marks itself when its own write both crosses
+`PM_NONJUMP_VEL` and RAISED the value. THE PREDICATE IS A CONJUNCTION and each
+half alone was a draft that failed. `vel_z > other.velocity_z` alone is TRUE for
+any DESCENDING player, and 25 of the start-overlapping pads SET a small or
+negative vertical (`verticalspeed -6` is the common authoring), so it switched the
+hop rule off on almost every approach -- both reviewers caught that.
+`vel_z > PM_NONJUMP_VEL` alone marks a player whose OWN jump put them over 140:
+`vel_z` is untouched under `SS_IGNORE` and unchanged under `SS_INCREASE` when they
+arrive higher than the pad's value, so a real bhop across a horizontal-only pad in
+a start box would have bought its own acquittal.
+
+**Census** (`tools/census/`, committed with this patch so the numbers stay
+checkable; its README grades AABB claims). 376 setspeed pads, 217 write a positive
+vertical, 183 over 140. Of those 183: 38 touch a start zone, 8 of them only on a
+zero-width plane, 30 have real overlap volume, and **16 across 9 maps lie ENTIRELY
+INSIDE a start zone** -- surf_cement, surf_fruits, surf_illumination,
+surf_minigolf, surf_forgotten, surf_monolith, surf_leesriize, surf_christmas,
+surf_tripportals. That last figure is the one to quote: containment is the only
+claim an AABB can make safely. P411's "4 upward pads" was a gap-zero figure like
+the 38, and two of its three maps proved unreachable. Reachability here is proven
+from real data rather than geometry: `p369/surf_deoa.rec` holds 9 `speed` warp rows
+at `vel_z` 245.8, with the recorded origins one hull-radius outside the pad's box
+in x and squarely inside in y and z.
+
+**Verified.** `cfg/test/p412speed.cfg` on surf_cement, patched against a control
+built from HEAD (qwprogs 1478930 vs 1478882). K1b (`jumps 3`) reads hopped 1 on the
+control and hopped 0 patched; both builds print `stage fill: tkspd 2060`, the pad's
+own authored horizontalspeed, so the pad fired identically and the one line in
+`trigger_setspeed_touch` is the only difference. K1 discriminates nothing and the
+reason is the harness's, not the build's -- it `setpos`es in from a grounded spot,
+so dwell was already ~0.9 s. THE PRE-REGISTERED DETECTOR WAS THE WRONG ONE and that
+is recorded: `cmd viewpos` read the same position before and after, because
+`setpos` into that brush leaves the body embedded. Two better witnesses in the same
+log carry it -- the `trigger_setspeed: StrictMode is not implemented` dprint from
+inside the touch, and `tkspd 2060` against `tkspd 0` at the baseline. Regression:
+p409hop unchanged, so 412 disturbs neither 409 nor 411.
+
+**NOT DONE, and it is the bigger half** -- written up in the source beside the fix.
+A pad writing only HORIZONTAL speed still has it clipped into `velocity_z` off a
+standable slope ONE PACKET LATER, after `run_pushed` is cleared. 25 such pads over
+300 u/s sit inside start zones on 13 maps, nine of them surf_bossfight's at 5000
+u/s (`tools/census/ssd1.py`). A flag set in the toucher cannot reach it: the
+carrier path survives only because it re-arms every command, and a site that writes
+once has nothing to re-arm. Also raised in review and not yet measured: 409's
+`run_jumpcmd` override is weaker than its own comment implies, because
+`run_wasground` is a PRE-MOVE sample and a bhop's ground phase is mid-move, so only
+the first hop of an autohop chain latches.
+
+**DEPLOYED 2026-09-20** with `c3cf81c` to all 12 lobbies -- `build.ps1 -Jobs 8 -Pi`,
+0 players on all 12, swapped keeping `.prev`, all 12 restarted, verified 1478930
+bytes and 12 active. `seed_csprogs.py` produced `cb29261c.dat`, the same name as
+Patch 411's, because csprogs.dat was byte-identical (412 is server-only).
+Re-shipped with `8c09730`; fleet record under Patch 415.
+
 ## Patch 413 — the Air/Bhop/Jump percentage measured its two halves from different moments  *(APPLIED -- mod-side only, no engine change: FTESurf `src/client/cl_board.qc`, `src/client/cl_hudedit.qc`, `ftesurf/cfg/default.cfg`. Fixture `cfg/test/p413air.cfg`.)*
 
 **Problem.** `seq_pct` is `100 * de / emax`. `emax` was the strafe ceiling alone;
@@ -32357,6 +32576,11 @@ the map's own rate. The pre-registered control prediction (">100% on the control
 was WRONG and is recorded in the fixture: over-100 and stuck-at-0 are the two ends
 of one defect. Not covered: mid-air boosters inject energy no ceiling models, so
 ramp-exit rows can still exceed 100%.
+
+**DEPLOYED 2026-09-20 ~05:30 UTC** with `8c09730`; fleet record under Patch 415.
+csprogs-only, so this is the patch in that deploy that needed `seed_csprogs.py` --
+the Patch 412 deploy before it did not, csprogs being byte-identical to 411's.
+The seeded name on the fleet is now `eb1da7bf.dat`.
 
 ## Patch 414 — OnJump had never fired once, on any map  *(APPLIED -- mod-side only, no engine change: FTESurf `src/server/sv_entities.qc`, `src/server/sv_player.qc`. Fixtures `cfg/test/p414jump.cfg`, `p414jumpwalk.cfg`, `p414lift.cfg`.)*
 
@@ -32393,6 +32617,26 @@ placement 300 u off the pad, stays silent on both builds. `p414lift.cfg` records
 that bonus 1's vertical `trigger_push` was never broken (1162 u of lift) and that
 its pre-registered detector was the wrong one — a purely vertical carrier can
 never print a cash-out. Regression: `p409hop`, `p412speed`.
+
+**DEPLOYED 2026-09-20 ~05:30 UTC** with `8c09730`; fleet record under Patch 415.
+WATCH THIS ONE: 123 maps now fire an output that had never fired once, and only
+surf_prosurf bonus 4 was driven before the deploy.  If a map's progression
+misbehaves from here, suspect an OnJump that now lands -- `run_bv_debug 1` prints
+`basevel: OnJump from <model>` at the moment it does.
+
+**POST-DEPLOY CENSUS**, because the blast radius that matters is the rotation and
+not the library.  Across the 93 maps the 12 lobby cfgs actually serve, 28 carry an
+OnJump and 937 outputs went from inert to live -- but ~734 of those are Momentum's
+own `AddContext _mom_leftground` bookkeeping, and only ~190 are `AddOutput`.  The
+anti-cheat question is the subset writing `basevelocity` with a big Z, because
+Patch 409's gate is `if (!run_pushed || run_jumpcmd)` and on an OnJump pad the
+player is pressing jump BY CONSTRUCTION -- run_jumpcmd is always TRUE, the gate
+always passes, and a big rise inside a start zone would read as a hopped start and
+taint an honest run.  Measured: 202 OnJump basevelocity outputs on the rotation,
+114 over PM_NONJUMP_VEL, and ZERO with any overlap volume against a start zone.
+Not reachable.  `tools/census/onjumpstart.py` re-runs it off the lobby cfgs when
+the rotation changes.  The biggest live ones are bhop_tripportals at
+`basevelocity 0 0 8000` and bhop_furret at 3000, both well clear of their starts.
 
 ## Patch 415 — `!r` puts you back on the spot you left in the start box  *(APPLIED -- mod-side only, no engine change: FTESurf `src/server/sv_saveloc.qc`, `sv_timer.qc`, `sv_zones.qc`. Fixtures `cfg/test/p415reset.cfg`, `p415snap.cfg`.)*
 
@@ -32440,3 +32684,681 @@ the `data/runs` corpus unmoved at 12 notes over 237 files.
 lands below the zone and build 47's start-box taint laundering never fires — 37 of
 48 sampled regions. Closing that would extend the `sl_load` velocity payload to the
 other 11; the velocity has to be answered first.
+
+**LIVE 2026-09-20, the two lobby-only paths** (verifier session, at Lex's request;
+`cfg/test/p415lobA.cfg` + `p415lobB.cfg` against lobby 4, bhop_eazy, progs
+`8c09730`).  A saved while moving inside the box: its own row reads **204 u/s**;
+`!r` answers `start of the map (your save, -366 -352 64)`; a save taken
+immediately after reads **0 u/s at the same origin**.  Armed and `class: clean`
+throughout.  So the placement hands back an origin and not the velocity on a
+lobby too, which is the arm p415reset could only run on a listen server.
+B is a SECOND PLAYER from a separate install, and the control is that the lobby
+log shows two guids (`f8dc54d0…` against A's `9fb676fd…`) — without it the pair
+would have measured one player twice: B's `sl_list` says `nothing saved on this
+map` and its `!r` lands on `teleDestPos, -336 -352 64`.  SL_Blk's per-player
+split holds; A's save is never offered to B.
+`lobby_nosaveloc` could NOT be driven on the fleet — setting it needs rcon, and
+only the 12 lobby ports are reachable off-LAN — so `p415nosave.cfg` ran against a
+dedicated server at `lobby_enable 1`: `sl_save` refused with "save points are off
+in this lobby", `!r` still lands on `teleDestPos`, clean.  That is the gate, not
+the fleet.  The refusal prints twice, which is the double-processed `cmd` path.
+Still not driven live: Patch 414 on a map whose progression depends on OnJump.
+
+**DEPLOYED 2026-09-20 ~05:30 UTC** (by the verifier session, on Lex's instruction):
+progs at FTESurf `8c09730` to all 12 lobbies.  NEW IN THIS ONE: Patches 413-415.
+403-412 and `run_startcap 0` were ALREADY LIVE, and the "everything since
+`7c7220a`" this was measured against is stale by one deploy -- `c3cf81c` (Patch
+412) went to all 12 lobbies earlier on 2026-09-20 from the session that wrote it,
+qwprogs.dat 1478930 bytes, csprogs byte-identical to Patch 411's and re-seeded as
+`cb29261c.dat`, verified 12 active / 0 players.  Corrected here rather than left,
+because a fleet record that understates what was already running is how the next
+rollback picks the wrong target.  qwprogs sha256 `cdaa6d30…`, csprogs
+`9b3cd497…` (folded `eb1da7bf`).  Progs only: the Pi's default.cfg, surfd and
+engine already matched.  Checked after: 12 units active, 5 s heartbeats, no log
+errors, a client connect to lobby 1 loads CSQC, and a 0.1.7 client with no cache
+downloads `csprogsvers/eb1da7bf.dat` and loads it (Patch 362's path, on a real
+deploy).  The 403-415 entries keep their own arms; this is the fleet record.
+
+## Patch 416 — the server picks a number a client cannot know, and asks for it back  *(APPLIED -- mod-side only, no engine change: FTESurf `src/server/sv_timer.qc`, `sv_resume.qc`, `sv_saveloc.qc`, `sv_player.qc`, `src/client/cl_replay.qc`, `cl_main.qc`, `src/shared/sh_defs.qc`, `tools/reccheck.py`, `tools/test_reccheck.py`, `surfd/recplot.py`. Fixtures `cfg/test/p416nonce.cfg`, `p416ctl.cfg`, `p416ms.cfg`, `p416twice.cfg`, `p416rewind.cfg`, `p416verify.cfg`.)*
+
+**Problem.** Every taint bit this game records is a statement about what the
+CLIENT claimed — its ruleset, its map hash, its input profile — and so is worth
+exactly what the client is worth. There was nothing in the evidence chain that a
+client could not produce on its own, which meant two silences could not be told
+apart: a run whose client COULD NOT send evidence (any older build) and one whose
+client WOULD NOT. A demotion that cannot separate those demotes every legacy
+client, which is the skew window `sv_mapcheck` shipped for a decade.
+
+**Change.** `SV_RecOpen` draws 128 bits, writes `nonce <hex32>` into the `.rec`
+header (additive, no version bump) and stuffs it to the one client running the
+run. That client answers `cmd rec_nack <hex>` and the server sets **TF_NONCE
+(131072)** — a MARKER, like TF_MULTISESSION and TF_SPEC: not a class, not in
+TF_UNCERT, not in surfd's `certifiable()`, and nothing is refused for its
+absence. A Multi-Session resume can be a different machine days later, so
+`SV_MsRecAttach` draws a fresh one and writes it into the body as `nonce <mt>
+<hex32>`; `<mt>` is the NEW session's epoch, because the mover counter resets
+with the map. The client also notes it into its raw input journal, where the
+engine stamps it at a stream position.
+
+**What it is worth, stated where it cannot be mistaken for more.** The attacker
+picks which silence they present: echoing the number is free for a patched client
+and so is staying quiet and sitting in the legacy bucket. So the bit does not
+separate honest from dishonest and must never be asked to — what it separates is
+a POPULATION, and only once pre-416 clients are gone. The journal note is a LOWER
+bound on when a journal was authored and nothing more: `in_journal_note` is an
+ungated console command, so on a hostile client the note's position is chosen by
+the attacker too. Both limits are written into the code beside the mechanism.
+
+**And the strength paragraph was wrong in the direction that flattered the
+patch**, which the review lens caught: it claimed the draw count was unknown. It
+is published two lines above, in the same header — `startjit` writes the
+randomized start at four decimals and with `run_startjitter 2` a draw's step is
+4/32768 = 0.000122, so each printed dx and dy names its own `random()` exactly,
+twice per run. A player does not even need the file; the offset is applied to
+their own body. **The collateral is bigger than the nonce**: enough observed
+draws recover glibc's stream from a `srand(time(0))` seeded once at COM_Init, and
+that makes `startjit` itself predictable — the control that exists so a run
+cannot be replayed from a known start. Pre-existing, found here, not fixed here;
+the answer for both is an engine patch exposing `Sys_RandomBytes` to the server
+VM.
+
+**Six defects found by review, five of them in the first cut's own reasoning.**
+Three reviewers, each given a different lens and none given the author's
+conclusions (predicate and control flow; consequences for recorded evidence; what
+a cheater gains):
+
+- **The frame order was inverted.** The note was written in `Rec_HidBegin` on the
+  claim that the server's stuffcmd runs first. `Host_Frame` runs `Cbuf_Execute`
+  (cl_main.c:7607) BEFORE `CL_ReadPackets` (:7639, :7705) and before
+  `SCR_UpdateScreen` (:7743), so a stuffcmd parsed this frame waits for the next
+  frame's buffer. The note could therefore only ever carry the PREVIOUS run's
+  number — measured, `p416twice.cfg`'s control: two notes in run 2's journal, the
+  first belonging to a recording already archived. Fixed by clearing the held
+  nonce at the run-end edge, which is what made the line safe to keep.
+- **TF_NONCE survived a resume through the parked save's flags** on four paths
+  that never reach the issuer, one of them (`run_ms_norec`) a session that
+  finishes and SUBMITS with a bit asserting an answer nobody was asked for.
+- **A save-load destroyed it permanently.** A save taken inside the answer's
+  round trip records the bit clear; the load restored that and the client, still
+  holding the same number, would never say it again. TF_NONCE now joins
+  TF_RECORDING and TF_FROZEN as a thing no file may assert (`sv_saveloc.qc`,
+  both directions), and a rewind re-publishes.
+- **A retry left the run unanswerable.** A retry is a `map_restart`: it destroys
+  the CSQC VM and the client's copy with it, and nothing re-issued.
+- **A cold load kept a nonce the file does not state.** It rebuilds the recording
+  from a save slot, header and all, so the server now ADOPTS the nonce that
+  buffer's header states rather than the one it drew.
+- **`strzone("")` never latches.** On an engine whose `digest_hex` refuses
+  SHA256 the seed guard `== ""` compares CONTENT, so a real allocation that is
+  still empty re-allocated one per run open, forever. Latched on length instead.
+
+**Verified.** `p416nonce.cfg` (S1-S5): header `nonce`, `flags 131329`, the same
+32 characters in the journal at stream position 0, reccheck 0 faults, no body
+record. **CONTROL** `p416ctl.cfg`, the same route with csprogs built from HEAD:
+`flags 257` — the bit is the client's answer and nothing else. `p416ms.cfg`
+(M1-M5): v10, `pause ... server` / `nonce 466 <hex>` / `session 2 466`, the body
+record inside the open pause, `flags 147713`. `p416twice.cfg` (T1-T3) and its
+first-cut control, above. `p416rewind.cfg` (R1-R4) — a save, a load and a retry
+in one run: **R3 failed twice** and both failures are recorded in the fixture;
+the second fix (the client asking, `cmd rec_nonce_ask`) did not fix it and is
+kept because it is the right mechanism for a lost stuffcmd. `p416verify.cfg`:
+ms/s/c/twice all PASS, `rewind.rec` REFUSEs — Patch 367's retry rule, controlled
+by stripping the `nonce` line and getting the identical verdict. `test_reccheck`
+248 checks / 0 failed; the `data/runs` corpus unmoved at 153 files with faults
+over 237.
+
+**reccheck** learns the key, the record and the one invariant the pair makes
+checkable: TF_NONCE set with no nonce anywhere is a FAULT, v9 and up. The
+converse is not and may not become one — a file can state a nonce and carry no
+bit for the most ordinary reason there is. `surfd/recplot.py`'s header allowlist
+too, so the key does not show as unknown on an owner's run page.
+
+**Not deployed.** Progs-only, so it ships with a normal `-Pi` deploy whenever
+Lex wants it; nothing here changes physics, the clock or any ranking decision.
+
+**Found and NOT fixed** (one line each, deliberately): `sv_lobby.qc`'s submission
+posts `&flags=%g`, which is exact at six significant digits — TF_NONCE takes the
+all-bits value to 262143 and the bit AFTER the next one puts it at seven, where
+`%g` starts sending `2.09715e+06`. Same trap the essay above that line documents
+for `ticks`. And `cl_lobbytime.qc` writes a client-side `FTESURF-REC 5` whose
+flags come from a stat, so it can carry TF_NONCE with no key to match: harmless
+today (local files, and reccheck's cross-check is gated at v9), worth knowing
+before anything treats the bit as meaningful in a file it did not write.
+
+## Patch 417 — a key that never leaves the player's machine, and a receipt no other server can wear  *(APPLIED -- engine: `common/ed25519.c` (new), `client/cl_receipt.c` (new), `client/in_generic.c`, `client/cl_main.c`, `client/client.h`, `common/common.h`, `Makefile`; FTESurf `src/server/sv_timer.qc`, `sv_player.qc`, `sv_lobby.qc`, `src/client/cl_replay.qc`, `tools/ed25519.py` (new), `tools/rcptcheck.py` (new). Fixtures `cfg/test/p417ed.cfg`, `p417sign.cfg`, `p417stale.cfg`, `p417probe.cfg`.)*
+
+**Problem.** The plan's Phase 2 identity item, unstarted since it was written: "a
+local keypair at first launch; public key = player id; runs signed." Until now a
+player is a `guid` derived from `qkey`, and nothing committed a client's evidence
+to a moment — a journal or a sidecar could be authored at leisure afterwards.
+
+**Change.** At the first signature the client makes an Ed25519 keypair and keeps
+the seed as hex in `fskey`, beside `qkey`, in the install root. At the end of a
+run it signs five lines — the server it is connected to, that server's run nonce
+(Patch 416), the tick count it saw, and the SHA-256 of its own `.hid` and
+`.view` — and sends the public key and signature to the server, which writes
+`data/evidence/<map>/<runid>.rcpt`: its own facts above the client's signed
+block. `tools/rcptcheck.py` verifies it offline, joins it to the `.rec` by runid,
+compares both tick counts, and hashes the files it is pointed at against what was
+committed to.
+
+**What it buys, in the words the review left standing.** The first version of
+this section claimed three things and two were wrong in the direction that
+flatters the patch.
+
+- **It does not prove honesty.** A patched client signs what it likes, and the
+  player holds the key — so a player signing a false statement about their own
+  run need not patch anything at all.
+- **It fixes the digests at the finish.** The gamecode signs at the run-end edge
+  and the server refuses a receipt while the run is still recording, so the
+  commitment cannot be made before the evidence exists. A forger's fake journal
+  has to be ready by the finish line rather than produced afterwards. Real cost;
+  not a wall.
+- **It is an identity that cannot be harvested by asking, and a signature that is
+  not portable.** The first cut said "an identity a server operator cannot wear",
+  and that was FALSE as written — see the relay below.
+
+**THE WORST FINDING, AND IT WAS AN ATTACK RATHER THAN A DEFECT.** `rec_sign` was
+reachable from a server's stufftext, like every command CSQC can reach. So any
+server could mint the key file on a client that had never played a ranked run and
+read back its public key — and worse, it made a LIVE RELAY work: start a run on
+the real server B, take B's nonce, have a victim's client sign it on your own
+server A, then post the victim's key and signature to B as your own run's
+receipt. B checked shapes and TF_NONCE and never that the key belonged to the
+sender. The forged receipt verified.
+
+Two lines close it, and both are measured in `p417probe.cfg`:
+
+- **A server may not ask.** `Cmd_FromGamecode()` is refused, and the client says
+  so on its own console. The gamecode's `localcmd` runs one restriction level
+  below, so the only caller there is keeps working.
+- **The statement names the server.** The address comes from the client's own
+  netchan, not from anything the gamecode said, so a signature made on A does not
+  read as a receipt on B. A hostile server still owns the client's CSQC and can
+  drive the command from gamecode it wrote — that line is what makes it worthless
+  anywhere else.
+
+**Six more findings, all from the three review lenses and none from re-reading
+the code.**
+
+- **A run with no journal signed the LAST run's digest.** The engine keeps the
+  digest so a receipt can sign it after the buffer is freed, and nothing said it
+  belonged to this run. Named use: play one clean PB so a real journal is
+  latched, set `rec_hid 0`, and every later run commits to the clean run's bytes.
+  Closed at both ends — the gamecode says whether this run journalled, and a
+  journal that ends with none open forgets the last one. `p417stale.cfg` keeps
+  the pre-fix receipt as its control.
+- **A discarded journal's digest was over a PREFIX.** It was taken before the
+  trailer was composed, so no file that could ever be written would hash to it —
+  and a lobby discards every journal, which made the commitment unfalsifiable on
+  exactly the servers it is for. One digest point now, after the trailer,
+  whichever way the journal ends.
+- **The receipt could be sent at tick one**, burning the one-per-run latch so the
+  honest receipt was refused, recording a server tick count of zero, and
+  committing to whatever digests were lying around. Refused while recording.
+- **Receipts were written into a flat `data/receipts/` that nothing ever swept**,
+  by twelve lobbies sharing one data dir. They live beside the evidence now and
+  `SV_EvidenceSweep`'s `run_evidence_days` reaps them on the same clock.
+- **A player name could inject lines into the receipt.** `SV_FixupName` strips
+  what QuakeC trips on, not what Python's `splitlines()` breaks on (`\v`, `\f`,
+  the file separators, U+2028). The receipt's text fields are cleaned to
+  printable ASCII.
+- **The verifier called a receipt that commits to nothing VALID.** It rebuilt the
+  message from whatever `signed ` lines it found, so a receipt with none at all —
+  a signature over the version line — reported ok, and `--tamper` had nothing to
+  tamper with and passed too. The signed block is now required to be exactly its
+  five lines, in order, and the version line is taken verbatim rather than parsed
+  and re-rendered.
+
+**Three crypto defects that no published vector and no random cross-check could
+reach**, because no honest signature goes near any of them:
+
+- **A small-order public key verifies everything.** `[k]A` is the identity for
+  every `k`, so verification collapses to `R == [s]B`, which anyone satisfies
+  with no secret. Ordinary Ed25519 code does not care — one key, one signer —
+  but here the key is a player's IDENTITY, so it would be a name eight people
+  can wear at once. A forgery was crafted and confirmed to verify under the
+  pre-fix equation; both implementations refuse it now, and the control (a real
+  key) still verifies. Computed as `[8]A == identity` rather than tabulated: a
+  wrong byte in a blacklist fails silently in the direction that accepts.
+- **`s < L` was checked to three bits.** `sig[63] & 224` refuses only
+  `s >= 2^253`, so `(R, s+L)` verified in C and was rejected by the Python
+  arbiter — the two accepted DIFFERENT SETS of signatures, invisibly.
+- **A non-canonical `y` gave one key two spellings**, which anything keying a
+  player on the hex text would read as two people.
+
+**The primitive is ours, and the reason is portability.** gnutls can sign and is
+Linux-only here, SChannel cannot sign, Windows CNG has no Ed25519. Two OS
+backends would be more code than one portable file and neither would run
+headless. `common/ed25519.c` is the compact tweetnacl formulation on the engine's
+own SHA-512.
+
+**Checked four ways.** RFC 8032 §7.1's three vectors in the shipping binary
+(`ed25519_selftest`, including the tampered-signature arm a
+returns-true-unconditionally verifier would fail); 40 random (seed, message)
+pairs against an independent pure-Python implementation, both directions, message
+lengths 0 to 1024; the three classes above, each with a crafted positive attack;
+and a receipt from this patch's own arm carried to the Pi and verified there by
+both `tools/ed25519.py` and python-cryptography 38.0.4.
+
+**Four defects the harness found before the reviewers did**, each recorded in the
+fixture that found it: the selftest reported a defect it had caused itself (four
+results computed inside one `Con_Printf` argument list, and C does not define
+evaluation order); a missing printf argument crashed the client at every finish;
+"malformed field" did not say which field; and the field was `ticks -1`, which is
+CORRECT — `STAT_FS_RUNTICKS` is -1 on a run the server does not keep. A fifth
+came from the last run of all: a QuakeC `tokenize()` treats a colon as its own
+token, so the unquoted address `QLoopBack:0` arrived as `QLoopBack` and the
+signature verified against nothing. And a sixth, which is the oldest mistake in
+the file: the flag saying "this run journalled" was cleared BELOW the call that
+sets it, so every receipt reported no journal while the engine held a good digest.
+
+**Verified.** `p417ed.cfg`: three vectors, four arms each, all ok.
+`p417sign.cfg` (G1-G5): a receipt beside the evidence, signature VALID over the
+message rebuilt from the file alone, nonce and ticks agreeing with the `.rec` and
+the server, `signed hid f8ecd07c… 1897 0` for the journal that closed at the
+finish, `signed view 685639de…` matching the file byte for byte, and `--tamper`
+invalidating all five signed lines. `p417stale.cfg` (S1-S2) with its pre-fix
+control. `p417probe.cfg` (P1-P5): the console form reaches the server and is
+refused by name; the STUFFED form is refused on the client and never reaches the
+server at all — same command, same arguments, four seconds apart in one log.
+`test_reccheck` 248/0, `test_hidcheck` 154/0, `ed25519.py --selftest` 0 failed,
+the `data/runs` corpus unmoved at 153 with faults.
+
+**Not deployed, and the server half is progs-only.** `ed25519.o` and
+`cl_receipt.o` are in CLIENT_OBJS, so a dedicated server binary is unchanged and
+the Pi needs no engine deploy for this.
+
+**Also fixed here, because Patch 416 spent its margin**: `sv_lobby.qc` submitted
+`&flags=%g`, exact only while the flags word stays under seven significant
+digits. With TF_NONCE the maximum is 262143; the bit after the next one makes it
+2097151, which `%g` sends as `2.09715e+06` and surfd's `strict_int` refuses — a
+run arriving with no flags at all. It is `%d` now, the same conversion `ticks` and
+`recbytes` already had.
+
+**What is still open**, and it is why the digests are worth signing at all: the
+journals do not leave the player's machine. On a lobby the `.hid` is discarded at
+the end of the run and the `.view` is never written (`Rec_ServerIsRemote`), so a
+live receipt today commits to bytes nobody else holds and names one file that
+does not exist. That is the next patch, and it is also why `kept` is recorded
+beside the digest rather than left to be inferred.
+
+## Patch 418 — the run's evidence leaves the player's machine  *(APPLIED -- engine: `client/cl_parse.c`, `client/cl_receipt.c`, `client/client.h`, `server/sv_ccmds.c`, `server/sv_main.c`, `server/sv_user.c`, `server/server.h`; FTESurf `src/client/cl_replay.qc`, `src/server/sv_timer.qc`, `ftesurf/cfg/default.cfg`, `tools/rcptcheck.py`. Fixtures `cfg/test/p418sv.cfg` + `p418cl.cfg`, `p418ctl.cfg`, `p418hidsv.cfg` + `p418hid.cfg`, `p418race.cfg`, `p418sweep.cfg`.)*
+
+**Problem.** A run has three recordings and, on a public server, exactly one of
+them existed anywhere but the player's own disk. `Rec_ViewEnd` drops the angle
+sidecar whenever the recording is remote — it has no local `.rec` to pair with —
+and `Rec_HidEnd` keeps a journal only for a personal best, which a lobby never
+has (`lobby_nopb`). So the cross-file consistency the whole evidence design rests
+on was, on the servers that matter, a claim about a directory nobody else could
+see; and Patch 417's receipt committed to digests of bytes nobody else held.
+
+**Change.** At the run-end edge the client writes its evidence to
+`data/staged/<nonce>.{view,hid}` and ARMS it (`rec_ul_arm`, engine). After that
+run's signed receipt arrives, the server asks for it (`sv_recupload <ent>
+<nonce> <path> [path2]`, which sets the client's upload destination and stuffs
+`rec_ul_send <nonce> <kind>`) and stores it as
+`data/evidence/<map>/<runid>.{view,hid}`, under the same `run_evidence_days`
+retention as the recordings. The transport is the QuakeWorld `clc_upload` path —
+in the tree since 1996, behind `#if 0` and a `-fileul` commandline flag, with a
+comment reading "in case we ever want to add any uploads other than snaps". This
+is that case.
+
+**THE ASYMMETRY IS THE SECURITY ARGUMENT.** The client arms; the server asks.
+The request carries **no path the client reads** — it names the run (the Patch
+416 nonce, which both ends already have) and the kind, and `sv_recupload` names
+only where the server's own copy lands. So a server cannot reach into a player's
+directory, and `rec_ul_arm` refuses anything arriving at RESTRICT_SERVER, which
+is the rule Patch 417's `rec_sign` learned the hard way. A hostile server still
+ships the client's CSQC and can arm one of its own files; what it cannot do is
+name a file the gamecode did not choose, and CSQC could already read those files
+outright with QC's own `fopen`.
+
+**Sidecar by default, journal by the operator, and the arithmetic is why.**
+Measured: a `.view` is **2.93 KB per second of run** (20 KB for 7 s), a `.hid` is
+**110 KB** (8.38 MB for 76 s, 2.06 MB gzipped) — 38× by rate. The transport is
+one ≤768-byte chunk per server request, so a two-minute run's sidecar is 459
+round trips: 25 s at 30 ms RTT, 80 s at 150 ms. The same run's journal is 17,000
+round trips, and the client's own 4 MiB cap refuses any journal from a run past
+~38 seconds. So `run_evidence_ul 1` takes the sidecar, `2` also takes the journal
+**and is a LAN and short-run switch, not a way to collect journals from a public
+lobby**, the client has its own switch (`rec_upload`), and `sv_uploadmax` caps
+what any one upload may cost the server.
+
+**What it buys, against the receipt.** The uploaded bytes are checked against
+the digest the client SIGNED at the finish: `rcptcheck` now hashes the `.view`
+and `.hid` sitting beside a receipt automatically, rather than only when an
+operator typed their paths. So the server does not have to trust that what
+arrived is what was recorded — and `hidcheck` reads the uploaded journal's
+`nonce` note and finds the same number the `.rec` header states. Three files, two
+machines, one run, joined by a number the client could not have known in advance.
+
+**What it does not buy** is the sentence Patch 417 already carries: a patched
+client can still produce a consistent set of fakes. What changed is that the set
+now has to be consistent across three files, one of which the server wrote, and
+produced within the run rather than afterwards.
+
+**Item 4's stated blocker never had to be answered.** The plan assumed an HTTP
+upload to surfd and stalled on `MAX_BODY` (16 KiB), the nginx cap and surfd's
+deliberately single-worker gunicorn. The netchan needs none of them: the
+connection is already authenticated, already knows which run this is, and adds
+no public write endpoint.
+
+**Four defects the harness found.** The cap was eight bytes (`sv_uploadmax`
+registered with a default of `"8m"`, and `CvarPostfixKMG` converts a postfix when
+a cvar is SET — a default registered with one is never set, so every upload died
+on its second chunk); `serverinfo fs_ul` was published as a boolean, so an
+operator asking for journals at 2 told every client 1; the client compared that
+key as a string, so turning journals on turned sidecars off; and a run's armed
+slots were never cleared, so a request never answered blocked the next run's.
+
+**Then independent review, three rounds, and this is the part worth reading.**
+Round one — control flow, consequences for recorded evidence, and what a cheater
+gains, one reviewer each and none of them given my reasoning — found eight.
+Round two, on the version those produced, found five more. Round three, on the
+version THOSE produced, found eight more, two of them worse than anything in the
+first two rounds. The ones that mattered:
+
+- **One packet from any connected client hung the server.** The length clamp went
+  in after round two — but only on the path that writes. The "nothing armed" exit
+  still read the raw sign-extended short to drain the packet, and
+  `MSG_ReadSkip(-4)` does not fail: it moves the read cursor BACKWARDS, onto the
+  `clc_upload` byte it just consumed, and only sets `msg_badread` if the cursor
+  goes below zero. The parse loop then reads the same command forever. A fix that
+  covered one of two exits is how a sign-extension bug became a denial of
+  service; the length is read and clamped once now, above every branch.
+- **A late answer was the next run's file, and this one left an artefact.** The
+  request used to be a bare `rec_ul_send` and the client answered with whatever
+  it had armed last. But a run's SECOND file is asked for only when its first has
+  arrived — tens of seconds later — and the next run's `rec_ul_arm -` has
+  re-armed both slots by then. Measured, on an ordinary two-run arm with no cheat
+  and no crafted client: `data/evidence/bhop_eazy/20260921-063713-0.hid` arrived
+  2109 bytes long, opening `FTESURF-VIEW 2`, hashing to `decfdcb9635833ac…` —
+  which is exactly the `signed view` digest in the NEXT run's receipt. `rcptcheck`
+  duly reported a digest mismatch about a player who had done nothing but finish
+  two runs. The request names the run and the kind now, the client answers only
+  from the slot that matches, it holds four slots (two runs), and `data/staged/`
+  keeps two runs' files instead of deleting the one still being asked for.
+- **Both "already sending" guards tested the wrong thing.** They tested the open
+  file handle, which appears with the client's FIRST CHUNK — a round trip after
+  the ask. In that window a second request, or an operator `snap`, replaced the
+  destination and the answer to the first request was written into the second
+  request's file. An ARMED destination counts now, at both sites.
+- **One packet also bought permanent exemption from evidence collection.** Send a
+  single chunk and then go silent: the handle stays open, and the only thing that
+  refused a new request was that handle. Every later run was refused, across map
+  changes, with a log line that reads exactly like the benign overlap. The
+  expiry is tested at the request sites now, not only where the client speaks.
+- **`percent` is the client's word.** A one-byte chunk declaring 100% closed the
+  file and printed "upload completed". The count is in the line now, an empty
+  upload is discarded, and the file is written to `<name>.part` and renamed at
+  the end — which is what the recorder does with `data/parts/`, and for the same
+  reason: a SIGKILL is the one teardown that cannot delete its own partial.
+- **The rate was the client's too.** The protocol is one chunk per request, but
+  the server took any chunk whenever a destination was armed, so a modified
+  client could push at its full upstream into a destination bounded only by
+  `sv_uploadmax` — which a new run resets. The handshake is enforced now.
+- **The whole-tree retention sweep was the wrong scope.** Round two found that
+  `run_evidence_days` only ever applied to maps in rotation, so a map that left
+  the pool kept its evidence forever; the fix swept the whole tree once a day,
+  and round three pointed out that the tree is shared by twelve lobbies, so that
+  imposes one process's retention on all of them. It is `run_evidence_sweepall`
+  now, for exactly one process.
+- Smaller, all real: the `FS_OpenVFS` failure path returned without draining the
+  chunk, leaving the client's file data to be parsed as protocol; the promoted
+  second destination inherited `uploadrec`/`remote_snap` from whatever came
+  before, which could turn a decline into a broadcast about a screenshot and a
+  completion into a `download data/evidence/…` line sent to an rcon holder; a
+  negative `VFS_READ` on the client reached `SZ_Write`, whose bounds check a
+  negative length passes; `snap` did not clear `uploadnext`; and the log said
+  "refused snap" when a player declined to send a run's evidence.
+
+**A fourth round, on the version the third produced — because that version
+shipped without anyone having read it.** Two reviewers, control flow and
+evidence consequences. Both independently found the same worst one:
+
+- **An unanswerable request blocked the NEXT runs' evidence for two minutes.**
+  A client that cannot answer — nothing armed for that run, or a journal over
+  its own 4 MiB cap, which at `run_evidence_ul 2` is every run past ~38 seconds
+  — simply said nothing, and the in-flight guard then refused every later
+  request behind the dead destination. Turning journals on made SIDECAR
+  collection worse. The client declines out loud now (the `snap` stringcmd,
+  which is QuakeWorld's existing "no" and reaches the same teardown), and the
+  expiry has two clocks: 15 s for a destination nobody has answered, 120 s of
+  silence for one with bytes arriving.
+- **"One chunk per request" was not true within a datagram.** The flag is set
+  when `nextul` is QUEUED, and the clc loop runs every command in a packet
+  before any of it is sent — so two chunks in one packet both passed it, and the
+  second could land in a destination promoted by the first. It is keyed on the
+  packet sequence now.
+- Also: `uploadrec` and the nonce survived a successful completion, so a later
+  `snap` logged "refused evidence upload" about a player who had sent theirs;
+  the arm table evicted by index while clearing by match, so index order stopped
+  being age order; the nonce validator accepted uppercase that the client's
+  match would never find; a rename failure printed "completed" on the next line
+  and orphaned the `.part`; and a listen server asked its own loopback client
+  for a file that client never arms, once per run.
+- **`rcptcheck` now counts what it used to pass over**: a receipt that commits to
+  a digest with no file beside it prints `commits to a <kind> digest, and no
+  <kind> is on this host`, and the summary counts them. Not a fault — an upload
+  can legitimately not arrive — but until now a client that signed digests and
+  handed nothing over was indistinguishable from a host with uploads off.
+
+**And one finding that was not one, recorded because the reasoning was better
+than the verdict.** A reviewer traced `rec_rp_ulkeep = rec_rp_nonce` in the
+gamecode to a use-after-free — the nonce is a zoned string the same block frees
+forty lines later — and predicted the race arm would show the previous run's
+staged files deleted. It does not, in three runs: `strunzone` is a no-op
+whenever `QCGC` is defined (`pr_bgcmd.c:4963`), which it unconditionally is. The
+assignment zones its own copy now anyway. The measurement said the code was
+right and the only thing making it right was a `#define` in a file this tree
+does not own.
+
+Two claims in this entry's own first draft were wrong and are corrected above: a
+journal is 6.6 MB per minute rather than "a megabyte a minute", and a sidecar
+that "takes seconds in a lobby" takes 25 to 80 of them. The second error is the
+one that mattered — every defect in the second and third rounds above is
+downstream of assuming the answer would be prompt.
+
+**Verified, all arms re-measured on the shipping build.** `p418cl.cfg` +
+`p418sv.cfg` (U1-U4, two processes): the client stages its sidecar instead of
+dropping it, the server ends up with `data/evidence/bhop_eazy/<runid>.view`,
+`rcptcheck` reports `matches the committed digest (18903 bytes)`, the file is
+byte-identical to the client's staged copy, and the signed `server` line reads
+`127.0.0.1:27696` — Patch 417's address binding over a real connection rather
+than a loopback name. **CONTROL** `p418ctl.cfg` (`rec_upload 0`): nothing staged,
+`signed view -`, no `Receiving` line, no file. `p418hid.cfg` + `p418hidsv.cfg`
+(H1-H4, `run_evidence_ul 2`): both files staged under one nonce, both uploaded,
+both digests matching, `kept 1`, and `hidcheck` on the uploaded journal reporting
+the same nonce the server's `.rec` header states. `p418race.cfg` (R1-R5) with a
+**negative control** — the same arm against a build with the in-flight guard
+compiled out reproduces that defect exactly, two different run ids on the
+`Receiving` and `completed` lines, and the file the server says completed does
+not exist — and a second pass at `run_evidence_ul 2` where run A's journal
+arrives as a journal (`FTESURF-HID 1`, 1901 bytes, digest matching) while run B
+is refused mid-stream. `p418sweep.cfg` (S1-S4): three per-map sweeps, one
+whole-tree sweep, the stamp in localinfo and not serverinfo, and **zero**
+whole-tree sweeps with the switch off. `rcptcheck` over the whole evidence tree:
+24 receipts, 0 faults. `test_reccheck` 248/0, `test_hidcheck` 154/0.
+
+**Four harness traps worth stating**, one run lost each: `set run_evidence_ul 2`
+inside the server's `+exec` cfg is TOO LATE (the serverinfo key is published at
+map init, before the exec); a RUNNING dedicated server holds `fteqwsv64.exe`, so
+the deploy step fails and the next arm silently measures the previous binary; a
+second server started on a port another one holds logs "Server spawned" and then
+sees no clients, so the run lands in the other log file; and `Con_DPrintf` never
+reaches a log file unless `log_developer` is set, so a falsifier that greps a
+server log for a DPrint measures nothing.
+
+**Not deployed.** The server half needs an engine deploy this time, unlike 417 —
+`sv_recupload`, the upload cap, the teardown and the second-destination queue are
+all in the dedicated-server build.
+
+**Still open.** The `.hid` default stays off, and the arithmetic above says the
+netchan is the wrong transport for journals at all. `SVRANKING`'s
+`sv_cmdlikercon` path executes a ranked client's command at that client's
+trustlevel, so if a deployment ever sets both, a high-trust client reaches
+`sv_recupload` — FTESurf sets neither, and the test there is on level rather than
+on provenance. Nothing yet cross-checks the uploaded `.view`'s angles against the
+`.rec`'s — that check is now POSSIBLE server-side for the first time and is
+deliberately not written here, because the only data that exists for it is a
+scripted harness run whose yaw never moves, and a detector this tree cannot
+calibrate is one it does not ship. And `surfd/sweep.py` still reads neither
+receipts nor uploaded evidence.
+
+## Patch 419 — the server gamecode gets the entropy the master-server code already had  *(APPLIED -- engine: `server/pr_cmds.c`; FTESurf `src/server/sv_timer.qc`. Fixtures `cfg/test/p419a.cfg` + `p419b.cfg`.)*
+
+**Problem.** Two things in the mod were drawn from QuakeC `random()`, which is
+`(rand()&0x7fff)/32768 + 0.5/32768` off a `rand()` seeded once from `time(0)` at
+`COM_Init` (`common.c:6861` — and for a dedicated server that is the only live
+seeding in the tree): the per-run nonce of Patch 416, and the randomized start
+offset `run_startjitter`. The second one **publishes its draws**. `startjit
+<units> <dx> <dy> <dz>` goes into every recording's header at four decimals, and
+at `run_startjitter 2` a draw's step is 4/32768 = 1.22e-4 — larger than the print
+resolution, so each printed value names its own `random()` output to within one
+count. A player does not even need the file: the offset is applied to their own
+body.
+
+**And the attack did not reproduce, which is recorded rather than buried.**
+`cfg/test/p419a.cfg` pre-registered "two servers booted in the same second draw
+the same offsets". They did not — 10:06:04 on both, `0.9614 1.5100` against
+`-0.4312 -0.5104`. A reviewer then checked the *premise* rather than the
+conclusion and found it sound (the other three `srand` sites are a debug ifdef, a
+path that runs only when `Sys_RandomBytes` fails, and the http interface), which
+leaves one explanation: the two processes were at different stream positions,
+because the arm ran its clients sequentially and the mod draws `random()` on
+connections, spawns and map timers that the script does not control. **Draw
+position was the arm's uncontrolled variable, so the verdict is NOT DEMONSTRATED,
+not "safe"** — and that argues for the patch. The stronger attack (invert a
+published pair, brute-force the 17 unknown bits of an msvcrt LCG state, roll
+forward) gave 10 candidates — which is what the ±1 tolerance on two observations
+produces, so the count confirms nothing — and 3,000,000 draws of roll-forward did
+not place the next run's pair in the stream. A negative from an unconfirmed model
+is weak evidence and is filed as that.
+
+**Change.** Two builtins expose `Sys_RandomBytes` — the source `sv_master.c`
+already uses for challenges, present on both platforms — to the server VM:
+`string(float bytes) fs_randomhex` and `float() fs_randomf`. Both are registered
+with builtin number 0, so the gamecode reaches them by name (`#0:fs_randomhex`)
+and no FTE number is claimed. `fs_randomf` takes 24 bits over 2^24: exactly
+representable in a QC float, uniform on [0,1), stateless. The gamecode prefers
+them through `SV_Rand01`/`SV_RandHex`, gated on `checkbuiltin`, and the nonce now
+carries `SV_RandHex(16)` — 128 bits of fresh OS entropy per run, which makes
+every other input to that hash irrelevant to predicting it.
+
+**What the reviews found.**
+
+- **The fallback warning was unreachable, on exactly the deploy it was for.**
+  `run_t_osrand` is a progs global, so it loads as 0 — the same value the
+  fallback branch set — and the `!= 0` test never fired. New progs on a pre-419
+  engine took `checkbuiltin` false, ran the whole map on `random()`, and said
+  **nothing**, while the healthy branch announced itself. Two reviewers found it
+  independently. There is a separate say-once latch now, initialised at map init,
+  and the bad news is a `print` while the good news stays a `dprint`.
+- **And it would then have flapped.** `Sys_RandomBytes` opens `/dev/urandom` per
+  call, so a refusal is intermittent rather than sticky, and one flag latching
+  both messages would print on every transition — up to eight draws per start
+  attempt, per player, unrated.
+- **I stole a `static`.** The insertion point for the two new functions was the
+  line `static BuiltinList_t BuiltinList[] = {`; the match took everything after
+  `static`, so the storage class ended up on my first function and `BuiltinList`
+  gained external linkage in every build of `pr_cmds.c`. The duplicate-`static`
+  compile error that followed was "fixed" by deleting the wrong one. It links
+  today only because the CSQC and menu tables declare their own `static`.
+- **`SV_RandHex` disagreed with itself outside 1..64** (the builtin clamps, the
+  fallback loop did not), and the fallback's `rint(x*255)` gave 0 and 255 half
+  the weight of every other byte. Both latent; both closed.
+- **The patch does not make the rule whole, and the comment now says so.** The
+  accepted offset is uniform only *conditioned* on the placement tests, with a
+  point mass at exactly (0,0) when every try fails — which the header states as
+  `startjit <u> 0 0 0`. The geometry is the player's choice: stand where the loop
+  cannot succeed and the start is known on every run. Entropy cannot fix a
+  conditioned distribution.
+
+**Verified.** `p419a.cfg`/`p419b.cfg` (J1-J5). Post-fix: `timer: randomness from
+the OS (Patch 419)` once and zero degraded prints; four consecutive offsets
+`(-1.7104, -0.6400) (1.3246, 1.3000) (1.0783, 0.4673) (1.8389, -1.0794)`, all
+inside ±2; `reccheck` ok on the `.rec` and its `.view`, 0 faults; and
+`VERIFY … PASS ticks 829 rows 815` on re-simulation — the offset is recorded and
+replayed exactly as before, only its source moved. **The degraded branch is
+measured too**, by rebuilding with the two builtins unregistered — which is the
+rollout case, new progs on an older engine — and running the same arm with
+`developer` unset: the warning appears once, at normal verbosity, and the run
+still records. `SV_RecOpen` also dprints `timer: startjit <u> <dx> <dy>` now, so
+the fixture leaves its own evidence in the log instead of in a `.rec` somebody
+has to keep.
+
+**Not deployed.** The engine half is a server-VM builtin, so it needs an engine
+deploy; the QC half is inert without it and says so out loud. Neither is on the
+Pi.
+
+**Still open.** The candidate rule, not the entropy: a start box whose four tries
+can be made to fail gives a known start regardless of where the numbers come
+from. And `guid` — client userinfo — is still an unsanitised field in the nonce's
+hash preimage, harmless only because 128 bits of OS random sit beside it.
+
+## Patch 422 — first key wins: the admin flags a second key, a shared key, and a player who stops signing  *(APPLIED -- mod-side only, no engine change: FTESurf `surfd/admin.py`, `surfd/surfd.py` (schema 8), `surfd/sweep.py`, `surfd/templates/admin_run.html`, `admin_runs.html`, `_admin_style.html`; suites `test_admin.py`, `test_board.py`, `test_sweep.py`.)*
+
+**Problem.** Patch 417 puts a key on every run and surfd schema 7 recorded the (key, player) pairs, but nothing said what a second key means. Lex, 2026-09-21, until real accounts or Steam IDs: a player's first key is theirs, and differences are flagged in the admin backend and nowhere else.
+
+**Change.** Per board run, admin only: `new` (not the player's first key), `shared` (the key first signed for another player), `unsigned` (no verified signature from a player who has signed before). First = earliest `.rcpt` mtime (`receipts.signed_at`; a resumed run keeps session one's runid), then runid; a receipt counts when its signature verified (`receipts.sig`), FAULT or not. `unsigned` is judged only below `sweepmeta.receipts_through` less 300 s -- the sweeper's watermark, which stops short of the oldest never-read receipt and does not move on a pass that raised -- so "not read yet" never reads as "not signed". Not judged, and labelled so: no runid, segmented runs (a save-load can clear the nonce), pre-8 receipts until re-read. Owner decisions on (key, player): accept (permanent for a key; for `('', player)` only up to the watermark's bound at the click), reject (flagged, out of "first", still counts as having signed). The two "first" lookups are ROW_NUMBER derived tables: 0.13 s for 6000 signed runs, where per-row subqueries took 12.7 s at 10k. Schema 8 is `receipts_v8()`, idempotent and run by every migrate(). VER_SQL and every public surface are untouched.
+
+**Review.** Six rounds, two lenses each (predicate/migration; attacker/exposure; round 6 one reviewer on a two-line fix), 28 defects, every fix with a test and a mutation that fails it. The ones that mattered: quadratic list (R1); "not read yet" read as "not signed", which would have flagged every signer during the 2026-09-21 receipt-step outage (R2); accept waiving unsigned runs forever and for anyone on a public guid (R2, R3); a flood freezing the watermark (R3); an honest segmented run with no possible receipt read "unsigned" (R4).
+
+**Also.** `46f69c9`: the admin run page had not run its script since `f19d477` (a redeclared `const dl`); test_admin now `node --check`s the admin pages and prints a skip where node is absent.
+
+**Not done.** The sweeper does not check the signed server (`rcptcheck.join_server`), so a relayed nonce can make a new player's key read `shared`; enforcing it needs the addresses real clients sign (lobbies advertise `play.proto.bar`), measured first. Stage rows from abandoned runs are outside the flags.
+
+**Verified.** All 9 surfd suites on Windows and on the Pi stage (test_admin's two rcon checks fail on Windows only). **DEPLOYED 2026-09-21 11:23 UTC** (FTESurf `d74af07`): 7 files swapped under `flock /tmp/surfd-sweep.lock`, DB backup `data/surfd.db.pre422-20260921-112220`, rollback `*.pre422-20260921-112220`, HUP -> `schema migrated 7 -> 8`. The 11:25 sweep re-read the fleet's one receipt (sig 1, signed_at = its mtime 01:16:01, stale 0) and set `receipts_through` 11:15:01. Migration on a copy of the live DB first: 0.29 s; the Key flags list 6 ms.
+
+## Patch 423 — the admin warns when the data drive fills  *(APPLIED -- mod-side only: FTESurf `surfd/surfd.py`, `surfd/admin.py`, `surfd/sweep.py`, `surfd/templates/admin.html`.)*
+
+**Problem.** `run_evidence_days 0` (2026-09-21, Lex: keep everything) leaves nothing bounding `data/`, and Lex asked to be warned.
+
+**Change.** `surfd.disk_status()` warns below max(20 GB, 10% of the drive holding RUNS_DIR); only then does it size `data/{runs,evidence,resume,parts}`, cached 10 min. The fleet page shows a status line or a red card; `sweep.log` gets a `DISK LOW` line; an unreadable drive says so. The Pi at deploy: 77 GB free of 458 GB, floor 45.8 GB, quiet.
+
+**Verified.** test_admin drives both floors and the unreadable case; test_sweep the line order and the failure line. Deployed with 422.
+
+## Patch 424 — a rename mid-run no longer takes a run off verification  *(APPLIED -- mod-side only: FTESurf `surfd/surfd.py`, `surfd/sweep.py`; suites `test_board.py`, `test_evidence.py`, `test_replays.py`.)*
+
+**Problem.** submit_run bound a leaf to its file by comparing the header's `owner` with the posted name, so a player who renamed mid-run filed a run with no recording behind it: no verification, no badge. Lex, 2026-09-21: "fix it the best way you know how."
+
+**Change.** The binding is what a name cannot change: the header's runid, map (case-folded -- ext4 is not), track, leg, flags and tickrate (within the header's printed precision). The owner compare is gone. A held replay changes only on new evidence -- player, ticks, bytes, or its sha256 (stored at filing; where either digest is unknown, a header proving another run) -- so a re-post cannot relabel, re-board or lapse the reviews of a verified replay; a file-less re-post of a held leaf writes nothing. The board row takes its name, board, flags and time from the stored replay when the replay is the poster's. A tie re-filed on another board unbinds the old board's row. The sweeper's `row_check` HOLDs a PASS whose file header disagrees with the row.
+
+## Patch 425 — stage times are judged; a reject hides the stage times its run set  *(APPLIED -- mod-side only: FTESurf `surfd/surfd.py`, `surfd/sweep.py`, `surfd/admin.py`, `surfd/templates/admin_run.html`, `admin_runs.html`; suites `test_evidence.py`, `test_sweep.py`, `test_admin.py`, `test_board.py`.)*
+
+**Problem.** Stage times from abandoned runs stood on the boards with nothing checking them. Lex, 2026-09-21: stage times are judged; segmented runs stay their own unjudged category; a reject hides the run's stage times, a clear puts them back, and meanwhile the player's next stage time can take the slot.
+
+**Change.**
+- The sweeper verifies evidence rows (the lobby's `data/evidence/<map>/<runid>.rec`). On an abandoned file pm_verify's "no finish" and "a cancel zone is crossed at the last row" are the file's shape, not a fault, and read PASS. A stage row missing from the file's `stagepost` records is a note, never a verdict.
+- The admin lists and reviews evidence rows; key flags on them are `new`/`shared` only, never `unsigned`.
+- A reject on a RECORDING of run R (`replays.bound`: filed against its file, decided at filing; -1 "not assessed" is resolved by every migrate) parks R's stage rows (leg > 0, no replay) in tier `<tier>@<R>`; no board reads it. A clear restores them; the better of a restored and a live time keeps the slot and the other waits as `<tier>^<its own run>` until the slot empties. A stage post of a rejected run goes straight to its hidden slot, under BEGIN IMMEDIATE through the write.
+- No schema bump: `replays_bound()` is idempotent and runs on every migrate.
+
+## Patch 426 — an abandoned run the lobby keeps as evidence takes its receipt  *(APPLIED -- server progs only: FTESurf `src/server/sv_timer.qc`, `sv_player.qc`, `sv_saveloc.qc`, `sv_resume.qc`; arms `cfg/test/p426{sv,sv2,cl,bcl,ccl,dcl}.cfg`.)*
+
+**Problem.** A kept abandon's receipt was always refused: the server drops the run's id and nonce in the frame it stops recording, and the client signs a round trip later (measured: `no run id or no nonce`). The same race lost a finish's receipt when the next run armed first (p426bcl S1, `cl_delay_packets 1000`).
+
+**Change.** The run that ENDED -- a finish, or an abandon the lobby keeps -- is held (`rec_end_rid/nonce/ticks`) if its nonce was answered and the live run has no receipt. The hold takes only a receipt signing its ticks; the first receipt of a runid wins; no expiry. An unkept void clears only a held abandon; a successful rewind drops the abandon that load's own discard kept (by runid); a failed rewind clears a matching hold only if the player was still recording when the rewind began (after the Patch 360 discard); connect, disconnect and close clear it. Kept abandons publish no sidecar and their receipts ask no upload (the client has one upload slot).
+
+**Review (424/425).** 12 rounds, two lenses each (predicates/evidence; attacker); Lex capped it at 12, whose attacker lens found nothing and whose two minor findings were fixed. The ones that mattered: a missing file un-hiding a rejected run (R5, now `bound`); a file-less re-post relabelling a verified replay (R4/R5); a same-file re-post naming its header's runid lapsing a reject (R7); set-aside rows of two runs sharing a slot, deleting an honest time (R7); a reject racing a stage post (R6/R7); an unreadable hash read as "a different file" (R9); a migrate that could not see a file unbinding the row for good (R10); a header tickrate of inf crashing every import (R12, older).
+
+**Review (426).** 8 rounds, one reviewer each (evidence and cheater lenses); round 8 found nothing. The ones that mattered: the hold released a finish's receipt to the next run (R1); a failed-rewind clear that fired on every load of a START save, losing held finishes (R6, armed p426ccl: refused on b8f92a0, signed after); a same-frame drop keyed on `time`, which every packet in one physics step shares (R7, armed p426dcl: 15 of 16 refused at sv_mintic 0.1, 16 of 16 signed after).
+
+**Known.** A kept abandon inside a successful load is never signed (the client never sees the end). A cold load of another run's save keeps that run's runid; the fix belongs in the rewind. An honest exact tie with an unchanged byte count reads as the same file only where a digest is unknown (rows filed before the column, or a hash that could not be taken) and the row is held as `''` or `-`. A leaf re-filed by another run leaves the old run's stage rows hidden, and once no replay names that run no clear reaches them.
+
+**Verified.** All 9 surfd suites on Windows and on the Pi stage; a mutation of every review fix fails its test; arms p426ccl and p426dcl each against the pre-fix and the fixed build.
+
+**DEPLOYED 2026-09-21 UTC.** surfd = FTESurf `b2d740c` at 19:21: 5 files swapped under `flock /tmp/surfd-sweep.lock`, DB backup and rollback suffix `pre425-20260921-191914`, HUP; the migrate added `bound`, `sha`, `sha_at` and bound all 51 run replays and both evidence rows; the 19:25 sweep verified the two pre-425 evidence rows (PASS 2). Four test_board fixtures a pre-425 suite run had written into `data/runs/surf_test` were removed. Progs = the same commit via `build.ps1 -Pi` at ~19:22, nobody on: qwprogs `92a0d9b9`, csprogs `1ba958bd` (client source unchanged since `2910de4`; the bytes differ because the Pi's previous pair was not built by this box's fteqcc), all 12 lobbies restarted.
+
+## Patch 427 — a sound name with a space no longer stalls the join  *(APPLIED -- engine: `client/cl_parse.c`, `server/sv_user.c`. Fixtures `cfg/test/p427cl.cfg` + `p427sv.cfg` (surf_r-ne), `p427sv2.cfg` (surf_themeless).)*
+
+**Problem.** A player could not join surf_r-ne or surf_themeless: the client sat on `Downloading sound/music/never coming back.mp3...` for good. `CL_SendDownloadStartRequest` sent `download %s` unquoted (`dlsize` has always been quoted), the server's tokenizer cut the name at its first space and answered `Couldn't find file "sound/music/never"`, and `CL_DownloadFailed` only aborts the pending download when the reply's name matches -- so nothing aborted it, `CL_RequestNextDownload` waited on it, and `prespawn` was never sent. Any ambient_generic whose file has a space and that the client lacks does this; the two maps' music is only the report.
+
+**Change.** Client: the request is quoted. Server: a QW `download` with more than one argument is a pre-427 client's split name, and is rejoined from `Cmd_Args()` before the lookup, so the reply names the whole file and an old client's queue moves on. QW only (the Q2 and DP command tables have their own argument forms).
+
+**Verified.** Four arms, old/new client x old/new server, on a local dedicated server: old/old stalls with the report's exact lines (no `joined` in 45 s, both maps); new client, new server, and both new each get `Couldn't find file "sound/music/never coming back.mp3"` and join 3 s later. `setpos` from `cmd viewpos` was pre-registered as the spawn marker and is not one (an unspawned client answers `0 0 0`); `said> server: P427 joined` is.
+
+**Known.** The server half is what reaches players now; the client half ships with the next release. The harmless `Server permissions deny downloading file "package/maps/<map>.bsp"` line on the same joins is the server advertising the map's BSP as a package and `SV_AllowDownload` refusing any `package/` that is not pk3/pk4/pak; the client moves straight on. Noise, not fixed here (the advertising side was not traced).
+
+**DEPLOYED 2026-09-22 06:44 UTC** (server half; nobody on). Pi `p349build` had exactly 427's parent `sv_user.c` (blob f86dbdaa), so only that file was sent (now a8860211). Native build `fteqw-svarm64` md5 8585304e, rollback `fteqw-svarm64.pre427-20260922-064401` (99fca9b3). Gates: pm_dettest on bhop_eazy prints the same 21 lines as the old binary (mapcrc 676de275, mover 3d136f8de25c9c2c, tick 93e8615d81c26325); replay 46 (surf_how2surf evidence) PASS ticks 9613 rows 9611 on both; `p427clpi.cfg` from this box's pre-427 client against the Pi on port 27791: the old binary stalls on `sound/music/never`, the new one says `joined`. All 12 lobbies restarted; a client connect to 27540 spawned with the prediction hook alive.

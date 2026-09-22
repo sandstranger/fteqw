@@ -2696,6 +2696,7 @@ void CL_Disconnect (const char *reason)
 	cls.signon=0;
 #endif
 	CL_StopUpload();
+	CL_Receipt_Disarm();	//FTESurf Patch 418: an offer to one server, not the next
 
 	CL_FlushClientCommands();
 
@@ -6044,6 +6045,7 @@ void CL_Init (void)
 	CL_InitDlights();
 	PM_Init ();
 	TP_Init();
+	CL_Receipt_Init();	/*FTESurf Patch 417: the run-signing key and rec_sign*/
 
 //
 // register our commands
