@@ -4565,6 +4565,254 @@ static void SV_RecSim_SpecEdge (const recsim_spec_t *e, const recsim_spec_t *pre
 /* Patch 354: every early exit still owes the sweeper a verdict line. */
 #define RECSIM_REFUSE(why) do { if (verify) Con_Printf("VERIFY %s REFUSE %s\n", fname, why); } while (0)
 
+/*
+  Patch 463: compare the zone pin FIELD BY FIELD, and not on the source path.
+
+  It used to be a string compare that INCLUDED the directory the zone table was
+  loaded from, so moving a byte-identical table from maps/zones/online/ to
+  maps/zones/local/ -- which the loader explicitly supports (sv_zones.qc:177-181)
+  and which is the only way to edit one -- refused every recording of that map as
+  "a different zone table or rule".  The maximum verdict, on a correct file.
+
+  Three reasons the source does not belong in a pin:
+
+  * zonecrc already IS the table.  Zone_Hash (sh_zones.qc:264) hashes per zone
+    the type, track, seg, cp, z-band and every point at %.3f, which is exactly
+    what SV_ZoneScan reads.  A directory cannot change a crossing.
+  * QC's resume gate has shipped pinning it this way: sv_resume.qc:106-108 writes
+    zonecrc and zonerule and no source, and SV_MsStale answers "the zones
+    changed" and "the zone rules changed" separately.  This agrees with it.
+  * hdrzsrc is read out of the .rec header, so it is whatever the recording
+    server wrote.  Anyone able to doctor a zone table can equally type "online".
+    It never detected a forgery; it detected an admin moving a file.
+
+  WHY THE COMPARISON CHANGED AND THE FORMAT DID NOT.  SV_VerifyZonePin still
+  returns "<src> <crc> <swept> <hull> <live>" and this still reads all five.  The
+  pin is built in two repos with two build steps -- here from header keys, there
+  from live state -- so dropping the field on one side alone would compare four
+  tokens against five, which never matches: EVERY file would refuse, presenting
+  as "the patch did nothing".  Accepting both widths means the two can never be
+  out of step whichever ships first.  Credit to ftesurf-a1, who found that trap
+  by reading both sites before the patch was written.
+
+  Returns NULL to accept, else the verdict.  `shown` gets the parsed fields for
+  the operator line, so a refusal still says what it compared.
+*/
+/*
+  ROUND 4: parsed by hand into qint64_t, not by strtol and not by sscanf.
+
+  strtol was wrong in a way that only shows on one platform.  Its range test
+  `v < -2147483647L - 1 || v > 2147483647L` is TAUTOLOGICALLY FALSE where long is
+  32 bits -- this Windows build, and any 32-bit Linux one -- because strtol's
+  ERANGE clamp lands exactly on the boundary the test cannot see.  Measured:
+  "2147483648" was accepted as 2147483647 here and rejected on a 64-bit-long
+  build, so the same .rec got a different verdict per platform, in a tool whose
+  product is a reproducible verdict.  And the C89-safe spelling of that constant
+  is also the spelling that suppresses -Wtype-limits, so nothing warned.
+
+  errno/ERANGE would fix it; accumulating into the engine's own qint64_t needs no
+  new header and leaves no saturation to detect.  The digit cap keeps acc itself
+  from overflowing: 2147483647 is ten digits, so eleven can never fit.
+
+  '+' is REJECTED deliberately.  sprintf("%d") never emits one, and
+  tools/reccheck.py:725 faults it, so accepting it would put the two readers of
+  this header back into disagreement.
+*/
+static qboolean SV_ParseInt (const char *s, int *out)
+{
+	qint64_t acc = 0;
+	qboolean neg = false, sawdigit = false;
+	int      digits = 0;
+
+	if (!s)
+		return false;
+	if (*s == '-')
+	{
+		neg = true;
+		s++;
+	}
+	while (*s == '0')
+	{
+		s++;
+		sawdigit = true;
+	}
+	while (*s >= '0' && *s <= '9')
+	{
+		acc = acc * 10 + (*s - '0');
+		s++;
+		sawdigit = true;
+		if (++digits > 10)
+			return false;
+	}
+	if (!sawdigit || *s)
+		return false;
+	if (neg)
+		acc = -acc;
+	if (acc < -(qint64_t)2147483647 - 1 || acc > (qint64_t)2147483647)
+		return false;
+	*out = (int)acc;
+	return true;
+}
+
+/*
+  ONE SPLITTER FOR ALL THREE FIELDS, which is the round-4 shape.
+
+  Round 2 normalised only the live pin: it tokenized `here` but compared `fcrc`
+  with a raw strcmp and read `frule` with sscanf.  Three parsing styles over one
+  record, and two of the defects round 3 found were exactly that -- a header line
+  `zonecrc abcd1234 ` with a trailing space refused a BYTE-IDENTICAL table, and
+  sscanf's %d silently truncated an out-of-range rule the live side rejected, so
+  `zonerule 4294967297 1 0` compared EQUAL to a live `1 1 0` and the evidence line
+  printed the truncated value.  Both sides go through this now.
+
+  `capped` exists so a field count can never overstate itself: round 2 printed
+  "8+ field(s)" for a pin of exactly eight, claiming more than it measured.
+*/
+static int SV_SplitFields (const char *s, char *buf, size_t bufsz,
+                           char **tok, int maxtok, qboolean *capped)
+{
+	char *p;
+	int   n = 0;
+
+	Q_strncpyz(buf, s, bufsz);
+	*capped = false;
+	p = buf;
+	for (;;)
+	{
+		/* The whole of isspace(), not the four obvious ones: %d skips \v and \f
+		   too, and a live pin containing one tokenized short, which shifted the
+		   field index so the SOURCE TAG was compared as the crc. */
+		while (*p == ' ' || *p == '\t' || *p == '\r' || *p == '\n' ||
+		       *p == '\v' || *p == '\f')
+			p++;
+		if (!*p)
+			break;
+		if (n == maxtok)
+		{
+			*capped = true;
+			break;
+		}
+		tok[n++] = p;
+		while (*p && *p != ' ' && *p != '\t' && *p != '\r' && *p != '\n' &&
+		       *p != '\v' && *p != '\f')
+			p++;
+		if (*p)
+			*p++ = 0;
+	}
+	return n;
+}
+
+static const char *SV_VerifyZoneCmp (const char *here, const char *fsrc,
+                                     const char *fcrc, const char *frule,
+                                     char *shown, size_t shownsz)
+{
+	char     hbuf[128], rbuf[64], cbuf[64];
+	char    *htok[8], *rtok[4], *ctok[2];
+	qboolean hcap, rcap, ccap;
+	int      nh, nr, nc, i;
+	int      fa, fb, fc, ha, hb, hc;
+
+	(void)fsrc;	/* read and REPORTED, never compared -- see above */
+
+	/*
+	  ROUND 2: BOTH SIDES EMPTY MUST REFUSE, NOT ACCEPT.
+
+	  The first cut accepted it, reasoning that "cannot compare" must not be an
+	  accusation and citing SV_MsStale's `!= ""` guards.  Both halves were wrong
+	  and three reviewers said so independently.
+
+	  REFUSE IS ALREADY THE THIRD VERDICT HERE -- "REFUSE is 'cannot say', never a
+	  judgement on the run", in the comment above this function's caller, and
+	  sweep.py repeats it.  (Round 2 cited that by line number and the number went
+	  stale within one round; a line number into the same file that the same patch
+	  keeps editing is a citation with a short life.)  Patch 421's rule was satisfied by refusing all along.  And
+	  SV_MsStale does not transfer: it tolerates an empty side because zones load
+	  after PutClientInServer and SV_MsApply ASKS AGAIN (sv_resume.qc:221-232).
+	  pm_verify runs after the map is fully loaded and cannot ask again.
+
+	  The accept was also reachable and inverted: Zone_Hash leaves zone_crc ""
+	  when buf_create() fails (sh_zones.qc:277-279) WITH a working table, and in
+	  that state an honest recording -- which carries a pin, because its recorder
+	  hashed fine -- refused, while a crafted one that simply omits the three
+	  lines was accepted.  Exactly the wrong way round.
+	*/
+	if (!*here)
+	{
+		Q_snprintfz(shown, shownsz, "this server states no zone pin (file crc \"%s\" rule \"%s\")",
+		            fcrc, frule);
+		return "this server cannot state its own zone pin";
+	}
+	/* Split, because round 2 answered BOTH of these with "the file states no zone
+	   table" -- and a file that states a table and omits the RULE does state a
+	   table.  Round 1 got the cause right by accident and round 2 lost it. */
+	if (!*fcrc)
+	{
+		Q_snprintfz(shown, shownsz, "file rule \"%s\", here \"%s\"", frule, here);
+		return "the file states no zone table";
+	}
+	if (!*frule)
+	{
+		Q_snprintfz(shown, shownsz, "file crc \"%s\", here \"%s\"", fcrc, here);
+		return "the file states no zone rule";
+	}
+
+	nh = SV_SplitFields(here,  hbuf, sizeof(hbuf), htok, 8, &hcap);
+	nr = SV_SplitFields(frule, rbuf, sizeof(rbuf), rtok, 4, &rcap);
+	nc = SV_SplitFields(fcrc,  cbuf, sizeof(cbuf), ctok, 2, &ccap);
+
+	/*
+	  READ THE CRC FROM THE END, not from the front.  The pin is
+	  "[<src>] <crc> <swept> <hull> <live>", so the crc is always four from the
+	  end whether or not the source is present.
+
+	  A WIDER PIN STILL REFUSES, AND THAT IS DOCUMENTED, NOT FIXED -- round 2's
+	  commit message overclaimed here and this corrects it.  On the domain this
+	  accepts, {4,5}, `nh - 4` is the same function round 1's if/else was; what it
+	  buys is that a build which drops the source needs no coordination with this
+	  one.  It does NOT make a fourth rule term work: nh would be 6 and `nh - 4`
+	  would read the wrong token, so six fields refuse.  Widening the rule needs
+	  the additive shape Patch 458's `proprule` uses -- a rule key in the header,
+	  older files compared at the old width and reported "not comparable" rather
+	  than refused.  Refusing loudly beats mis-indexing quietly.
+	*/
+	if (nh < 4 || nh > 5)
+	{
+		Q_snprintfz(shown, shownsz, "%d%s field(s) in \"%s\" -- this build reads 4 or 5",
+		            nh, hcap ? "+" : "", here);
+		return "a zone pin this build cannot read";
+	}
+	i = nh - 4;
+
+	if (nc != 1 || ccap)
+	{
+		Q_snprintfz(shown, shownsz, "zonecrc \"%s\" is not one field", fcrc);
+		return "an unreadable zonecrc";
+	}
+	if (nr != 3 || rcap ||
+	    !SV_ParseInt(rtok[0], &fa) || !SV_ParseInt(rtok[1], &fb) ||
+	    !SV_ParseInt(rtok[2], &fc))
+	{
+		Q_snprintfz(shown, shownsz, "zonerule \"%s\" is not three integers", frule);
+		return "an unreadable zonerule";
+	}
+	if (!SV_ParseInt(htok[i+1], &ha) || !SV_ParseInt(htok[i+2], &hb) ||
+	    !SV_ParseInt(htok[i+3], &hc))
+	{
+		Q_snprintfz(shown, shownsz, "this server's zone rule is not three integers: \"%s\"",
+		            here);
+		return "an unreadable zonerule";
+	}
+
+	Q_snprintfz(shown, shownsz, "crc file \"%s\" here \"%s\"  rule file %d %d %d here %d %d %d",
+	            ctok[0], htok[i], fa, fb, fc, ha, hb, hc);
+
+	if (strcmp(ctok[0], htok[i]))
+		return "a different zone table";
+	if (fa != ha || fb != hb || fc != hc)
+		return "the same zones under different zone rules";
+	return NULL;
+}
+
 static void SV_RecSim_Run (const char *fname, int stopat, qboolean verify)
 {
 	model_t      *world = sv.state?sv.world.worldmodel:NULL;
@@ -4583,6 +4831,7 @@ static void SV_RecSim_Run (const char *fname, int stopat, qboolean verify)
 	recsim_ride_t*rid = NULL;
 	float         sjrule = -1, sjoff[3] = {0,0,0};
 	int           filever = 0;
+	int           filepropr = 0;				/* header `proprule`: which prop geometry built this run's collision world */
 	float         hdrtick = 0;					/* header `tickrate`: the cash-out's TICK_INTERVAL */
 	int           inend_mt = -1;				/* Patch 344: v8 closing horizon */
 	float         inend_carry = 0;
@@ -4682,6 +4931,8 @@ static void SV_RecSim_Run (const char *fname, int stopat, qboolean verify)
 						sscanf(ln+8, "%i %i", &instart_mt, &instart_run);
 					else if (!strncmp(ln, "FTESURF-REC ", 12))
 						filever = atoi(ln+12);
+					else if (!strncmp(ln, "proprule ", 9))
+						filepropr = atoi(ln+9);
 					else if (!strncmp(ln, "pmpin ", 6))	/* Patch 347 */
 						pinfound = SV_PMPinParse(ln+6, hdrpin);
 					else if (!strncmp(ln, "zonesrc ", 8))	/* Patch 349 */
@@ -5220,7 +5471,8 @@ static void SV_RecSim_Run (const char *fname, int stopat, qboolean verify)
 	if (verify)
 	{
 		const char *refuse = NULL;
-		char zbuf[128], zhere[128];
+		const char *zwhy;
+		char zbuf[192], zhere[128];	/* zbuf now holds the parsed fields, not the pin */
 		/* Patch 356: a newer format is refused above (Patch 364/367), before any
 		   unknown record could be skipped into a PASS. */
 		if (!exact)
@@ -5252,22 +5504,58 @@ static void SV_RecSim_Run (const char *fname, int stopat, qboolean verify)
 			func_t fpin = PR_FindFunction(svprogfuncs, "SV_VerifyZonePin", PR_ANY);
 			func_t fbeg = PR_FindFunction(svprogfuncs, "SV_VerifyBegin", PR_ANY);
 			globalvars_t *pr_globals = PR_globals(svprogfuncs, PR_CURRENT);
+			qboolean zlong = false;
+			size_t zqlen = 0;
 			*zhere = 0;
+			*zbuf = 0;	/* the callee writes it on every path; do not rely on that */
 			if (fpin)
 			{
+				const char *zq;
 				PR_ExecuteProgram(svprogfuncs, fpin);
-				Q_strncpyz(zhere, PR_GetString(svprogfuncs, G_INT(OFS_RETURN)), sizeof(zhere));
+				zq = PR_GetString(svprogfuncs, G_INT(OFS_RETURN));
+				/* Q_strncpyz truncates SILENTLY, and a cut that lands on a field
+				   boundary turns a 5-field pin into a 4-field one -- which then
+				   parses, with the source tag read as the crc, and refuses as
+				   "a different zone table".  A wrong verdict from our own buffer.
+				   Checked here because this is where the buffer's size is known.
+				   `>= sizeof` and not `>= sizeof - 1`: Q_strncpyz copies 127 chars
+				   plus the NUL into 128 bytes with nothing lost, so round 2's
+				   predicate refused one length that fits exactly. */
+				zqlen = strlen(zq);
+				zlong = (zqlen >= sizeof(zhere));
+				Q_strncpyz(zhere, zq, sizeof(zhere));
 			}
-			Q_snprintfz(zbuf, sizeof(zbuf), "%s %s %s", hdrzsrc, hdrzcrc, hdrzrule);
 			if (!fpin || !fbeg)
 				refuse = "these progs have no verifier hooks (QC build 88)";
-			else if (strcmp(zbuf, zhere))
+			else if (zlong)
 			{
-				Con_Printf("  zone pin  file \"%s\"  here \"%s\"\n", zbuf, zhere);
-				refuse = "a different zone table or rule";
+				/* zqlen, not strlen(zhere): the copy has already truncated, so
+				   printing the buffer's length reports 127 for a pin of 127, 128
+				   or 4000 -- a number that describes this code, not its input. */
+				Con_Printf("  zone pin  %u bytes, buffer is %u\n",
+				           (unsigned)zqlen, (unsigned)sizeof(zhere));
+				refuse = "this server's zone pin is too long to read";
+			}
+			else if ((zwhy = SV_VerifyZoneCmp(zhere, hdrzsrc, hdrzcrc, hdrzrule,
+			                                 zbuf, sizeof(zbuf))) != NULL)
+			{
+				/* The source is still stated, because an operator chasing a
+				   refusal wants to know which directory served the table -- it is
+				   just not what decided the verdict. */
+				Con_Printf("  zone pin  %s  (file src \"%s\")\n", zbuf, hdrzsrc);
+				refuse = zwhy;
 			}
 			else
 			{
+				/* SAY SO ON THE SUCCESS PATH TOO.  Without this a PASS is silent
+				   about zones and reads identically to a PASS that skipped the
+				   comparison -- which is how the first cut's fail-open would have
+				   looked in a log.  proprule prints on its success path for the
+				   same reason.  No `if (verify)` guard: the whole block is already
+				   inside one, and a predicate that cannot be false implies this
+				   can run without verify, which it cannot. */
+				Con_Printf("  zone pin  matched: %s  (file src \"%s\")\n",
+					           zbuf, hdrzsrc);
 				pr_globals = PR_globals(svprogfuncs, PR_CURRENT);
 				G_FLOAT(OFS_PARM0) = zs_ev;
 				G_FLOAT(OFS_PARM1) = zs_az;
@@ -5310,6 +5598,12 @@ static void SV_RecSim_Run (const char *fname, int stopat, qboolean verify)
 		unsigned int pecrc = 0;
 		qboolean pehave = false;
 		int    pe_ok = 0, pe_bad = 0, pe_first = -1;
+		/* FTESurf: rows that differ on a file recorded before the prop-scale rule
+		   (header `proprule`).  The THIRD VERDICT -- a digest built from different
+		   geometry cannot answer the question, and answering "differs" anyway is an
+		   accusation this check is not entitled to make.  Counted and printed, never
+		   folded into `why`. */
+		int    pe_nc = 0;
 		unsigned int pe_file = 0, pe_ours = 0;
 		int    port_ok = 0, port_bad = 0, port_first = -1;
 		int    x_ok = 0, x_bad = 0, x_shown = 0, x_first = -1;
@@ -5669,6 +5963,8 @@ static void SV_RecSim_Run (const char *fname, int stopat, qboolean verify)
 					{
 						if (crc == pecrc)
 							pe_ok++;
+						else if (filepropr < 1)
+							pe_nc++;	/* recorded under older prop geometry -- see pe_nc */
 						else if (pe_bad++ == 0)
 							{ pe_first = i; pe_file = pecrc; pe_ours = crc; }
 					}
@@ -6020,6 +6316,10 @@ static void SV_RecSim_Run (const char *fname, int stopat, qboolean verify)
 			           pe_ok, pe_bad);
 			if (pe_bad)
 				Con_Printf(" (first row %i: file %06x, replay %06x)", pe_first, pe_file, pe_ours);
+			/* Says WHICH rule, so "not comparable" cannot be read as "not checked". */
+			if (pe_nc)
+				Con_Printf(", ^3%i not comparable^7 (file is proprule %i, this build"
+				           " builds prop geometry to rule 1)", pe_nc, filepropr);
 			Con_Printf("%s\n", proxy ? "" : "  ^3(not built)^7");
 			Con_Printf("        portals: %i crossing move(s) agree, %i disagree",
 			           port_ok, port_bad);

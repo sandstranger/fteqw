@@ -33362,3 +33362,858 @@ hash preimage, harmless only because 128 bits of OS random sit beside it.
 **Known.** The server half is what reaches players now; the client half ships with the next release. The harmless `Server permissions deny downloading file "package/maps/<map>.bsp"` line on the same joins is the server advertising the map's BSP as a package and `SV_AllowDownload` refusing any `package/` that is not pk3/pk4/pak; the client moves straight on. Noise, not fixed here (the advertising side was not traced).
 
 **DEPLOYED 2026-09-22 06:44 UTC** (server half; nobody on). Pi `p349build` had exactly 427's parent `sv_user.c` (blob f86dbdaa), so only that file was sent (now a8860211). Native build `fteqw-svarm64` md5 8585304e, rollback `fteqw-svarm64.pre427-20260922-064401` (99fca9b3). Gates: pm_dettest on bhop_eazy prints the same 21 lines as the old binary (mapcrc 676de275, mover 3d136f8de25c9c2c, tick 93e8615d81c26325); replay 46 (surf_how2surf evidence) PASS ticks 9613 rows 9611 on both; `p427clpi.cfg` from this box's pre-427 client against the Pi on port 27791: the old binary stalls on `sound/music/never`, the new one says `joined`. All 12 lobbies restarted; a client connect to 27540 spawned with the prediction hook alive.
+
+## Patch 428 — 999 saves a player in a lobby, and a lobby slot's saves stay with its player  *(APPLIED -- mod-side only: FTESurf `src/server/sv_saveloc.qc`, `sv_player.qc`, `sv_main.qc`, `src/client/cl_main.qc`. Arms `cfg/test/p428cl.cfg` + `p428sv.cfg`/`p428svq.cfg`, `p428slota.cfg` + `p428slotb.cfg`.)*
+
+**Problem.** A lobby player got 24 saves a map (FS_SLBLOCK), which a player hit. The cap was the globals budget: the ten save columns were fixed arrays of 999 + 32 x 24 rows, and qwprogs used 64547 of its 16-bit target's 65535 globals. Found on the way: nothing released a lobby block when its player left, so the next player in that slot on the same map inherited the old rows while every file operation used their own folder -- the other player's count, a load placing them at the other player's save, and a delete removing their own save that shared the other's folder number (p428slota control: B lists A's three rows under B's root).
+
+**Change.** The columns are `memalloc`'d per map (~1.85 MB; the 12 lobbies' QC heap measured 5-8 MB used of 2 GB reserved with `sv_meminfo`), a block is 999 rows, and qwprogs drops to 39813 globals. The insertion sort is a shell sort. `sl_list` prints a 30-row window (`saveloc <n>` from row n), one print a row. Delete-all passes the gate once and then sweeps 2 rows a server frame from StartFrame (`SV_SaveLocFrame`), setting its own root each step (`sl_root` is one global every command re-points); list commands and the hold are refused while it runs. ClientConnect clears the slot's block (`SV_SaveLocForget`).
+
+**Verified.** p428cl on a Windows server and a Pi test server: 999 taken and the 1000th refused; #1/#30/#999 load to three distinct points before and after a forced rescan, rows 500-529 matching their creation slot and clock; the sweep answers mid-way and refuses a save. Rescan of 999 (profile_ssqc): 237 ms Windows, 157 ms Pi. p428slota/b: control reproduces, fix clean. Regression: p426ccl (L1, L2 signed; L2 flags 131072) and p426cl (both abandons and the finish signed).
+
+**Review round 1** (two lenses: control flow; players' data and abuse). Fixed: a row delete released the holds of every HIGHER slot (rows are laid out by slot; the sweep repeated it every frame); off-lobby block 0 is shared, so another player's save mid-sweep was the next row deleted -- any sweeper of the block now refuses list commands, and one sweep runs a frame; the allocation flag survived a savegame over null columns -- it tests the pointer and drops restored counts; the clear-at-ClientConnect missed QW spectators and let a player force a 999-row rescan by reconnecting -- a lobby block is now fresh only for the guid it was scanned for (p428slota: bb581da rescans at a rejoin, the fix does not); 999 saves of a streaming run queued ~1.4 GB of recording copies on the shared disk and one flush stall -- a lobby block keeps a copy only for its newest 24 (SL_RECKEEP), an older load goes on unrecorded (p428cl N7); a load whose state file was gone teleported and marked nothing (pre-existing; two connections on one guid) -- refused before the placement; a burst of list commands in one packet was seconds of disk work -- a 20/s bucket. p426ccl and p426cl re-run: all receipts signed.
+
+**Review round 2** (the same two lenses, new readers). Fixed: freshness keyed on the guid while the root also depends on `lobby_nosaveloc` -- Sync scanned the SHARED folder into a lobby block while saves were off, and turning them back on then spelled the player's own folder with the shared list's numbers (data loss); Sync now scans and publishes nothing for a player whose saves are off. The bucket charged 3/4/5/6 twice (Step's gate and Load's) -- one charge a command now, in SV_ParseClientCommand, never on the hold's edges (p428cl N10: 90be4c1 refused the 11th step). A refused load's `sl_hold` still teleported through the hold's re-place, and a bare `cmd sl_hold` always had -- a hold now starts only at the cursor row's origin (N9). A QW spectator's delete-all ran one batch and stalled -- sl_ commands are a player's. A scan that returned early left the old rows fresh for a new owner -- a scan empties the block first. Round 1's trim let a player drop his own evidence: a save whose copy was gone still resumed its clock on a cold load, with the recording dropped -- the save 24 back is now DEMOTED (position kept, state.txt rewritten with an idle timer, copy removed), so it ends the run instead (N7). With two connections on one guid, a load paired one save's position with another's clock -- the pre-check now refuses unless the file's seq, ticks and origin are the row's. Sweeps take turns in entnum order. p426ccl/p426cl, p428slota/b and p430cl re-run on the result.
+
+**Review round 3.** Fixed: a DEMOTED save restored an idle timer with every latch -1, so in a start or stage box the next tick armed -- clearing the load's taint -- and leaving the box started a clean run at the saved speed (p428hold D1: b3e100e `armed, practice 0`, the fix `idle, practice 1`); a demoted load now takes its latches from a zone scan where it put you. The hold still needed no load, only standing on the save, and the release handed a running attempt the save's velocity -- a hold now needs a load of its row in the same frame (H1). Demotion now checks the file is still its row, marks the row before the rewrite and removes the copy after it; demoted rows carry tick -1, so `!r` no longer offers them as start spots. A refused hold stops pinning the client's view. p428cl, p428slota/b, p430cl, p426ccl/cl re-run.
+
+**Review round 4.** Fixed: the hold's row test was a list position, so `sl_goto K; sl_del; sl_hold` parked on the save that slid under it -- it now also needs the loaded save's seq; `sl_goto; respawn; sl_hold` in one packet put the hold's arm edge on a fresh idle timer, a clean run from any save when the spawn is in a start box -- it needs the player still at the save, and SV_TimerWarped (every placement) voids the load marker; a demoted save kept its speed, and on a floor-bottom start box the %.4f origin scans a hair below the zone, so the first hop armed with it -- a demoted save is a position at rest (p428hold D1: b20e42b armed at 241 u/s); only saves with a run clock are demoted, so idle start-box saves stay `!r` spots; the client resyncs its command count on every send (a stale count released a hold the server had started). p428hold D1/D2/H1-H4 against b3e100e and b20e42b; p428cl, p428slota/b, p430cl, p426ccl/cl re-run.
+
+**Review round 5.** Control flow: nothing real in round 4's predicates. Evidence: an OLDER hole in the same system -- a zone move (`!r`, `!m`, `!s N`, `!b N`, zone_goto/reset/restart) did not release a save-lock hold, so it re-armed a fresh attempt under it (SV_TimerArm clears the load's taint; MOVETYPE_NONE is not noclip), the hold put the body back at the save and the release handed the attempt the save's speed: a clean stage or start run at any saved speed. SV_ZoneMoveAt now releases the hold first (p428hold H5: 557d736 kept it). Minor: a demote skips the row its owner is holding (its release speed went to 0); the client's command count resyncs only from its own stats and rebases down when the server's restarts; the hold allocates before reading a row.
+
+**Review round 6.** Both lenses, one OLDER hole: a map mover (a func_bhop dwell teleport fires on a MOVETYPE_NONE body; PlayerPostThink runs SV_BhopFrame, then SV_TimerFrame, then the hold's re-place) put a held body in a start or stage box for one scan, which armed a clean attempt or failed and reopened a stage without its taint, and the release handed it the save's speed. SV_TimerFrame now runs no zone tests while a save-lock hold is live, as for a ghost; the edge a hold hid comes after the release, so Build 47's start-box re-arm still happens, just not under the freeze (p428hold H6: b05f768 practice 0 while held; the fix 1 while held, 0 after). A save is refused while holding (hold, step, save kept rows out of demotion for good), and the demote skip goes with it.
+
+**Review round 7 (last -- Lex capped it there).** Control flow: nothing real. Evidence: nothing new exploitable. Fixed anyway: a hold refuses under the replay pin and the ghost (they refused it, not the reverse); a held body's push carrier is cleared every packet (one armed on the last held command cashed out into the release packet); three stale comments.
+
+**Known.** A delete costs ~3.5 ms on the Pi (FS_Remove re-walks every search path for the name hash), so a 999 delete-all takes ~5 s and ~7 ms a frame. OLDER, FOUND BY THE REVIEWS, NOT FIXED: (1) Patch 415's start-box prespeed hole is wider than its essay says -- the floor-rounding gate that protects 37 of 48 regions is beaten by a hop (the first scan puts the latch at -1, the hop lifts the point into the zone, SV_TimerArm clears the load's taint with the save's speed on); a falsifier: bhop_eazy, an armed save with speed, load, +jump, `cmd timer` -> armed, practice 0. (2) A save taken FINISHED in the next stage's box keeps that box as its pending arm, so leaving it after a load is a clean stage run at the saved speed. (3) The release packet's ticks count as frozen (practice runs only). (4) Map triggers still touch a held body (push-once triggers are spent for everyone); only `run_pmhold` skips touches in the engine. PRE-EXISTING, NOT FIXED HERE (round 3): a running save whose rewind fails for a reason the player does not choose -- a stream prefix over SV_RecSnapshot's 256 MB cap, a failed copy step -- still resumes its clock with the recording dropped; SV_SaveApplyState's failed-rewind branch is Patch 426's, and ending the run there belongs in its own patch. NOT FIXED: a 999-row rescan (157 ms on the Pi) is synchronous; a player with two certificates holding 999 saves each can order one per reconnect, and a map change costs one per heavy saver. The directory walk is about half of it and cannot be split, so this wants an index or an incremental scan, not a tweak. A QW spectator receives the tracked player's cursor-save stats (Patch 430) -- no more than the live position it is watching. A player joining with hundreds of saves on the current map costs that scan once (157 ms at 999 on the Pi). The first cuts of the delete-all (one call, then a batch a packet) each stalled the server ~3.5 s; see p428cl's header.
+
+## Patch 429 — the player being spectated sees who is watching  *(APPLIED -- mod-side only: FTESurf `src/server/sv_pose.qc` (Pose_SpecBy), `sv_main.qc`, `src/client/cl_spectate.qc` (Spec_DrawWatchers), `cl_main.qc`, `cl_hudedit.qc`, `ftesurf/cfg/default.cfg`, `defaultuser.cfg`. Arm `cfg/test/p429t.cfg` + `p429w.cfg` against `p429sv.cfg`.)*
+
+**Problem.** A watched player had no way to know it: STAT_FS_SPEC and the SPEC pose bits go only to the watcher, and the server's per-target count (`pb_specn`) went nowhere.
+
+**Change.** Server, 4 Hz from StartFrame: each player's watchers (`pb_watch`, so not a countdown and not a developer `pose_watch`) as entnums on that player's `*specby` star key, compared against the live key so a recycled slot cannot keep a stale one. Client: a small right-anchored "Spec:" box listing the names under the map info (`hud_specby`, `_x`, `_y`; a hidden hud_edit row for drag and reset, and a "Who's watching" toggle in the Spectate pane). Not drawn while you spectate or watch a replay. HE_MAX 20 -> 24 (the new row filled the last spare).
+
+**Verified.** p429t/p429w on a Windows lobby-mode server: no key and no box before, `*specby 2` and the box while watched, key kept and box hidden at `hud_specby 0`, both gone after `spectate off`. Two watchers at once not run.
+
+## Patch 430 — the load key draws the save a round trip early  *(APPLIED -- mod-side only: FTESurf `src/shared/sh_defs.qc` (STAT_FS_SLORG/SLANG/SLACK 104-110), `src/server/sv_saveloc.qc` (SV_SaveLocSync), `sv_player.qc`, `sv_main.qc`, `src/client/cl_saveloc.qc` (SaveLoc_PredictLoad, SaveLoc_Camera), `cl_main.qc`. Arm `cfg/test/p430cl.cfg` against `p428svq.cfg`.)*
+
+**Problem.** "It takes some time before the lock loads" -- the list is the server's, so `2` showed nothing for a whole round trip, the player still moving at the old spot, then snapped (the report's `prederr` lines are that snap, one at the load and one at the release).
+
+**Change.** The server publishes the cursor save's origin and pitch/yaw/duck (STAT_FS_SLORG, STAT_FS_SLANG) and counts every `sl_` command it runs (STAT_FS_SLACK); the client counts what it sends. On `2`, when every sent command is counted (so the row is current), the camera is put at the save's eye with its angles until the predicted eye arrives there, or 0.15 s after the count covers the load (a refusal), or 1.5 s. Render only -- VF_ORIGIN/VF_ANGLES; the usercmd, prediction and the .view sidecar (VF_CL_VIEWANGLES) are untouched. `cl_slpredict 0` turns it off. A pre-430 server publishes nothing and the client never draws ahead.
+
+**Verified.** p430cl with 200 ms of outgoing delay, spec_trace: at 1 the camera is at the save on the first frame while the body is 519 u away, and they agree from the body's arrival (+232 ms); at 0 (control) the camera waits 234 ms; `1` then `2` in one frame draws nothing early. The first cut ended on the count and put the camera back for 20 ms (the count lands before the body); fixed and re-run.
+
+**Known.** Only `2` is drawn early -- 3/4/5/6 move the cursor and load in one server step, and their target row is not published. The `prederr` lines themselves remain: the server still moves the body a round trip after the press, and the release still waits for the server's unfreeze.
+
+**DEPLOYED 2026-09-22 ~10:07 UTC (Patches 428, 429, 430 together).** FTESurf `3e7abba` via `build.ps1 -Jobs 8 -Pi`, nobody on: qwprogs sha256 2c47c1fb (968638 bytes), csprogs ff726d34 (4969090 bytes), previous pair kept as `.prev`, all 12 lobbies restarted. A client connect to 27540 (bhop_eazy): prediction hook alive, the 430 client's `saveloc` line, `sl_list` answered from the Pi's per-player folder. The engine is unchanged by these (427's server half is the live binary).
+
+## Patch 431 — a stage watched from the board opens in a blink and shows only that stage  *(APPLIED -- mod-side only: FTESurf `src/client/cl_watch.qc` (Watch_BufLoad; Watch_Scan split into pass one + the seek index and Watch_ScanRange; Watch_BuildSeq over the built range; Watch_WindowFind/SetCut/StageWindow; the chrome and `replay cut`, `replay online <id> <leg>`), `src/client/cl_scores.qc` (Scores_TrailerTicks, the online hand-off). Arms `cfg/test/p431reg.cfg`, `p431win.cfg`, `p431trail.cfg`; measurements `p431load.cfg`, `p431path.cfg`, `p431shot.cfg`.)*
+
+**Problem.** "Watching back any stage of my surf_rookie run freezes my game for 12 seconds, then jumps to the spot." The board row opens its parent run (Patch 395): 6.7 MB, 95k lines. `profile_csqc`: Watch_Open took 13.4 s, of which every QC pass was 0.5 s; the rest was buf_loadfile, which splits with VFS_GETS, one VFS_READ per byte -- and fs_win32.c:480 memory-maps only files up to 5 MB, so above that each byte is a ReadFile (the same bytes at a runs/ path: 13.0 s). Scores_TrailerTicks read an unstamped `last.rec` the same way, so a local board over an 8-minute attempt stalled as long. The viewer then drew the whole run's line and bar.
+
+**Change.** Files are read with FILE_READ + fgets (loaded whole, split in memory; Watch_BufLoad), and the trailer read takes the last 16 KB. The scan's per-sample work (path controls, dead air, snap and duck tables) is Watch_ScanRange over a range; pass one also takes the boards and skips `in`/`mc` untokenized, and a cheap walk builds the seek index. A board stage row (and `replay online <id> <leg>`) finds its window before anything per-sample is built and builds only that, from 1 s before the stage. The bar, seeks and playback are CUT to that window: title `<owner>   stage N`, the clock in stage time (negative in the lead-in), a pause at the stage's end, and a `whole run` / `stage N only` toggle on the hint row (`replay cut 0|1`) that rebuilds for the whole file when needed. The line is drawn only inside the cut.
+
+**Verified.** p431reg: a whole-file open prints identical status counters on 8 files, HEAD's csprogs against the patch (202 lines, e.g. r47 `fit 33527 hermite 290 linear 39 snap`); `opened in` r47 13290 -> 392 ms, the others unchanged within noise. p431win: `replay online 47 5` opens in 67 ms at `stage 5 window 33.2250..37.3650 s from 32.2250`; seeks clamp to the cut; one `window end` then the pause holds; `cut 0` rebuilds the whole file in 315 ms; a missing stage opens whole. Control (HEAD csprogs) fails every arm. p431trail: join to the first board line 16 s -> 3 s with a 6.7 MB `last.rec` (the prediction that the stall sat at the status command was wrong: rows scan at the first refresh). p395win: every window line verbatim; after the end, `replay play` now holds (the cut) where it used to run on.
+
+**Known.** A cut starting after an open `ride arm` does not see it (only the kinematic snap veto, until the next ride record). The engine's buf_loadfile stays slow on Windows above 5 MB; nothing in the progs calls it on a recording now except cl_replay.qc's .view reload after a save-state rewind (evidence code, not touched here) -- in BACKLOG.md.
+
+## Patch 432 — the replay's line: every sample, 1 px anti-aliased, red to green, broken at teleports  *(APPLIED -- mod-side only: FTESurf new `src/client/cl_lines.qc` (the run-line pool, the anti-aliased strip, chunk culling, stride levels, the distance fade, teleport markers), `src/client/cl_watch.qc` (slot 0 built in Watch_ScanRange; Watch_Path/Path2D draw it; the control points and spline removed; `replay bench`), `cl_mouse.qc` (the trail's segment), `src/cl_progs.src`, `ftesurf/cfg/default.cfg` + `defaultuser.cfg` (`hud_watch_path_px 1`, `_color`, `_far`). Arms `cfg/test/p432line.cfg`, `p432mode.cfg`; measurements `p432shot.cfg`, `p432bench.cfg`, `p432prof.cfg`.)*
+
+**Problem.** The replay's line was a spline through at most 1024 control points, so on a long run a control every 34 samples (~0.5 s) -- "longer runs look more vague". It drew straight across every teleport, its 3 px quads and the mouse pad's trail were aliased, and it was blue to yellow.
+
+**Change.** A pool of run lines (cl_lines.qc; slot 0 the replay, 1..8 for the board): one point per sample, a break wherever Watch_ScanPair snapped (a `warp`/`portal`/`restart` record, or a kinematic snap). Drawn as a screen-space strip, 1 px (`hud_watch_path_px`), anti-aliased by vertex alpha -- a box-filtered w px line is a trapezoid, so each segment is a fan whose outer vertices carry alpha 0 -- with mitred shared joints and a Catmull-Rom subdivision where a segment is long on screen. Colour red (slow) -> yellow -> green (fast) over the shown speeds' mean +- 2 sd, or gain/loss (`hud_watch_path_color 1`). A teleport is a square at each end and a faint dashed line. Cost control: 32-point chunks and 16-chunk groups culled against the frustum, a per-chunk stride (2..32) whose load-time error is under 1 px at its distance, and a fade over the last third of `hud_watch_path_far` (6000 u, Lex's idea) past which nothing is walked. Mode 1's world ribbon reads the same points. The mouse pad's trail uses the same segment.
+
+**Verified.** p432line: every sample drawn (`33857 of 33857`), breaks = the snap table on five files (40 = 40 rec; 4, 5, 6, 35 = rec + kin), colour 1 switches; ctl (Patch 431's csprogs) draws a solid line across the stage 5 teleport, the new one the loop, the squares and the dashes (screenshots). Two arms FAILED as written and are recorded: A1 opened whole then windowed (the slot's count is the file's), A4's `ahead 0` bound missed the subdivision under the camera (26%, not under 20%). p432bench (QC ms a draw, unprofiled): whole run at t 20, 3.705 (all points) -> 2.150 (stride levels) -> 0.595 (far 6000); stage cut 0.295; the polygons are a quarter. 4x crops: a soft-edged line and trail, no steps. p432mode: the ribbon, and `ahead 0`, draw with no QC error.
+
+**Known.** gettime(1) counts whole milliseconds (Sys_Milliseconds), so a single draw cannot be timed; `replay bench <n>` times n. A t 200 view on surf_rookie still costs 1.3 ms: 1355 points within 6000 u.
+
+## Patch 433 — a `line` column on the board: tick a run to draw its line while you play  *(APPLIED -- mod-side only: FTESurf `src/client/cl_scores.qc` (SBX_LINE and its budget step; Scores_LineKey/Find/Free/Toggle, Scores_LinesFrame/Pin/Draw/Status, Scores_LineCell; `scores line <row>`, `scores lines [clear]`), `cl_watch.qc` (Watch_RecordBits, the incremental Watch_LineJob*), `cl_main.qc` (the frame, pin and draw calls), `tools/onlinecache.py` (a stub board row). Arms `cfg/test/p433line.cfg`, `p433ui.cfg`.)*
+
+**Problem.** "A button on each run on the leaderboard to the right of `why` for display lines ... tick and display that demo's / stage / bonus / main run."
+
+**Change.** A `line` column right of `why` (dropped first on a narrow window): a box on every row with a recording, ticked while its line is drawn, amber while it loads, red if it failed. Up to 8 lines, run-line slots 1..8 (Patch 432), drawn in the world whether the board is open or not, at 0.85 alpha, on the shared colour range. A local row's file, or an online row's through the one replay fetch (queued behind a watch the board is waiting on); a stage row set inside its run (Patch 395) draws only that stage's window. Built over frames (6000 lines a frame reading records, 2500 tokenizing samples), breaks classified by the scan's own rule (Watch_RecordBits, now shared). The box's click is registered after the row's and applied on the frame boundary like the row picks.
+
+**Verified.** p433line against the p395 stub: a cached stage row builds its run's stage 2 window exactly (625 points, t 7.8750..17.2350, Patch 395's); an uncached one downloads once and builds stage 4 (1200 shown, 31.7850..49.7700); rows with nothing behind them refuse; untick removes; 146 segments drawn in the world beside an open replay. The control (Patch 432's csprogs) prints nothing and fetches nothing. p433ui: the column and the tick on screen.
+
+**Known.** No live-lobby click was driven (a harness cannot click; `scores line` is the handle). Lines are per map (the VM reloads). A board line's stage 1 out of a run starts at the run's clock (the start box), as the replay's cut does.
+
+**Review round 1 (Patches 431-433, two reviewers: runtime safety, behaviour).** Fixed: `replay bench <n>` could pass the VM's 100M-op runaway limit and drop the player (now capped at 1M points); `scores line <row>` out of range faulted on an unguarded index (|| does not short-circuit); board lines were not pinned to the scene's projection when a replay was open outside mode 2; a teleport's near square vanished when its far end was past the fade (each end fades by its own distance now); the line folded back over the playhead where a subdivision crossed it, and `ahead 0` drew past the playhead in the near-clip branches; the fade was by depth and the cull by distance (both by distance now: a hard cut at the screen's sides); `2d bbox` and `pts projected` in `replay status` were stale or the board lines'; `replay trace` ran past a cut; `replay cut` with nothing open; three masked out-of-range reads. Re-run: p432line and p433line verbatim, p432bench (t 20 0.605 ms, t 200 1.320, cut 0.295 with the fade). Left in BACKLOG.md: a board line's window on an old file with no `stagepost`, the one-segment alpha ramp at the playhead.
+
+**DEPLOYED 2026-09-23 (Patches 431, 432, 433 and review round 1).** FTESurf `fe56812` via `build.ps1 -Jobs 8 -Pi`, nobody on: qwprogs sha256 ed3080de (968638 bytes, unchanged code), csprogs 68815aa8 (4687542 bytes), previous pair kept as `.prev`, all 12 lobbies restarted. `cfg/test/p433pi.cfg`: a client joined 27540 (bhop_eazy), CSQC loaded, the new `replay cut`/`scores lines` handles answered, no QC error.
+
+## Patch 434 -- a save whose recording cannot be restored ends the run  *(APPLIED -- mod-side only, no engine change: FTESurf `src/server/sv_saveloc.qc` (SV_SaveApplyState's failed-rewind branch). Arm `cfg/test/p434rew.cfg` with the fixture `cfg/test/p434state.txt`, driver `tools/p434rew.py`.)*
+
+**Problem.** BACKLOG, from Patch 428's review. SV_SaveApplyState restores the clock and only then rewinds the recording, and the failed branch discarded the recorder without touching the timer. So a save whose prefix is gone -- a stream prefix over SV_RecSnapshot's 256 MB cap, a failed copy step, a hand-deleted run.rec -- loaded into a RUNNING attempt that kept counting, kept posting splits and stages, and filed a finish with no `.rec` behind it: nothing for pm_verify to replay, and no `warp` or `resume` row to say why.
+
+**Change.** That branch calls SV_TimerVoid when the state it restored was TS_RUNNING, and SV_RecDiscard as before when it was not. SV_TimerVoid is the funnel every other abort uses, so the restored time stays on screen greyed instead of snapping to zero, and its SV_TimerIdle does the discard -- the branch must not discard twice, or the Patch 426 hold logic runs again against a run that has already ended.
+
+**Verified.** p434rew (listen server, bhop_eazy), subject a fixture save901: state.txt only, `ticks 500`, `reclines 500`, `recserial -1` (a serial no session draws, so the warm path cannot apply) and NO run.rec -- byte-for-byte what a failed copy step leaves. Control arm first and on both builds: a real save taken by the same run loads back (`run resumed at 0:01.720`, running, shadow 1, recording 1, buffer 17), so the harness can load a running save at all. Then the fixture -- pre-fix: no cancel line, `timer: running`, recording 0, buffer -1, stopped 0, and the clock at 0:06.200, PAST the 0:05.000 it had been restored to; fixed: `run cancelled (the save's recording could not be restored)`, `timer: idle`, the clock held at 0:05.000, `stopped 1 at 0:05.000`. Driver exit 0 in both modes, `--control` grading the pre-fix predictions.
+
+**Known.** The streamed (lobby) cold path is not covered: a listen server buffers, so this exercises SV_RecRewind's buf_loadfile leg. The lobby leg fails the same way (the cap, a missing part file) through the same FALSE and lands in the same branch. Nor is a run that had POSTED a stage, where SV_RecKeepEvidence keeps the file -- unchanged by this patch, since SV_TimerIdle calls the same SV_RecDiscard the branch called. The void also prints `timer: receipt refused -- no run id or no nonce` for a fixture with no `recrid`, which is honest: there is no recording for a receipt to commit to.
+
+## Patch 435 -- a start-box load that carries speed does not arm a clean run  *(APPLIED -- mod-side only, no engine change: FTESurf `src/server/sv_saveloc.qc` (SL_ARM_SPEED, SL_RowSpeed, the Build 47 gate in SV_SaveLocLoad), `src/server/sv_player.qc` (`viewpos` prints the body's velocity). Arms `cfg/test/p435pre.cfg` with the fixtures `cfg/test/p435rest.txt`, `cfg/test/p435speed.txt` and the zones `cfg/test/p435.zones.json`, `cfg/test/p435hop.cfg`, `cfg/test/p435mode.cfg`, driver `tools/p435pre.py --arm pre|shipped|mode`, census `tools/census/startdest.py`.)*
+
+**Problem.** BACKLOG (Patch 415's essay, Patch 428's review). Build 47's gate forces the zone edge for a save loaded inside a start box, so the next scan arms the attempt and SV_TimerArm LAUNDERS the load's TF_SEGMENT|TF_PRACTICE -- and SV_SaveLocPlace writes `e.velocity = rec_sl_vel[r]`. So a save taken while carrying speed inside a start box became a CLEAN armed attempt that was already moving: leave the box and the run ranks from a flying start, with that speed in the `.rec`'s seed and no `warp` row to explain it. Patch 415 measured the gate failing on some shipped regions and deliberately left it alone until the velocity was answered.
+
+**Change.** The gate also asks the ROW what it carries: `SL_RowSpeed(r) < SL_ARM_SPEED`, 1 u/s -- above `velocity %.4f` rounding and above friction's residue at sv_stopspeed, below any prespeed worth carrying. A save at rest arms exactly as before; a save with speed keeps the load's taint, and leaving the box starts a PRACTICE run at the speed you saved with, which is what a stitched attempt is for. `viewpos` grew a second line (`velocity x y z  horizontal N`) because nothing else reports the SERVER's velocity for a body -- the hold publishes the SAVE's, the recorder's samples exist only after a close, and the client's number is a prediction.
+
+**Verified.** p435pre on both builds, driver exit 0 each way. Two fixture saves one line apart (`velocity 0.0000` against `velocity 250.0000`), both ARMED at (-420 -352 64.0312) inside a start region whose bottom p435.zones.json lowers 64.03125 -> 48 so SV_ZoneStartAt answers 0; on the shipped file this gate never fires on bhop_eazy at all, so the shipped file cannot show either behaviour. Control (at rest), identical on both builds: parked `arm zone -1 (armed from 0)`, out of the box `running`, `practice 0`, `class: clean`. Subject (250 u/s): pre-fix `arm zone -1 (armed from 0)`, `running`, `practice 0`, `clean`; fixed `arm zone 0 (armed from 0)`, `running`, `practice 1`, `segmented`. The injection itself: `viewpos` in the load's OWN packet reads `horizontal 250.0000` on both builds, so the fix moves the class and not the speed.
+
+**Known -- PARTIAL, and measured.** The gate can only answer where it fires. `tools/census/startdest.py` counts 29 of the 35 shipped regions with an authored teleDestPos in the class this closes and 6 regions on 3 maps (bhop_eazy, kz_bkz_goldbhop_v2, surf_friday) where `origin %.4f` puts the placed body below the slab bottom, so SV_ZoneStartAt answers -1 and neither Build 47's gate nor this condition is reached. On those, p435hop measures that a HOP does not launder in bhop mode (the jump starts the run from the restored ARMED state and SV_TimerTryArm's bhop branch refuses to arm an attempt already RUNNING) and p435mode measures that IT DOES with `sv_gamemode surf` -- airborne at z 106.9 against a bottom of 64.03125, then `arm zone 0`, `practice 0`, `class: clean`. That residual is in BACKLOG with p435mode.cfg as its reproducer; closing it needs either the inherited speed zeroed at a start-box placement under a tolerant box test, or a load-scoped mark SV_TimerArm refuses to launder while it stands (and which a Patch 428 hold must not clear, since the release hands the same velocity back). Two predictions the arms got wrong, both facts about the machine: the class cannot be read while PARKED on either build (Patch 428 runs no zone tests under a hold, so the arm lands at the release and the parked observable is `arm zone`), and ground friction bleeds 250 u/s to zero in ~0.33 s, so the exact figure has to be quoted from the load's own packet.
+
+## Patch 436 -- a restored `pendarm` no longer hands back a clean stage run  *(APPLIED -- mod-side only, no engine change: FTESurf `src/server/sv_saveloc.qc` (the `pendarm` key in SV_SaveApplyState is read and dropped, the restore writes -1, SV_SaveWriteState keeps writing the line). Arms `cfg/test/p436pend.cfg` with the fixture `cfg/test/p436state.txt` and driver `tools/p436pend.py`; the live-path arm `cfg/test/p436hand.cfg` + `p436sv.cfg` with driver `tools/p436hand.py`.)*
+
+**Problem.** BACKLOG, Patch 428's review. Finishing a stage leaves run_t_pendarm holding the NEXT stage's zone, and SV_TimerFrame's FINISHED branch waits for the body to leave that box and then calls SV_TimerArm -- which zeroes run_t_flags. SV_SaveWriteState wrote `pendarm` and SV_SaveApplyState restored it, so a save taken after a stage finish carried an arm the player could fire on demand: load, and the next scan arms a CLEAN stage run at whatever speed the save held. Repeatable, and the arm is the one thing that clears a load's TF_SEGMENT|TF_PRACTICE.
+
+**Change.** The loader reads the key and drops it, and the restore writes -1. A pending arm is an arm that has NOT happened, and the legitimate handover is reached by CROSSING the finish -- not by being placed somewhere with one already owed. The writer keeps the line so the file's shape does not move under an older build, and the key is named in the reader rather than left to the unknown-key skip, because a key the writer writes and the reader silently ignores is the drift the grammar block exists to prevent.
+
+**Verified.** p436pend on both builds, driver exit 0 each way, subject a fixture: state 3 (TS_FINISHED), ticks 300, placed at the centre of bhop_eazy's stage-1 box with `pendarm 2` naming the stage-2 box 3000 u away, so the handover's own condition (`!SV_ZoneIn(pendarm, p, hull)`) is true on the first scan and nothing has to be driven. Control build: the load's packet reads `finished` with `pending arm 2` still standing, and the next scan spends it -- `running`, `stagerun 1`, `practice 0`, `class: clean`, ticks back to ~0. Fixed build: `finished` at the save's own 0:03.000, `pending arm -1`, `practice 1`, `segmented`, on both reads. A real save taken by the same run restores on both (P3, `running`). p436hand is the other half of the claim and is IDENTICAL on both builds by design: `!s 1`, noclip across to stage 1, `finished` with `pending arm 1` owed, step out, `running` with `stagerun 1` and `pending arm -1` -- the live handover still fires end to end.
+
+**Known.** Two predictions the arms got wrong, both about which field carries the fact: `pending arm` is not a discriminator in p436pend (the fixed build drops it and the control build spends it, so both read -1 at the deciding read) and a stage leg posts no split, so p436hand's G2 reads `splits 0` and the owed arm is the observable. The control build's launder takes TWO packets, not one -- SV_TimerFrame runs once per packet, so the load's own packet cannot contain the arm. Not covered: a save taken with the body INSIDE the pendarm's box (the fixture places it 3000 u away, which is why the handover fires at all; the loader drops the key either way), and a bonus track. The handover's taint forgiveness is b43stage 4b's subject and is unchanged.
+
+## Patch 437 -- the board line's stage window is the replay's window  *(APPLIED -- mod-side only, no engine change: FTESurf `src/client/cl_watch.qc` (Watch_LineJobWindow asks Watch_WindowFind; pass one fills rec_wt_ev* and rec_wt_endticks), `src/client/cl_scores.qc` (`sb_ln_lineleg`, the harness handle). Arm `cfg/test/p437win.cfg` with driver `tools/p437win.py`.)*
+
+**Problem.** BACKLOG, Patch 433's review: a board line built from another run's file cut itself to a stage window found by Watch_LineJobWindow, a second spelling of the question the replay answers in Watch_WindowFind -- the line job took the LAST `stage seg` record where the replay takes the one BEFORE the first `stage seg+1`. Rows whose leg is > 0 always carry a `stagepost`, so the two agreed there and the difference was reachable only through an old file.
+
+**Change.** Watch_LineJobWindow asks Watch_WindowFind when pass one found no `stagepost`, and keeps its own reading only if that answers "no window". Pass one now fills rec_wt_ev* and rec_wt_endticks from THIS file -- a line job reads another file's handle while the finder reads the replay's globals, so a stale table from a replay opened earlier would answer for the wrong file. `sb_ln_lineleg` is added to a row's leg at Watch_LineJobStart, because a LOCAL row's leg is always 0 and no stage window is otherwise reachable through the board; it is a harness handle (no bind, no menu), set after the map because a CSQC-registered cvar is reset at registercvar.
+
+**Verified.** p437win on both builds, driver exit 0 each way, subject a real file from the corpus copied twice (surf_4am's cheat.rec: FTESURF-REC 4, six `stage` records, no `stagepost`) into the names the local board resolves. Fixed: the line draws 485 points, `t 0.0000..7.2423`, and `replay window 1` on the same file says `ticks 0..483, stage records` -- the same window, to one sample. Control: the line draws all 20264 points, `t 0.0000..304.3340`, after `scores: no window for stage 1 in that run`. Patch 433's own suite (p433line, L1-L6 against the p395 stub) re-run unchanged: 625 points `t 7.8750..17.2350`, 1200 shown `t 31.7850..49.7700`, 146 drawn segments, one GET /api/replay/990018.
+
+**Known -- the defect was wider than the item said.** The control build's reading is NOT its last-stage spelling; it gets NO window at all. Pass one reads at most WT_LJ_PASS1 (6000) lines a frame and its filter is a line's first BYTE, which every sample row fails, so on a 20290-sample file it stops at sample ~6000 with wt_lj_sa and wt_lj_sb both -1 (the debug print that settled it: `win leg 1 fleg 0 pa -1 pb -1 sa -1 sb 483 end 20290 tick 0`). Its fallback then gives -1..20290, which its own `pb <= pa` test refuses. So an old file's board line was never cut, and the fix reaches a window through the event table pass one fills rather than through the spelling it was meant to correct. Also measured: the builder's `t b` is the LAST KEPT SAMPLE's time, one sample inside the boundary the replay prints, so the identity holds to a tick and not to the fourth decimal. The stage-1 leg's own row cannot be lined at all -- its tag is RT_LOBBY and Scores_LineKey returns "" for one -- which is why the fixture is a copied `_pb`.
+
+## Patch 438 -- the evidence sidecar's cold reload reads in 92 ms instead of 12 s  *(APPLIED -- mod-side only, no engine change: FTESurf `src/client/cl_replay.qc` (Rec_ViewLoaded reads with Watch_BufLoad, Patch 431's speller), `src/server/sv_saveloc.qc` (`sl_replay <slot>`), `src/server/sv_player.qc` (its dispatch). Arm `cfg/test/p438view.cfg`, driver `tools/p438view.py`.)*
+
+**Problem.** BACKLOG, Patch 431's review: cl_replay.qc's Rec_ViewLoaded reloads the run's `.view` with buf_loadfile, which splits with VFS_GETS -- one VFS_READ per byte -- and Windows memory-maps only files up to 5 MB (fs_win32.c:480). Above that every byte is a ReadFile. Patch 431 measured 13.4 s for surf_rookie's 6.7 MB `.rec` and moved the viewer to FILE_READ (34 ms), but left this one as evidence code. It is not only evidence code: this is the CLIENT's frame, during a save-load, and a sidecar is 2.93 KB per second of run, so an hour-long attempt is ~10 MB.
+
+**Change.** Watch_BufLoad -- Patch 431's own speller: FILE_READ loads the file whole on the first fgets and splits it in memory. Same buffer, same shape, size from buf_getsize. cl_replay.qc compiles before cl_watch.qc, so it takes a prototype. `sl_replay <slot>` is the harness handle the arm needs: it fires SLOP_LOADED for an absolute slot and nothing else -- no placement, no clock, no row, no state file -- charged by SV_SaveLocRate like any other sl_ command, and it cannot launder a run because it cannot move one. A real `sl_load` cannot reach a scratch path at all, because the server stuffs `set cl_saveroot "data/saves/<map>"` back over any `+set`.
+
+**Verified.** p438view on both builds, driver exit 0 each way, subject a generated 6.01 MB sidecar (193158 sample lines, real header and line shape) written under the gamedir with cl_saveroot pointed at it, and a 1.6 KB one beside it as the path control. Fixed: `p438 cold reload took 92 ms` (82 and 113 on repeat runs). Control: `11971 ms` (11920 on a repeat) -- 130x, for the same bytes, in the client's frame. Both count 193162 lines and both write the file back byte-identical, so the read is complete and the round trip proves the spelling rather than assuming it.
+
+**Known.** The control's own print is part of the control build, not the fixed one: the fixed build prints the cold reload's cost once per reload, which is the arm's observable and costs a sprintf on a path that runs at most a few times a session. Both spellings count the SAME lines (buf_loadfile's `while (VFS_GETS(...))` stops at EOF, Watch_BufLoad's fgets loop stops at the file size), so two earlier runs that reported n+3 and n+5 were the harness comparing the builds against each other instead of against the file. Three traps the arm hit before it measured anything, all in its header: `sl_load` cannot reach a scratch path (the stuffed cl_saveroot), a sidecar only exists inside a run and starting one on surf_4am takes a WALK out of the start box (`run_rearmhop 1` re-arms on the first jump out, the start rule refuses the second, and the box runs 32 units past where a straight walk stops), and the scratch has to be inside the GAMEDIR -- FS_LoadFile locates with FS_GAME, so a path outside it makes fopen return -1 with no "Access denied" line, which reads as a reader bug and is a path bug.
+**DEPLOYED 2026-09-23 (Patches 434, 435, 436, 437, 438).** FTESurf `552b093` via `build.ps1 -Jobs 8 -Pi`, nobody on any of the 12 lobbies: qwprogs sha256 b41b125f (969430 bytes), csprogs 84304d4c (4688610 bytes), both hash-verified on the Pi after upload and the previous pair kept as `.prev`. All 12 units restarted and `active`. NO ENGINE CHANGE in this batch -- all five are mod-side, so `fteqw-svarm64` and the sweeper's binary are untouched and the `commit` pin did not move. Post-deploy verification is a client connect, not the journal (`cfg/test/p438pi.cfg`, lobby 4 on 27540): `FTESurf CSQC loaded`, Patch 438's `sl_replay 900` answered `save: replay event for slot 900`, Patch 435's `viewpos` printed its `velocity ... horizontal` line, Patch 437's `scores lines` answered `lines: 0 drawn`, and zero occurrences of `Unknown command` / `QC error`. Clients on an older csprogs download this one (Patch 362+); the new CSQC cvar `sb_ln_lineleg` is a harness handle nothing binds.
+**RELEASED 0.1.13 (2026-09-23, QC build 89, engine patch 438).** Windows and Linux, both from engine commit `45174b9d4` (Patch 427), stamp `git-6894-patch-266-105-g45174b9d4`. The Linux drop is `dist/linux-build-438` (BUILDINFO `gates all PASS`, glibc 2.29, libc/libm/libdl/libpthread only, built in the bullseye chroot on WSL Ubuntu-22.04); `ftesurf64.exe` is 7C80A1637DF9B864CE01F3DD9C4B2E9737A1957E7D7D1A672565101A3CC6D949 and `fteplug_hl2_x64.dll` EEF6D039AAAA14B0E439E18F79C6EEA2D659E489B57E25DF0C0FE5D67A1A10F4 (not recompiled -- byte-identical to 0.1.12's). The receipt records `engine.patch_applies_to_binary true` and `linux.engine.code_compared_to windows-exe-commit`.
+
+WORTH KEEPING: the 0.1.12 exe carried TWO stamps -- `ga72183e6b` (Patch 419) from a .rc object compiled then, and `g2b685797b-dirty` from `sv_user.c` compiled later with a dirty tree -- so no reader could say which commit the shipped binary was, and gate L2 refused every attempt to publish a Linux drop beside it. Thirteen objects under `engine/release/` still held a stale stamp; removing them and rebuilding with `SVN_VERSION=git-6894-patch-266-105-g45174b9d4 SVN_DATE=2026-09-23` produced one stamp in both `fteqw64.exe` and `fteqwsv64.exe`. Two build traps on the way, both in the msys2 environment rather than the code: `make` inherits `TMP=/tmp` and gcc then dies with `Cannot create temporary file in C:\WINDOWS\: Permission denied` (pass `TMP="C:\msys64	mp" TEMP="C:\msys64	mp"`), and an object whose stamp is baked in does not rebuild when `SVN_VERSION` changes -- `touch` the file that holds it (`client/sys_win.c`, `common/common.c`, `server/sv_user.c`) or delete the object.
+
+Patches 420-438 are all mod-side, so no engine binary content changed for this release beyond the stamp; the fleet was already running the same progs (`qwprogs b41b125fba243ecb`, `csprogs 84304d4cd25b3b86`) since this morning's `-Pi` deploy.
+
+
+## Patch 440 -- the Google face's outline and grey drop shadow, switchable from hud_edit  *(APPLIED -- mod-side only, no engine change: FTESurf `src/shared/sh_font.qc` (essay), `src/client/cl_hud.qc` (HUD_TextDraw, `hud_font_outline`, FX_*), `src/client/cl_hudedit.qc` (fixed-block chip, HE_FIXEDROWS 5, reset-all, status), `ftesurf/cfg/default.cfg` + `defaultuser.cfg`. Arm `cfg/test/p440font.cfg`, driver `tools/p440font.py`.)*
+
+**Problem.** Text drawn in the Google face (Google Sans Code: splits, segments, the clock's subtext, map info, the strafe and board numbers) sat flat against busy map textures with no way to change that from hud_edit. The engine's own outline is a per-slot BAKE read at slot definition for every slot in the process (`outline=N` in loadfont's size list, `r_font_postprocess_outline` re-bakes the console and menu fonts too), so it cannot be a HUD switch.
+
+**Change.** `hud_font_outline` (0 plain / 1 outline / 2 outline+shadow, default 2, archived) gates HUD_TextDraw, the one funnel every HUD_Text/HUD_TextC/HUD_TextR call passes through, on `ui_font_cur == ui_font_mono` -- face-gated, not element-gated, so Roboto's labels, Bebas's clock, the console, the editor and the TAB board do not answer to it. The outline is eight copies of the string one pixel out in each direction under the body (the 8-neighbourhood; a baked second slot would double this face's cells in the four-plane atlas every font in the process shares), the shadow a copy offset down-right by max(2, 9% of the size) in dark grey at 0.65 alpha -- dark because ftefont is premultiplied (`blendfunc gl_one gl_one_minus_src_alpha`), so a light grey at half alpha is a smear, not a shadow. A chip in hud_edit's fixed block cycles plain/outline/shadow (HE_FIXEDROWS 4 to 5); reset-all and both default cfgs carry the cvar.
+
+**Verified.** p440font + driver PASS: noise floor 0/0 (subject and Roboto control, same cvar 0.7 s apart); outline 2224 changed pixels in the mono map-info block against 0 in the Roboto debug block and 0 on the Bebas speedometer; the shadow adds 373; the editor's ten element rows are pixel-identical (0) with the feature on and off while the same frame's map info moves 2347; the taller panel still fits (clamped, `done` lit at y 1083 of 1111). Crops p440_crop_fx0/1/2.png.
+
+**Known.** With the console notify on screen, states 1/2 tinted the speedometer's Bebas zero to the console's ^7 white (410 px) -- a notify x font-batch interaction that also needs a busy HUD; the arm sets con_notifytime 0 and BACKLOG.md carries the entry with its falsifier. An earlier cut baked a second outlined slot; the dim seen there is the same interaction (the atlas-corruption reading is withdrawn, in sh_font.qc and in the arm's RESULT), and the ring ships instead. The TAB board is out of scope on purpose: its rows go through sui_text inside a list view's transform and it is the largest text surface in the tree.
+**DEPLOYED 2026-09-24 (Patch 440).** FTESurf `532fc45` via `build.ps1 -Jobs 8 -Pi`, nobody on any of the 12 lobbies: qwprogs sha256 801d4d46bf516dd2 (969430 bytes), csprogs e456ec99c0a34570 (4691806 bytes), both hash-verified on the Pi after upload and the previous pair kept as `.prev`. All 12 units restarted and `active`. NO ENGINE CHANGE -- 440 is mod-side, so `fteqw-svarm64` and the sweeper's binary are untouched and the `commit` pin did not move; the qwprogs hash moved from the 434-438 deploy's b41b125f on line-table bytes only (comment blocks in shared/sh_font.qc shift line numbers; server code is unchanged). Post-deploy verification is a client connect, not the journal (`cfg/test/p440pi.cfg`, lobby 4 on 27540): `FTESurf CSQC loaded`, and `hud_edit status` printed `hud_font_outline 2 (outline+shadow)` -- a line only the deployed csprogs can print, which is what proves the lobby's copy is this build -- plus the fleet-intact handles (`save: replay event for slot 900`, the `horizontal` line, `lines: 0 drawn`, `replay: nothing loaded`) and zero occurrences of `Unknown command` / `QC error` / `Bad rcon`. Clients on an older csprogs download this one (Patch 362+); the new cvar is CSQC-registered and nothing server-side reads it.
+
+## Patch 441 -- a cancelled run is not an arm, and absence is not evidence  *(APPLIED -- mod-side only, no engine change: FTESurf `src/server/sv_saveloc.qc` (the failed-rewind branch, `sl_voided`, the Patch 435 gate's guard, `sl_replay`'s cheat gate), `src/client/cl_watch.qc` (`Watch_StageSpan`, the line job's own `wt_lj_ev*`/`wt_lj_endt`), `src/client/cl_replay.qc` (the cold-reload line is a dprint). Arms `cfg/test/p441void.cfg` + `p441fast.cfg` + `p441norec.cfg` with `tools/p441void.py`, plus new W6 in `p437win.cfg` and R1g in `p438view.cfg`.)*
+
+**Problem.** Four, from the review of Patches 434-438, all in code that writes or reads evidence. (1) Patch 434 ends a run whose recording could not be restored with SV_TimerVoid, and SV_TimerVoid clears all four occupancy latches -- correct for its other callers, which are teleports, where walking back into the box you left must count as entering it. On the load path the body stands in the save's own start box, so the next tick's scan read an arm edge against a latch of -1, SV_TimerArm cleared the load's TF_PRACTICE|TF_SEGMENT, and the run that had just been cancelled came back as a CLEAN armed attempt at the velocity the save carried: Patch 428 round 3's hole, reopened through a void that did not exist when r3 was written. Measured at a START box by the new arm and, independently, at a STAGE box by p439smoke, whose S2 had the laundered reading written down as its prediction. (2) The same branch fired on any RUNNING restored state, and under `rec_enable 0` or `lobby_norec 1` the rewind fails on EVERY load -- so an honest run on a server that records nothing was cancelled for missing evidence it was never going to have. (3) `sl_replay <slot>`, Patch 438's harness handle, was dispatched from the ordinary client-command table with no gate; the event it fires is the one Rec_ViewLoaded acts on, and that truncates the live `.view` sidecar to the slot's remembered mark or replaces the buffer from the slot's file, so any client could drop its own angle evidence mid-run, repeatedly, without taking a save. (4) Patch 437 gave the board's line job the REPLAY's event table and finish tick to work in and had it ask Watch_WindowFind, whose job is to SET the replay's cut: opening a board line while watching a replay wiped that replay's splits and finish and re-cut it to the row's stage.
+
+**Change.** The void branch re-scans the latches from where the body now stands -- a scan and not the az/ez/cz the state file restored, because a demoted save's are all -1 -- and leaves run_t_armzone at -1, a cancelled run having no zone it armed in; a new `sl_voided` makes the Patch 435 arm gate stand down for that load, because there the state is non-RUNNING from a CANCELLATION and not from an idle save, and forcing the edge would hand the taint-clearing arm straight back. The void itself is gated on SV_RecEnabled() -- "is this server writing .rec files at all" -- and NOT on `wasrec`, which was the first cut and is wrong the other way: after one failed load the run is no longer recording, so a second load of the same row would have let a RUNNING attempt continue with no recorder behind it, and `sl_goto <n>` is itself a load, so the pair is one keypress apart (measured, then fixed). `sl_replay` needs sv_cheats, read through cvar() and not SV_CheatsOn(), which answers FALSE whenever run_cheatwatch is 0 and would refuse the arm the command exists for; every configuration where it still works is one where the run cannot rank (cheatwatch 1 taints it, cheatwatch 0 makes every run practice). The line job gets its own stage table and finish tick, and the single spelling Patch 437 wanted is now `Watch_StageSpan(seg, src)` answering in wt_ws_a/wt_ws_b -- a question that writes no window state, so the replay's cut belongs to the replay again.
+
+**Verified.** 0 new warnings. Three new arms against BOTH builds, the control built in a `git worktree` at FTESurf 3ab4195 and proved by hash, which the driver prints (qwprogs 830A76438E00EFA4 control, 3786B7D1D3341D4B fixed). rest: control `run cancelled` then `timer: armed  class: clean  practice 0  arm zone 0 (armed from 0)`; fixed `timer: idle  arm zone 0 (armed from -1)`, clock held at 0:05.000, stopped 1. fast: control walks out of the box into `timer: running  class: clean  practice 0  recording 1` at the save's 400 u/s -- a rankable run with a recording open for it, straight out of a failed rewind; fixed stays idle. norec: control cancels an honest run under `rec_enable 0`; fixed keeps it running (`practice 1  class: segmented`, the clock counting on from 0:05.000). p437win's new W6 reads the open replay's `end/window/cut/view/events` before and after a line job is built under it: control CHANGED (cut 0 -> 1, view -2.2862..304.3340 -> -1.0000..7.2450, i.e. a 304-second run re-cut to a 7.2-second stage under the viewer), fixed unchanged. p438view's new R1g: `sl_replay` with cheats off is refused in the server's own words and the reader is not reached, while R1 still reads 85-92 ms for 193162 lines. p434rew and p436pend re-run unchanged.
+
+**Known.** Not deployed: the fleet is on Patch 440's progs (measured on the Pi 2026-09-26, qwprogs 801d4d46bf516dd2, csprogs e456ec99c0a34570, both dated 2026-09-23 19:59), so this is the pre-deploy baseline. Every arm here runs a LISTEN server, where the recording is buffered and the cold path fails for want of a prefix on disk; on a lobby the recorder STREAMS and it is SV_RecSnapshot's buffer that fails -- same branch, same FALSE, different reason, and nothing in cfg/test drives a streamed run (BACKLOG.md carries it). W6's two files are copies of one recording, so a line job whose file has different `stage` ticks, or no `end` record, is not covered. Two predictions of mine were falsified on the way and are written up where they were made: 400 u/s does not coast out of a 196-unit box against ground friction, and a clock that was correctly NOT cancelled keeps counting. Three checks in the arms of 437/438/439 could never have failed and were fixed beside this (a round trip that compared a file with itself, a `QC error` string the engine never prints -- 0 hits across 1550 logs -- and a cleanup that removed any recent save in a shared tree rather than its own).
+
+**Rounds 2 and 3 (2026-09-26), and the first sentence of the Change paragraph above is superseded.** Two further review rounds -- five reviewers over three lenses -- found the void's gate wrong twice more, so the predicate shipped is `st == TS_RUNNING && (SV_RecEnabled() || hadrec)`. `SV_RecEnabled()` alone asks about the SERVER NOW, not this run: rec_enable is read at SV_RecOpen and nowhere per sample, so a live recorder survives `rec_enable 0`, SV_RecRewind then refuses on its own copy of that test, and the branch skipped the void while SV_RecDiscard threw the recording away (measured, `cfg/test/p441mid.cfg`: `timer: running` at 0:06.610 with `recorder: buffer -1`). A `mark > 0 || wasrec` cut was wrong both ways: `wasrec` is captured 122 lines BELOW the Patch 360 discard, which clears TF_RECORDING, so it answers FALSE for any run that has posted a stage; and `mark` is the SAVE's claim about a past state, which cancelled honest runs from an old save on a server with rec_enable 0 (the absence trap, back through the file's own words) while reading a failed prefix write as "nothing was lost". `hadrec` is the TF_RECORDING read taken ABOVE the discard. Also from those rounds: `sl_replay` no longer charges a second rate token or counts a second ack (the dispatcher does both for every `sl_` command), it taints the attempt in progress through SV_TimerPractice so its safety does not depend on two distant cvar blocks, and Rec_ViewBegin frees the buffer it was overwriting (one sidecar's worth of strings per failed load, which on a streaming lobby is every save-state load of a running save). Two ARMS were added because no existing arm could tell the clauses apart -- `p441twice.cfg` (the second load of one row, control = the fix compiled out) and `p441mid.cfg` -- and an audit of the set found a graded field being read out of a cfg's own `echo`, both sides' logs overwriting each other, and four RESULT blocks quoting a stale hash. Every arm now keeps `<log>.fixed` and `<log>.control`. Six arms, both sides, exit 0: qwprogs 63AF428049260231 against per-arm controls 830A76438E00EFA4 (pre-441), 3786B7D1D3341D4B (441 as first committed), 8B84B5CE71C058E8 (predicate cut to `hadrec`) and 725E18EF7AE4B60D (pre-442). What the rounds did NOT fix is in BACKLOG.md: run_t_startok is set by every load and retry, which turns the hopped-start rule off and leaves a retried run clean and rankable; the retry placement restores velocity through no gate at all; and the start-box gate still asks about speed rather than SUPPORT, so an airborne save under 1 u/s arms clean and collects the slab's height for free.
+
+**DEPLOYED 2026-09-26 (Patches 441 and 442 together).** FTESurf `a6bd548` via `build.ps1 -Jobs 8 -Pi`, nobody on any of the 12 lobbies (surfd's directory answered with a row for each and 0 players on all of them, which is the check `-Pi` refuses without): qwprogs sha256 3096b6f5468bee3a (969662 bytes), csprogs d7c5a6aef4f6f961 (4696410 bytes), both hash-verified on the Pi after upload and the previous pair kept as `.prev`. All 12 units restarted and reported by the script. NO ENGINE CHANGE -- both patches are mod-side, so `fteqw-svarm64` and the sweeper's binary are untouched and the `commit` pin did not move; the `patch` pin went 440 -> 442 with these two entries. The deployed qwprogs is the exact build every arm in this series ran against, which is why the arms' RESULT blocks name that hash. POST-DEPLOY VERIFICATION is a client connect, not a journal (`cfg/test/p441pi.cfg`, lobby 4 on 27540, bhop_eazy): `FTESurf CSQC loaded`, and `cmd sl_replay 900` answered **`save: sl_replay needs sv_cheats 1`** -- the fingerprint, because Patch 441 gates that command on sv_cheats and a lobby runs sv_cheats 0, so a 438..440 progs would have answered `save: replay event for slot 900` and a pre-438 one `Unknown command`: three builds, three answers, and only the first can come from the pair just deployed. Plus the fleet-intact handles (Patch 435's `velocity 0.0000 0.0000 0.0000  horizontal 0.0000` under the `setpos` line, Patch 437's `lines: 0 drawn, 0 segments last frame`, the viewer's `replay: nothing loaded`) and zero occurrences of `Unknown command`, of a QC stack-trace frame, or of `Bad rcon`. Patch 442 has no client-visible fingerprint -- SL_RowSpeed shows itself only through `sl_list`, which needs a saved row on that lobby -- and the cfg says so rather than implying one.
+
+## Patch 442 -- a save taken mid-jump in a start box is not a save at rest  *(APPLIED -- mod-side only, no engine change: FTESurf `src/server/sv_saveloc.qc` (SL_RowSpeed takes all three components; `sl_list`'s speed column with it). Arm `cfg/test/p442jump.cfg` + fixture `p442jump.txt`, driven by the Patch 435 gate's own driver, `tools/p435pre.py --arm jump`.)*
+
+**Problem.** Patch 435's gate arms a start-box load whose row carries no speed and keeps the load's taint on one that does. It asked SL_RowSpeed, which measured `vlen([v_x, v_y, 0])` -- HORIZONTAL only, and its comment reasons entirely about a grounded body (friction, sv_stopspeed), because friction is horizontal. A body mid-JUMP inside the box has vz +302 and nothing horizontal, so the row read as AT REST: the gate fired, SV_TimerArm cleared the load's TF_SEGMENT|TF_PRACTICE, and the load handed back a CLEAN attempt. On a map whose rule is `start on jump` -- bhop_eazy's, and every bhop map's -- the restored velocity lifting the body off the ground IS the start, so the run is clean, rankable and already RUNNING one frame after the load with no walking out to do. The start's hop dwell goes with it: SV_TimerJumpWatch needs a jumped EDGE, a restored velocity never produces one, so run_t_hopped stays clear and SV_TimerStart finds nothing to consume. Reachable wherever the placed origin is strictly inside the slab, which `tools/census/startdest.py` puts at 29 of 35 authored start regions. Found by the independent review of Patch 441, which put a guard on top of this gate without looking inside it.
+
+**Change.** SL_RowSpeed returns `vlen` of the whole vector. One caller, the gate. `sl_list`'s speed column goes with it -- a row carrying +302 printed `0 u/s  standing`, which is how the vertical half stayed invisible to anyone reading their own list. SL_ARM_SPEED stays 1: this is not a threshold change, and the measurement below is why 1 is still right.
+
+**Verified.** 0 new warnings. Both builds, the control a `git worktree` at the commit before this one, driver exit 0 each way (qwprogs 725E18EF7AE4B60D control, 78FCAB85E475B805 fixed). J (the fixture, ARMED, `velocity 0 0 302`, inside the lowered slab of `cfg/test/p435.zones.json`): control reads `timer: running  practice 0  class: clean` at all three reads; fixed reads `running  practice 1  class: segmented` -- the run still starts, it starts as the stitched attempt the load made it. R, the regression control and the point of the arm: a REAL save taken standing in the start box, its velocity written by the engine rather than by a fixture, reads `velocity 0.0000 0.0000 0.0000` and still arms `practice 0  class: clean` on BOTH builds. That zero is what makes a three-component test safe for the case the gate exists for. Two predictions were falsified and are written up in the cfg: J reads `running` rather than `armed` (start on jump), and `arm zone` does not discriminate at all, because the gate's -1 lasts one tick and the next scan writes the box back before `cmd timer` can be asked. Regression set on this build, all exit 0: p435pre `--arm pre` and `--arm mode`, p441void `--arm rest/fast/norec/mid`, p434rew, p436pend, p439smoke.
+
+**Known.** Not deployed. This is the narrow half of BACKLOG.md's prespeed entry: the gate can no longer be told a rising body is at rest, but a load carrying speed still hands that speed back (as a segmented run), and the entry's own answer -- zero the inherited speed at the placement under a tolerant box test, or a load-scoped mark SV_TimerArm refuses to launder -- is still open. `sl_list`'s `standing` column still comes from the duck flag, so a row taken airborne reads `standing` with a speed beside it. On the 6 regions where Patch 415's `%.4f` rounding puts the placed body below the slab, neither the defect nor this fix engages.
+
+## Patch 458 — the client and the server collided against different-sized props  *(APPLIED, engine + QC — `build.ps1 -Engine`)*
+
+Reported as "some props let you walk into them like they have no collision but the client
+side is still trying to push you out". Patch 229 fixed one shape of that (the server had no
+prop in its own pmove list at all); this is a second, narrower one that survived it, and the
+disagreement is about SIZE rather than presence.
+
+### Root cause — one number, four readers, three precisions
+
+`.scale` is a plain QuakeC float and **nothing clamps it on write**. `PF_setmodel` does not,
+there is no write barrier in `pr_cmds.c`, and the SSQC documentation's claim that the field is
+"limited to 1/16th precision" (`sv_defs.qc:401`) describes the WIRE, not the field. So:
+
+| reader | expression | `modelscale 1.4` |
+|---|---|---|
+| wire → client pmove | `bound(1, scale*16, 255)` as a **qbyte** (`sv_ents.c:3953`, `protocol.h:1434`), `/16` on arrival (`cl_ents.c:7791`) | **1.3750** |
+| renderer | the same byte (`cl_ents.c:6122`) | **1.3750** |
+| server pmove | `bound(1, scale*16, 255)/16.0`, **no truncation** (`sv_user.c:7747`) | **1.4000** |
+| `World_Move` | the raw float (`world.c:1405`, `:1420`, `:1428`) | 1.4000 |
+
+`AddEntityToPmove`'s own comment says it deliberately uses "the value the CLIENT DECODES" — it
+took the right expression and omitted the integer truncation that *makes* it that value. Since
+the renderer uses the wire byte too, the client's prediction agreed with what was DRAWN and the
+authoritative collision stuck out past the model: a player is stopped a unit or two short of a
+surface they can see, and released when the server's reconcile lands.
+
+**Measured population** (`FTESurf tools/census/propsolid.py`, 1316 maps): 34,058 props carry a
+`modelscale`; 4,026 have one whose ×16 is not whole; **1,970 of those are solid** and the other
+2,056 cannot be felt. 97 maps. Worst: surf_spacemonkeys 174, surf_angelinaaa 131,
+surf_diet_mountain_dew 130, surf_sinner_ksf 112, surf_angelina 101. The commonest offenders are
+the ordinary decimals a mapper types — 1.4, 1.2, 1.8, 1.3, 0.8 — plus 790 props above
+`SV_SpawnProp`'s 15.9 clamp, whose ×16 is 254.4. Deltas 0.0125–0.05 in scale.
+
+### Fix — quantise at the source, and make the engine self-consistent
+
+**QC (`src/server/sv_entities.qc`, `SV_SpawnProp`):** `sc = floor(sc*16)` then `max(1, …)/16`
+before `self.scale = sc`. A multiple of 1/16 is exact in float32, so once the field is on that
+grid **all four readers compute the same number** and nothing is left to round — including
+`World_Move` and `SV_PhysentDigest`, neither of which any engine-side cast could reach. `floor`
+rather than `rint` because the wire truncates; `max(1, …)` mirrors its `bound(1, …)` floor,
+because 26 props in the library write a scale below 1/16 and a plain `floor` sends those to 0,
+which both `sv_ents.c:3950` and `sv_user.c:7744` read as `!scale` and substitute **1** — a 100×
+prop instead of a small one.
+
+**Engine (`server/sv_user.c`):** `pe->scale = (float)(int)bound(1, scale*16, 255) / 16.0`. A
+no-op under the QC above, and idempotent, but it is the actual engine defect and it makes pmove
+parity hold for a mod that does not quantise.
+
+**Engine (`server/sv_ccmds.c`) — the evidence half, and it is not optional.**
+`SV_PhysentDigest` hashes `pe->scale` (`sv_user.c:292-318`), so on those 97 maps a run recorded
+before this change rebuilds to a different digest on a build that has it. Nothing is wrong with
+either the file or the replay: the geometry definition moved underneath them. Left alone that
+reads out as `VERIFY … HOLD physents: N row(s) differ` on **honest runs**, which is this
+codebase's oldest trap — a check that cannot measure returning the maximum-severity answer.
+So the recorder writes a new additive header key `proprule 1` (FTESurf `sv_timer.qc`, and the
+`.rec` grammar block documents it), and `pm_recsim` parses it into `filepropr`, still compares
+every row, and **downgrades** a mismatch on a pre-rule file to a counted `pe_nc` — printed as
+"N not comparable (file is proprule 0, this build builds prop geometry to rule 1)" and never
+folded into `why`. The third verdict, not a better threshold.
+
+### Verified — and the mutation names which grade does the work
+
+`cfg/test/p458prop.cfg` + `tools/p458prop.py`, six maps, three grades:
+
+- **P1 the count.** The spawn's own `props: N spawned (…), M requantised` against the grader's
+  independent read of the same question out of the BSP entity lump. 257/225, 232/109, 176/28,
+  273/46 — exact on all four. **Two controls**: `ahop_coast` has 284 props and none needing the
+  floor, `bhop_eazy` has none at all, and both must print **no clause**; they do. A counter that
+  always fires proves nothing, so the silent maps are the arm.
+- **P2 the arithmetic.** Every `propscale <raw> -> <scale>` line must satisfy
+  `scale == floor(raw*16)/16`. 408 lines checked, 0 wrong.
+- **P3 coverage.** Lines must equal the reported count, per map, so a floor that ran on one prop
+  and skipped 224 cannot pass P2 on its single line.
+
+**Mutation, pre-registered in the cfg:** deleting the floor outright takes P1 down with P2,
+because the counter tests `raw != sc` and a deleted floor makes that always false — that proves
+the pair fires together, not that P2 measures arithmetic. The isolating mutation is
+`floor(sc*16 + 0.5)`: population unchanged, so **P1 PASS, P3 PASS, P2 FAIL** on exactly the
+scales whose sixteenth-fraction is ≥ 0.5 — 56/28/9/17 wrong across the four maps, first
+`1.3 -> 1.3125 want 1.25`. Observed exactly as predicted. Reverting rebuilt `qwprogs.dat` to
+`6F69C0ABA58E7AF946E20224EAF4DC88`, byte-identical to the pre-mutation build, so the green run
+and the graded build are provably the same bytes.
+
+**A defect in the arm, found by its own numbers and worth recording.** The first cut graded
+`surf_dune` as 176 props against an expected 344 and called the server wrong. The server was
+right: `tools/census/*` read the Momentum install and the game loads `ftesurf/maps`, and for
+that map those are **different builds**. This repo's own `mapcrc` note says it — a map name is
+not a map. The grader now prefers the gamedir copy and **prints which source it used**, so the
+next occurrence names its own cause.
+
+**Not deployed.** `build.ps1 -Pi` restarts all 12 lobbies, and this moves collision geometry on
+97 maps, so it is the operator's call. 0 new warnings, both engine targets.
+
+## Patch 460 — a plugin's cvar flags were masked down to CVAR_ARCHIVE, so prop collision could be switched off client-side  *(APPLIED, engine + plugin + QC — `build.ps1 -Engine`)*
+
+"Maps must have prop collision for this surf game to work. Please ensure its defaulted to
+on, and can't be turned off client side" — unless `sv_cheats` is on, "then it's fine".
+
+That is `CVAR_CHEAT` exactly (`cvar.h:126`, "latch to the default, unless cheats are
+enabled"), enforced at `cvar.c:1159-1166` by force-setting the cvar to
+`var->enginevalue` on connect. Marking the three collision cvars with it was the whole
+intended change. It did nothing, and finding out why is the patch.
+
+### Root cause — `flags&1`
+
+```c
+return Cvar_Get2(name, defaultvalue, flags&1, description, groupname);
+```
+
+`Plug_Cvar_GetNVFDG` (`common/plugin.c:479`) masked a plugin's cvar flags to bit 0, and
+`CVAR_ARCHIVE` is `(1<<0)`. **Every other flag any plugin has ever declared was silently
+discarded.** In the hl2 plugin alone: `CVAR_SHADERSYSTEM` 25 times, `CVAR_MAPLATCH` 14,
+`CVAR_NOSAVE` 6, `CVAR_CHEAT` 4, `CVAR_RENDERERLATCH` once.
+
+Not a latent defect — a load-bearing one that has been reasoned about in comments.
+`mod_hl2.c:1480` argues at length about `hl2_propcollision` being MAPLATCH ("the
+registration in mod_vbsp.c has always been MAPLATCH"), and the registration does say so,
+and this line dropped it. `cl_gfx.qc`'s whole `*` "needs a reload" convention is the mod
+compensating on its own side for latches that were never applied, without knowing that was
+why.
+
+### Fix — the restrictive flags only, and the rest recorded rather than smuggled
+
+`#define PLUG_CVAR_FLAGS (CVAR_ARCHIVE|CVAR_CHEAT|CVAR_SEMICHEAT)`.
+
+`CVAR_CHEAT` and `CVAR_SEMICHEAT` can only ever **refuse** a change, so honouring them
+cannot alter what any existing cvar reads or when. Honouring `MAPLATCH` and
+`SHADERSYSTEM` in the same patch would change the read-back behaviour of 39 cvars: a
+MAPLATCH set stops updating the value until a reload, so every menu row over one would
+redraw the number the user did not choose — precisely the confusion `Gfx_Inert` exists to
+prevent. That half is in BACKLOG.md. Still excluded on purpose: `CVAR_NOTFROMSERVER` and
+`CVAR_NOUNSAFEEXPAND` are security flags, `CVAR_SERVERINFO` publishes to every client, and
+`SERVEROVERRIDE`/`CONFIGDEFAULT`/`USERCREATED` are the engine's bookkeeping.
+
+**Plugin (`mod_vbsp.c`):** `hl2_propcollision`, `hl2_propcollision_nophy` and
+`hl2_dispcollision` move from `CVAR_MAPLATCH` to `CVAR_CHEAT` (only one latch flag is
+allowed, `CVAR_LATCHMASK`), and their help text says so. Their registration defaults are
+already **1, 0, 1** — collision on and `.phy`-or-nothing — which is the only reason the
+flag is usable here: **a `set` in default.cfg does not become a cvar's default**
+(`CVAR_CONFIGDEFAULT` is defined and nothing ever assigns it), so a cheat cvar snaps to
+what the C registered, not to what the config says. That also rules the flag out for
+`sv_prop_collision`, whose compiled default is 2 while FTESurf wants 1 — left in BACKLOG.
+
+**Mod (`cl_gfx.qc`):** the two collision rows stay at 19 and 20 and report
+`needs sv_cheats` through `Gfx_Inert`. They are NOT deleted: the block above row 27 states
+that these rows are addressed BY NUMBER (`gfx_menu cycle N`, and `ui_gfx_page` remembers a
+position across builds), so removing two would move every row below them under someone's
+cursor. Saying so on the row is also the honest answer — otherwise it accepts a keypress,
+redraws the value the engine snapped back, and reads as broken. The inert test uses
+serverinfo `*cheats`, the engine's own published signal (the same key `cl_main.c:3246`
+reads), plus the local `sv_cheats` because a listen server allows cheats from its own cvar.
+
+`default.cfg` and `defaultuser.cfg` pin all three, as stated intent rather than as the
+enforcement.
+
+### Verified — the pre-fix engine is the control, and the readback is a trap
+
+`cfg/test/p460lock.cfg` + `tools/p460lock.py`, six grades, all green.
+
+**The discriminating power is measured, not argued.** The first run of this arm was against
+the `flags&1` engine and every set LANDED — no latch message, no `Effective value` line,
+`hl2_propcollision` reading 0, 2 and 3 as asked — with L5 and L6 green. L1-L4 red before,
+all six green after. That failure is what found the mask.
+
+| | |
+|---|---|
+| L1/L2 | `hl2_propcollision` 0, 2, 3 all refused, effective **1** |
+| L3 | `hl2_dispcollision` 0 refused, effective **1** |
+| L4 | `hl2_propcollision_nophy` 1 refused, effective **0** |
+| L5 | with `sv_cheats 1` the same set **lands** — a latch, not a constant |
+| L6 | **CONTROL** `hl2_propdist`, same family and menu page, not a cheat cvar, still sets |
+
+L6 is not decoration: without it an engine that froze every plugin cvar passes L1-L4.
+
+**`maxclients 4` is load-bearing in the cfg.** `cl_main.c:3253` allows cheats
+unconditionally on a listen server with one slot, so at the default slot count the arm
+measures nothing. That is also the honest caveat: **the lock does not engage for someone
+hosting solo**, and does not need to. A lobby runs 32.
+
+**A latched cheat cvar still prints the value you asked for.** `"hl2_propcollision" is "0"`
+followed by `Effective value is "1"` — the first line is the request, the second is the
+answer. The grader keys on the second, because keying on the first would pass a build where
+collision can be switched off. Recorded because it is the same trap as every other entry in
+this series: the number that looks like the result is not the result.
+
+**Not deployed.**
+
+## Patch 461 — a `solid 2` prop is traced against its `.phy`, because the wire cannot carry the box Source asks for  *(APPLIED — mod-side only, no engine change: FTESurf `src/server/sv_entities.qc` (SV_SpawnProp's SRCSOLID_BBOX promotion, `vbsp_prop_bboxphy_n`, and the re-cut fallback with `vbsp_prop_bbox_n`). Arm `cfg/test/p461box.cfg`, driver `tools/p461box.py`.)*
+
+The last of the four client/server prop disagreements, and the only one whose first fix
+was measured to be worse than the defect.
+
+### Root cause — the encoding truncates AND symmetrises
+
+A `SOLID_BBOX` entity's bounds reach the client through `COM_EncodeSize` /
+`COM_DecodeSize` (`common/common.c:1340-1385`):
+
+```c
+maxs[0] = maxs[1] = solid & 255;   mins[0] = mins[1] = -maxs[0];
+```
+
+Each extent is truncated to a whole unit, and **the box is forced symmetric in x and y**
+from `-mins[0]` alone. The server's own pmove uses the raw `mins`/`maxs` (the final `else`
+in `AddEntityToPmove`). So a prop wider in y than in x arrived at the client as a narrow
+column while the server kept the wide box — walk into its side, get pushed out.
+
+### The first fix was wrong, and the arm is what said so
+
+Re-cutting the entity's box to one the encoding reproduces exactly (integer extents,
+symmetric, rounded outward so it contains the studio box) agreed perfectly and was
+unusable. Measured on the only map that matters: **all 144 of surf_lax's solid-2 props are
+one model**, `models/props/de_inferno/railingspikedgate.mdl`, whose bounds are **9.65 wide
+in x and 138.6 long in y**. Symmetrising to the larger extent makes each railing a
+**142 × 142 block — a 14.7× inflation, 144 times**, which would wreck the map. Symmetrising
+to the smaller turns a 138-unit fence into an 8-unit post and lets players through it.
+
+Neither is a rounding question. **An asymmetric box has no faithful symmetric form**, so
+the choice was between two wrong shapes until the model was asked what it actually has.
+
+### The fix — promote to the hull, which the wire carries exactly
+
+`railingspikedgate.phy` exists: 3409 bytes in `cstrike_pak_dir.vpk`. So a solid-2 prop whose
+model ships a `.phy` becomes `SOLID_PHYSICS_TRIMESH`, which crosses as `ES_SOLID_BSP` **with
+no bounds at all** — both sides load the same model and run the same narrowphase, and there
+is nothing left to quantise.
+
+**A deliberate deviation from Source, stated rather than hidden:** Source would collide this
+prop against its studio AABB and this collides it against its VPhysics hull. That is a
+smaller and more accurate shape than the box, it is the same data Source uses for every
+solid-6 prop on the map, and it is the only option that keeps the two sides in agreement —
+which was the defect. The box is precisely the thing that cannot be transmitted.
+
+### Verified — and the second run emptied the fallback
+
+`cfg/test/p461box.cfg` + `tools/p461box.py`. Counts graded against the driver's own read of
+the BSP entity lump:
+
+| | |
+|---|---|
+| surf_lax | **144 of 144** solid-2 props promoted, 0 re-cut |
+| bhop_collective | **1 of 1** |
+| surf_mate | **1 of 1** |
+| ahop_coast | **CONTROL** — 284 props, no solid-2, both clauses silent |
+
+144 + 1 + 1 = **146, the entire library's solid-2 population**, and all 146 promote. So the
+re-cut fallback **has never run on a shipped map**, and the driver reports it as
+NOT DEMONSTRATED rather than as passing — an arm whose condition never occurred proves
+nothing. It stays in the code because Source builds a solid-2 box from studio bounds with no
+`.phy` involved, so a future model without one is still legitimately a box, and an inflated
+box both sides agree on beats a box they disagree about. The grade it would face is written
+down: integer extents, symmetric in x/y, containing the old box.
+
+### What the four patches add up to
+
+458 scale, 459 `.phy`-or-nothing, 460 the cvar lock, 461 the box. Every path by which a
+client's prop collision could differ from the server's is now either identical by
+construction or cheat-locked. Re-run after all four: p458prop 16/16, p458phy 195/195,
+p460lock 6/6, p461box 4 maps + 1 declared-unexercised.
+
+**Not deployed.** These move collision geometry on ~100 maps; `-Pi` restarts all 12 lobbies.
+
+## Patch 463 -- the zone pin compared the SOURCE DIRECTORY, so editing a zone file refused every recording of that map
+
+*(APPLIED -- `engine/server/sv_ccmds.c`: new `SV_VerifyZoneCmp` above `SV_RecSim_Run`, and the call site in the pm_verify refusal chain. No QC change. Arm `ftesurf/cfg/test/p463pin.cfg`, driver `tools/p463pin.py`.)*
+
+### The defect
+
+`pm_verify` built its zone pin as a string and compared the whole thing:
+
+```c
+Q_snprintfz(zbuf, sizeof(zbuf), "%s %s %s", hdrzsrc, hdrzcrc, hdrzrule);
+...
+else if (strcmp(zbuf, zhere))
+        refuse = "a different zone table or rule";
+```
+
+`hdrzsrc` is the `.rec` header's `zonesrc` -- which of `local`/`online`/`bsp` served the
+table. The zone loader tries `maps/zones/local/<map>.json` first precisely so that a copy
+there overrides Momentum's shipped file (`sv_zones.qc:177-181`, and `cl_zones.qc:293-295`
+says it is "the whole point of the directory"). So the one supported way to edit a zone
+changed the pin, and every existing recording of that map was refused -- at maximum
+severity, with a message accusing the table.
+
+Measured on a pre-463 build with a **byte-identical** copy installed at
+`maps/zones/local/bhop_eazy.json`:
+
+```
+zone pin  file "online c50cfd70 1 1 0"  here "local c50cfd70 1 1 0"
+VERIFY data/b88fin.rec REFUSE a different zone table or rule
+```
+
+Same crc, same rule, one word different -- and **all five** of `p349verify.cfg`'s subjects
+refused, not just the subject. On the fleet that is every recording for any map whose zone
+file had ever been touched.
+
+### Why the source does not belong in a pin
+
+- **`zonecrc` already is the table.** `Zone_Hash` (`sh_zones.qc:264`) hashes, per zone, the
+  type, track, seg, cp, z-band and every point at `%.3f` -- exactly what `SV_ZoneScan`
+  reads. A directory cannot change a crossing, so for the property the pin exists to test
+  the crc is necessary and sufficient and the path is neither.
+- **QC's own resume gate has shipped pinning it this way.** `sv_resume.qc:106-108` writes
+  `zonecrc` and `zonerule` and no source; `SV_MsStale` (`:215-232`) answers "the zones
+  changed" and "the zone rules changed" separately, and guards both with `!= ""` so absence
+  is not a fault. This makes `pm_verify` agree with a gate that was already correct.
+- **The field is attacker-supplied.** `hdrzsrc` is read out of the header, which is whatever
+  wrote the file. Anyone able to doctor a zone table can equally type `online`. It never
+  detected a forgery; it detected an honest admin moving a file.
+
+### The trap this patch was written around
+
+The pin is built in **two repos with two build steps**:
+
+| | |
+|---|---|
+| engine | `sv_ccmds.c` -- from the header keys `hdrzsrc` / `hdrzcrc` / `hdrzrule` |
+| QC | `sv_timer.qc:12686` `SV_VerifyZonePin` -> `"<src> <crc> <swept> <hull> <live>"` |
+
+`hdrzrule` holds the last three, so both sides are five tokens. **Dropping the field on one
+side only compares four against five, `strcmp` never matches, and every file refuses** --
+strictly worse than the bug, and it presents as "the patch did nothing". Found by
+ftesurf-a1, reading both sites, before this was written.
+
+So the **wire format is unchanged** and only the comparison moved. `SV_VerifyZoneCmp` parses
+the QC pin and accepts five fields (with source) or four (without), which means the two
+repos can never be out of step whichever ships first, and a newer engine works against
+today's QC with no coordination at all.
+
+### Also fixed while in there
+
+- **The verdict is split.** A crc mismatch is "a different zone table"; a rule mismatch is
+  "the same zones under different zone rules". Different causes, different remedies, and the
+  code already printed both strings -- only the verdict merged them. `SV_MsStale`'s pair is
+  the shape.
+- **The rule triple is compared as integers**, so neither side's spacing can manufacture a
+  mismatch.
+- **"Cannot compare" is no longer an accusation.** Both sides empty is accepted (a map with
+  no zones cannot be timed, so it is unreachable from a real recording, but the old code's
+  `strcmp("  ", "")` would have refused it); an unparsable pin says so; a table on one side
+  only says that.
+- The refusal line still prints `zonesrc`, because an operator chasing one wants to know
+  which directory served the table. It is stated and not compared.
+
+### Deliberately NOT done
+
+**The crc is not widened.** It is 8 hex -- 32 bits, `substring(digest_hex("SHA256",...),0,8)`.
+Accidental collision is a non-issue at ~600 tables; adversarially it is grindable, but the
+source string was never protecting that either, so removing it does not move the adversarial
+position and widening is a separate decision. Widening would change every existing pin and
+refuse every recording -- this bug again -- so it needs the additive shape Patch 458's
+`proprule` uses: a rule key in the header, older files compared at the old width and reported
+"not comparable" rather than refused.
+
+### Verified
+
+`ftesurf/cfg/test/p463pin.cfg` + `tools/p463pin.py`, which runs the game twice -- with and
+without a byte-identical mirror -- because a patch that merely stopped checking zones would
+pass the first run and fail the second.
+
+| | |
+|---|---|
+| P1 | source is `maps/zones/online` then `maps/zones/local`, **crc `c50cfd70` both ways** |
+| P2 | `data/b88fin.rec` PASS ticks 662 rows 634 in **both** runs |
+| P3 | `data/p349_zcrc.rec` REFUSE "a different zone table" in both -- and not "or rule" |
+| P4 | the diagnostic names crc and rule as separate fields |
+
+`p349verify.cfg` re-run whole: every one of its 2026-09-18 pre-registered outcomes
+reproduces (subject PASS 662/634; N1 HOLD ticks; N2 REFUSE table; N3 HOLD no finish; N4 HOLD
+state at row 200; the three out-of-scope files REFUSE).
+
+**Control build**, from reverting only `sv_ccmds.c` -- the sole uncommitted engine change, so
+458/460/461 stay in -- quoted above. Note the exe hash changes on *every* rebuild whatever
+the source, because the binary embeds `SVNREVISION` and a stash dirties the tree; the control
+was therefore confirmed by behaviour, not by hash.
+
+**Not deployed.** This is the verifier, so it needs the independent review AGENTS.md requires
+before it reaches the fleet, and the lobbies run the old comparison until then.
+
+### Round 2 -- three reviewers, nine defects, and one of them was a fail-open I added
+
+Reviewed under three lenses and none given the author's reasoning. The control-flow
+reviewer compiled `SV_VerifyZoneCmp` standalone against the engine's own `Q_strncpyz` and
+warning flags and ran ~45 inputs with a canary; the other two read the corpus and the
+attack surface. Bounds, `shown`-always-written and `zwhy`-always-assigned all came back
+clean and measured, as did 0 compiler warnings. What did not:
+
+**THE ONE THAT MATTERS: the both-empty branch accepted where the old code refused.** Two
+reviewers found it independently. The first cut reasoned that "cannot compare must not be
+an accusation" and cited `SV_MsStale`. Both halves were wrong:
+
+- **REFUSE is already the third verdict here**, said four lines from the call site --
+  `sv_ccmds.c:5329`, *"REFUSE is 'cannot say', never a judgement on the run"* -- and
+  `sweep.py` repeats it. Patch 421's rule was satisfied by refusing all along.
+- **The precedent does not transfer.** `SV_MsStale` tolerates an empty side because zones
+  load after `PutClientInServer` and `SV_MsApply` *asks again* (`sv_resume.qc:221-232`).
+  `pm_verify` runs after the map is fully loaded and cannot ask again.
+
+And it was reachable and inverted. `Zone_Hash` leaves `zone_crc` empty when `buf_create()`
+fails (`sh_zones.qc:277-279`) **with a working table**; in that state an honest recording --
+which carries a pin, because its recorder hashed fine -- refused, while a crafted one that
+simply omits the three lines was accepted. Exactly the wrong way round. Now both sides
+refuse: `this server cannot state its own zone pin` and `the file states no zone table`.
+
+**The mirror image of the original bug, found by the adversarial lens.** At six fields the
+pin returned "unreadable", so the day QC adds a fourth rule term -- which this note itself
+calls the next move -- **every file would refuse on every map**. The crc is now read four
+from the END, so the source-present and source-absent forms both parse with no coordination
+between the repos. A *wider* pin still refuses, deliberately: `n - 4` would silently read
+the wrong token, and refusing loudly beats mis-indexing quietly. Widening the rule needs
+`proprule`'s additive shape and the code says so instead of pretending.
+
+**The rest, each with the input that triggers it:**
+
+| | |
+|---|---|
+| truncation could masquerade as a real difference | `Q_strncpyz` cuts `zhere` silently; a cut landing on a field boundary turned 5 fields into 4, read the SOURCE TAG as the crc and refused "a different zone table". Now checked in the caller, where the buffer size is known |
+| `atoi` answered 0 for garbage | `"x y z"` and `"0 0 0"` were the same pin. `strtol` with an endptr test |
+| `sscanf` swallowed a fourth rule term | the file side accepted `1 1 0 9` while the pin side refused it -- the two readers disagreeing in opposite directions. `%1s` sentinel |
+| only `' '` separated tokens | a stray `
+` gave 4 fields and "a different zone table" -- a wrong verdict, not an unreadable one |
+| the field count printed was capped at 8 | 20 fields reported as `8 field(s)`; now `8+` |
+| `zbuf` was uninitialised | correct only by an undocumented every-path contract in the callee |
+| **a PASS said nothing about zones** | indistinguishable from a PASS that skipped the check -- which is exactly how the fail-open above would have read in a log. `proprule` prints on its success path; this now does too |
+
+**Out of scope, logged in BACKLOG rather than ridden in on this patch:** `pm_verify` takes
+`pr_globals` *before* `PR_ExecuteProgram` and reads `G_INT(OFS_RETURN)` through it
+(`:5423-5428`) while the sibling branch re-fetches it four lines later -- one of the two is
+wrong, and it dates to Patch 349. Also `surfd/sweep.py:236-238` marks any non-ERROR verdict
+`checked = 1`, so **deploying this repairs nothing retroactively**: every run already
+refused for this reason stays refused until somebody clicks `recheck`, one at a time.
+
+### Round 2 verification
+
+The arm exercised 2 of 6 returns, which the evidence reviewer flagged. It now derives six
+one-edit fixtures from `b88fin.rec` -- bytes in, bytes out, because the header is LF and the
+tail is binary -- and grades all of them:
+
+| | |
+|---|---|
+| `p463_nosrc` (zonesrc line deleted) | **PASS** 662/634 -- the patch's core claim, tested directly |
+| `p463_rule` (`zonerule 1 1 1`) | REFUSE *the same zones under different zone rules* |
+| `p463_nocrc` / `p463_norule` (line deleted) | REFUSE *the file states no zone table* -- the fail-open, closed |
+| `p463_rule4` (`1 1 0 1`) / `p463_rulejunk` (`1 1 x`) | REFUSE *an unreadable zonerule* |
+
+15 grades pass; P7 reports the three live-side branches as NOT DEMONSTRATED, because
+reaching them needs a doctored `SV_VerifyZonePin` rather than a header edit, and an
+untested branch nobody has written down reads exactly like a tested one. `p349verify`
+re-run whole: all eight pre-registered outcomes reproduce, with a `zone pin matched:` line
+now ahead of each.
+
+`tools/p463pin.py`'s P3 also stopped matching loosely: `"zone table" in reason` also matched
+*"a zone table on one side only"*, so a real difference degrading into a cannot-compare
+would have stayed green.
+
+### Round 4 -- the fix's own fix, and one defect that was platform-specific
+
+Two more reviewers on the round-2 code. Neither found a way for a crafted `.rec` to PASS;
+both found the same root defect from opposite ends.
+
+**Two parsers, two overflow behaviours, disagreeing on identical text.** The live side used
+`strtol` with the range test `v < -2147483647L - 1 || v > 2147483647L`, which is
+**tautologically false where `long` is 32 bits** -- this Windows build, and any 32-bit Linux
+one -- because strtol's ERANGE clamp lands exactly on the boundary the test cannot see.
+Measured: `2147483648` accepted as `2147483647` here, rejected on a 64-bit-`long` build. *The
+same recording got a different verdict per platform*, in a tool whose product is a
+reproducible verdict. And the C89-safe spelling of that constant is also the one that
+suppresses `-Wtype-limits`, so nothing warned, even at `-Wextra`.
+
+Meanwhile the file side used `sscanf("%d")`, which is undefined behaviour on overflow and in
+practice truncates. Measured end to end: **`zonerule 4294967297 1 0` compared EQUAL to a live
+`1 1 0`** -- and the evidence line then printed `rule file 1 1 0`, so a PASS misreported the
+file's own bytes, and `tools/reccheck.py`'s `isdigit()` test passed it too. One input,
+both independent readers fooled, in the same direction.
+
+Both are gone: one hand-rolled parser over the engine's own `qint64_t`, used for every field
+on both sides. No new header, no saturation to detect, and `'+'` is rejected deliberately so
+`reccheck.py` and `pm_verify` agree about what a rule looks like.
+
+**One splitter for all three fields**, which is the shape round 2 should have had. It had
+normalised only the live pin -- `fcrc` went through a raw `strcmp` and `frule` through
+`sscanf` -- three parsing styles over one record, and two findings were exactly that:
+
+- a header line `zonecrc c50cfd70 ` with **one trailing space** refused a BYTE-IDENTICAL
+  table as "a different zone table". This patch's own bug class, one field over.
+- `\v` and `\f` were not separators while `%d` skips them, so a live pin containing one
+  tokenized short and the **source tag was compared as the crc**.
+
+**Also fixed:** a missing `zonerule` said "the file states no zone table" -- a file that
+states a table and omits the rule does state a table, and round 1 got that right by accident
+before round 2 lost it. The "too long" diagnostic printed `strlen` *after* the truncating
+copy, so it reported `127 bytes` for a pin of 127, 128 or 4000 -- a number describing this
+code, not its input. The length test was one too strict (`>= sizeof - 1` refuses a 127-byte
+pin that fits exactly). The field count printed "8+" for exactly eight. An `if (verify)` sat
+inside a block already guarded by `if (verify)`.
+
+**A correction to round 2's own commit message, which overclaimed.** It presented `i = n - 4`
+as closing the "a fourth rule term refuses every file" hazard. Measured: on the domain this
+accepts, `{4,5}`, it is the same function round 1's if/else was, and a six-field pin still
+refuses. What it buys is that a build dropping the source needs no coordination with this
+one. The hazard is **documented, not fixed**, and the code now says so where the commit did
+not. Widening the rule still needs `proprule`'s additive shape.
+
+### Round 4, mod side: a zone file that loads nothing must not cost you the map
+
+`Zone_LoadJson` (`sh_zones.qc`) returned TRUE unconditionally, *after* `Zone_Clear()`. So
+valid JSON that adds no zones -- a `tracks` key deleted or misspelled, which is what a
+hand-edit gets wrong -- wiped the table, reported success, and `SV_ZoneLoad` therefore did
+**not** fall back to `online/` or to the BSP. The map goes silently untimeable, and under
+this patch every recording of it refuses because the server cannot state a pin.
+
+That is a trap aimed precisely at `maps/zones/local/`, the directory this work exists to open
+up on 543 maps. It now returns FALSE when nothing loaded and says so; falling through is safe
+because `Zone_Clear()` has already run. Verified: a `{"formatVersion":1}` file installed for
+`bhop_eazy` prints *"loaded no zones -- ignoring it and trying the next source"*, `online/`
+loads its 7 zones at crc `c50cfd70`, and `b88fin.rec` still PASSes 662/634.
+
+(The reviewer reached this through `ok` being computed and discarded. `ok` is dead for a
+different reason -- `Zone_AddRegion` has no FALSE path at all, since a degenerate region and
+a cap hit both return TRUE and keep loading -- so it is returned rather than deleted, to stop
+a real failure being discarded a third time.)
+
+### Round 4 verification
+
+`p463pin` grew three cases, each a regression test for a round-3 finding:
+
+| | |
+|---|---|
+| `p463_rulebig` `zonerule 4294967297 1 0` | REFUSE *an unreadable zonerule* -- **round 2 ACCEPTED this** |
+| `p463_crcpad` `zonecrc c50cfd70 ` | **PASS** -- round 2 refused a byte-identical table |
+| `p463_ruleplus` `zonerule +1 1 0` | REFUSE, agreeing with `reccheck.py` |
+
+18 grades pass. `p463_norule`'s expectation changed with the fix, and the arm caught that
+itself rather than being told. `tools/reccheck.py` stops faulting a pin whose only missing
+field is `zonesrc` -- it notes it instead, because the grammar block now calls that field
+informational and `pm_verify` deliberately accepts it; the two readers were otherwise in
+disagreement on the very fixture this arm calls its core claim. `test_reccheck.py`: 295
+checks, 0 failed.
+
+## Patches 458, 460 and 463 deployed to the 12 lobbies, 2026-09-28
+
+Lex: *"Do whatever you need, don't be scared to restart lobbies... We're in development."*
+
+**The engine binary on the fleet was older than every one of these.** The newest swap
+backup was `fteqw-svarm64.pre427-20260922`, so 458, 460 and 463 had never been on a lobby.
+461 is mod-side and rode the progs.
+
+### What went out
+
+| | |
+|---|---|
+| `engine/server/sv_user.c` | 458 -- the pmove scale quantised, so client and server collide against the same prop |
+| `engine/common/plugin.c` | 460 -- plugin cvar flags stop being masked to `CVAR_ARCHIVE` |
+| `engine/server/sv_ccmds.c` | 463 -- the zone pin stops comparing the source directory |
+| `plugins/hl2/mod_vbsp.c` | 460 -- the three hl2 collision cvars become `CVAR_CHEAT` |
+| `qwprogs.dat` / `csprogs.dat` | the prop work, the zone loader's no-zones fallback |
+| 66 zone files | maps that could not be timed at all now can |
+
+### The Pi tree was at exactly the pre-458 baseline, and that was checked rather than assumed
+
+`/srv/nvme/p349build` is hand-maintained and not a git checkout, so AGENTS.md says to
+`git hash-object` before assuming anything is current. All four files hashed to
+`65d937ba6^` exactly, so sending HEAD's versions gave precisely 458 + 460 + 463 with no
+unrelated patch riding along. After the transfer all four hashed to HEAD.
+
+### The gate
+
+`pm_dettest` on `bhop_eazy`, arm64 against Windows -- **every hash identical**, including
+`libm`:
+
+```
+mapcrc 676de275   libm 5e749b8a83b44107   trace f7958b04dbcd1008
+mover 3d136f8de25c9c2c   tick 93e8615d81c26325  ticks 2048/2048
+```
+
+Then `pm_verify` on a real 15232-tick recording from the Pi's own `data/runs`:
+`PASS ticks 15232 rows 15232`, `physents: 15232 rows match the recorded digest, 0 do not`,
+and Patch 463's new line reading `zone pin matched: crc file "01800a51" here "01800a51"
+rule file 1 1 0 here 1 1 0`. That is the patch working on live evidence rather than on a
+fixture.
+
+**Three things the gate caught that a swap-and-hope would not have:**
+
+- A dedicated server needs `+map` on the command line; a `map` line inside the cfg is too
+  late and it dies with *"Couldn't load a map"*. AGENTS.md says so and the first run proved
+  it.
+- `make plugins-rel` builds every plugin, and ffmpeg (no `libswscale`) and quake3/xmpp (no
+  `zip`) fail on this Pi. The broken `fteplug_quake3_arm64.so` they left in
+  `engine/release` **segfaulted the engine on load**. Building from the game dir instead of
+  the build dir is what the live configuration actually is; the broken artefacts were
+  deleted.
+- `NATIVE_PLUGINS=hl2` builds the one plugin needed. Its `EMBEDMETA` step also fails for
+  want of `zip` -- and the deployed plugin is byte-for-byte the same size, so that step has
+  never run on this Pi. It embeds a plugin description for a browser UI, nothing
+  functional. The new `.so` hashes differently from the old and carries `CHEAT-LATCHED`
+  three times where the old carries it zero times, so the change is in.
+
+### One risk checked before shipping 460
+
+`CVAR_CHEAT` force-sets to the ENGINE default (`cvar.c:1159-1166`), so if the plugin's
+declared default disagreed with `default.cfg` the lock would have overridden the config --
+and for `hl2_propcollision` that means turning prop collision OFF on 12 lobbies. Measured:
+the plugin declares `"1"`, `"0"`, `"1"` and `default.cfg` sets `1`, `0`, `1`. A no-op,
+which is what the `default.cfg` comment claimed and what nobody had verified.
+
+### Patch 462 was HELD, at its author's request
+
+`build.ps1 -Pi` ships whatever the tree builds, so HEAD's csprogs contained ftesurf-a1's
+strafe trainer. Asked; the answer was hold, with the reasoning that its only networked arm
+does not work yet (the body never moves against a remote server, not root-caused) so the
+one configuration a lobby runs is the one untested. Built from a `git worktree` at HEAD with
+`git revert --no-commit 6a9fc9d` applied **there only**, plus `git rm` of three test cfgs
+that later commits had modified -- their tested recipe. Result: 0 `Trn_`/`cl_trainer`
+references, `cl_trainer.qc` absent, `HUDE_MAX` back to 20, and csprogs 4,773,902 bytes
+against 4,827,514 with the trainer. Worktree removed after.
+
+### Sequencing that mattered
+
+The sweeper picks up a new binary **immediately** on swap; the lobbies keep the old one
+until restarted. So `pm_verify` behaviour changed for every queued run at swap time, before
+any lobby restarted -- which is why the gate ran first and on port 27750/27751/27752, never
+27698. Backups kept as `fteqw-svarm64.pre463-20260928-005626` and
+`fteplug_hl2_arm64.so.pre460-20260928-005626`.
+
+`-Pi` refused nothing: its own check found a row for each of the 12 lobbies and 0 players on
+every one. All 12 restarted.
+
+### Verified live afterwards
+
+```
+zones(sv): 6 on surf_utopia_njv (maps/zones/local) crc 4260ad9c
+```
+
+on the fleet's own binary and zone files -- the same crc the local arm measured for that
+donation. That map had no start, no end and no clock before today.
+
+### Not deployed, and stated so it is not assumed
+
+The **client** half of 460 reaches players only through a release, not through `-Pi`: the
+cheat lock on `hl2_propcollision` binds the client's own engine, and a player keeps theirs
+until `release.ps1`. The 543 zone mirrors are local to Lex's disk on purpose. And a REFUSE
+already recorded against a run does not re-verify itself (`sweep.py` marks any non-ERROR
+verdict `checked = 1` and there is no bulk re-check), so 463 helps runs verified from now
+on and not the ones it would have rescued.
+
+## Patch 462 deployed to the 12 lobbies, 2026-09-28
+
+Held in the 458/460/463 deploy at its author's request, because its only networked arm did
+not work and a lobby is the only configuration that matters for a client-side stat. Shipped
+once that arm moved.
+
+**The reading that changed the answer**, measured by ftesurf-a1 on `fteqwsv64` at commit
+46f0588: the server's own `viewpos` after the run-up reads `velocity 0 -260 0`, and the
+trainer's first strafe reads `v 260->282`. `Trn_Speed` agrees with the server EXACTLY at a
+NON-ZERO value across the wire. The earlier cut agreed at zero, which a stat that never
+arrived produces too -- so the first agreement was worth nothing and this one is the whole
+case. Also `cl_yawspeed 420` measuring `rate 420.0 ideal 425.8 q 0.995`, a ramp-touching
+strafe graded 120 ms of its 165 ms, an ungradeable strafe drawn grey with "-" rather than a
+zero, and 0 client-VM error lines over ~10 s with the panel on.
+
+Their own root cause is worth recording: `ftesurf64.exe -dedicated` loads the map and exits,
+and the server half of the arm had been a second `ftesurf64.exe` -- a LISTEN server, which
+brings its own local player. One log carried both "client Proto connected" and
+"client (1)Proto connected": two bodies, and the test client's was not the one being driven.
+The server half is `fteqwsv64.exe` now.
+
+**Verified here before shipping rather than on the report**: 0 fteqcc warnings, csprogs
+4,827,514 bytes matching their figure exactly, and `cfg/test/p462trn.cfg` re-run in this
+tree -- 0 "Unknown command" lines (the rule they added to AGENTS.md after finding that
+config files have no block comments and were feeding their own prose to the command
+interpreter), and trainer rows carrying moving non-zero velocities rather than the zeros a
+dead stat gives.
+
+`build.ps1 -Pi` again found a row for each of the 12 lobbies and 0 players on every one.
+csprogs 94b2f7c6..., qwprogs unchanged at 8f74c5f9... -- correct, 462 is client-only.
+Previous pair kept as .prev.
+
+**A note on how this entry was first written, because it is the session's recurring trap.**
+The paragraphs above landed gutted the first time: the append ran through a bash-quoted
+Python string, and every backticked term was taken as command substitution, so `fteqwsv64`,
+`viewpos`, `Trn_Speed` and a dozen others were replaced by the empty output of a failed
+command. The text read as fluent prose with the load-bearing nouns removed. Third variant of
+the same fault in one session -- heredoc backslash collapse, then a heredoc eating a fix,
+then this -- and the standing rule is already written down: compose escape-bearing text with
+a file write, never inside a shell string.
