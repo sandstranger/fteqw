@@ -5227,7 +5227,7 @@ static void Shader_MakeCache(const char *path, unsigned int parseflags)
 			continue;
 		}
 
-		key = Hash_Key ( token, HASH_SIZE );
+		key = Hash_KeyInsensitive ( token, HASH_SIZE );
 
 		cache = ( shadercache_t * )Z_Malloc(sizeof(shadercache_t) + strlen(token));
 		strcpy(cache->name, token);
@@ -5246,12 +5246,12 @@ static qboolean Shader_LocateSource(const char *name, const char **buf, size_t *
 	unsigned int key;
 	shadercache_t *cache;
 
-	key = Hash_Key ( name, HASH_SIZE );
+	key = Hash_KeyInsensitive ( name, HASH_SIZE );
 	cache = shader_hash[key];
 
 	for ( ; cache; cache = cache->hash_next )
 	{
-		if ( !Q_stricmp (cache->name, name) )
+		if ( !strcasecmp (cache->name, name) )
 		{
 			if (buf)
 			{
@@ -9104,7 +9104,7 @@ char *Shader_GetShaderBody(shader_t *s, char *fname, size_t fnamesize)
 		{
 			unsigned int key;
 			shadercache_t *cache;
-			key = Hash_Key (parsename, HASH_SIZE);
+			key = Hash_KeyInsensitive (parsename, HASH_SIZE);
 			cache = shader_hash[key];
 			for ( ; cache; cache = cache->hash_next)
 			{
@@ -9494,7 +9494,7 @@ shader_t *R_ShaderFind(const char *name)
 		if (!s || !s->uses)
 			continue;
 
-		if (!Q_stricmp (shortname, s->name) )
+		if (!strcasecmp (shortname, s->name) )
 			return s;
 	}
 	return NULL;
