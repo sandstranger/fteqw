@@ -92,6 +92,8 @@ cvar_t r_detailtextures;
 
 #define MAX_TOKEN_CHARS sizeof(com_token)
 
+extern unsigned int Hash_KeyInsensitive(const char *name, unsigned int modulus);
+
 char *COM_ParseExt (const char **data_p, qboolean nl, qboolean comma)
 {
 	int		c;
