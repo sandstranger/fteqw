@@ -34217,3 +34217,635 @@ command. The text read as fluent prose with the load-bearing nouns removed. Thir
 the same fault in one session -- heredoc backslash collapse, then a heredoc eating a fix,
 then this -- and the standing rule is already written down: compose escape-bearing text with
 a file write, never inside a shell string.
+
+## Patch 464 is claimed elsewhere and has no entry here  *(BOOKKEEPING)*
+
+`lextest.md` §2g ("The segment percentage, and the air rows are yellow now")
+already calls its change Patch 464, and that number never reached this file. So
+the highest number HERE was 463 while the highest number IN USE was 464, and the
+obvious way to pick the next one -- scan this ledger for the maximum -- hands you
+a number that is already taken. This session did exactly that and had to
+renumber to 465 after the fact.
+
+Anything that allocates a patch number should grep the whole tree, not just this
+file: `grep -rn "Patch 4[0-9][0-9]" --include=*.md --include=*.qc --include=*.c`.
+If 464 later gets a real write-up, it goes here under this heading.
+
+## Patch 465 — the map browser can fetch a map you do not have, over http, with no server  *(APPLIED, engine + QC — `build.ps1 -Engine`)*
+
+Three engine changes, all client-side, plus the QC that uses them. The feature asked for
+was "a download button on the right of the map list"; most of the work was that none of
+the four paths it needed existed end to end.
+
+**Why a builtin and not `localcmd("download …")`.** `PF_localcmd` adds to the command
+buffer at `RESTRICT_INSECURE` (`common/pr_bgcmd.c:7413`), and it does that for every VM —
+menuqc and a server's stuffcmd are indistinguishable at that level. So the console
+`download` command takes its *server-initiated* branch (`client/cl_main.c:5481`), which is
+wrong for a menu button twice over: it calls `CL_AllowArbitaryDownload`, and
+`cl_download_redirection` defaults to `2`, which permits only `demos/*.mvd` and
+`package/*.pak` and refuses a bare map outright; and it enqueues with
+`DLLF_REQUIRED|DLLF_VERBOSE` and no `DLLF_ALLOWWEB`, so even when allowed the transfer
+ignores `sv_dlURL` and crawls over the netchan. Relaxing `cl_download_redirection` was the
+obvious alternative and is the wrong one — its own description says it "allows the server
+to send nearly arbitary download commands", so buying a menu button with it would weaken
+every player's client against every server they join.
+
+`PF_m_downloadmap` (`client/pr_menu.c`, registered as `downloadmap`, ebfsnum 0) is reachable
+only from our own `menu.dat`. It takes a **bare map name**, not a path, and composes
+`maps/<name>.bsp` itself after rejecting anything outside `[A-Za-z0-9_-]` — so no caller can
+steer it, and the validation is a whitelist rather than the blacklist `CL_AllowArbitaryDownload`
+has to use. Returns 0 refused, 1 started, 2 already present.
+
+**`CL_RequestNextDownload` would never have started it.** The queue is drained only under
+`if (cl.sendprespawn || cls.state == ca_active)`, which is correct for a netchan download —
+there is nowhere to send the request otherwise — but the map browser is a *menu* screen and
+the player is usually connected to nothing. An http download has no such dependency:
+`HTTP_CL_Think` is pumped from the top of `Host_Frame` (`client/cl_main.c:7433`) regardless
+of connection state, and `CL_EnqueDownload`'s `cls.state < ca_connected` bail is already
+inside its non-web branch only (`client/cl_parse.c:569`). So a `DLLF_TRYWEB` entry is now
+started while disconnected, and nothing else is: the ordering rules below it (NONGAME, then
+REQUIRED) are untouched for the connected case.
+
+**And it would have started exactly one.** `CL_DownloadFinished` does not chain, and every
+other caller of `CL_RequestNextDownload` sits on a connection path, so a second queued map
+would have waited forever behind the first. `CL_WebDownloadFinished` now re-pumps when
+disconnected. Harmless when connected — the call returns immediately while `cls.download`
+is still set.
+
+**What is NOT an engine change, and was the surprise.** The progress bar, the percentage
+and the KB/s readout needed nothing: `serverkey("dlstate")` already returns
+`files-remaining total-size unknown-flag localname remotename percent rate received total`,
+and `PF_cl_serverkey_internal` reads `cls.download` directly rather than through a VM, so
+menuqc can ask (`client/pr_clcmd.c:1433-1447`). The 1 MB/s cap needed nothing either —
+`sv_maxdrate` already exists and already defaults to `500000`, which is the real answer to
+"do we get full uncapped speeds": we did not, we got half the asked-for figure, and only on
+the fallback path. The http path is capped by nginx (`surfd/maps.nginx`, `limit_rate 1m`),
+because that is where the bytes actually go.
+
+QC side: `src/defs/m_defs.qc` declares `downloadmap` as `#0:downloadmap` and feature-detects
+with `checkbuiltin`, exactly as `localcmd_local` above it does — on an older binary the
+button never draws rather than the menu failing to load. `src/menu/m_main.qc` gains
+`ui_dl_load` (reads `data/mapdl.txt`, appends the maps the Pi serves and this install lacks),
+`Dl_Tick` (polled from `m_draw` **outside** the `menu_active` gate, because a download
+survives an ESC and the only thing that notices it finished is that tick), and the gutter
+that draws the button, the bar and the rate.
+
+**The verification that matters and the one that does not.** 0 fteqcc warnings and a clean
+engine link say nothing about whether the builtin *binds* — a `#0` with no `:name` compiles
+perfectly and resolves to nothing, which is the bug this patch had until `menu.dat` was
+checked against a known-good control (`localcmd_local` present, `checkbuiltin` present, an
+invented name absent). The one real compiler warning in the engine build,
+`cl_parse.c:1735 -Waddress` on `cl.model_csqcname`, is pre-existing upstream code: both
+hunks of this patch are at 733 and 1967, and `model_csqcname` appears nowhere in the diff.
+
+### Patch 466 — having the FILE and having the RIGHT BUILD are different facts
+
+Patch 465 gave the map browser a Download button and asked one question of each
+map: `COM_FCheckExists("maps/<name>.bsp")`. That is a question about a NAME. The
+question that matters is about a BUILD, and the gap between them is not academic
+— it is the single case the whole feature could not help with, and it is the
+case a server kicks you for.
+
+Reported from a laptop, verbatim: *"it still doesn't download the map? Should
+it?"* It should not have, and did not, and that was correct: the map was on
+disk. What followed in the same log was the real event.
+
+```
+Map model file does not match (maps/surf_666.bsp), 0XC6702B74 != 0X77D2E0BD
+You have been kicked due to the file maps/surf_666.bsp being modfied,
+  located at .../Momentum Mod Playtest/momentum/maps/surf_666.bsp
+```
+
+Measured rather than assumed: the Pi and this workstation both hold
+`cb5343da145f636f459d04729a587e7760d99e0e` for surf_666, which is the roster's
+pin with 53 demo attestations. The server was serving the right build. The
+reporter's Momentum install held a different one, and the browser had no way to
+say so and no way to replace it.
+
+**`downloadmap(name, force)`** — force skips the presence test and adds
+`DLLF_OVERWRITE`, whose real meaning is "ignore any local files"
+(client.h:609's own note) rather than "clobber". The result does not touch the
+user's Steam content: this path leaves `fsroot` at `HTTP_CL_Get`'s default
+`FS_GAMEONLY` (only `DLLF_NONGAME` forces `FS_ROOT`, cl_parse.c:810), so the
+file lands in `ftesurf/maps/` and SHADOWS the lower mount. With Patch 465's
+.tmp-then-rename, a re-get that fails leaves the old build rather than no map.
+Traced through the field rather than reasoned from the flag's name, because the
+failure mode if it were wrong is deleting content out of a Steam install.
+
+**`mapfilekb(name)`** — the size, in KB, of the `maps/<name>.bsp` the engine
+would actually LOAD, via `FS_FLocateFile`, ie the mount order.
+
+Two things in that sentence are load-bearing.
+
+*Not `search_getfilesize`.* That answers for whichever duplicate the search
+listed first, and NAMESORT is an explicitly unstable qsort (pr_bgcmd.c:3592-98),
+so with the same map in two mounts it can describe the copy the engine will NOT
+load — which is precisely the configuration this exists for. The test proves the
+difference rather than asserting it: with a truncated shadow planted in
+`ftesurf/maps/`, `mapfilekb` reports 483 KB, the shadow, not the 965 KB Momentum
+copy underneath it.
+
+*Kilobytes, not bytes.* A QC float is 32-bit and exact only to 2^24; maps here
+run past 200 MB and surf_666 alone is 21,644,745 bytes, already past the point
+where a byte count survives the trip into QC. KB also matches
+`data/mapdl.txt`'s own column, so the two compare as authored. The first draft
+of the C wrote `(double)(loc.len + 1023) / 1024`, which is a ratio and not a
+ceiling; the integer divide has to happen first.
+
+**A size difference is conclusive proof of a different build. Equal sizes prove
+nothing.** So this under-reports by construction and never accuses a correct
+install, which is the right way round for a check whose action is to spend the
+player's bandwidth. The honest limit: two builds of the same size are missed.
+
+**What the arms measured.** `tools/p466reget.py`, and the control is the
+interesting one.
+
+    CONTROL  nothing planted   wrongbuild 2 (= baseline), state idle throughout,
+                               nothing written, mirror served 0
+    SUBJECT  483 KB shadow     wrongbuild 3, localkb 483 (the SHADOW, not the
+                               965 KB copy under it), idle -> active -> ok,
+                               987533 bytes afterwards, sha1 == the served file,
+                               no .tmp, and wrongbuild falls back to 2
+
+**The baseline is 2, not 0, and assuming otherwise would have made the control
+meaningless.** Those two are `surf_dune` and `surf_fantasy` — the CS:S builds
+lextest 2i has been asking about, found here by a completely different signal
+(size against the Pi) from the one that found them originally (hash
+attestation). Two independent methods, same two maps.
+
+**And the first cut of the arm graded a reading that could only ever be zero.**
+`ui_load_maps` is lazy, so a bare `ui_dlmap` at startup reports `list 0`; the
+grader took the FIRST wrongbuild figure, which was always that one, and the
+control passed while measuring an empty list. The cfg now calls `ui_maplist`
+first and the grader discards any row whose list is 0. Same family as Patch
+453's stride and the sparse `.rec` dump: the sample never contained the thing.
+
+### Patch 465, second cut — the interrupted download, found by finally testing the first cut
+
+The entry above was written from a build that compiled and a feature that was
+never run. Driving it with `tools/p465dl.py` found a defect in the first cut
+within two runs, and it is the kind that does not announce itself.
+
+**`httpclient.c` NEVER RENAMES.** It opens its localname directly with `"w+b"`
+(`http/httpclient.c:639-642`) and writes the body straight into it. The netchan
+path has always downloaded to `<name>.tmp` and renamed in `DL_Abort`'s
+`QDL_COMPLETED` arm — but that arm is gated on `DLLF_BEGUN`, and a web download
+never sets it. So an http transfer interrupted by a quit or a dropped link left
+a SHORT FILE UNDER THE REAL NAME.
+
+For a map that is the worst available shape. It reads as installed, so
+`ui_dl_load` stops offering it and the Download button disappears; and a
+truncated bsp is a mapcrc mismatch, which is a silent `TF_NOMAP` on every run
+played on it — the exact failure the brief warns about under the map roster.
+
+Found by measurement, not by reading: the first throttled run was cut off by its
+own wait budget and left 3,531,250 of 4,774,571 bytes sitting there as
+`p465test.bsp`, and the grader reported it as a truncation rather than glossing
+it as "close enough".
+
+The fix fetches to `<name>.tmp` and renames in `CL_WebDownloadFinished` —
+on failure it removes the partial instead. **The rename is deliberately NOT done
+by handing `DL_Abort` a tempname**, which would have been the smaller diff: that
+arm also calls `FS_Remove(dl->dclname + dl->prefixbytes)`, and both fields are
+set only on the netchan path (`cl_parse.c:2363-2374`), so a web qdownload
+carries `""` there and the behaviour of `FS_Remove("")` is nobody's documented
+contract.
+
+**What the arms measured, and the control that makes them mean anything.**
+Subject, against a mirror throttled to 250000 B/s: `idle -> active x8 -> ok x3
+-> idle x4`, 15 of 16 rate samples non-zero with a maximum of exactly 250000,
+the bsp on disk at 4,774,571 bytes with a sha1 matching the source, no leftover
+`.tmp`. Control, the same mirror on the same port with the same config answering
+404: `idle -> failed x2 -> idle`, no bsp, no `.tmp`, one refused request. They
+differ in every graded dimension.
+
+**Two things the run settled that this entry previously asserted.** The engine
+takes the `sv_dlURL` layout and never `cl_download_mapsrc` — the latter is an
+`else if` on dlURL being empty (`cl_parse.c:1005`) and `sv_dlURL` is the same
+cvar on a client, so it is dead configuration while that line exists. And
+`DL_HOLD` is 6 s, so the arm's original 8 s probe interval stepped over the
+completion banner entirely and reported `active -> idle` with the map on disk,
+which reads exactly like a download that never finished.
+
+## Patch 467 — the milk visualizer: a raymarched 3D menu, a visualizer sky, and `snd_getvis` analysing the mix  *(APPLIED, engine + QC — `build.ps1 -Engine`)*
+
+**Problem.** QC could not see what the game was playing (`getchannellevel` reads one
+channel's source sample), so nothing could react to music or to the game's own sounds;
+there was no way to muffle the game under the menu; and the menu was two flat screens.
+
+**Change — engine.** `client/snd_vis.c` (new), hooked from `snd_mix.c`, `snd_dma.c`, both
+VM builtin tables and `pr_cmds.c`'s docs. `S_PaintChannels` copies the head card's mono mix
+(16-bit scale, before device conversion) into a 32768-frame ring just before
+`S_TransferPaintBuffer`. Analysis runs lazily when QC asks, on a fixed AUDIO-time grid
+(`snd_vis_rate`, catching up after frame hitches — analysing once per frame dropped 13 of 16
+kicks under stalls): Hann + 1024-point FFT, MilkDrop's bass/mid/treb/vol against a
+long-term average, onsets (bass 1.35 / 0.18 s, treble 1.5 / 0.12 s), and a log-spectrum
+RGBA8 image. The window ends at the DirectSound play cursor recorded in `S_Update_`
+(WASAPI: its queue length), so visuals do not lead the audio by `s_mixahead`.
+`snd_fx_lowpass` is a 2-pole Butterworth AFTER the tap, gliding in log-frequency and
+crossfading to a bit-exact bypass; the mixer reads only values latched under `mixermutex`.
+QC: `float(float *out, float count) snd_getvis`, `float(string imagename, float bands)
+snd_visimage`; console `snd_visinfo`. OpenAL (`QSF_EXTERNALMIXER`) has no mix to tap and
+reports that instead of zeros that look like silence.
+
+**Change — QC.** `src/milk_sys.qc` (menu.dat and csprogs.dat) is a MilkDrop-style feedback
+renderer on existing builtins only — targets via `setproperty(VF_RT_DESTCOLOUR, name, fmt,
+size)`, per-tick data via `VF_USERDATA` -> `w_user[16]`, materials via `shaderforname`,
+sprites via 2D `R_BeginPolygon`. One tick at a FIXED 60 Hz (MilkDrop applies zoom/decay per
+frame, which at `cl_maxfps 1000` would run 16x fast): scene, feedback warp
+(zoom/rot/wobble/slime/kaleidoscope, decay), sprites, bloom at 1/2 and 1/4, ACES composite;
+the only per-frame pass is the present. `src/menu/m_milk.qc`: four stations raymarched in
+`glsl/milk_scene.glsl` (cube lattice, spectrum tower field, ring tunnel, orb pool), a camera
+flight between them on every screen change, mouse-look, the hovered row drawn INTO the
+feedback so it glows and leaves a ghost, and new VISUALS / MUSIC screens. Only while
+disconnected — over a live run the old translucent backdrop stays. `src/client/cl_milk.qc`:
+`r_skybox milk` draws every sky surface from `$rt:ms_out` via the script shader
+`skybox_milk` (R_LoadShader prefers script shaders to R_SetSky's generated text,
+`gl_shader.c:8710-8723`; `gfx/env/milk.png` exists only so R_SetSky takes that branch),
+driven by the mix, speed and landings — no input, angle or recording path is touched.
+GL only (`Milk_Supported`): Vulkan's 2D target switch is an empty function.
+
+**Verified.** Engine, standalone core: FFT against a direct DFT 1.2e-7; kicks 20/20 at 30,
+120 and 1000 analyses/s; identical from -6 to -46 dBFS; the 500 Hz filter -49.8 dB at
+8 kHz, bit-exact bypass, no click. Real mixer, DirectSound and WASAPI
+(`cfg/test/p467sndvis*.cfg`, graded by `tools/p467visprobe.py --grade`): every kick and hat
+detected, 0 extras; the analysis identical with the filter on and off while the filter
+measured -39.4 dB on the hats; ~20-55 us per analysis. QC, 0 warnings;
+`cfg/test/p467milk.cfg` photographs all four stations; two shots of one station 6 s apart
+differ in 61% of the lattice region (the sim runs); `cfg/test/p467perf.cfg` on an Intel N100
+iGPU at 2256x1380, uncapped, against the flat backdrop: q1 +1.3 ms, q2 +3.3 ms, q3 +18.8 ms
+per frame (after rendering the raymarch at 0.75x and one tick a frame past 25 ms; before:
+2.6 / 8.7 / 33 ms); `cfg/test/p467sky.cfg` on surf_rookie: 100% of sky pixels differ from
+the map's own sky; `vid_renderer vk` falls back to the flat backdrop with the menu working.
+NOT verified: the OpenAL path (no OpenAL DLL on the test machine), any non-Intel GPU, and
+mouse-look (a minimized harness has no cursor).
+
+## Patch 468 — a Windows precision touchpad could not turn the view: raw input was rejecting its motion as injected  *(APPLIED — `engine/client/in_win.c`, `engine/client/in_generic.c`, `engine/client/client.h`; the reader side is `tools/hidcheck.py` + `tools/test_hidcheck.py` in the game repo. VERIFIED on the owner's laptop: build, enumeration and registration (`cfg/test/p468smoke.cfg`, log quoted below). NOT YET VERIFIED: the acceptance itself, which needs a hand on the pad — `cfg/test/p468pad.cfg`, graded by `tools/p468pad.py`.)*
+
+**Problem.** On the owner's laptop the trackpad did not move the view in game, and the one
+recording from that machine (keyboard-only play, pitch 0.0000 on every row, mouse counters
+never moving) carried 14.7 rejected raw-input reports per second with no mouse attached.
+Measured outside the game with a raw-input probe (a hidden window, `RIDEV_INPUTSINK` on
+usage page 1 usage 2 and on page 0x0D usage 5, 180 s of ordinary pointer use, 2026-10-02):
+
+| device | collection | reports in 180 s |
+|---|---|---|
+| Pixart 093a:0255 `HID#XXXX0000&Col01` | RIM_TYPEMOUSE (2 buttons) | **0** |
+| the same device, `&Col02` | HID page 0x0D usage 0x05, the precision-touchpad digitizer | 8746 |
+| no device, `hDevice == NULL` | RIM_TYPEMOUSE motion and button reports, `usFlags 0`, `ulExtraInformation 0` | **2137 of 2137** |
+
+So the pad's own mouse collection is enumerated and never speaks; Windows reads the digitizer
+collection itself, synthesises the cursor motion, and delivers it to raw input with no device
+handle. That is exactly the shape Patch 306 counts as `in_raw_injected` and returns on — and
+because the pad's mouse collection makes `rawmicecount` 1, the legacy `GetCursorPos` path is
+off as well (`if (!rawmicecount)`). Net: with `in_rawinput 1` the pad cannot turn the view at
+all, and every honest swipe is recorded as a defeated injection attempt. The gap from a digitizer
+report to the motion it produced:
+
+| gap | reports |
+|---|---|
+| under 1 ms | 1707 |
+| 1 to 5 ms | 71 |
+| 5 to 20 ms | 325 |
+| 20 to 50 ms | 9 |
+| 50 to 100 ms | 8 |
+| over 100 ms (all 17 are a tap's synthesised button-up, 203 to 268 ms after the lift-off report) | 17 |
+
+**Change.** `INS_RawInput_Init` also notes every `RIM_TYPEHID` device whose `RIDI_DEVICEINFO`
+says page 0x0D usage 0x05 (`rawpad[]`, up to four collections; `padmouse` is the one device
+they drive, named by the first). `INS_RawInput_MouseRegister` registers that usage beside the
+mouse, with the same focus-following NULL target and never with NOLEGACY (the OS must keep
+synthesising). `INS_RawInput_PadRead` stamps `rawpad_lasttime` on each digitizer report and
+parses nothing — the report layout is device-specific and the time is the whole fact. In
+`INS_RawInput_MouseRead` a `RIM_TYPEMOUSE` report with no handle is accepted onto `padmouse`
+when a pad is present, `in_rawinput_touchpad` is on, and the last digitizer report is within
+`RAWPAD_WINDOW` = 0.5 s; otherwise it is counted as injected exactly as before. Half a second
+because the worst honest gap measured is 0.268 s and there is no security difference between
+0.3 and 0.5 s: both mean "while a finger is on the pad".
+
+Counting follows the Patch 306 rules: `in_raw_touchpad` starts at -1 (backend does not count),
+is lifted to 0 on the raw-input success return, is never reset, and is ACCEPTED input, so it is
+never summed into `IN_CountsGet`'s rejected total and never shares the `i` record. It is the
+ninth `end` field, appended after Patch 307's; the header gains `rawpads <n>`; the device
+tables carry `touchpad <devid> "<digitizer path>"`, so a reader can tell a pad's motion from a
+mouse's. `in_rawinput_touchpad` (default 1, archived) is in the journal's tracked input-cvar
+table, so the value in force is in every journal.
+
+**What a cheater gains.** A synthesised report timed inside the window, while a finger rests
+on the pad, is accepted — by construction, the window cannot tell them apart (the release
+rule adds nothing: a release-admitted report is stripped to release bits). It then becomes
+ordinary counts on the `touchpad` device, which the counts identity, the journal and the turn
+statistics judge like any other motion, with the device table saying a touchpad was in use.
+A machine without a precision touchpad takes the old branch exactly (`rawpadcount` 0).
+
+**Measured.** `cfg/test/p468smoke.cfg` on this laptop, build `cccb6c312db4` (previous
+`1b6e034cd23a`), `logs/p468smoke.log`:
+
+```
+Raw input: precision touchpad [6] \\?\HID#XXXX0000&Col02#5&173917db&0&0001#{4d1e55b2-f16f-11cf-88cb-001111000030}
+Raw input type 0: [10] \\?\HID#XXXX0000&Col01#5&173917db&0&0000#
+Raw input: initialized with 1 mice, 0 keyboards and 1 touchpads
+Raw input: precision touchpad registered -- handle-less motion accepted within 0.5 s of its reports
+"in_rawinput_touchpad" is "1" (default)
+```
+
+Build: mingw64 `make m-rel`, 0 errors; 0 compiler warnings in the lines this patch adds. The
+log carries 31 pre-existing compiler warnings in untouched code (`gl/ltface.c:798`,
+`gl/gl_rsurf.c:197`, `d3d/d3d_backend.c:1961`, `client/in_win.c:2720`, `:2724`, `:2874`, …)
+and 179 make "pattern recipe did not update peer target" lines, counted here because a build
+filter is how warnings get missed. `tools/test_hidcheck.py` 162 checks, 0 failed (four new:
+accepted-with-device, accepted-without-device is a FAULT, a 10-field trailer makes no claim, -1
+makes no claim).
+
+**Taps.** The synthesised click of a tap is two handle-less button reports: the down 0 to
+22 ms after a digitizer report, the up 203 to 268 ms after the lift-off report, both inside
+the window. So on this build the pad's taps are RAW presses on the touchpad devid, deduped
+against the legacy message like any raw press, and Patch 307's uncorroborated-button count no
+longer includes them (its essay and `in_rawinput_nolegacy`'s text say so now). A release for
+a button the pad pressed is accepted outside the window too, so a late up cannot latch the
+button. The first cut of this entry said the opposite about taps; round 2 corrected it.
+
+**The journal's `p` record** (`p <dt> <accepted> <digitizer> <released>`, deltas, from the
+same three call sites as `i`: frame, view, end) and the tenth trailer field (digitizer
+reports) make the accepted count a quantity stated three times: the trailer, the sum of the
+`p` records, and the motion events on the touchpad's devid, which the accepted count must
+cover. The released count is at most the accepted count on every `p` line, and a reader
+compares it with the pad's journalled presses without faulting on it (a press made under a
+menu is an `x`, one made unfocused or before the journal began is nothing). hidcheck checks
+all of it, including the direction of both totals on a truncated file.
+
+**What the server sees.** Nothing new. `IN_CountsGet` still sends injected+unenumerated, so a
+pad machine's `rej` column now reads near 0 and says nothing about the gate; the accepted
+count and `rawpads` are not on the wire. The in-band split planned for the next phase carries
+them; until then a reader of the `.rec` alone cannot tell a touchpad session from a mouse one.
+
+**Not verified, stated so it is not overread.** The acceptance in game (arms A, B, C of
+`p468pad.cfg`: the view turns with the cvar on and not with it off, the touchpad's `m`
+records are covered by the accepted count, injected stays near 0, nothing ticks hands-off).
+A pad plugged in after init is not re-enumerated, like a mouse. Only one `padmouse` exists
+however many digitizer collections are found. Whether Windows synthesises two-finger scroll
+as a handle-less `RI_MOUSE_WHEEL` report is unmeasured (the probe saw no wheel reports); the
+raw copy is dropped either way, so the pad's scroll goes on arriving through the legacy
+`WM_MOUSEWHEEL` exactly as before.
+
+### Round 2 — three reviewers on the committed tree (control flow; evidence consequences; what a cheater gains)
+
+Found and fixed: `Mouse_AllocateDevID` scanned `rawmice[]` only, so the pad and a real mouse
+could share devid 0 and hidcheck faulted the journal ("claimed by two devices") -- the
+allocator now sees `padmouse`. A tap's click was inside the window after all (above), and an
+accepted down with a rejected up would have latched `rawbuttondown[]` -- releases for
+pad-pressed buttons pass outside the window. `rawpad_lasttime` seeded 0 held the gate open
+for the first 0.5 s of process time -- sentinel -1. `rawpads` published the enumerated count
+before registration -- it now says bound (0 when the registration call fails). A handle-less
+wheel report would have been a second notch beside the legacy one -- dropped. The accepted
+count had no body record and no bound -- the `p` record and the tenth field. The grader
+required `accepted == m records` and a fault-free hidcheck on arms whose journals hold no
+events (hidcheck faults "no frame markers" there by design) -- `m <= accepted`, and that
+one fault is expected on B and C. hidcheck's note said "not an injection", a verdict the
+file cannot support -- reworded. This entry, `in_rawinput_nolegacy`'s text and the Patch 307
+essay said a pad has no raw button reports -- true before 468, corrected.
+
+Accepted, not fixed, stated: the gate is a presence test (a resting finger re-arms it at the
+pad's report rate, 725 digitizer reports in one 5 s rest in the probe); a device presenting
+page 0x0D usage 5 opens it on any machine, which is the hardware class Patches 303 and 306
+already concede and the device table names; a touchscreen's or pen's synthesised report
+inside the window is attributed to the pad; the server does not see the gate (above).
+
+**Deployment rule.** A pre-468 `hidcheck.py` reads every 468 journal as never closed ("'end'
+has 12 fields", then "no 'end' trailer"); the reader's length set is strict on purpose. Put
+the game repo's reader on every host that reads journals before any 468 client exists.
+
+Round 2 build `567b63b5e685`: 0 errors, the same 31 pre-existing warnings in untouched files, the
+`p468smoke.cfg` lines unchanged; `test_hidcheck.py` 170 checks, 0 failed.
+
+### Round 3 — two reviewers on round 2 (control flow and the new release rule; evidence)
+
+Found and fixed: a report admitted by the release rule was then applied in full, so its
+motion and any other DOWN bit it carried went through -- one touch of the pad, ever, could
+seed a hands-off chain of `UP(4)|DOWN(5)|motion` / `UP(5)|DOWN(4)|motion` reports (CONFIRMED
+by trace). Such a report is now stripped to the UP bits of pad-pressed buttons with zero
+motion and an unchanged extra-button word, so it can only release; the releases are counted
+(`in_raw_padrelease`, the third field of `p`) and the reader bounds them by the pad's own
+presses. The release rule was gated on `in_rawinput_touchpad`, so flipping the cvar off while
+a pad button was held would have latched it -- no longer gated. `rawpads` published the
+collection count (up to four) against one `touchpad` table line -- it is 0 or 1 now. Reader:
+the legacy-press note keyed only on the trailer field and told a reviewer the pad could not
+explain the count on a file whose own input table says the acceptance was off -- it reads the
+cvar and `rawpads`; a truncated file's digitizer total was not held to the direction rule --
+it is; a digitizer total of -1 beside `p` records carrying digitizer counts passed -- a fault;
+a negative `p` delta balanced a trailer -- a fault; a pad's raw taps on a devid other than 0
+drew the pre-468 "key events carry devid(s) other than 0" note -- mouse-button events are
+attributed to their pointer, not to a keyboard. Grader: it counted keys and legacy clicks
+sharing devid 0 with the pad as pad events on arms B and C -- motion only now, and the
+"no frame markers" fault is the only one allowed there, not required. Comments that said
+"two call sites" (three) and "acceptance only while the pad was reporting" (releases pass
+outside) are corrected. A wheel-only accepted report produces nothing and is the third
+no-`m` class, now named in the reader.
+
+Round 4 build `1d1f09387abe`: 0 errors, the same 31 pre-existing warnings in untouched files, the
+`p468smoke.cfg` lines unchanged; `test_hidcheck.py` 181 checks, 0 failed.
+
+### Round 5 — two reviewers on round 4 (the release strip; the reader's bounds)
+
+No defect in the strip: every field the rest of the read path consumes is covered, a
+stripped report can neither allocate a devid nor return early with state half-cleared, a
+release-admitted report always carries at least one UP and re-arms nothing. Found and fixed:
+the reader's "releases at most presses" was a FAULT, and the file cannot count every press --
+one made under a menu or the console is an `x` record, one made unfocused or before the
+journal began writes nothing -- so on hardware whose tap-up misses the window an honest
+file would have read guilty (the third-verdict rule). It is a note now, with those reasons,
+and each `p` line is held to `rel <= acc` instead, which the writer guarantees. The
+write-only baseline for the release count is gone (no trailer total; it is bounded per
+line). The acceptance counter carries the same `>= 0` guard as the other two. Noted, not
+fixed: an extra raw button (the raw path dispatches `ulRawButtons` bits j >= 6 as `K_MOUSE1 + j`,
+which keys.h names K_MWHEELUP and K_JOY1..3) set on `padmouse` by an in-window report stays
+held after the finger lifts, since the strip leaves that word alone --
+reachable only by in-window injection of those bits, the conceded trade. "The release rule
+adds nothing" means: one key-up per pad-pressed button at the sender's chosen time, which a
+finger lift gives too, and a `rawbuttontime` stamp that can only suppress a legacy DOWN for
+100 ms.
+
+The reader side of round 5 (game repo `a9cbde9`): mouse-button events on a devid no pointer
+claims are said; a hidden tap on a pointer's devid is not read as a keyboard; only the five
+buttons count as presses; the cvar state is read over the whole journal; the reader floor is
+`fde8420` (the five-field `p`), which the working brief now names. Round 6 build `f784777b42fd`: 0
+errors, an incremental build whose log shows the three pre-existing `in_win.c` warnings, smoke
+unchanged; `test_hidcheck.py` 190 checks.
+
+### Round 7 — one reviewer on round 6: no defect
+
+Nits fixed in the docs and the fixture: the working brief's floor sentence (an efc4627 reader
+passes a journal whose pad never fired and faults every `p` line of one that did; fde8420 is
+the floor); three comments that still said the retracted bound; the fixture's `x` records
+were not carried into its trailer's hidden count, so two checks ran on a faulting file; a
+cvar string that is zero but not spelled 0 read as on. The suite's 91 journals read the same
+under the pre-468 reader and this one except the touchpad fixtures, and a two-raw-mice file
+loses only the old reader's false "does not match the engine" note on the second mouse's
+raw clicks.
+
+## Patch 469 — a board comparison line was graded against a zero ground plane  *(APPLIED — mod-side only, no engine change: FTESurf `src/client/cl_watch.qc`)*
+
+**Problem.** The board-line job (`Watch_LineJobStep`) read a sample's plane only when
+`tokenize(s) > WT_C_V4N`. `WT_C_V4N` is 17 and a conforming v4+ sample has exactly 17 columns,
+so the test was always false: slots 1-8 were built with a zero plane and `Line_Grade`'s ramp
+branch never fired there. With `hud_watch_path_color 4` every ramp sample on a board line was
+graded against the flat-air ideal. The replay's own scan (slot 0) spells the test `>=` and was
+right all along.
+
+**Change.** `>` to `>=`.
+
+**Verified.** `cfg/test/p469plane.cfg` + `tools/p469plane.py`: one file in slot 0 (the replay)
+and slot 1 (`scores lineat`, the real job), both dumped at stride 1 and graded against the
+`.rec` with p453q's model, run twice — with the file's planes and with them zeroed.
+surf_colin_blaster_69000, 8084 samples, 873 carrying a plane; the N100 laptop.
+
+| | fixed `C8750BFA78E71E0E` | control `B58F0E8EE93603F3` (game `9a9ec07`) |
+|---|---|---|
+| slot 1 against the file, 7828 points | 0 wrong | 789 wrong |
+| slot 1 against slot 0, grade and `ln_col` | 0 differ | 789 differ |
+| points where the plane moves the grade | 789 | 789 |
+| of those, slot 1 matching the zero-plane model | 0 | 789 |
+| slot 0 against the file, 8084 points | 0 wrong | 0 wrong |
+
+Not verified: on a second file or map (one local recording exists on this machine), and by
+pixels — both slots draw the same path, so the screenshot shows ink and not which slot's.
+
+**Found on the way, not fixed here:** the same job calls `Line_Tick` before it has read the
+header, so a board slot's energy ceiling always uses the 0.015 default. Patch 470.
+
+## Patch 470 — a replay was graded at the server's tick, not the recording's  *(APPLIED — mod-side only, no engine change: FTESurf `src/client/cl_lines.qc`, `cl_watch.qc`, `cl_hud.qc`)*
+
+**Problem.** Three readers of one number. `Line_Grade` (the run line's air-control colour)
+used the live server's `pm_ticrate` while the energy colour two hundred lines on used the
+file's (`ln_tick`); the strafe bar used the server's too; and a board slot never had the
+file's at all — the line job called `Line_Tick` before it had read the header, handing it 0
+and so the 0.015 default. On this fleet the error is the tick ratio alone (the 30 u/s cap
+saturates the gain at both rates): a 0.01 file watched on a 0.015 lobby got a target 1.5x
+too low and read better than it was strafed.
+
+**Change.** `Line_Grade` reads `ln_tick[s]`; `ln_mv_tick` is gone. The job hands the slot
+its tick in `Watch_LineJobWindow`, after the header. `HUD_DrawStrafe` takes
+`rec_wt_tickrate` while a replay is open. `replay colours` prints the slot's tick in `lnmv`,
+and `replay status` prints the bar's `bar tick/ideal/speed/regime` (new; nothing could read
+the bar before).
+
+**Verified.** `tools/p470tick.py` + `cfg/test/p470tick.cfg`: the fixture's samples staged
+under a header re-ticked to 0.01 on a 0.015 server (synthetic: it grades the arithmetic),
+in slot 0 and slot 1; the staged file is removed and the directory listed after. Control =
+this tree with the three behaviour hunks reverted and the prints kept.
+
+| | fixed `0A64AF906B245665` | control `9CE0C4186E1071B8` |
+|---|---|---|
+| T1 slot ticks | 0.010 / 0.010 | 0.010 / 0.015 (the job order, slot 1 only) |
+| T2 grades at the file's tick | 0 wrong of 4042 / 3914 | 428 wrong each, all matching the server-tick model |
+| T3 slot 1 energy colour = slot 0's | 0 of 1951 differ | 261 differ |
+| T4 the bar, 4 flat-air seeks | tick 0.01, ideal exact | tick 0.015 at every seek |
+
+The bar's ideal at 2080 u/s is 82.632 fixed and 55.088 control (ratio 1.5), and the screenshot
+shows its target drawn at the logged value. `p469plane` re-run on this build: unchanged.
+
+**Not done** (BACKLOG): the Segments column's three `pm_ticrate` reads in cl_board.qc and the
+debug energy readout still use the server's tick in a replay; the replay reads `tickrate` and
+never `movetickrate`; the other eight movevars still come from the server (`pmpin`).
+
+## Patch 471 — `sl_list` rounded away the 1 u/s line the start-box gate reads  *(APPLIED — mod-side only, no engine change: FTESurf `src/server/sv_saveloc.qc`)*
+
+**Problem.** A start-box load arms only when the row's speed is under `SL_ARM_SPEED` (1 u/s,
+Patch 435), and `SV_SaveLocList` printed that speed `%4.0f`: a row at 0.6 (arms) and one at
+1.4 (does not) both read `1 u/s`. Patch 442 widened the column to the whole vector, which is
+what made it worth reading, and the rounding hid the one distinction it was read for.
+
+**Change.** `%6.1f`, and ` at rest` after the unit when `SL_RowSpeed` is under the gate. The
+marker is needed as well as the decimal: 0.99 prints `1.0`. `tools/p435pre.py` and
+`p441void.py` read the column with `(\d+) u/s`; they now take `(\d+)(?:\.\d)? u/s`, the same
+integer for the values they grade (checked on sample lines, not by running them: their map,
+bhop_eazy, is not on this machine).
+
+**Verified.** `tools/p471list.py` + `cfg/test/p471list.cfg` stage four saves at 0.6, 0.99,
+1.06 and 1.4 u/s (the last with a vertical component) and put the save root back as found.
+Fixed qwprogs `271B367694668A3E`: `0.6 u/s at rest`, `1.0 u/s at rest`, `1.1 u/s`, `1.4 u/s`.
+Control `F53EBB0795E4E7F5`: `1 u/s` on all four.
+
+## Patch 472 — a save load placed a body at an origin that is not on any map  *(APPLIED — mod-side only, no engine change: FTESurf `src/server/sv_saveloc.qc`)*
+
+**Problem.** `SV_SaveOriginSane` (a negated range test, +-65536) guarded only the `!r`
+picker; `SV_SaveLocLoad` placed whatever `state.txt` held. Measured on the control: an origin
+of x `1e999` (stof: inf) was refused only by accident -- `SV_SaveRowIs`'s distance test sees
+inf - inf = NaN and answers "that save changed on disk", the wrong reason -- and a finite
+x `1e9` was PLACED there. Owner-file only (a lobby's save root is the server's), so hardening.
+
+**Change.** The load runs the same test before anything else touches the row and refuses
+with "that save's position is not a place on any map". The hold needs a successful load of
+its row in the same frame, so it is covered too.
+
+**Found doing it:** `stof` is the C runtime's `atof`, and `nan` is runtime-dependent -- this
+laptop's mingw64 build (msvcrt) reads it as **0**, so a hand-edited `nan` row listed as
+`0 0 0` and loaded there; ucrt (the main rig) and glibc (the Pi) give a real NaN. An overflow
+is inf on all three, which is why the arm uses `1e999`. The function's comment now says so.
+
+**Verified.** `tools/p472org.py` + `cfg/test/p472org.cfg` stage three saves (inf, 1e9, a real
+one) and restore the save root. Fixed qwprogs `34ECFDC6A1F6E80A`: the real row loads, the
+other two are refused with the position message and the body stays put. Control
+`271B367694668A3E`: inf refused as "changed on disk", 1e9 placed.
+
+## Patch 473 — a replay's Segments column was built at the server's tick  *(APPLIED — mod-side only, no engine change: FTESurf `src/client/cl_board.qc`, `cl_watch.qc`)*
+
+**Problem.** Patch 470's residue. `Watch_BuildSeq` runs the live segment machine over the
+file, and its three tick reads -- `Board_AirCeiling` (the air ceiling a row's % divides by),
+the touchdown row's duration, the air row's slack -- read the server's `pm_ticrate`. A 0.01
+file on a 0.015 lobby got its column measured at 0.015. (Patch 470's note also named the
+debug energy readout; wrong -- that chain is skipped outright during a replay.)
+
+**Change.** `Board_Tick()`: `board_ov_tick` while `rec_wt_build`, else the server's. The
+build pass sets `board_ov_tick = rec_wt_tickrate`, as it sets the other `board_ov_*` --
+cl_board.qc compiles before cl_watch.qc and cannot read the replay's state. `replay seq`
+now prints each row's ceiling and percentage too (nested sprintf, the varargs cap).
+
+**Verified.** `tools/p473seq.py` + `cfg/test/p473seq.cfg`: Patch 470's re-ticked fixture
+(0.01) opened twice in one session, server `pm_ticrate` 0.015 then 0.01 -- `sv_cheats 1`
+first, the movement lock's own way off, since it reverts a typed tick. Fixed csprogs
+`EF78D1D34178CB53`: the two columns identical, 19 rows, 0 differ, row 0's ceiling 99.281 both
+times. Control `567E80F25E1DA377` (the one build-pass line removed): 14 of 19 rows differ,
+row 0's ceiling 85.500 against 99.281 -- which is also the proof the client saw the change.
+
+## Patch 474 — the online board stopped at 64 rows; it now pages as the list scrolls  *(APPLIED — mod-side only, no engine change: FTESurf `src/client/cl_online.qc`, `cl_scores.qc`)*
+
+**Problem.** The in-game board asked surfd for one page (`limit=64`, no offset), so rank 65
+of a board holding 15,866 (surf_utopia, imported) could not be shown. surfd and the web
+board already paged.
+
+**Change.** The first page is 100 rows; within 20 rows of the end the list asks for the next
+(`Online_FetchMore`, `offset` = rows held) and appends, up to 1,000. The append has its own
+request id and never touches `ob_state`, so a scroll does not blank the list to "asking...";
+it lands only on the board it was asked for (an epoch bumped by every clear) and directly
+after the rows it follows (the reply's `offset`). The ten row arrays moved to `memalloc`:
+as globals they took csprogs past fteqcc's limit (131,418 against 131,072). Handles:
+`board_more`, `scores tab imported`, `scores oscroll <row>`; `board_status` prints
+`more/append/held`.
+
+**Verified.** `tools/p474page.py` + `cfg/test/p474page.cfg` against the Pi's surfd on
+surf_utopia. Fixed csprogs `48D1E28C63E5EE52`: 10 of 10 -- contiguous ranks to the 1,000
+cap, the trigger fires near the end and not at the top. Control `680143FF276EDAB3`: 9 of 10
+fail (64 rows, `Unknown command`). A mutant without the four append guards fails E, an
+imported page landing on the ranked board; reply order is not controlled, so E is a race the
+guards win rather than a proof. Not run: a real mouse wheel (the handle sets the same scroll).
+
+## Patch 475 — your own run's line, drawn live  *(APPLIED — mod-side only, no engine change: FTESurf `src/client/cl_trail.qc` (new), `cl_lines.qc`, `cl_main.qc`, `cl_hudedit.qc`, `cl_progs.src`, both shipped cfgs)*
+
+**Problem.** Every run line was fed from a file: slot 0 the replay, 1..8 the board's. Lex
+asked for the line to follow the player during a run, stay after a fail, and fade when the
+next run starts -- the first piece of the rewind feature.
+
+**Change.** Two more slots (LN_SLOTS 9 -> 11, +6.5 MiB of arenas) fed from `pmove_org`
+and `pmove_vel`, one sample per command frame while STAT_FS_TIMERSTATE is running. A
+finished or cancelled run keeps its line; the next run's start swaps the two slot indices
+and the old one fades over `hud_trail_fade`. `Line_End` runs every 16 samples. A picture
+only: nothing is sent and nothing is evidence. `hud_trail`, `hud_trail_prev`,
+`hud_trail_fade` with hud_edit rows and cfg lines; `trail` reports both slots. Written by
+the session the 2026-09-29 restart killed; finished, renumbered and measured here.
+
+**Verified.** `tools/p475trail.py` + `cfg/test/p475trail.cfg` on surf_dune. Fixed csprogs
+`7AA2DD878BDC665A`: 7 of 7 -- 235 samples on the clock, kept and not growing after a cancel,
+the old run fading at the next start and gone 3 s later, 821 pixels between the line on and
+off at one pose against 0 between two off shots. Control `48D1E28C63E5EE52` (Patch 474):
+6 fail, `trail` unknown, 16 pixels. A teleport draws as a long segment (BACKLOG).

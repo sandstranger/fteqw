@@ -2,6 +2,7 @@
 
 #include "pr_common.h"
 #include "shader.h"
+#include "snd_vis.h"
 
 #ifdef GLQUAKE
 #include "glquake.h"
@@ -2430,6 +2431,100 @@ static void QCBUILTIN PF_m_clipboard_get(pubprogfuncs_t *prinst, struct globalva
 	Sys_Clipboard_PasteText(cliptype, PF_m_clipboard_got, prinst);
 }
 
+//FTESurf Patch 465: the map browser's download button.
+//menuqc's localcmd runs at RESTRICT_INSECURE (pr_bgcmd.c PF_localcmd), so a
+//`download maps/foo.bsp` from the menu takes CL_Download_f's SERVER-INITIATED
+//branch, and that branch is wrong for us twice over: cl_download_redirection
+//defaults to 2, which permits only demos/*.mvd and package/*.pak and refuses a
+//bare map outright; and its flags carry no DLLF_ALLOWWEB, so even when allowed it
+//ignores sv_dlURL and crawls over the netchan at sv_maxdrate (500KB/s default).
+//A builtin is reachable only from our own menu.dat and never from a server, so it
+//can take the user's intent at face value. We compose the path from a validated
+//BARE NAME rather than accepting one, so no caller can steer it.
+//Returns 0 refused, 1 started, 2 already present.
+//
+//Patch 466 adds the optional second argument: downloadmap(name, force). Having
+//a FILE of that name and having the RIGHT BUILD are different facts, and only
+//the first one was ever checked -- so the one case the button could not help
+//with was a wrong build, which is exactly the case a server kicks you for
+//(mapcrc mismatch, "being modfied", cl_parse.c:7669). force skips the presence
+//test and passes DLLF_OVERWRITE.
+//
+//The result does NOT overwrite the user's Steam content: localname resolves to
+//the gamedir write path, so the file lands in ftesurf/maps/ and SHADOWS the
+//copy in a lower mount. Combined with Patch 465's .tmp-then-rename, a re-get
+//that fails leaves the old build in place rather than no map at all.
+static void QCBUILTIN PF_m_downloadmap(pubprogfuncs_t *prinst, struct globalvars_s *pr_globals)
+{
+	const char *name = PR_GetStringOfs(prinst, OFS_PARM0);
+	qboolean force = (prinst->callargc > 1) && G_FLOAT(OFS_PARM1);
+	unsigned int flags = DLLF_USEREXPLICIT|DLLF_REQUIRED|DLLF_VERBOSE|DLLF_ALLOWWEB;
+	char rel[MAX_QPATH];
+	const char *c;
+
+	G_FLOAT(OFS_RETURN) = 0;
+
+	if (!name || !*name || strlen(name) > MAX_QPATH-16)
+		return;
+	for (c = name; *c; c++)
+		if (!((*c >= 'a' && *c <= 'z') || (*c >= 'A' && *c <= 'Z') ||
+		      (*c >= '0' && *c <= '9') || *c == '_' || *c == '-'))
+			return;	//a map name, not a path: no dot, slash, colon or backslash reaches here
+
+	Q_snprintfz(rel, sizeof(rel), "maps/%s.bsp", name);
+
+	if (force)
+		flags |= DLLF_OVERWRITE;	//cl_parse.c:1012 -- the presence test is what this skips
+	else if (COM_FCheckExists(rel))
+	{
+		G_FLOAT(OFS_RETURN) = 2;
+		return;
+	}
+
+	//CL_CheckOrEnqueDownloadFile returns TRUE for "do not wait" -- already held, a
+	//local server, or the enqueue failed -- and FALSE once it is really queued.
+	if (!CL_CheckOrEnqueDownloadFile(rel, rel, flags))
+	{
+		CL_RequestNextDownload();	//nothing pumps the queue from the menu; see the Patch 465 block there
+		G_FLOAT(OFS_RETURN) = 1;
+	}
+}
+
+//FTESurf Patch 466: the size, in KB, of the maps/<name>.bsp the engine would
+//actually LOAD -- resolved through FS_FLocateFile, ie the mount order, not a
+//directory listing. search_getfilesize answers for whichever duplicate the
+//search happened to list first, and NAMESORT is an explicitly unstable qsort
+//(pr_bgcmd.c:3592-3598), so with the same map in two mounts it can describe the
+//copy the engine will NOT load -- which is precisely the case this exists for.
+//
+//KILOBYTES, NOT BYTES, and that is not cosmetic: a QC float is 32-bit, exact
+//only to 2^24, and maps here run past 200 MB. surf_666 alone is 21,644,745
+//bytes, already past the point where a byte count survives the trip. KB also
+//matches data/mapdl.txt's own column, so the two are compared as authored.
+//Rounded up the same way tools/mapscan.py rounds: (n + 1023) / 1024.
+//Returns 0 when the map is not present at all.
+static void QCBUILTIN PF_m_mapfilekb(pubprogfuncs_t *prinst, struct globalvars_s *pr_globals)
+{
+	const char *name = PR_GetStringOfs(prinst, OFS_PARM0);
+	char rel[MAX_QPATH];
+	flocation_t loc;
+	const char *c;
+
+	G_FLOAT(OFS_RETURN) = 0;
+
+	if (!name || !*name || strlen(name) > MAX_QPATH-16)
+		return;
+	for (c = name; *c; c++)
+		if (!((*c >= 'a' && *c <= 'z') || (*c >= 'A' && *c <= 'Z') ||
+		      (*c >= '0' && *c <= '9') || *c == '_' || *c == '-'))
+			return;
+
+	Q_snprintfz(rel, sizeof(rel), "maps/%s.bsp", name);
+
+	if (FS_FLocateFile(rel, FSLF_IFFOUND, &loc))
+		G_FLOAT(OFS_RETURN) = (float)((loc.len + 1023) / 1024);	//integer divide FIRST: this is a ceiling, not a ratio
+}
+
 static struct {
 	char *name;
 	builtin_t bifunc;
@@ -2808,6 +2903,8 @@ static struct {
 //	{NULL,						PF_Fixme,					501},
 //	{NULL,						PF_Fixme,					502},
 	{"whichpack",				PF_whichpack,				503},
+	{"downloadmap",				PF_m_downloadmap,			0},	//FTESurf Patch 465
+	{"mapfilekb",				PF_m_mapfilekb,				0},	//FTESurf Patch 466
 															//gap
 	{"uri_escape",				PF_uri_escape,				510},
 	{"uri_unescape",			PF_uri_unescape,			511},
@@ -2824,6 +2921,8 @@ static struct {
 															//gap
 	{"log",						PF_Logarithm,				532},
 //	{"getsoundtime",			PF_Fixme,					533},
+	{"snd_getvis",				PF_snd_getvis,				0},	//FTESurf: snd_vis.c
+	{"snd_visimage",			PF_snd_visimage,			0},
 	{"soundlength",				PF_soundlength,				534},
 	{"buf_loadfile",			PF_buf_loadfile,			535},
 	{"buf_writefile",			PF_buf_writefile,			536},
