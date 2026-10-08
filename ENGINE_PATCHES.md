@@ -35275,3 +35275,4960 @@ on the heap (memalloc, 2048 rows; csprogs had hit fteqcc's 131072-global cap) an
 qwprogs `b5d07c97` is byte-identical to the build it replaced; csprogs `f3f44782` ->
 `caf1bc53`, the previous pair kept as `.prev`. All 12 units active after the restart,
 and both live files hash to the local build.
+## Patch 482 - the JSON reader decoded every \uXXXX escape from the wrong buffer, and its surrogate range was half too small  *(APPLIED - engine `common/json.c`)*
+
+**Problem.** `JSON_ReadBody`'s `case 'u'` read the escape's four hex digits from
+`out[]` - the DESTINATION - where it means `in[]`, the source. `in` still points at
+the first digit when that case runs (the switch's `*in++` consumed the `u`), and the
+`in += 4` immediately below is the proof of where the digits are. Eight call sites
+were affected: the four that read the code point and the four in the low-surrogate
+lookahead, which read `out[4..9]` where the pair's second escape is at `in[0..5]`.
+So the decoded value came from whatever tail of already-decoded text happened to sit
+in the output buffer: `Chri` followed by `\u0073` read the `s` out of `Chri` and
+produced `Chriis`, and an escape with nothing decodable behind it failed all four
+`dehex` tests, fell through to `default`, and was left as literal text. BACKLOG's
+report of a box drawn for an o-stroke was that fall-through, not a glyph-missing
+case - which is what kept the hunt pointed at fonts.
+
+This is the decoder behind the QC `jsondecode` builtin (`common/pr_bgcmd.c`), so it
+reaches every name, map title and string the client reads off the web board. The
+other `dehex` users in the tree (`common.c`'s `^Uxxxx` colour markup,
+`gl_heightmap.c`, `sv_main.c`'s auth challenge) all read the source correctly, so
+the defect is confined to `json.c`.
+
+Fixing that exposed a **second, independent defect in the same expression**: the
+low-surrogate test was `low >= 0xdc00 && low < 0xde00`, but the range is
+U+DC00..U+DFFF. The bound refuses to pair any astral character whose low surrogate
+is in the top half - U+1F600 is D83D **DE00**, the first case anyone would reach
+for, and it does not pair. The high-surrogate bound beside it (D800..DBFF) is
+correct; only this one was wrong. It was unreachable while the digits came from
+`out[]`, since nothing paired at all, so it could only be found after the first fix.
+
+**Change.** Read the digits from `in[0..3]` and the lookahead from `in[0..5]`, and
+widen the low-surrogate bound to `0xe000`. `in += 4` moved inside the success
+branch, which is where it always belonged: on failure the code falls through to
+`default`, which re-reads the backslash from `in-1` and emits it literally, and
+skipping four digits first would have dropped them. No behaviour change on the
+success path, which is the only path that reaches it.
+
+**Verified.** A host-side test compiles the engine's own `utf8_encode`, `dehex` and
+`JSON_ReadBody` verbatim - `C:/FTESurf-private/poc/p483/`, extracted by
+`mkjsontest.py` so the fragment cannot drift from the engine - and grades 18 cases.
+Six controls that involve no `\u` escape (plain text, `\n`, `\t`, `\\`,
+empty) pass on the unfixed engine too, so a suite that failed everything would not
+look like a fix. Both fixes: 0 failures. Mutants, each caught by exactly the cases
+that should catch it:
+
+| engine state | failures |
+|---|---|
+| neither fix (baseline `798fda84b`) | 6 |
+| `out[]`->`in[]` only | 2 - U+1F600 and U+10FFFF, the top-half surrogates |
+| range bound only | 10 - every escape case |
+| bound widened past DFFF (`0x10000`) | 1 - `\ud83d\ue000` |
+| both fixes | 0 |
+
+The last mutant is why there are two "must not pair" cases and not one. A first cut
+had only `\ud83d\u0041`, which sits BELOW the range and grades the lower bound;
+an over-wide upper bound passed the whole suite. `\ue000` - the first code point
+above DFFF - is the only one of the two that can fail it, and a control that cannot
+fail the bug it names is decoration.
+
+NOT verified in the running client: no board row on proto.bar currently carries a
+`\uXXXX` escape (20 of 21 unpaired files are bonus legs the viewer does not
+serve), so there was no live string to watch change. The host test decodes the same
+function the builtin calls, but a name rendered on the board is a further step and
+was not measured.
+
+## Patch 483 - three command gates a server's stufftext walked past, and the macro ordering that inverts one of them  *(APPLIED - engine `common/cmd.c`, `common/fs.c`, `client/cl_main.c`)*
+
+**Problem.** Three of the routes ENGINE_SECURITY.md still listed as traced-only, two
+of them already measured by the Patch 482 arms:
+
+- *item 8, `saveconfig`* (`common/cmd.c`, `Cmd_WriteConfig_f`): the exemption for a
+  `data/` or `cfg/` prefix was an `else if` on the `Cmd_IsInsecure()` test, so an
+  exempt path never reached it. The exemption exists to restrict the CONTENT of the
+  file (`nohidden`, "don't write any settings they're not allowed to see") and was
+  instead acting as a grant of PERMISSION to write one. A server's stufftext could
+  plant a real 64 KB config in the two directories the gamecode reads its own data
+  from - `data/mapdl.txt`, `data/mapmeta.txt`, `data/saves/**`.
+- *item 7, `setinfoblob`* (`client/cl_main.c`, `CL_SetInfoBlob_f`): no check at all.
+  It reads any gamedir-readable file (up to 64 MB) into the player's userinfo, which
+  is sent to the server, so one stuffed line turns the client into a file reader for
+  whoever it is connected to.
+- *item 4, `fs_changegame`* (`common/fs.c`, `FS_ChangeGame_f`): the numeric and the
+  2-argument forms both RETURN above the function's own `Cmd_IsInsecure()` test, so
+  neither ever reached it. The numeric form switches to any installed mod by index;
+  the 2-argument form drives `FS_ModInstall`, whose download leg does prompt but
+  whose already-installed leg calls `FS_ChangeGame` with NO prompt at all.
+
+**Change.** `cmd.c`: `else if` becomes `if`, strict, matching the `cfg_save` branch
+of the same function - one command, one permission rule. `cl_main.c`: a strict gate
+before the file is opened, the shape `condump` already uses. `fs.c`: the existing
+test RELOCATED above the two early-return forms rather than duplicated, strict like
+`FS_RefuseInsecure` and Patch 481's `fs_*` gates, and the branch that became
+unreachable deleted instead of left as dead code.
+
+**THE TRAP, and it is the reason this entry is longer than the diff.** The first cut
+of the `fs.c` gate read `Cmd_IsInsecure() && !Cmd_FromGamecode()`, intending "block a
+server, allow QC" - because the numeric form's own comment says "for use by qc" and
+`pr_clcmd.c` hands QC exactly that string. Both macros are thresholds over ONE
+ordered value (`cmd.h`): `RESTRICT_LOCAL` 29 < `RESTRICT_INSECURE` 30 <
+`RESTRICT_SERVER` 31, `Cmd_IsInsecure()` is `>=30` and `Cmd_FromGamecode()` is
+`>=31`. The conjunction is therefore exactly level 30: **it blocks QC and admits the
+server.** Measured, not reasoned - the arm's stuffed `fs_changegame 1` switched
+games, tore the listen server down and crashed the client, with no `Blocking` line,
+while the strict `saveconfig` gate in the same run refused correctly. A server's
+stufftext arrives at `RESTRICT_SERVER`, which `Cmd_FromGamecode()` counts as
+gamecode, so these two macros cannot separate "a remote server" from "ssqc" - which
+is exactly why Patch 481's comment refuses both. QC loses `fs_changegame`; nothing
+in this tree calls it (grepped `src/`), and the engine's own mod menu uses
+`RESTRICT_LOCAL` (`m_options.c`), which was never insecure.
+
+**Verified.** Arm and driver in the private repo (`poc/p483/p483a.cfg`,
+`run_p483a.py`), 7 pre-registered predictions, a listen server stuffing each command
+at its own client so it arrives the way a remote server's does.
+
+- SUBJECT (fixed): ALL PASS, exit 0. `saveconfig cfg/p483a_cfg.cfg: not allowed`,
+  `saveconfig data/p483a_data.cfg: not allowed`, `setinfoblob: not allowed (from
+  server)`, `Blocking insecure command: fs_changegame 1`, and no file on disk for
+  either refused write.
+- CONTROL (the same three files at HEAD, everything else byte-identical -
+  `in_generic.o` was left at its previous compile because a concurrent session's
+  uncommitted `in_generic.c` does not build, so the two binaries differ ONLY in
+  these three files): P2/P3 printed `Wrote $basedir/ftesurf/cfg/p483a_cfg.cfg` and
+  `.../data/p483a_data.cfg`, P6 switched games (`Clearing memory`), P7 read the
+  planted canary with no refusal. Four failures, the four the patch closes.
+- **P1 and P4 pass in BOTH runs, and that is the point.** P1 is a gate that already
+  existed (a non-exempt path was always refused), so it proves a stuffed command
+  reaches the handler at all; P4 is the same `saveconfig` typed at the local
+  console, which still writes its 64118 bytes. A fix that moved either would be a
+  regression, and a grader that only counted refusals would not have seen it.
+- The canary is planted by the driver and removed afterwards, and the removal is
+  checked. The driver also removes the local-console file P4 legitimately writes.
+
+**Not verified.** Item 7's EXFILTRATION leg: showing the bytes on the wire needs a
+dedicated server advertising `_pext_infoblobs`, which is the Patch 482 arm's
+measurement, not this one. This arm grades the refusal, which happens before the
+file is opened, so on the fixed engine the file is never read at all. Items 5
+(`gamedir`), 6 (`fs_restart`), 9 (`mapfrom`'s prefer-hint leg) and 10 (`ssv` /
+`mapcluster`) remain traced-only. Not in a shipped binary; a client on the 467
+engine keeps all three holes.
+
+**Number collision.** A concurrent session's uncommitted `client/in_generic.c`
+carries `FTESurf Patch 482` comments, which is the number this repo's committed
+`common/json.c` change already holds and pushed. 482 cannot move down, so that work
+needs 484 or later.
+
+## Patch 484 — the input angle identity, computed where it is produced  *(APPLIED — engine `client/in_generic.c`; FTESurf `tools/hidcheck.py`, `tools/rcptcheck.py`, `tools/p484ident.py`, `cfg/test/p484ident.cfg`, `surfd/sweep.py`, `surfd/surfd.py`, `surfd/admin.py`, `surfd/templates/admin_run.html`)*
+
+**Problem.** Patch 293 put the device counts and the angle they produced on one
+line of the `.hid` journal, and `hidcheck.py` closes the identity over it — but
+the journal is the ONE evidence file that reaches no server. `run_evidence_ul` is
+1 on the fleet, which uploads the `.view` and not the `.hid`, and the client's
+4 MiB staging cap refuses any journal past ~38 s of run at 110 KB/s. Measured on
+the live host while this was written: 19 receipts, 14 sidecars, 4 recordings and
+**ZERO journals**. So every input check the tree built — the angle identity on
+both axes, the injection counters, the counts join, the device-provenance table —
+ran only when an operator typed a path at a file that is not there. Two of them
+were also never called by anything: `hidcheck.py` had no caller outside `tools/`
+and `cfg/test/`, and `rcptcheck.join_hid` checks the DIGEST the signature commits
+to, not the file's contents.
+
+**Change.** `IN_Journal_CheckIdentity()` runs inside `IN_Journal_View`, and
+publishes five read-only cvars in the shape Patch 301 set for `in_rawmice`
+(`CVAR_NOSET|CVAR_NOSAVE`, a live int mirrored once a frame, `-1` = never
+measured): `in_jrn484_frames`, `_ghosts`, `_violations`, `_badframes`,
+`_skipped`. Per-journal, reset in `IN_JournalBegin_f` — these counters belong in
+a recording's header, and one that survived a journal begin would attribute one
+run's ghosts to the next.
+
+**Why HERE and not in the progs.** The identity is a statement about the counts an
+angle was built from, and a rewrite that sits where the usercmd is built changes
+the angle with no counts and no recorded keyboard turn behind it. Below this line
+the two are indistinguishable; above it the counts do not exist yet. That is the
+same argument Patch 376 made for the mouse counters.
+
+**The abstentions are the patch.** A counter that accuses an honest player is
+worse than no counter, so a frame is not governed when the cursor was free
+(flags & 4), when `m_filter` or `m_accel` is on, when sensitivity is 0, or when
+neither axis governed. Per axis: `strafe_y` removes pitch and `strafe_x` removes
+yaw, and **a pitch prediction that would leave the clamp envelope is skipped and
+counted, never modelled** — pitch is clamped (`cl_input.c`) and yaw is not, and
+the bound is a SERVERINFO value the file does not carry (`cl_main.c` reads
+minpitch/maxpitch out of `cl.serverinfo`; the engine default is −70/+80 and
+FTESurf's `default.cfg` sets −89/+89). Sweeping the corpus with −70/+80 ASSUMED
+against files recorded at ±89 produced 910 pitch failures of which **892 were
+pitch-only — 892 false accusations on one honest PB**, against 18 with the bound
+read off the client. The engine reads its own `cl.maxpitch`/`cl.minpitch`.
+
+**Counted per FRAME, not per axis.** The first cut summed the two axes, and
+`tools/p484ident.py` Part 2 caught it: over the tree's 113 journals every frame
+that failed did so on BOTH axes (11 pitch, 11 yaw, the same 11 frames), so a
+per-axis sum reports 22 for 11 events. The per-axis split stays in the `.hid`,
+where hidcheck reports it; the counters a server sees are per frame, which is the
+unit a gate thresholds on.
+
+**Sign, measured rather than read.** Sweeping all eight combinations of (angle
+column, key column, count column, sign) over two PBs, exactly two fit at ~0
+failures — pitch from dy with kpitch, POSITIVE; yaw from dx with kyaw, NEGATIVE —
+and the wrong sign gives 38,744 failures against 0. `hidcheck.py`'s own comment
+says the opposite ("The sign convention is the OPPOSITE of what it looks like")
+and that comment is wrong; the check was always right. Recorded here so the next
+reader does not re-derive it.
+
+**Verified.** `cfg/test/p484ident.cfg` + `tools/p484ident.py`: 18 checks, 0
+failed. `tools/test_hidcheck.py` 216 checks (was 191), `test_reccheck` 295,
+`test_sweep` and `test_web`/`test_board`/`test_evidence`/`test_replays`/`test_join`
+all pass; `test_admin` fails the same two rcon arms at HEAD and at this commit
+(verified by restoring both files and re-running — real UDP, Windows-only).
+
+- ARM A: all five cvars read −1 with no journal open. **FAILED ON THE FIRST RUN,
+  and the failure was the finding** — ghosts and violations read 0, because the
+  first cut published them unguarded while frames/skipped were guarded on
+  `!count && !skip`. An unmeasured state wearing a clean measurement's clothes.
+  The guard is now a "journal has been opened" flag, because a counter cannot say
+  whether it has been measured, and a journal whose frames were ALL skipped has
+  run and governed nothing and must read 0, not unknown.
+- ARM A2: all five refuse `set` ("variable … is readonly") and still read −1.
+  This is the property that makes the channel mean anything — a counter a console
+  can assign is one a server's stufftext can assign, and then an attacker
+  publishes 0 violations.
+- ARM B FAILED ITS OWN PREDICTION (frames > 0). Measured frames 0 / skipped 180,
+  because ALL 181 of the journal's `v` rows carry flags 4: `Key_MouseShouldBeFree()`
+  is true with no window focus and a minimized harness has none (`ui_close` does
+  not change that). **The counter was correct and abstaining on every frame, which
+  is indistinguishable by number from a dead counter** — the tree's "prove the
+  subject acted" rule firing on this patch. What it does prove by agreement:
+  skipped 180 EQUALS hidcheck's own `not_governed` for the same file.
+- ARM D: a fresh journal resets rather than continues.
+- PART 2 supplies the coverage ARM B could not: a transcription of the C gates run
+  over all 113 journals (210,678 governed frames). It agrees with hidcheck on ALL
+  THREE counters on EVERY file, zero mismatches. Corpus: governed 210678, skipped
+  364, ghosts 152, violations 11, badframes 163. **3 of 113 files carry any
+  violation, 11 frames in 210,678 (0.0052%), and on every one yaw and pitch are
+  EQUAL and are the SAME frames — pitch-only 0.** They are large instantaneous
+  jumps with no input behind them (dpitch −41.8, −28.1, −49.0 against predictions
+  of ~0.02 deg), i.e. server angle sets the yaw rule has faulted on since 293.
+
+**Not verified.** NO ARM HERE CAN MAKE `in_jrn484_violations` NONZERO. A minimized
+harness receives no real mouse motion and cannot fire a WM_INPUT, so the subject —
+injected or rewritten motion — cannot be driven from inside the cfg. The arm that
+would is p306inj's external SendInput harness, and even that path is rejected and
+COUNTED upstream by Patch 306 rather than reaching the identity. What is proven is
+that the counters are alive, publish, resist assignment, reset per journal, abstain
+on exactly the frames hidcheck abstains on, and that the C gates are the gates
+calibrated on 210,678 real frames.
+
+**Not done, deliberately: nothing consumes these cvars yet.** They are published
+and unverified in the field, and a gate that reads a counter nobody has ever seen
+nonzero is a gate nobody can calibrate. The consumer — a QC publish beside
+`inprof`, a header key in the `.rec`, and a `pm_verify` HOLD — is BACKLOG, and it
+needs the fleet to be collecting journals at all first.
+
+**Number collision, resolved forward.** A concurrent session's committed
+`common/json.c` change already holds 482 and its `cmd.c`/`fs.c` gates hold 483, so
+this patch and its five cvars were renumbered 482 → 484 before anything shipped.
+The cvar name carries the patch number so a future reader can date it; renaming a
+published cvar is a compatibility break, and this was the last free moment.
+
+## Patch 485 - gamedir, mapfrom and fs_restart refuse a server's stufftext, and mapfrom's second leg was the hole  *(APPLIED - engine `server/sv_ccmds.c`, `common/fs.c`)*
+
+**Problem.** The last three traced-only command routes in ENGINE_SECURITY.md
+(items 5, 6, 9). All three are registered by `SV_InitOperatorCommands` with NO
+restriction level, and a CLIENT process runs that too because it can host - so a
+remote server's stufftext reaches all three, and none of the handlers tested the
+caller.
+
+**CORRECTION, AND IT IS ABOUT THIS ENTRY RATHER THAN THE CODE.** The first version
+of this entry claimed that two of ENGINE_SECURITY.md's three citations were wrong
+(`cl_main.c:3725` for gamedir, `cl_parse.c:4791` for mapfrom) and drew a conclusion
+from it about a traced-only list whose line numbers had drifted. THE FILE SAYS NO
+SUCH THING. It cites `sv_ccmds.c:3256 -> COM_Gamedir` and `sv_ccmds.c:3891`, and
+both are exact: 3256 is SV_Gamedir_f's definition, and 3891 is the
+`Cbuf_AddText(va("fs_useaddons %s\n", mount), Cmd_ExecLevel)` line the item is
+about. Item 6 names `FS_ReloadPackFiles_f` by function rather than by line, which is
+the citation style AGENTS.md asks for and the reason it did not drift.
+The wrong numbers came from A COMPACTED SESSION SUMMARY, and were asserted against
+the file without opening it. Item 9 had also already said the important part -- "its
+fs_useaddons leg is refused by 481, its `map \"@spec/map\"` prefer-hint leg still
+mounts the game" -- so the leg this patch closes was traced before the arm ran. What
+the arm added is the MEASUREMENT: that leg does not merely mount, it prints
+`SpawnServer`, i.e. a remote server makes the client HOST. A wrong reason under a
+right conclusion is exactly what this file exists to catch, and this one was pushed
+before it was caught.
+
+**THE FINDING IS mapfrom, AND IT IS A PARTIAL FIX THAT LEFT THE DANGEROUS HALF
+OPEN.** `SV_MapFrom_f` re-queues TWO commands at `Cmd_ExecLevel`, so both inherit
+the caller's level. Patch 481 already refuses the first (`fs_useaddons`). Measured
+on the unfixed build, a stuffed `mapfrom ftesurf bhop_eazy` printed `Blocking
+insecure command: fs_useaddons "ftesurf"` and then **`SpawnServer: bhop_eazy`** -
+the second leg ran, and a remote server made the client HOST a map. In the generic
+branch `prefer` is the caller's own `argv(1)` with no validation at all, so the
+server also chose the addon the map resolves through. Gating one leg of a
+two-leg command is not gating the command.
+
+`fs_restart` is a denial of service before it is anything else: it rebuilds the
+whole filesystem from an arbitrary flag word, and the mod's own `sv_player.qc`
+calls it "the single most expensive command in the build" while noting "the
+dangling-bucket crash the engine's own comment in fs.c documents". On the control
+one stuffed line printed an `is no longer needed` line for every mounted package.
+`gamedir` reaches `COM_Gamedir`, the same filesystem restart as `fs_changegame`
+(Patch 483) from a different command; its argv validation already refuses `..`,
+both slashes and `:`, so it is not a path traversal - it switches to any SIBLING
+directory by bare name.
+
+**Change.** One `Cmd_IsInsecure()` gate in each of the three handlers, strict, with
+the reason Patch 483's note gives (INSECURE covers a server's stufftext AND a
+csprogs/menu localcmd and `Cmd_FromGamecode()` cannot separate them). For
+`gamedir` and `mapfrom` the gate sits BELOW their read-only branches - the argc==1
+gamedir print and the usage line - because both write to the client's own console
+and so tell a server nothing it does not already have. That differs from 483, which
+gated `fs_changegame` above its no-arg form: that one LISTS WHAT COULD BE SWITCHED
+TO. `fs_restart` has no read-only branch and is gated at the top.
+
+**Verified.** Arm and driver in the private repo (`poc/p485/p485a.cfg`,
+`run_p485a.py`), six pre-registered predictions, a listen server stuffing each
+command at its own client. None had to be revised.
+
+- SUBJECT: ALL PASS, rc=0. `Blocking insecure command:` for each of `fs_restart`,
+  `mapfrom ftesurf bhop_eazy` and `gamedir ftesurf`.
+- CONTROL (both files at HEAD = Patch 484, everything else byte-identical): P4/P5/P6
+  FAIL, and its log shows what they did - the pack teardown, and `SpawnServer`
+  behind mapfrom's refused first leg.
+- **P1, P2 AND P3 PASS ON BOTH BUILDS, and that is the design.** P1 and P2 are
+  HARMLESS probes - a stuffed `gamedir` and `mapfrom` with no arguments, which hit
+  the read-only branches and return - so they prove a stuffed command reaches these
+  handlers at all and a subject's silence cannot be read as a refusal. P3 is the
+  same `gamedir` from the LOCAL console, which still prints: a gate that also
+  stopped the user would not be a fix.
+- **THE LOG SIZE IS A SECOND MEASUREMENT**: 147735 bytes / 1645 lines on the control
+  against 88790 / 1037 on the subject. The difference is the filesystem teardown.
+- `Blocking insecure command: fs_useaddons` is PRESENT on the control and ABSENT on
+  the subject - 485's gate returns before mapfrom queues anything, an independent
+  sign the gate is above the `Cbuf_AddText` calls rather than below them.
+- Every internal caller of all three re-queues at `RESTRICT_LOCAL` (fs.c:422,
+  fs.c:11252, cl_main.c:7950, sv_main.c:6809), and no QC or shipped cfg calls any of
+  them - `sv_player.qc` RENAMED AWAY from `fs_restart` precisely because the name
+  collided with the engine's. So nothing loses these.
+
+**Grading note.** The driver grades a subject whose own marker never appeared as
+NOT-REACHED, which is neither a pass nor a fail, and exits 2 rather than 1. Patch
+483's first run lost a measurement to a crash and reported it as a failure; a
+grader that cannot tell the two apart will eventually "fix" a gate that was already
+holding. Both builds reached all six markers here, so nothing was NOT-REACHED -
+which is what the least-destructive-first ordering bought.
+
+**Not verified.** `mapfrom`'s effect on a client that is NOT hosting (the arm is a
+listen server, so `SpawnServer` is the local host). Item 10 (`ssv` / `mapcluster`)
+is now the only traced-only route left. Not in a shipped binary; a client on the 467
+engine keeps all three holes.
+
+## Patch 486 - the journal identity's consumer: the counters reach the server  *(MOD-SIDE ONLY - no engine C in this patch; it consumes Patch 484's cvars.  FTESurf `src/client/cl_replay.qc`, `src/server/sv_timer.qc`, `src/shared/sh_defs.qc`, `tools/p486injrn.py`, `tools/p486mut.py`, `cfg/test/p486injrn.cfg`, `cfg/test/p486sv.cfg`)*
+
+**Problem.** Patch 484 computes the `.hid`'s own angle identity inside
+`IN_Journal_View` and publishes five read-only cvars, and shipped with NO
+CONSUMER - deliberately, because a gate that reads a counter nobody has ever seen
+nonzero is a gate nobody can calibrate.  But an unconsumed counter reaches nobody
+at all, and the reason it matters is that THE JOURNAL DOES NOT REACH THE SERVER:
+measured on the live host 2026-10-05, 19 receipts, 14 sidecars, 4 recordings and
+ZERO `.hid`, with both lobby cfgs at `run_evidence_ul 1` (which uploads the
+`.view` and not the `.hid`).  Raising it to 2 does not help either - at 110 KB/s
+the client's 4 MiB staging cap refuses any journal past ~38 s of run, and the
+transport is one <=768-byte chunk per round trip.  So every input check the tree
+built over the `.hid` ran only when an operator typed a path at a file that is not
+there.  Two of them had no caller at all until Patch 484 wired them in.
+
+**Change.** The verdict travels instead of the file, over the channel build 78/79
+established.  `cl_replay.qc`'s `Rec_JrnIdentReport` reads the five through
+`Rec_InputCvar` (the one accessor that asks `cvar_type` before reading, because
+`cvar()` autocreates and this tree has been bitten by that four times) and sends
+`sendevent("injrn", "ffffff", have, frames, ghosts, viol, bad, skip)`.
+`sv_timer.qc` stores them on the player entity, clears them in `SV_CSQCForget`
+(the one place, per that function's own stated rule), and `cmd timer` prints a
+`jrnident:` line.  The grammar is written once in `sh_defs.qc` as `IJ_*`, because
+`FS_TagName`'s lesson is that two copies of a field order is how the two ends
+drift.
+
+THREE DECISIONS WORTH STATING, since each was a fork:
+
+* SIX FIELDS IS `sendevent`'s CEILING AND THIS IS EXACTLY AT IT, so - as the
+  `CSEv_inprof_ffffff` comment already states - THE VERSION IS NOT SENT: it is
+  carried by the function name the engine composes from the argument types.  A
+  server without `CSEv_injrn_ffffff` answers silence, which is the version check
+  for free and with no way to get it wrong.  A seventh field needs packing into
+  vectors ("vvf" is nine), not dropping one.
+* A SEPARATE EVENT, NOT A WIDENING OF `rechid`, and the reason is bandwidth:
+  `rechid` rides a cache keyed on one value that changes essentially never, while
+  these five change on any governed frame, so folding them in would make it a wire
+  message per frame per player - which `Rec_ProfileReport`'s own comment calls a
+  bandwidth bug rather than a safety margin.
+* NO DIAGNOSTIC `setinfo` COPY, unlike both reports above.  Those keys exist so
+  `cmd timer` can print what the console CLAIMS beside what the CSQC reported, the
+  two disagreeing being the signature of a forgery.  These counters have nothing
+  to disagree with - the only other source is the `.hid`, which the server does not
+  have - so a key would publish six numbers a console can set and no reader that
+  can catch it.
+
+`-1` IS PASSED THROUGH UNCHANGED AND NEVER NORMALISED TO 0.  The temptation is to
+tidy it, and that would re-introduce one layer up the exact defect Patch 484's arm
+A caught: an unmeasured state wearing a clean measurement's clothes.  A client
+that journalled nothing must stay distinguishable from one that journalled and
+found nothing, and `-1` against `0` is the only place that distinction survives.
+
+STILL NOT A GATE, AND THAT IS THE POINT RATHER THAN AN OMISSION.  No reader
+latches a `TF_` bit or demotes a run.  Over the 113 local journals the honest
+corpus carries 11 violations on 3 files and every one is a yaw-and-pitch frame on
+a large instantaneous jump - the shape a server angle set has, which the yaw rule
+has faulted on since Patch 293.  A threshold from 11 events on 3 files is a guess,
+and this tree's rule is that a check which faults an honest run is worse than no
+check.  The gate is BACKLOG item C and needs a corpus, which needs this.
+
+**Verified.** `cfg/test/p486injrn.cfg` (client) against `cfg/test/p486sv.cfg`
+(dedicated, `fteqwsv64.exe` of Sep 28 - PRE-484 ON PURPOSE, because the consumer
+is QC in the two `.dat` files both processes share, so a server binary that
+predates the engine half still exercises all of it).  `tools/p486injrn.py`:
+**37 checks, 0 failed.**
+
+* ARM 1, no journal open: `said 1  have 16  frames -1  ghosts -1  viol -1  bad -1
+  skip -1`.  `-1` AND NOT `0`, so the consumer did not re-introduce the arm-A
+  defect one layer up.
+* ARM 2, one journal: `frames 181`, which EQUALS the engine's own
+  `in_jrn484_frames` printed three lines later in the same arm - two ends of one
+  channel, independently printed, agreeing exactly rather than approximately.
+  `viol 0  ghosts 0`, so honest input is not accused.  ARM 1 read `-1` and ARM 2
+  reads 181, which is the falsifier for a dead channel.
+* ARM 3, THE STRONGEST RESULT: the log shows `SETINFO Proto: injrn=0 999999 0 0 0
+  0` - the console really did write the hostile key - and the server's next line
+  reads `frames 181`.  Not 999999.
+* ARM 4, a fresh journal: `frames 0` against ARM 2's 181, so the reset propagates;
+  a cache that never re-sent would have left the server holding 181.  And `0`, not
+  `-1`: measured clean against never measured.
+
+THE GRADER IS ITSELF GRADED.  `tools/p486mut.py` mutates the log six ways - each a
+defect this patch could really have - and all six are caught with a named failure,
+with the unmutated log as a control that must pass: the console forging the fact,
+ARM 1 reading 0 instead of -1, a dead channel, a reset that never propagates, the
+two ends drifting by one, and an honest run accused.  **THE FIRST CUT OF THAT
+SCRIPT HARD-CODED `frames 183` AND THE RUN IT WAS POINTED AT HAD PRODUCED 181**,
+so three mutants mutated NOTHING, the grader passed them, and the script reported
+"3 not caught" while looking like a grader bug.  A mutant that does not mutate is
+the same false green as a grader that does not grade and it is silent in the same
+way; it now reads the numbers out of the log.
+
+Build: all three progs, `Done. 0 warnings` each.  `cfgguard` clean.
+
+**Not verified.** NOTHING HERE CAN MAKE `viol` NONZERO - the same gap Patch 484
+has and for the same reason: a minimized harness cannot fire a `WM_INPUT`, so
+injected or rewritten motion cannot be driven from inside a cfg.  This proves the
+counters are CARRIED, honest about what they have not measured, and unforgeable
+from a console.  It does not prove a server can see a violation; coverage of the
+rule itself is `tools/p484ident.py` Part 2, over 113 real journals.
+
+**Known, and not this patch's.** The journal ARM 2 wrote has 182 `v` records and
+ZERO `f` records, and its end line reads `0 frames` against an identity counter
+that governed 181.  A census of all 123 journals in the tree says this is COMMON
+AND OLD rather than a regression: 61 have `f=0` and 62 have `f>0`, and the empty
+half includes `p305_*`, `p385_*` and THREE real gameplay recordings
+(`0000007_pb`, `0000008_pb`, `0000009_pb`).  Any check built on `f` therefore
+silently covers about half the corpus.  In BACKLOG with the census, beside the
+cosmetic finding that every journal names itself `loadworker_3` on its own end
+line - the engine `va()` trap AGENTS.md already records, reaching
+`IN_Journal_End`'s print.
+
+**Number collision, resolved forward.** A concurrent session's uncommitted
+`sv_ccmds.c`/`fs.c` gates hold 485, so this consumer and its five files were
+renumbered 485 -> 486 before anything shipped.  Found by reading
+ENGINE_PATCHES.md's headings before claiming rather than after, which is the
+second collision in two patches and the reason AGENTS.md says to check untracked
+`cfg/test/pNNN*` files too - a claim shows up there first.
+
+## Patch 487 - a teamplay trigger alias now runs at the ALIAS's own execlevel, which is what makes Patch 481 a boundary again  *(APPLIED - engine `client/zqtp.c`, `common/cmd.c`, `common/cmd.h`)*
+
+**Problem.** ENGINE_SECURITY.md item 1, the one item that defeats every other fix in
+this batch: `TP_ExecTrigger` looked a trigger alias up with
+`Cmd_AliasExist(name, RESTRICT_LOCAL)` and then ran its BODY as raw text at
+`RESTRICT_LOCAL`, ignoring the alias's own `execlevel`.  A server-stuffed alias is
+created at level 31 with `execlevel = RESTRICT_SERVER` ("server-set aliases MUST run
+at the server's level", `Cmd_Alias_f`), so a server that stuffed
+`alias f_newmap "<anything>"` got that anything back with the USER's privileges.
+That is not one gated command slipping through: `Cmd_ExecuteString`'s
+`Cmd_IsInsecure()` test reads `Cmd_ExecLevel`, and this path set it to 29, so every
+gate Patches 481/483/485 added was bypassed by a single stuffed alias.  481 was a
+delivery-path fix, not a boundary, and this is the second delivery path.
+`TP_SearchForMsgTriggers` had the same shape.
+
+**Change.** `Cmd_AliasExecLevel(name, level)` returns the named alias's `execlevel`
+(0 = the alias table's own spelling of "the caller's level"), matching with the same
+`!strcmp` as `Cmd_AliasExist` so two lookups of one name cannot disagree.  Both
+executing sites in `zqtp.c` now resolve the level once and use it for the whole body,
+`Cbuf_AddText` and `Cmd_ExecuteString` alike, falling back to `RESTRICT_LOCAL` when
+the alias carries none - identical to the old constant for a locally defined alias.
+This is the convention `Cmd_ExecuteString`'s alias branch already follows
+(`if (a->execlevel) execlevel = a->execlevel; else execlevel = level;`), applied to
+the two sites that resolved the body themselves and so never reached it.
+
+All six `Cmd_AliasExist` call sites were read, not just the two that were vulnerable,
+because Patch 485's finding was that gating one leg of a two-leg command is not
+gating it.  `cl_parse.c`'s `//exectrigger` and `cl_screen.c`'s `f_centerprint` pass
+the alias NAME to the dispatcher or the cbuf, so the alias branch applies its own
+level; `keys.c` only prints the body into the bindings listing and `menu.c` only
+tests existence.  Resolving the body and executing it as text was unique to `zqtp.c`.
+
+**Verified.** `C:/FTESurf-private/poc/p487/` (PRIVATE - a working recipe for a hole
+every shipped engine still has, so it stays beside the audit): `run_p487a.py` drives
+a dedicated server and a remote client through three changelevels and grades the
+client log.  Control `ce6705f8` and subject `8647d382`, both `fteqw64.exe`, all six
+pre-registered predictions met on both builds:
+
+| evidence in the client log | control | subject |
+|---|---|---|
+| planted alias ran (`Steam library overrides`) | **4** | **0** |
+| planted alias refused (`Blocking insecure command: fs_steamlibs`) | 0 | **3** |
+| local alias ran (`usage: fs_unload`) | 2 | 2 |
+| local alias refused | 0 | 0 |
+| directly stuffed `fs_load` refused (Patch 481 live) | 1 | 1 |
+| `aliaslist server` | `( 1)(31) f_newmap` | `( 1)(31) f_newmap` |
+
+The regression control is identical on both builds, so the change moved only what a
+SERVER-planted alias may do; a user's own trigger alias still runs its body at
+`RESTRICT_LOCAL`.  Every payload is a gated `fs_*` command that is read-only at these
+arguments (`fs_unload`/`fs_load` with no argument print a usage line; `fs_steamlibs`
+lists), so the arm writes nothing to the install.
+
+**WHAT THE ARM DOES NOT DRIVE, stated rather than left to be assumed.** The planted
+alias is single-command, so its verdict comes from `TP_ExecTrigger`'s
+`Cmd_ExecuteString` branch.  The `Cbuf_AddText` branch (a body containing `;`) cannot
+be planted from a server console at all: `stuffcmd` refuses any string with `;` or
+`
+` ("You're not allowed to stuffcmd that", `sv_ccmds.c:2341`, measured).  That
+filter is in the console COMMAND, not in the wire path, so a server sending
+`svc_stufftext` itself - or its own QC's `stuffcmd` - still reaches that branch.  The
+fix sets the level for both branches; only one is driven, and the local-alias control
+is what exercises the other.
+
+**Three harness facts measured on the way, and they are why the grader attributes by
+string rather than by segment or count.**  (1) A multi-command alias body's execution
+is DEFERRED - the local alias queued at one changelevel drained ~94 s later, during
+the client's own quit - so a marker's position says nothing about which phase produced
+it.  (2) The client's `quit` reloads the menu and the map, and those reloads fire
+`f_newmap` AGAIN (two extra payload runs after the client printed its own "done"), so
+counts differ between builds for reasons that are not the fix (4 vs 3 above) and only
+presence/absence is a verdict.  (3) `cmd viewpos`'s reply is asynchronous and a shader
+reload (~150 lines) landed between request and answer, so a fixed byte window read it
+as "not connected" - a false verdict on the one prediction that validates all the
+others; the grader now bounds that window by the client's own done marker.
+
+**Client-side only.** A dedicated server never runs `TP_ExecTrigger`, so no lobby
+deploy is implied by this patch; it ships with the next client release.
+
+## Patch 488 - a server may no longer name the DLL the client's renderer loads  *(APPLIED - engine `client/renderer.c`)*
+
+**Problem.** ENGINE_SECURITY.md item 2, the last route to arbitrary native code
+execution from a remote server, and CONFIRMED rather than traced: `p482b`'s canary
+had its `DllMain` run inside the client's pid.  `R_BuildRenderstate` stored an
+EXPLICIT subrenderer token with no filter at all
+(`Q_strncpyz(newr->subrenderer, com_token, ...)`), while the path filter immediately
+beside it -- "don't allow this to contain paths. that would be too exploitable - this
+often takes the form of dll/so names" -- ran only on the `gl_driver` FALLBACK branch.
+That token is a DLL name: `GLInitialise` passes it to `Sys_LoadLibrary`, and the
+Vulkan path passes it straight to `LoadLibrary` (`*info->subrenderer ?
+LoadLibrary(info->subrenderer) : NULL`, `gl/gl_vidnt.c`).  `setrenderer` is
+registered with no restriction level, so a server's stufftext reaches
+`R_SetRenderer_f`, which hands `Cmd_Argv(1)` here.  A non-existent path in the same
+arm printed `Loading renderer dll "<that path>"`, which is what makes the canary an
+execution and not a coincidence: the string arrives verbatim.
+
+**Change.** Refuse an explicit subrenderer token when the caller is insecure
+(`Cmd_IsInsecure()`), print `Blocking insecure renderer: <token>`, and leave
+`subrenderer` empty so the existing fallback chain runs (`gl_driver`, then the system
+`opengl32`).  THE TOKEN IS REFUSED WHOLE RATHER THAN SCREENED FOR SLASHES, and that
+is the part worth keeping: a BARE name is also a DLL name, and `LoadLibrary`
+resolves it through the standard search order, which includes the client's own cwd --
+so copying the sibling branch's `strchr('/') || strchr('\')` test would have been
+the incomplete version of this fix, closing the absolute path p482b drove and leaving
+a dropped-file route open.  The renderer NAME is untouched, so a server may still ask
+for `gl`/`vk`/`sw`; only the choice of library is the user's.  A local console or cfg
+caller is `RESTRICT_LOCAL` and never insecure, so this costs the user nothing --
+measured, not assumed (L1 below).
+
+**NOT gated on `vid_renderer`'s `CVAR_SERVEROVERRIDE`, deliberately.** That would
+also refuse a LOCAL user's own explicit `setrenderer gl <path>` for as long as a
+server held that cvar, and the route it would defend was measured as not reaching the
+loader (`p482b` B1: the cvar took the planted path and the engine logged `Server
+taking control of cvar vid_renderer`, but `GLInitialise` printed `Reusing renderer
+dll` and the canary did not run).  A gate whose cost is a local false positive,
+defending a route measured dead, is the wrong trade; it is in the game repo's BACKLOG
+with that measurement and a falsifier instead.
+
+**Verified.** Built win64 `m-rel` + `sv-rel`, exit 0, no new warnings.  Driven
+subject/control, ONE process (a listen server, with the engine's own `stuffcmd` as
+the delivery, which is what `p482b` used -- stufftext to the local client seat
+arrives at `RESTRICT_SERVERSEAT(0)` = 31, so `Cmd_IsInsecure()` is true).  Five
+pre-registered predictions, ALL MET ON BOTH BUILDS.  Control `b36fafc9` (Patch 487,
+no 488), subject `2c08576e`, 63 s each:
+
+| evidence | control | subject |
+|---|---|---|
+| local token reached the loader | yes | **yes** (unchanged) |
+| stuffed token reached the loader | **yes** | no |
+| stuffed token refused | no | **yes** |
+| stuffed canary reached the loader | **yes** | no |
+| stuffed canary refused | no | **yes** |
+| `marker.txt` lines | **1** (`DllMain ran in pid 16268`) | **0** |
+
+Three distinct path strings (a locally typed one, a stuffed non-existent one, the
+stuffed canary) mean every line names its own cause, and the stuffed non-existent
+path is the discriminator that needs no DLL: it separates "the token was refused"
+from "the load failed".  Provenance is by STRING rather than by stamp -- the stamps
+in this tree are stale by construction -- and the driver refuses to run if the
+subject lacks the gate string or the control has it.  Arm:
+`C:/FTESurf-private/poc/p488/` (`run_p488a.py`, `cfg/p488a.cfg`), private because it
+is a working recipe for native code execution that every shipped engine still has
+(0.1.22 = patch 467).
+
+**NOT VERIFIED.** (a) The `vid_renderer` + `vid_restart` route was measured dead by
+`p482b` B1 and is not re-driven here, so this patch's claim is about the
+`setrenderer` command route only.  (b) Windows only.  The gate is in common client
+code, so a Linux `.so` token is refused by the same test, but no Linux build was
+driven.  (c) A harness bug found on the way is recorded in the arm rather than left
+implicit: `setrenderer gl <path>` UNQUOTED hands the handler `argv(1) == "gl"` alone,
+so no token is parsed and nothing is logged -- a regression control written that way
+measures a different code path from the subject's, and would have read as "the fix
+broke local renderer selection" on the subject while passing vacuously on the
+control.
+
+**Client-side only.** No server behaviour changes, so no lobby deploy is implied; it
+ships with the next client release.
+
+## Patch 489 - `allskins` no longer copies a server-supplied string past the end of its buffer  *(APPLIED - engine `client/skin.c`)*
+
+**Problem.** ENGINE_SECURITY.md item 3, the last driven-and-open item:
+`Skin_AllSkins_f` was
+
+    strcpy (allskins, Cmd_Argv(1));
+
+into `char allskins[128]`, and `qwskin_t skins[MAX_CACHED_SKINS]` is declared
+IMMEDIATELY AFTER it, so the bytes past 128 land in the skin cache.  The command is
+registered with no restriction level and the handler has no `Cmd_IsInsecure` check, so
+a server's stufftext reaches it.  Unlike the rest of that audit's list, this one MUST
+stay server-reachable: forcing skins is a legitimate QuakeWorld server feature, and
+the audit says so in terms ("the command exists FOR a server to call").  So the fix is
+the bound, not a gate.
+
+**Change.** `Q_strncpyz (allskins, Cmd_Argv(1), sizeof(allskins))`.  127 characters
+are still accepted whole; anything longer was already invisible downstream, where
+`qwskin_t::name[64]` truncates the value to 63 characters before it is ever used, so
+no legitimate server loses anything it could express.  `strcpy` was the only unbounded
+copy in the file (audited: `grep -n "strcpy\|strcat\|sprintf" client/skin.c`), and the
+same sweep over `client/*.c` and `common/*.c` for a copy fed directly by `Cmd_Argv`
+found two others, both already bounded and both verified rather than trusted --
+`zqtp.c`'s `msg_trigger` checks `strlen >= countof(trig->string)` and `strlen(name) >
+31` before its two `strcpy`s (and refuses insecure callers outright), and `cmd.c`'s
+`Cmd_Alias_f` concatenates into a 65536-byte buffer, which is a separate question
+recorded in the game repo's BACKLOG rather than folded into this patch.
+
+**Verified.** Built win64 `m-rel` + `sv-rel`, exit 0, no new warnings.  Driven over
+FOUR BUILDS with two jobs, five pre-registered predictions, ALL MET ON ALL FOUR
+(`C:/FTESurf-private/poc/p489/`, `run_p489a.py` + `cfg/p489a.cfg`):
+
+THE DETECTOR.  `p482c` could not distinguish a fix from no fix, because it grades the
+loader line and `qwskin_t::name[64]` truncates that to 63 characters downstream -- its
+own RESULT says the overrun is NOT measured and needs a canary build.  So this arm is
+that canary build: `mkcanary.py` generates BOTH variants from one pristine `skin.c`,
+placing a guard word (`0x50489489`) at offset 128 and printing it before and after the
+copy, and ASSERTS the two differ in exactly one line so the instrumentation cannot be
+what separates them.  The handler prints `arglen N` with each reading, so every
+reading is self-attributing and no verdict depends on log position.
+
+| argument | canary-control (`strcpy`) | canary-subject (`Q_strncpyz`) |
+|---|---|---|
+| 15 chars | guard intact | guard intact |
+| 127 chars (the largest that fits) | guard intact | guard intact |
+| 300 chars | **guard = `0x62626262`** | **guard intact** |
+| client | **died, rc 0xC0000005** | reached the end, rc 0 |
+
+The corrupted guard holds the argument's own bytes (`0x62` = `b`), and the log ends on
+the line after it -- so the client died inside `Skin_Skins_f()`, the statement
+immediately after the copy, consuming the skin cache the overflow had written through.
+THE REGRESSION ARM, on the binaries that actually ship (control `b36fafc9` = Patch 488
+with no 489, subject `73fc1c1f`): both behaved IDENTICALLY -- a stuffed
+`allskins p489short_reach` still reached the loader, the 127-character name still
+reached it truncated to 63 characters, and both survived the 300-character argument.
+Provenance by string rather than by stamp: the driver refuses to run a canary build
+that lacks the guard print or a real build that contains it.
+
+**NOT VERIFIED, and the distinction matters.** The crash above is a property of the
+INSTRUMENTED layout, where a guard word sits at offset 128 in place of whatever the
+linker put there; the uninstrumented build survived the same argument (`p482c`, and
+real-control here).  So the claim this patch earns is "an unbounded write of a
+server-supplied string past a 128-byte global, demonstrated to reach at least 172
+bytes and to be fatal once the bytes past the buffer are load-bearing" -- NOT "a
+server can always crash a client with `allskins`".  The audit deliberately did not
+quote an impact class beyond the bound being absent, and that restraint still holds.
+Also Windows only; the change is one line of portable C, but no Linux build was
+driven.
+
+**Client-side only.** No server behaviour changes, so no lobby deploy is implied; it
+ships with the next client release.
+
+## Patch 490 - `in_journal_end` prints the journal it wrote, not a loader thread's name  *(APPLIED - engine `client/in_generic.c`)*
+
+**Problem.** `IN_JournalEnd_f` held `name` across `COM_WriteFile` and printed it
+afterwards.  `QC_FixFileName` returns EITHER its argument -- a `Z_Malloc`'d
+`Cmd_Argv` copy, stable for the whole command -- OR `va("data/%s", name)`, a pointer
+into the engine's small rotating `va()` buffer, and it takes the `va()` branch
+whenever the caller passed a BARE name with no `data/` prefix.  `COM_WriteFile` walks
+the filesystem, which restarts the loader threads, whose names come from `va()` -- so
+on the bare-name path the pointer this function still holds describes a loader thread
+by the time it prints.  The same pointer feeds the `Con_Printf(CON_WARNING
+"in_journal_end: %s was not written\n")` a few lines below, which is precisely the
+line where a reader needs to know WHICH journal was lost.
+
+**Change.** Copy the name into a `char namelocal[MAX_QPATH]` before `COM_WriteFile`
+and print the copy.  Twenty-one lines, one file, no behaviour change on any path that
+was already correct.
+
+**NOT an evidence defect, and the arm measures that rather than asserting it.**
+`COM_WriteFile` runs on the good pointer, before the clobber, so every journal was
+always written under its real name.  Over the tree's `ftesurf/logs/` corpus: 117
+`in_journal_end:` lines name a file, **17 read `loadworker_3`** and 100 read their own
+`data/<name>.hid` -- and the split is exactly the argument shape, not luck.  The 17
+are every harness that called it with a bare name (`p484ident.cfg` says
+`in_journal_end p484_B.hid` and its log says `loadworker_3`); the 100 include the
+GAMECODE's own caller (`cl_replay.qc`'s `localcmd(sprintf("in_journal_end %s\n",
+dst))`), which always spells the `data/` prefix through `FS_RunPath` and so never
+took the branch.  No `was not written` warning exists in the corpus, so the load-
+bearing half of the fix has never fired in anger -- it is the reason to fix this
+rather than tolerate it, not a claim that it has cost anything yet.
+
+**Verified.** Built win64 `m-rel`, exit 0, no new warnings.  Subject and control are
+ONE FILE APART, which is what makes the diff attributable: the control is
+`a5d9019a6` (Patch 489, no 490) built `m-rel` (`d1106cb7…`), the subject is the same
+tree plus this change (`5ec1992b…`).  Both were built in the same session from the
+same objects, and `git diff --stat` on the subject reads `1 file changed, 21
+insertions(+)`.  Driven by `cfg/test/p490jname.cfg` and graded by
+`tools/p490jname.py` (game repo), three pre-registered arms, no server and no map --
+the journal is the input layer's own and begins at the menu:
+
+- **arm 1, the subject path** (`in_journal_end p490_A.hid`, a bare name): control
+  printed `loadworker_3`, subject printed `data/p490_A.hid`.  The control's failure
+  is its PASS; a pre-490 binary that printed the real name would mean the mechanism
+  was misdiagnosed and the patch fixes nothing.
+- **arm 2, the already-prefixed path** (`data/p490_B.hid`): printed identically on
+  both.  This is the half that proves the fix did not break the working path,
+  including the gamecode's own caller, which is this shape.
+- **arm 3, the files and not the print**: `p490_A.hid` 1776 bytes and `p490_B.hid`
+  2127 bytes on BOTH binaries, and nothing on disk under a loader-thread name.  This
+  is the prediction that bounds the incident -- had it failed on the control the
+  defect would have been an evidence defect and this would be a different patch.
+
+The shipped `ftesurf64.exe` (488-era) was run as a second control and failed arm 1
+identically, so the defect is not new in 489.
+
+**Follow-up, same session: all three `QC_FixFileName` call sites audited and the
+rule written at its `extern`.**  The other two are `cl_receipt.c:197` (hashes a
+path it was handed, calls nothing between the return and the read) and
+`cl_receipt.c:514` (`rec_ul_arm`, which strlens, suffix-checks and `Q_strncpyz`s
+into its slot array with no filesystem call in between).  Both are safe AS WRITTEN
+and both become this defect the moment someone adds an FS call or a diagnostic
+print to them, so the `extern` in `in_generic.c` now states the rule and names the
+audit.  Comment-only; rebuilt `m-rel` exit 0 and the arm re-run at 8 checks 0
+failed, which is what confirms a comment did not become code.
+
+## Patch 491 - a remote server may no longer turn a connected client into a cluster master  *(APPLIED - engine `server/sv_cluster.c`)*
+
+**Problem.** ENGINE_SECURITY.md item 10, the last unarmed item in that audit, and its
+own note about it was WRONG IN THE DIRECTION THAT MATTERED: it said the route "needs a
+local/listen server first".  It does not.  `mapcluster`, `ssv` and `ssv_all` are
+registered by `SV_InitOperatorCommands` with NO restriction level, and a CLIENT runs
+that function too because it can host -- the same fact Patch 485's `gamedir` note
+records.  So a remote server's stufftext reached `MSV_MapCluster_f` and then
+`MSV_MapCluster_Setup`, whose FIRST unconditional act is `CL_Disconnect(NULL)`, after
+which the victim's process becomes a cluster master: `SV_UnspawnServer`,
+`sv.state = ss_clustermode`, `NET_InitServer` opening sockets, and a landing map of the
+caller's choosing.  The subserver fork that follows is `CreateProcessW`.  Measured, not
+traced: the victim was dropped (server-side `Client "Proto" removed`) and
+`Operating in databaseless mode` printed on a plain client that had only ever connected
+to somebody else's server.
+
+**THE SECOND LEG, and why the gate is where it is.** `MSV_MapCluster_Setup` has TWO
+command legs, and gating one is not gating the command -- Patch 485's finding, from a
+handler that ended in `Cbuf_AddText`.  Leg 2 is `SV_Map_f`'s auto-offload, which a
+server reaches in two steps: `sv_autooffload` is a plain `CVARD` with no
+`CVAR_NOTFROMSERVER`, so a stuffed `set` takes it, and a stuffed two-argument
+`map <name>` then lands in the same function.  The gate therefore sits in
+`MSV_MapCluster_Setup` itself, before `CL_Disconnect`, and refuses `Cmd_IsInsecure()`
+with `Blocking insecure command: %s` naming `Cmd_Argv(0)` -- so it prints `mapcluster`
+on one leg and `map` on the other, which is the observable proof that both are covered.
+`ssv`/`ssv_all` were left alone: `MSV_SubServerCommand_f`'s write path is inert without
+a cluster (it prints `No node for index.`) and its no-argument listing prints only to
+the victim's own console, so it is a harmless reachability probe rather than a hole --
+the same reasoning Patch 485 used to leave `gamedir`'s argc==1 read available.
+
+A local console, a config or a command line is `RESTRICT_LOCAL` and never insecure, so
+the legitimate uses are untouched: a dedicated server's cfg, the single-player offload
+`sv_autooffload` exists for, and the engine's own menu.  Nothing in the FTESurf mod
+calls this -- the lobbies only mention `mapcluster` in comments about future work, and
+they are dedicated, which the auto-offload leg excludes anyway (`!isDedicated`).
+
+**Verified.** Built win64 `m-rel` + `sv-rel`, exit 0, no new warnings.  Driven over a
+MATCHED pair differing ONLY in `server/sv_cluster.c` -- control `2309fccb` (HEAD
+`af6610e7e` with the file reverted) and subject `4dd856be` -- four runs (two legs x
+control/subject), four pre-registered predictions each, ALL MET ON ALL FOUR
+(`C:/FTESurf-private/poc/p491/`, `run_p491.py --leg mapcluster|autooffload`):
+
+| | leg 1 control | leg 1 subject | leg 2 control | leg 2 subject |
+|---|---|---|---|---|
+| reachability / precondition | `ssv` listing x1 | **x1** | effective value 1 x1 | **x1** |
+| `MSV_MapCluster_Setup` ran | **x1** | x0 | **x1** | x0 |
+| gate fired | x0 | **`mapcluster` x1** | x0 | **`map` x1** |
+| server could still address the client | **x0 (dropped)** | x2 | **x0 (dropped)** | x2 |
+
+The two legs cannot share a process, and the reason is in the code: leg 1 sets
+`sv.state`, and leg 2's condition requires `!sv.state`, so whichever ran first would
+mask the other.  Disconnection is evidenced by a marker the server stuffs AFTER the
+attempt -- a `stuffcmd` with no client to address vanishes with no message anywhere
+(AGENTS.md), so its ABSENCE is the evidence and its presence proves the client stayed.
+That is a stronger observable than reading connection state, because it is produced by
+the party doing the dropping, and leg 1's control corroborates it server-side with
+`Client "Proto" removed`.  The reachability prediction is deliberately separate from
+the verdict and must pass on BOTH builds, so "the gate works" cannot be confused with
+"the command was never reachable".
+
+**Two harness bugs the NOT-REACHED mechanism caught, both in the precondition control,
+and in the second case the arm would otherwise have reported NO VERDICT for a leg that
+had in fact fired.**  (1) The first cut matched `"sv_autooffload" is "1"`, but a
+server-set cvar is `Cvar_LockFromServer`'d, so the client prints three lines and THE
+FIRST ONE LIES: `"sv_autooffload" is "0"` / `Effective value is "1"` / `Default: "0"`.
+That is exactly the latched-string-vs-effective-value split AGENTS.md records for
+string mirrors, here in the engine's own cvar readback.  (2) The second cut required
+those two lines to be ADJACENT, and every log line carries a `YYYY-MM-DD HH:MM:SS `
+prefix, so the pattern could never match.  The final pattern was derived against the
+real bytes rather than guessed a third time.
+
+**NOT VERIFIED.** The subserver fork itself (`CreateProcessW`, `sys_win_threads.c`):
+both legs were stopped at `MSV_MapCluster_Setup`, which is before the fork, so what
+this patch proves is that a remote server could DROP a connected client and RE-PURPOSE
+its process into a cluster master with a landing map of the server's choosing -- not
+that it could make one spawn children.  Also: an earlier control run was killed by the
+driver's 150 s timeout after the client printed `done` and re-initialised `menu.dat`,
+which read as "the re-purposed process stopped honouring quit"; on the matched pair the
+same control exits rc=0 in 48 s, so that was not reproducible and is not claimed.  That
+first cut also quoted binaries built before the peer's Patch 490 follow-up landed --
+the pair above is the one these numbers come from, and re-running all four arms after
+the tree moved is the reason the numbers are quotable at all.
+
+**Client-affecting but SERVER-side code.** No QC and no cfg depends on it, so no lobby
+deploy is implied by this patch alone; it ships with the next client release.
+
+## Patch 492 - current Momentum's collision: Source's brush test and the slide-bug change, on `pm_fixrampbugs 2`  *(APPLIED - engine `common/com_bih.c`, `common/pm_source.c`, `common/pmove.h`, `server/sv_phys.c`, `server/sv_user.c`, `server/sv_ccmds.c`, `server/server.h`.  A run at fixrampbugs 2 pins `pmsrcver=2` (review round 1); below 2 the mover, the pin and every recording are unchanged.  The game turns it on in `cfg/default.cfg`.)*
+
+Lex, 5 Oct: surf_voyager is a hands-off map -- the geometry flies you for 66 s -- and here it fell short where it flies in Momentum and CS:S.  Measured against his own Momentum run of it (`ftesurf/data/momentum/surf_voyager/main/0004418_proto-2da02252_run.rec`, every tick at %.2f) with a debug build printing every tick's state and every trace, three rules disagreed, each at the first tick where the two runs did:
+
+1. **The brush test decided hits on the true fractions** `d1/(d1-d2)` and only pulled the reported one back by DIST_EPSILON.  Source decides on the adjusted ones -- `(d1-eps)` to enter, `(d1+eps)` to leave, and a strict `<` against the reported fraction across brushes.  At a ramp seam a box riding within 1/32 of the old face still touches it, so Source clips the old face's share of gravity and then the new face: computed by hand from the BSP's planes that reproduces Momentum's (-190.28, -710.33) at the first seam (t 0.54) to the printed digit; ours skipped the old face (+0.04/+0.18 u/s), lost a contact tick at the ramp's end (5.6 u/s), was ~156 units off by the faceted wall at 10 s, lost 25% there and reset at 11.5 s.
+2. **The early-out was Quake 2's** `d1 > 0 && d2 >= d1`.  Source's is `d1 > 0 && d2 > 0`: a box moving parallel to a face within 1/32 does not re-hit it.  With Quake 2's, clip float error re-hit the face at fraction 0 and the ramp fix nudged 0.2 off it.
+3. **A fraction-0 hit on a later bump was a "ramp bug"** (0.8.7's sv_ramp_fix, IsValidMovementTrace), recovered by a 0.2 nudge.  Current Momentum's `mom_mv_fix_slide_bugs` (0.8.7's cvars are gone from its server.dll) lets it reach the two-plane crease, as stock Source does: the start pocket's release and the V troughs end exactly where the recording does only that way (crease projection reproduces Momentum's (-2676.22, 0.19, -2676.12) at t 11.655).
+
+With all three the debug build matched the recording to 0.013 units of position for the first 11 s and stayed within ~1 unit to 46 s; today's game left it in the first second.  The rest is float rounding of positions (a random walk of ~0.0005/tick at x ~ 8700), which decides grazing contacts at the 1/32 boundary and is not a rule this patch can name.
+
+The trace rules apply only while `bih_sourceclip` is set, which PMSrc_PlayerMove does from `movevars.fixrampbugs >= 2` and clears on exit -- QC traces, rendering and every other caller keep the old test.  pm_verify and pm_recsim reach the mover through PMSrc_PlayerMove after SV_PMPinApply, so a replay traces by its own file's value.
+
+**Review round 1** (two reviewers: trace/mover logic, and evidence; neither saw the reasoning above).
+
+1. **A box starting inside the epsilon skipped the brush.**  On a short move from within 1/64 of a face, `(d1-eps)/(d1-d2)` is below -1, and Quake 2's `enterfrac > -1` dropped the brush: the move ended inside it (the reviewer compiled this commit's own functions into a test program).  Source starts `enterfrac` at `NEVER_UPDATED` (-9999) and clamps an accepted one to 0, so the box stops at the face (except a move under ~3e-6 units from under ~3e-6 outside, which Source lets through too).  The reviewer proposed clamping the numerator at 0 instead, as `collisionutils.cpp`'s IntersectRayWithBox does; both were flown on surf_voyager against Lex's Momentum recording:
+   - unchanged (Quake 2's -1): every tick to 11.64 s equal at the recording's %.2f, then the V trough (0.79 u/s) and a different line after it -- 0:58.335, 8 s early, 2110 units off at the end.
+   - the numerator clamp: off from the first seam (t 0.540: vy -190.23 / vz -710.15 against -190.28 / -710.33), but finishes 1:06.270, Momentum's own tick (4418).
+   - **NEVER_UPDATED, shipped: every tick to 11.64 s equal, the first seam included, and 1:06.270 -- 4418 ticks, the recording's count.**  Worst position 5.07 units at the finish; the rest is the V trough's 0.6 u/s and contacts landing a tick apart.  The recording agrees with the unclamped form and not with the clamp.
+   The reviewer's second case (a negative enter undercutting a negative leave at an edge) stays: it is the same unclamped arithmetic the recording agrees with.
+2. **Brushes and triangles decided hits on different numbers in one trace.**  Brushes compared the reported fraction, triangles and embedded models the true one, and a triangle could RAISE `trace.fraction`: riding a displacement (reported 0, true 0.521), a brush ahead at 0.332 lost to 0, then a face behind it at true 0.40 won with 0.399 -- the box ended 1.97 units inside the brush.  Round 1 put triangles, patches and embedded models on the reported fraction too; round 2 found that wrong (below).  The shipped shape: they keep their pre-492 test on true fractions, and a brush competes on `truefraction`, which a brush sets to its adjusted enter -- so among brushes it is Source's test, and a brush can no longer lose to a triangle's low reported fraction (the ride-then-brush case above now stops at the brush, 0.332).
+3. **`fixrampbugs=2` named two movers.**  Pre-492 engines run any nonzero value as 1 and pin `pmsrcver=1`, so a lobby that got the cfg before the binary would record honest runs whose pin claims physics they did not run, and the new verifier would HOLD them.  The pin's `pmsrcver` now follows the clip (SV_PMSrcVer: 2 at fixrampbugs >= 2, else 1), and pm_verify REFUSEs a header or applied `pm` pin whose pmsrcver is not the one its fixrampbugs needs.  Measured: surf_ace r38 as recorded PASS; fixrampbugs relabelled to 2 REFUSE "a pre-492 mover" (was HOLD); pmsrcver relabelled to 2 REFUSE; both relabelled HOLD (30 packets from row 3662); the same two relabels on a `pm` record of surf_aesthetic r57 REFUSE.  A pre-492 verifier reads only the HEADER's pmsrcver: it REFUSEs a file whose header pins 2 (the voyager recording: PASS here, REFUSE on the old server), but a Multi-Session run parked before the deploy and resumed after it pins 1 in its header and 2 in a later `pm` record, and the old verifier HOLDs it (measured, review round 2) -- so the sweeper must not roll back past this patch.
+4. **pm_dettest could not see the clip**: its traces run outside the mover, and its mover pass copied the running fixrampbugs.  `srctrace` repeats the trace sweep with the clip on; `mover` now pins fixrampbugs 1, the value every recorded reading ran at, and `srcmover` is the same walk at 2.  `trace`/`mover` unchanged (bhop_eazy f7958b04dbcd1008 / 3d136f8de25c9c2c, surf_ace 9ba6ebb01e3518f0 / 2b575b87199f21c4); `srctrace` bhop_eazy de0ed3421db7e9d1, surf_ace f89ef15d3fb57e3e (c16e72359724b916 under round 1's triangle rule), surf_voyager 5abf954b20b42051.  `srcmover` equals `mover` on all three -- the random walk never meets a case where the rules differ -- so the deploy gate verifies a pmsrcver-2 recording as well (FTESurf `tools/pigate.sh`), and runs pm_dettest on surf_ace, whose displacements reach the triangle path that bhop_eazy has none of.
+
+**Review round 2** (the same two lenses, on the round-1 commit): no honest recording from any engine version gets a wrong PASS, and none made on this build a wrong REFUSE.  Fixed: a `fixrampbugs` of NaN (only an edited file can carry one; `atof` reads "nan") was below 2 to the slide rule and not >= 2 to the clip or the pin, a third mover under `pmsrcver 1` -- SV_PMSrcVer now returns 0 for it, which names no mover and REFUSEs, and the slide rule tests `!(x >= 2)` like the other two.  The refusal no longer claims the file came from a pre-492 engine: 492's first cut (62ea3978b, never deployed) also pinned 1 at 2.  And the pin-index name check moved into SV_PMSrcVer, because the verifier never fills a pin and so never ran it.
+
+The logic reviewer, compiling three versions of the clip into one harness, found round 1's triangle change made things worse: (a) the triangle test is Quake 2's (early-out only when moving away, true fractions, `leavefrac` 2), so its true enter can sit in (1, 2] when the box ends within 1/32 in front of a face, and only the old `enterfrac <= truefraction` had capped it -- under round 1 a box dropping to 0.01 above a displacement or prop floor hit it at 0.9785, and the mover's 2-unit ground probe called a player grounded 2.03 units up; (b) a triangle reports the adjusted value of its TRUE-enter plane, which can be far below where the box meets it, and round 1 let that win, tree order deciding.  Hence the shape above, checked with the reviewer's own harness: no phantom hit, and the wall-then-floor case gives the wall at 0.499375 in every order, culled or flat.  Running triangles through the brush's own rules, as Source's `dispcoll_common.cpp` does, is the real fix and needs ground truth on a displacement or prop map: BACKLOG.  Also corrected: brushes do not tie "first tested wins" -- an unclamped negative enter replaces a stored 0, so the later brush wins, which is Source's arithmetic.  On maps the BIH does not trace (BSP29, box hulls) fixrampbugs 2 changes only the slide rule, and the pin still says 2 -- the same mover on both sides of a replay, so a consistent label.
+
+Not changed: the 8-bump budget (Momentum 0.8.7's `sv_ramp_bumpcount` default; 0.10's `mom_mv_bumpcount` default is not readable from server.dll's strings), and the QC `tracebox` that SL_RowGrounded uses keeps the old test (BACKLOG).  Old recordings: bhop_ambience 0002376, surf_ace r38, surf_aesthetic r57, surf_aweles r19 and surf_how2surf r46 PASS on this build as before.
+
+## Patch 494 - three holes left by Patches 485 and 488, and `toggle`  *(APPLIED - engine `common/fs.c`, `common/cmd.c`, `client/renderer.c`, `server/sv_ccmds.c`)*
+
+Found by an independent review of Patches 480-491 on 5 Oct, each driven on a listen server stuffing its own client (`stuffcmd *`, which reaches only a spawned client -- wait as `poc/p485a.cfg` does, and prove delivery with a stuffed `echo` first).
+
+1. **`fs_game` / `game` walked around Patch 485.**  A server could set the cvar, and its callback re-issues `gamedir` at RESTRICT_LOCAL, below 485's gate.  Measured on the unfixed build: `Server taking control of cvar fs_game`, and the switch CREATED the sibling directory and moved the client's log into it.  Now CVAR_NOTFROMSERVER.
+2. **`toggle` checked neither CVAR_NOTFROMSERVER nor CVAR_NOSET**, unlike `set`, `seta` and `inc`, so `toggle game <dir>` or `toggle <any NOTFROMSERVER cvar>` from a server bypassed every such cvar.  Measured: a stuffed `toggle cfg_save_auto` turned the harness's `cfg_save_auto 0` into 1.  Now the same two checks as `set`.
+3. **`vid_renderer` outlived Patch 488.**  488 blocks an insecure in-session renderer load, but `setrenderer` still wrote the whole `gl <dll>` string into this ARCHIVE cvar, and a server could also set the cvar directly; the next cold start loads it at RESTRICT_LOCAL (the reviewer ran a canary's DllMain that way).  Now CVAR_NOTFROMSERVER, and an insecure `setrenderer` does not persist.
+4. **`SV_Map_f` copied a command argument into `spot[MAX_QPATH]` with strcpy.**  Bounded with Q_strncpyz; a 300-character start spot now loads the map.
+
+**Measured after:** each stuffed probe prints `Server tried setting <cvar> cvar` and the value stays; `setrenderer` still prints `Blocking insecure renderer` and no longer persists.
+
+**The unfixed control exploited the owner's install.**  Its `toggle cfg_save_auto` succeeded, so it auto-saved on quit and wrote the stuffed `vid_renderer` into C:\FTESurf\ftesurf\ftesurf.cfg; the next launch tried to load the (nonexistent) DLL and fell back.  Repaired from the 19 Sep backup's value (only `vid_renderer` differed), and the sibling gamedir it created was removed.  Run any control for a client-security patch on a COPY of the install.
+
+## Patch 493 - the move columns get a bound, a marker and a reader that checks both  *(APPLIED - MOD-SIDE ONLY, no engine C)*
+
+`src/shared/sh_defs.qc` (TF_MOVEOOR), `src/server/sv_timer.qc` (SV_MoveBoundFrame, the
+`movebnd` header key, `cmd timer`), `src/server/sv_player.qc` (one call in PreThink),
+`src/client/cl_scores.qc` (the header bound 24 -> 32), `ftesurf/cfg/default.cfg`,
+`tools/reccheck.py`, `tools/test_reccheck.py`, `tools/p493move.py`,
+`ftesurf/cfg/test/p493{move,off}.cfg`.  No engine file is touched and no engine
+builtin is used, so this is version-skew safe against the older Pi engine.
+
+**Problem.** A usercmd's move triple reaches the server with NO RANGE TEST ANYWHERE: the
+engine's server side is a bare `sv_player->xv->movement[0] = ucmd->forwardmove;` and the
+only bound on the client is `cl_input.c`'s `bound(-32768, ..., 32767)`, a wire bound
+rather than a plausibility one.  The physics never needed one -- `PMSrc_WishDir` clamps
+wishspeed to `pms_maxspeed` -- which is exactly why an impossible value here is free
+evidence rather than a hazard.  And the corpus says the impossible value is the shape
+this class of cheat writes: two of the samples in `C:/FTESurf-private/Cheats` fly a body
+back to a recording's start with `cmd->forwardmove = dist;`, a DISTANCE, which is in the
+thousands on any map that respawns away from its start.  Nothing in this tree had ever
+looked at the column.
+
+**Change.** `run_movebound` (2000, 0 = off) is latched per map in `SV_TimerMapInit`
+beside `run_startcap`, and `SV_MoveBoundFrame` -- called from PreThink BESIDE
+`SV_TimerInFrame` and not inside it, because that function returns early on three counts
+and a run whose recorder is not live still submits its flags -- compares each command's
+largest |axis| against it.  It counts the commands over (`run_t_moveoor`), keeps the
+largest value the attempt sent AT ALL (`run_t_movebig`, tracked before the bound test so
+an honest run reads `worst 450` and not a dead `worst 0`), and sets **TF_MOVEOOR
+(262144)**.  `SV_RecOpen` states the bound as a `movebnd` header key from the same
+latch, so a file cannot state one bound and judge its rows against another; `cmd timer`
+prints `movebnd: bound N over N worst N moveoor N`.
+
+MARKER ONLY, on the `SV_RecCounts` precedent (Patch 405): no class, not in TF_UNCERT,
+not in surfd's `style_of`/`certifiable`, not named by `FS_CertWhy`, nothing demoted.
+THREE HONEST ROUTES PAST THE BOUND are written into the bit's essay and are why it marks
+rather than accuses -- the four move cvars are plain archived cvars (`cl_movespeedkey`'s
+ENGINE default is 2.0 where default.cfg ships 1, so an honest +speed sends 900);
+**A GAMEPAD WITH +speed HELD IS UNBOUNDED**, found by reading rather than measuring,
+because `in_generic.c`'s IN_MoveJoystick scales jstrafe by `360 * cl_movespeedkey` and
+then multiplies by `cl_forwardspeed` without re-normalising, reaching 450*360 and stopped
+only by the wire bound; and mouse-strafe adds `m_side * mouse_x` per command.  A
+demotion on this axis would land on an honest gamepad player first, which is the Patch
+305 failure mode.  The strictly better form -- pinning the four move cvars in the ranked
+input profile beside the four it already pins, then judging against the config the client
+reported -- is BACKLOG, and this marker is the measurement that says whether it is needed.
+
+`tools/reccheck.py` gains the two-directional cross-check: `movebnd` joins HEAD_V9, the
+bound is counted as the rows stream past, and **rows over the stated bound with the bit
+clear is a FAULT** (the trace and the marker are written by the same command) while the
+converse is a NOTE, because two honest writers produce it and the tool can see neither
+(the `in`-row line cap, and a `pause` epoch).  Absence of the key abstains in both
+directions, on the `proprule` precedent -- this tree's own Patch 358 fixtures carry
+`side=2325 / fwd=-1067` and no bit, because a harness drove them.
+
+**Verified.** `tools/test_reccheck.py` 306 checks, 0 failed (was 295; `case_movebnd` adds
+11, including the gate below).  A corpus sweep over the 266 `.rec` in `data/runs` is
+unchanged at 169 files with faults and adds no `movebnd` finding to any of them -- every
+pre-Patch-493 file abstains.  Driven by `tools/p493move.py`, **26 checks, 0 failed**: the
+control phase at the shipped `cl_forwardspeed 450` reads `bound 2000 over 0 worst 450
+moveoor 0` on three samples; the subject at 5000 reads `over 120 worst 5000 moveoor 1`
+and then `over 283`, i.e. a count of commands growing as registered; the closed file
+carries `movebnd 2000` and `flags 395013` with the bit present, reccheck faults nothing
+and reports `284 of 1938 over 2000 (worst 5000)`; the two tamper directions fault and the
+weak one notes; and `+set run_movebound 0` on the command line gives `bound 0 over 0
+worst 0 moveoor 0` on five samples with a file that carries NO `movebnd` key, which
+reccheck reports as `not stated (no bound applied)` and `not judged` rather than as a
+clean verdict.
+
+**THE PREDICTION THAT FAILED WAS THE ONE THAT MATTERED, and it produced a real defect in
+the first cut of the reader.** This patch's own harness was written to grade a
+Multi-Session PARK, on the argument that `SV_MsEligible` gates on elapsed time only and
+so a tainted attempt would still close its file with the real flags word.  It does close
+the file -- and the flags word in it is `flags 0` beside 284 rows over the bound, because
+`SV_RecFlagLine` reserves a fixed width at open and only `SV_RecClose` /
+`SV_RecKeepEvidence` seek back to rewrite it.  A marker set after the open is therefore
+absent from a parked file and from a save-state prefix, and the ungated cross-check
+FAULTED that file, i.e. accused a recording the writer never finished.  The check is now
+gated on `end` like every other header-bit cross-check in reccheck, `case_movebnd` pins
+the gate with a `run.rec`-named fixture, and the arm finishes its run instead (b88fin's
+route, which the zone scan's server-side point test makes reachable by a noclip flight).
+
+Two harness failures worth keeping, both of which read as a passing arm.  (1) The first
+run of `p493move.cfg` produced no diagnostic at all because `map bhop_eazy` with no
+`waitms` before it and no `waitmap` after it left every later command running while the
+engine was still initialising -- the whole log was `Can't "cmd", not connected`, and an
+arm graded on the ABSENCE of a marker would have reported the feature working.  (2) The
+second produced a real file and still archived nothing, because phases A and B move the
+body (B at 5000 u/s) so the flight started 2785 units down +x and never crossed the end
+region (`checkpoints: 0 crossed`); the flight now re-launches from b88fin's `setpos`
+first, which adds a `warp` record and taints an attempt that was already tainted, and
+does NOT re-arm -- only `zone_goto` does that -- so the counters under measurement
+survive it.
+
+**NOT VERIFIED.** Nothing here can make a real cheat produce the marker: no sample in
+`C:/FTESurf-private/Cheats` runs against this engine, so the subject is an ordinary
+archived cvar set to 5000, which measures the observation and not the accusation.  The
+bound's value is a judgement over one corpus (1,342,728 axis values in 63 fleet runs,
+max exactly 450, plus a 5,571-file local corpus whose only values above it are 11,460 in
+three harness files) and no joystick player appears in either.
+
+## Patch 495 - the monolith's forest terrace, rebuilt  *(APPLIED - MOD-SIDE ONLY, no engine C: FTESurf `ftesurf/glsl/milk_monolith.glsl`, `ftesurf/cfg/test/p495forest.cfg`)*
+
+**Problem.** The menu's monolith world draws a forest terrace, and from inside it the
+canopy arrived holed, faceted and cut into vertical combs of missing leaf that moved
+as the camera moved; from the balcony it was a dozen lollipops on a flat green slab.
+Two causes, both in `milk_monolith.glsl`.  (1) `trees()` looked at four grid cells, so
+a crown near a cell boundary was in the field or not depending on where the sample
+point sat: at each window shift a crown a metre from the ray left the distance field
+and `march()` stepped straight through it -- the combs, and the sectioning.  (2) The
+crown's distance divided by 1.67 where its own gradient needed 2.8, i.e. it
+over-estimated, which `milk_cone.h` and `march()` both forbid; rays over-stepped the
+leaves and the canopy came back holed.
+
+**Change.** Trees on a 14 m grid with a reach of 6.9 m (<= half the cell), looked up
+over NINE cells, and the returned distance capped at 1.2 * CELL so the field stays
+continuous as the window slides; crowns are a soft-unioned mass plus three lobes, each
+ellipsoid divided by its own smallest semi-axis (the only normalisation an ellipsoid
+may take), smin never over-estimates; trunks are smooth in the SDF with the bark in
+the normal and albedo, because a ripple round a 0.6 m trunk spends the march's step
+size on bark.  Mossy boulders on a second grid, a hummocked floor, and light that
+agrees with the geometry: one `forestDens` field feeds the trees, the canopy shade and
+dappled sun pools, so the wood's edge is a feathered noise and not a box seam.  Below
+high quality the crown is the mass alone and the terrace keeps no boulders.  Every
+cell is rejected by a squared-distance test before any hash and the density field is
+read once per march step, not once per cell -- four reads a step was a fifth of the
+frame.
+
+**Verified.** `cfg/test/p495forest.cfg` (new): bootcheck 7 photographs the four
+stations at the owner's own archived settings (monolith, quality 4, res 1, panels 0)
+and bootcheck 10 sweeps six head turns inside the wood.  Before/after shots: the combs
+and holes are gone in all six sweep views and the balcony view reads as a wood with a
+floor, a stream and boulders.  Cost on an RTX 2080 SUPER at PLAY, q4, every tick:
+2.02 ms before, 17-21 ms after (two samples); q3 (raymarch every other tick) 2.75-5.56
+ms a frame, q2 2.20 ms; with the forest removed from `map()` the world is 7.7 ms, so
+~6 ms is the terrace and its light and ~13 the trees.  Two predictions were falsified
+and are recorded in the cfg: removing the crown ripple changed nothing (the cost was
+per-step evaluation), and mass-only crowns measured SLOWER at ultra (30.6 ms) than
+lobed ones, because disjoint spheres let a ray weave into every surface behind them.
+NOT VERIFIED on the N100: no such machine here; the cfg states the advice that ultra
+was already the slow setting there and quality 3 draws the same wood for a fraction.
+
+## Patch 496 - run times are exact milliseconds, and a QC integer literal is a float  *(APPLIED - MOD-SIDE ONLY, no engine C: FTESurf `src/shared/sh_time.qc`, `src/client/{cl_main,cl_scores,cl_online}.qc`, `src/menu/{m_board,m_main}.qc`, `src/server/sv_player.qc`, `tools/p496time.py`, `ftesurf/cfg/test/p496time.cfg`)*
+
+**Problem.** Every run time this game prints -- the finish line in chat, the save list,
+the board, the WR column, a split against a PB -- went through one float32 expression,
+`ms = floor(ticks * tickrate * 1000 + 0.5)`.  That chain rounds twice and a float32
+carries ~7 significant digits, so it prints 1-3 ms off on most values past 4,096,003 ms
+(68 minutes).  Re-derived here rather than quoted (`tools/p496time.py --stats`): **9,149,677
+of the 16,777,216 ms values below 2^24 are wrong through the `Time_TickString(ms, 0.001)`
+idiom**, which three board paths used because milliseconds happen to be ticks of a
+0.001 s rate -- and 0.001 is not a float32, so that is the chain at its worst rate.  On
+the tick path, 329,580 of the first 1.2M ticks differ at rate 0.015 (first wrong 546,152
+= 2 h 17 m) and 446,140 at `f32(1/66.6667)`, whose first wrong tick is **64,220 = 16
+minutes**.  That last rate is not hypothetical: `cl_online.qc:1683` and `cl_scores.qc:1818`
+pass `1 / ob_rate[i]` with `ob_rate` in ticks per SECOND, so every online board row is
+formatted at the worst of the real rates.  Momentum boards hold hours-long runs, so the
+rows this affects are the ones anybody looks at.
+
+**Change.** `sh_time.qc` gains `Time_TickMs` (an exact compensated product -- Dekker's
+two-product, `4097 = 2^12+1` splitting a 24-bit mantissa -- so `p + err` IS the real
+product of the two float32 inputs, with only the sub-second remainder scaled) and
+`Time_MsString` (the one formatter, integer throughout, so the h:mm:ss split is exact at
+10 hours as well as at 10 seconds).  `Time_TickString` is their pair and keeps its
+signature, so its ~20 call sites are untouched; the three ms call sites now call
+`Time_MsString` directly instead of pretending milliseconds are ticks, and `Mlb_MsString`
+in `m_board.qc` -- which had its own integer split, written to dodge this chain -- is now
+that function plus the board's own `--` for a row with no time.  Clamped at 2147483 s
+(24 days) where `sec * 1000` would wrap the int, and at 1e15 ticks where the 4097 split
+would overflow: neither is reachable from a run, both from a corrupt header, and a
+wrapped int prints as a negative time.  Residual, measured: 6 of 463,116 modelled cases
+differ by 1 ms from float64, every one an exact half-millisecond tie at 233 hours where
+the rate the caller passed is itself 50 ms uncertain.
+
+**AND THE REASON THIS TOOK THREE RUNS: A QC INTEGER LITERAL IS A FLOAT.** `ms = ms + sec
+* 1000` with `sec` an `int` promotes the product to float32 and stores a quantised value
+back into the int -- measured in both VMs, `2144999 * 1000 + 952` gives **2144999936 with
+bare literals and 2144999952 with `1000i`/`952i`**.  The exact product this patch exists
+to compute was therefore undone above 2^24 by the line that added it to the seconds, with
+NO warning from fteqcc.  Every integer literal in both functions now carries an `i`
+suffix, and the rule is in AGENTS.md's pitfalls.  What gave it away was the compiler's
+own F324, `%i requires int at arg N (got float)`, on a throwaway diagnostic print -- so
+fteqcc does type-check sprintf's arguments, and `%i` on a value is a type assertion worth
+making.  (`m_board.qc` had spelled its literals `3600000i` all along; that file was right
+and this one was not.)
+
+**Verified.** `cfg/test/p496time.cfg` + `tools/p496time.py`, a listen server on
+surf_rookie: the client registers `timefmt` and the server answers `cmd timefmt`, and
+because `sh_time.qc` is compiled into both VMs one run grades both copies of the file and
+tags say which printed.  **Subject: 24 checks, 0 failed** over 12,642 lines -- 6,310 cases
+printed by BOTH VMs and all agreeing (the invariant that file exists for, now measured
+rather than asserted), every ms the exact product of the two float32 inputs, every string
+that ms split correctly, and 4,214 of the cases ones the old chain prints differently.
+17 explicit edges pinned, including 64,220 @ `f32(1/66.6667)` -> 963,299 where the old
+chain reads 963,300 and 4,096,003 ms -> `1:08:16.003` where it reads `...004`.
+**Control: 25 checks, 0 failed.** `--control` rewrites `Time_TickMs`'s body -- and only
+that body, one asserted block replacement -- back into the naive chain, rebuilds
+warning-clean, runs the same cfg, and requires the arm to reproduce the modelled old
+chain on EVERY case while disagreeing with the exact answer on the same 4,214; then it
+restores by hash and rebuilds.  That is the leg which proves the arm measures arithmetic
+rather than printing, and that this script's Python model of the old QC is faithful to it.
+Two pre-registered predictions were falsified and are corrected in the cfg header, both
+from the same cause: the reference itself rounded the product to float32 before scaling,
+i.e. it carried the defect under test, and the first run read "2,210 cases differ" against
+a build that was correct.  BACKLOG's modelled tick-path figures (first wrong 273,085;
+619k of 1.2M) did not reproduce at either rate and are not repeated; its ms-idiom figures
+reproduced exactly.
+
+**AND THE FLEET, which needed a correction this entry would otherwise not have
+carried.** `Time_Print` first used `print` -- correct -- but the harness handle had
+been written against a LISTEN server, where a server QC `print()` shows up in the
+client's own log because it is one process. On a lobby it does not: `print` is
+builtin 339, Con_Printf on the SERVER's console, and Con_Printf reaches a connected
+client only where the qc sends it there (`sprint`/`bprint`). So `cfg/test/deploy496smoke.cfg`
+sent `cmd timefmt` to ftesurf@1 three times and read no answer, with no error
+anywhere, while `cmd viewpos` and `cmd timer` in the same run answered normally --
+because those two reply with `sprint(self, PRINT_HIGH, ...)`. The same silence also
+swallowed `cmd ent_census`, a pre-existing command that answers with `print()`, which
+is what made it diagnosable: one control in the same channel and the same second.
+Read from the lobby's side instead -- `log_name`/`log_dir`/`log_enable 1` over rcon
+(one cvar per `execute()` call), drive the cfg, then `log_enable 0` and delete the
+file -- and ftesurf@1 prints
+
+    tf sv 273085 0.0149999997 4096275 1:08:16.275
+    tf sv 64220 0.0149999922 963300 16:03.300
+    ent_census: 3 unhandled classnames/inputs on surf_kitsune
+
+4096275 is this patch's answer; the pre-496 progs would have printed 4096276. Both
+.dat files were sha256-verified ON THE PI against the local build before the run
+(`73d14674...`, `9d5ed103...`), all twelve `ftesurf@` units were active after the
+swap, and `-Pi` refused to swap until it had read twelve rows of 0 players. `dprint`
+would have been worse than useless here: it is Con_DPrintf, which returns before
+formatting unless the host has `developer` or `log_developer`, and a lobby has
+`log_enable 0`, `log_developer 0`, `developer 1` (measured over rcon). The rcon
+console cannot drive it either -- `SV_ParseClientCommand` is the `cmd`/stringcmd
+hook, not a console command, so rcon answers `Unknown command "timefmt"` even on the
+build that has it. That smoke cfg also cost two false readings worth keeping: port
+27698 is the sweep server and not a lobby (the fleet is 27510, 27520..27620), and a
+fixed 20 s wait after `connect` sends stringcmds into surf_kitsune's prop lighting
+and nav pass, where they vanish without an error.
+
+Separately, and not this patch: `build.ps1 -Pi` mis-binds its own parameters when its
+output is redirected to a FILE. `pwsh -NoProfile -Command "./build.ps1 -Jobs 8 -Pi"
+*>&1 > x.txt` arrives at the Pi step with `$PiGame = 'cl_progs.src'` -- a string that
+exists nowhere else in the script except as the middle element of its own compile
+list -- and its guard then throws. The same command piped, bare, or via `-File` binds
+correctly and deploys. Probes pin the corruption to the window between `Push-Location`
+and `if ($Pi)`: the value is correct at script start, at `Step "QuakeC"`, after the
+push and inside the compile loop. Nothing assigns it, and a minimal faithful
+reproduction does not reproduce it, so it is a pwsh host fault and the fix is not in
+the script's logic. Its `$PiGame` regex guard is the reason this cost one run and not
+a corrupt fleet, which is why AGENTS.md now says never to remove it.
+
+**NOT VERIFIED.** No screenshot of a board row past an hour: the observable here is a
+digit in a string and the arm reads it from the same formatter the draw calls, so a pixel
+arm would measure the font.  The one intended behaviour change is that a negative time
+rounding to zero prints `0:00.000` rather than `-0:00.000`, because an int has no negative
+zero -- pinned as a case, and no caller passes fractional ticks (every one rounds first).
+`cl_online.qc`'s cache NAME keeps the old chain deliberately, because every cached `.rec`
+on disk is named by it; the cost is stated in BACKLOG.
+
+## Patch 497 - a replay turns ticks into seconds at the MOVER's rate  *(APPLIED - MOD-SIDE ONLY, no engine C: FTESurf `src/client/cl_watch.qc`, `tools/p497tick.py`, `ftesurf/cfg/test/p497tick.cfg`)*
+
+**Problem.** The `.rec` grammar (the block over `SV_RecOpen`) states two tick keys and a
+rule for them: `tickrate` is "what the recorder's samples are spaced at" and
+`movetickrate` is "the rate the MOVER divided by", and "A reader that turns ticks into
+seconds must prefer this one when it is present" (0 = the engine stated no value).  Three
+QC header scanners read those keys and only one followed the rule: `cl_online.qc:913`
+already preferred the mover's (with the grammar quoted in its own comment), while
+`cl_watch.qc`'s two -- `Watch_Scan` (the replay) and `Watch_LineJobStep` (the board-line
+job) -- took `tickrate` alone.  Those two feed `rec_wt_tickrate` and `ln_tick[]`, i.e.
+the replay's clock, its seek index, its window, the run line's time axis and the strafe
+bar's ideal turn rate (Patch 470 made all of them the file's own), so a file whose two
+keys disagreed would have been replayed and graded at a rate its board row beside it was
+not formatted at.  Nothing in the tree writes such a file: measured over all 6056 `.rec`
+under `ftesurf/data`, 5569 state both keys equal, 487 predate `movetickrate` and state
+only `tickrate`, and **0 differ** -- so this is the rule being kept rather than a visible
+defect being fixed, and the two readers agreeing is what makes the third one's comment
+true of the format instead of of one caller.
+
+**Change.** Both scanners read `movetickrate` and prefer it when it is > 0, falling back
+to `tickrate` and then to `PM_TICK` exactly as before; the board-line job keeps its own
+copy (`wt_lj_mtick`) because it is a separate pass over the same header.  No writer, no
+format and no version change -- the key has been in the grammar since v4 (build 74).
+
+**Verified.** `cfg/test/p497tick.cfg` + `tools/p497tick.py` (both new), 6 checks, 0
+failed.  The driver stages two synthetic headers over one real recording of the map it
+loads, with THREE rates in play so every verdict names one cause: the server runs 0.01
+(`pm_ticrate` is a locked mover cvar, so `default.cfg`'s 0.015 does not reach it),
+`p497diff.rec` says `tickrate 0.025` / `movetickrate 0.008`, `p497same.rec` says 0.02 for
+both.  On the subject all four observables read the mover's rate -- `replay status`'s
+`bar tick`, `replay colours`' `lnmv` for slot 0 (the replay) and slot 1 (the board-line
+job, a separate hunk), `replay seq`'s `lnsb` -- and T5/T6 hold: the same-key file reads
+0.02 in all four, so the arm cannot pass by printing a constant, and no observable reads
+the server's 0.01, so nothing fell back to `PM_TICK`.  CONTROL, required to fail and did:
+the csprogs from `git worktree add C:\tmp\ctl497 HEAD` compiled by hand
+(`fteqcc64 cl_progs.src`, 0 warnings, sha256 9D5ED103... against the subject's
+F70C4AA2...) read **0.02500 in all four** and still passed T5/T6 -- the control cannot
+tell the two files' mover rates apart, which is the defect.  `tools/cfgguard.py` passes.
+NOT VERIFIED: nothing here exercises a real file whose keys disagree, because none
+exists; the subject's own motion is not graded either (the fixture is replayed at a rate
+it never flew at, deliberately -- only the printed rates are read).
+
+## Patch 499 - the rewind's pin owns the movetype, and a resume row stops outliving its run  *(APPLIED - MOD-SIDE ONLY, no engine C: FTESurf `src/server/sv_player.qc`, `src/server/sv_saveloc.qc`, `ftesurf/cfg/test/p477rewind.cfg`, `tools/p477rewind.py`)*
+
+**Problem.** Two defects the Patch 477 review logged and left in BACKLOG, both in the
+rewind's server half.
+
+**(1) THE PIN HELD THE VELOCITY AND NOT THE BODY.** `SV_WatchHold` wrote MOVETYPE_NONE once,
+at the press, and `SV_WatchRelease` handed the stored one back; between the two nothing held
+it. `SV_WatchFrame` re-asserts the zero velocity and the cleared carrier every packet but not
+the movetype, so one `cmd noclip` left a PINNED body in MOVETYPE_NOCLIP for the rest of the
+pin. The engine's own `SV_Noclip_f` answers that command -- this mod's `noclip` branch is dead
+code on every build, as its own comment says -- and needs only `SV_MayCheat`, which `sv_cheats`
+satisfies; the mod's ungated branch (BACKLOG, Patch 479's item) is the lobby-reachable route to
+the same state. `SV_NoclipWatch` is a LEVEL check in PlayerPostThink, so a frozen, recording run
+then read `class: cheated (seg 0 cheat 1 cheatlatch 1)`. Under a REPLAY's pin -- which keeps its
+run through warps and thaws on release (Patch 477) -- that mark survives into the run the player
+goes on to finish.
+
+WHAT IT IS NOT, measured rather than assumed: BACKLOG called this "a body can creep through a
+stage with the clock frozen". It cannot, from the client's own keys. The pinned body moved
+**0.0 u** over 900 ms of `+forward` with noclip ON, because the client sends an EMPTY usercmd
+while browsing (`cl_main.qc`'s `rw_on && !rw_cd` branch) and `SV_WatchFrame` zeroes the velocity
+every packet. The exposure is the taint and the movetype state, not the distance.
+
+**(2) A RESUME ROW OUTLIVED THE RUN THAT WROTE IT.** `rw_goid` -- "the next resume replaces this
+row" -- was cleared in `ClientDisconnect` only, which AGENTS.md already calls the wrong place for
+a map change. A `retry` therefore left it pointing at a row whose run was gone, and the next
+ENTER's `go` DELETED that row instead of making a new one (`SV_RewindDropGo`, "makes way"): a save
+the player had, gone because they restarted.
+
+**Change.** (1) `SV_WatchHoldMove` (sv_saveloc.qc, beside `SV_WatchFrame`) re-imposes
+MOVETYPE_NONE while the pin is held, and is called from BOTH thinks in one spelling so the two
+cannot drift: PlayerPreThink, per USERCMD and ahead of the mover, so no command is ever moved with
+a movetype the pin did not choose (`cl_c2spps` puts several commands in a packet, which is why
+per-packet is not enough there); and PlayerPostThink ahead of `SV_NoclipWatch`, for a packet that
+carries the stringcmd and no usercmd at all. The mod's dead `noclip` branch refuses under the pin
+too, for the client that reaches it. (2) `SV_RewindReset` clears `rw_goid` and `rw_goseq` as well:
+it is the documented wipe and it runs at a run START, not only at a disconnect. The ROW is kept --
+it is a real position and speed the player can load or delete -- and only the "the next resume
+replaces it" claim, which is a property of a run, is given up. `ClientDisconnect`'s separate clear
+became redundant and is gone.
+
+**Verified.** `cfg/test/p477rewind.cfg` + `tools/p477rewind.py`, four new sections (R28A-D):
+61 checks, 0 failed on the subject build (qwprogs E98A1F2F02B2BE28,
+csprogs 1D414A51910BE43B).
+
+* R28A is the CONTROL leg and flies with no pin: 951.6 u, which is what proves the detector can
+  see a state change at all (936.0 u on the control-build run: the gesture is not repeatable to
+  the unit, which is why the threshold is 50 and not a number).
+* R28B, the same gesture under the pin: the body moved 0.00 u, `cmd timer` read `noclip 0` and the
+  pin was still on afterwards. (The class read is NOT this arm's discriminator: the leg needs
+  `sv_cheats 1` for the engine's noclip, and that alone marks the run cheated on either build.
+  `noclip N` is the movetype the fix controls.)
+* R28C/R28D grade the resume row across a `retry`: no "makes way", and the list grows by the two
+  rows the two sections make (each makes a `rewind save` and the leave's resume).
+
+CONTROL BUILD, REQUIRED TO FAIL, and it did: HEAD's two server files (`git checkout --`, rebuilt,
+0 warnings, my refusal string absent from the .dat) failed exactly R28B and R28D and passed the
+other 59. R28B read `noclip 1` and `class: cheated (seg 0 cheat 1 cheatlatch 1)` on a run still
+recording; R28D printed `rewind: save 16, the last resume point, makes way` naming R28C's row and
+grew the list by 1, not 2.
+
+Two existing arms moved with the fix and were re-derived, not renumbered: R5C named the at-rest
+save absolutely (`sl_goto 4`) and a resume row that is no longer dropped moved it to 5, so it now
+loads "the newest row" (`sl_goto 9999`, which `SV_SaveLocLoad` clamps to the count) with the save's
+own row number beside the count as a CHECKED premise; and R8's `saves: 5/5` conjunct WAS that
+dropped row, so it is gone -- R28C/R28D grade the rule now, and R8 keeps its own subject (the leave
+resumes at the head). Both pass on the subject and on the control build, which is the point: an arm
+whose premise is an absolute row index is an arm that breaks on an unrelated fix.
+
+NOT VERIFIED: the lobby-reachable route (the mod's ungated `noclip` branch with `sv_cheats 0`) is
+not exercised -- R28A/B need `sv_cheats 1` for the engine's handler, and the ungated branch is dead
+for `cmd noclip` on this build. Patch 479's item still covers it. No arm watches a pin survive a
+`map_restart` either (AGENTS.md: QC globals are zeroed at a map load, so `rec_wt_hold` dies with
+them and the pin cannot survive one; the client's `rw_on` is closed by the stat going to 0).
+
+## Patch 500 - the menu's text fields: a keyboard route in, and the navigation keys back  *(APPLIED - MOD-SIDE ONLY, no engine C: FTESurf `src/sui_sys.qc`, `src/menu/m_main.qc`, `tools/p498keys.py`, `ftesurf/cfg/test/p498keys.cfg`)*
+
+**Problem.** BACKLOG's "Cosmetic / low" bullet *"Typing w/a/s/d into a menu text field
+moves sui's keyboard cursor, and Enter clicks wherever it landed"* -- and, beside it, the
+fields could not be reached by keyboard at all.  Both are halves of one rule.  sui moves its
+cursor by hit test (`_cursor_kb_move` looks `_action_elements` up by screen position) and a
+text field is not an element the cursor can land on and click, so with the mouse parked off
+it no key the menu VM consumes can focus a field -- and `sui_text_input_focused`, the flag
+that suppresses the WASD navigation keys, is set from a MOUSE hit (`sui_is_last_clicked`),
+so it reads FALSE and w/a/s/d keep moving the cursor.  The fields are unreachable by
+keyboard, and the flag that would suppress navigation while someone typed in one was only
+ever set by a mouse.  No engine file is touched: keys.c already gives every non-F1..F15 key
+to `Menu_KeyEvent` and returns (`keys.c:4056-4063`), so with the menu up a bind never runs
+and the whole question is menuqc's.
+
+BACKLOG's own diagnosis of the w/a/s/d half was right about the mechanism and wrong about
+the site: it read `sui_input_dir` as the only consumer and `sui_input_event` as dropping its
+result.  `sui_input_dir` DOES gate on the focus flag, and the cursor demonstrably does not
+move -- but `sui_menu_nav`'s four `sui_listen_*` calls classify a key by its BIND, read out
+of the SAME BUFFER the field types from, so w/a/s/d were consumed by the navigation before
+`sui_text_input` could see them.  Measured with the focus gate live and the field focused:
+`nav focus 1 up 1 down 0 left 0 right 0` for exactly the one frame the `w` was in, and the
+field's text still empty afterwards.  The buffer is a queue, and reading it is consuming it.
+
+**Change.**  A CLAIM rather than a flag, because the flag is per-frame (`sui_begin` clears
+it) and that is measured, not assumed: the first cut set it from the key handler and got
+exactly ONE frame with it set out of 899 draws in the 9 s before the next keystroke, so the
+keystroke arrived after `sui_begin` had cleared it and the field never consumed the buffer
+-- and that one frame was worse than useless, because the buffered TAB is bound to
+`+showscores`, so `sui_listen_command("+forward")` reported a navigation key,
+`sui_block_listened` returned TRUE and `Menu_KeyEvent` told keys.c the VM had HANDLED it.
+So: `sui_field_focus(id)` records a claim, `sui_text_input` takes it on the field's own
+draw (setting the flag and the id), `sui_input_dir` asks `sui_text_focus()` instead of
+reading the flag, and the owner drops the claim when its panel goes away
+(`sui_text_unfocus`, called from both ESC routes).  TAB is the key, because it is sui's own
+text-focus key and is bound to nothing here.  And `sui_menu_nav` returns early while a field
+is focused, which is the BACKLOG item's own fix ("skip the bound moves in sui_menu_nav while
+a field is focused, keeping the arrows and pad") -- the arrows and the pad keep working
+because `sui_input_dir` classifies them by SCAN as well as by bind.  Four harness handles
+went in with it, none of which existed: `ui_key` (one synthetic press through
+`Menu_InputEvent`, the function keys.c calls), `ui_focus`, `ui_cursor`/`ui_element` and
+`ui_click`.
+
+**Verified.**  `cfg/test/p498keys.cfg` + `tools/p498keys.py` (both new), 16 checks, 0
+failed, menu.dat `14200595A3457882`.  CONTROL, required to fail and did, and run twice
+(once before the `sui_menu_nav` gate went in and once after, same verdict): menu.dat
+`C86E8EC399D018F1` built by hand in `git worktree add C:\tmp\ctl500 HEAD` (0 warnings,
+and zero mentions of `sui_text_focus` or `ui_key` in either source file) returned CANNOT
+GRADE with 36 unrecognised lines, naming all four handles as `Unknown command` -- a
+different exit code from a subject that ran and was wrong.  The check that would catch a
+regression of the buffer half alone is B7: w/a/s/d typed into the field leave it reading
+"watwasd", and those four letters are BOTH binds and printable, so a build whose
+`sui_menu_nav` still drains the buffer reads "wat" there and still passes B5.  The subject's own observables: a click focuses the field
+(held 1) and RIGHT then does NOT move the cursor while it moved for RIGHT/LEFT/UP with
+nothing focused; `w`/`a`/`t` typed into it produce text `wat` caret 3; ENTER commits the
+name; TAB claims the create screen's field under its own id; both ESC routes drop the claim
+and navigation works again afterwards.  `tools/cfgguard.py` passes and both VMs compile at
+0 warnings.
+
+Four predictions failed on the way and each was a finding rather than a grader bug; all four
+are written into the cfg's RESULT block, and three are general enough to be worth repeating
+here.  (1) `ui_key enter` reads `took 0` on the name screen even with nothing focused,
+because `sui_input_is_confirm` is reached only through `sui_block_menu_navigation` -- the
+UNUSED sibling of `sui_block_input_fn` (`var` initialised to `sui_block_listened`, never
+reassigned, no caller anywhere in `src/`) -- so "a key the VM consumes" is not a property of
+ENTER in general.  (2) A navigation key with no element in its direction is
+INDISTINGUISHABLE from a suppressed one: `_cursor_kb_move` scored (226,474) for both `w` and
+`a` on a four-element main menu, and the main menu's four elements are a vertical list at
+x 144..352 so RIGHT has nowhere to go from `mm_play` while DOWN moves.  Every suppression
+check is therefore paired with a direction measured to move on that screen.  (3) The first
+navigation key after a click is SPENT, not suppressed: `_cursor_kb_move` only moves from an
+element's centre and a click leaves the cursor inside a box but off-centre (probe read `dir
+scan 131 focus 1 flag 1 kb 0 0` -- gate live, move vector zero).
+
+**NOT VERIFIED, and one real finding left behind.**  The create screen's field is reachable
+by TAB's claim and by nothing else: its scroll view calls `sui_reread_input` and DRAINS THE
+INPUT BUFFER every frame, so a keystroke is consumed before `sui_text_input` can read it --
+measured, the TAB that claimed the focus was eaten by the frame that claimed it, and that
+screen has 58 elements (one per visible map row) against the name screen's 3.  A player
+cannot type in the map-search box without a mouse.  In BACKLOG with the measurement.  Also
+unverified: the two screens are the only ones with fields, so no other panel was exercised,
+and the arm never runs a real mouse -- `ui_click` drives `_sui_mouse_move` +
+`Menu_InputEvent(IE_KEYDOWN/UP, K_MOUSE1)`, which is the code a real click runs but is not
+one.
+
+**Two compiler traps this cost hours on, both silent.**  A braceless `for` binds ONE
+statement, so a second print ran outside the loop with the index at its end value -- past
+the array -- and **fteqcc (git-6681-5662b3a23) SEGFAULTED**: no message, no output file,
+exit 139, which reads as a hung build rather than as a rejected construct.  And sui's own
+`#define printf(x, ...) print(sprintf(x, __VA_ARGS__))` makes a bare `printf("...\n")` a
+syntax error (`")" - not a name`) because sprintf needs at least one vararg.  The same hunt
+also produced a wrong comment that had to be retracted: a float index into a struct array
+was blamed for that segfault and is not the cause, which is exactly the failure CLAUDE.md
+forbids -- a claim written down without the measurement that would have shown it false.
+
+## Patch 501 - receipt read failures are retryable, not evidence  *(APPLIED - SURFD ONLY, no engine C or game progs: FTESurf `surfd/sweep.py`, `surfd/test_sweep.py`)*
+
+**Problem.** A settled receipt or sibling-digest I/O failure could become a
+permanent evidence FAULT. Coverage also advanced over unread fresh files, and
+glob silently hid unreadable map directories. Separately, the live sweeper's
+reader API did not match its installed readers: the receipt step was throwing,
+not measuring evidence. Missing observations cannot establish unsigned runs.
+
+**Change.** Defer unmeasured I/O, but retain independent measured faults. Keep
+partial-reread provenance so completing joins after source removal cannot clear
+a recorded fault or erase old measured content. Bound coverage before ALL
+unread fresh files, independently of attempt order; unknown ages or lost
+unobserved identities retain prior coverage. A durable per-path FIFO in existing
+sweepmeta provides bounded progress despite persistent errors, arrivals and
+queue compaction. Explicitly enumerate both directory levels. No schema columns,
+ranked policy, engine pin/tag, build number, rewind state or progs changes.
+
+**Verified.** Clean frozen FTESurf `4f16963`: 262 sweep checks, 0 failed; both
+independent reviewers approve the final source. Tests require independent healthy
+reads, recovery/key binding, persistent fresh/stale failure progress, queue churn,
+unknown first stat, disappearance/restoration, mixed measured faults plus I/O,
+and stale completion after the fault's source disappears. Counterfactuals failed:
+original `6a153f5` against the earlier suite (37); first candidate `f30017e` against
+its expanded suite (20); later candidates `cb878db`/`f9ba85f` against subsequent
+controls (7 each). Different suites, not comparable error rates. Reader suite:
+306 checks, 0 failed. Runs-only corpus: 267 files / 170 with faults before and
+at completion, no increase. The default reader CLI also reaches an existing
+parked save-prefix path raising PermissionError; preserved, not repaired.
+Python syntax checks clean; LSP records no diagnostics. No QC/engine build run.
+
+**Deployed and acted, 2026-10-06 07:52:56 UTC.** Published exact `4f16963`; staged
+nine app suites plus the reader suite on the Pi, all passing. Under the sweep
+lock, backed up the DB owner-only and each existing destination; copied ONLY
+the two sweeper files and the four matching previously committed reader
+dependencies. All six destination Git blob hashes match the commit; paired API
+probe passes. Live control read 1 previously unread receipt, 0 faults: receipt
+rows 19 -> 20, coverage 1791203401 -> 1791272575. Health stayed ok / 12 lobbies;
+no worker/lobby restart or progs swap. Normal entrypoint control with replay/sim
+work disabled exited 0 without a receipt-step exception at 07:56 UTC. Review
+startup initially hit concurrent npm failure; clean tree verified before native
+retry, no external-provider fallback. Peer rewind source/fixtures excluded.
+
+**Limits.** The 19 earlier receipt rows were not automatically reinterpreted;
+the live fleet still supplied no journal in the acted arm. This proves reader
+integration/retry behavior, not device/model calibration or cheat conviction.
+Permanent loss pauses unsigned coverage pending operator reconciliation. A
+repeated reread request does not supersede an in-flight partial reread: finish
+it, then request a new reinterpretation. Other evidence-lifecycle work remains.
+
+## Patch 502 - rewind/save-lock keeps the played prefix  *(MOD-SIDE ONLY, no engine C: FTESurf server/client QC and isolated controls)*
+
+**Problem.** Rewind saves were placement-only, loads left abandoned visual
+history, and viewer/save-lock transitions could lose their pictures or input
+releases. Restoring the visible line without the corresponding timer/recorder
+state did not produce a usable segmented continuation.
+
+**Change.** Bound timer/recorder snapshots to the existing server physics ring
+and reuse the save reader's timed continuation contract. Validate recorder
+lineage and prefix availability before copying; retain only valid warm history
+at a cut. Preserve the recording-retention window and detach an old implicit
+resume pointer on a cold/demoted load without deleting its row. Client saves
+persist a visual-only raw prefix beside the existing sidecar and rebuild both
+raw/rendered history on a splice. Missing pictures never inherit another run's
+line. Replay/ended poses remain practice. Capture queued pictures at request
+time, preserve save/load order, and deliver terminal save results independently
+of later events. Ready load/hold pairs dispatch together; authoritative hold
+checks and immediate releases remain intact. Rewind uses sampled pitch and
+stand/duck eye height, retaining the optional chase view and vote/board priority.
+
+**Verified.** FTESurf `87fc699` reproduces the reviewed frozen QC source
+`bea3b75`; the product commit alone was rebuilt and controlled in a clean
+worktree. All three QC targets, zero warnings; real dedicated buffered and
+streamed arms each 42 checks, zero
+failures; nine grader counterfactuals pass; eight compiled recorder-cut helper
+controls pass. Reader suite 306 checks, zero failures; runs-only corpus remains
+267 files / 170 with faults. Independent source reviews and blocker rechecks
+report no remaining blockers; runtime evidence is parent-executed, not reviewer
+execution. Cold loads restore pictures but do not reconstruct historical scalar
+snapshots. Rendered alignment/camera feel still needs the human checks in
+`lextest.md`. No engine code, evidence grammar, build-number or engine-pin change.
+The number was reserved before the later reader/surfd patches; ENGINE.txt keeps
+the maximum patch requirement.
+
+**DEPLOYED 2026-10-06 UTC.** Published game `87fc699` and patch entry
+`965209cf3`. Only the clean product commit's progs were shipped. The default LAN
+SSH query timed out before upload; the documented WAN deployment then proved
+all 12 active lobbies had directory rows with zero players, verified both
+uploaded/live hashes, kept `.prev`, and restarted all 12 successfully. Remote
+hashes were rechecked; at 12:36 UTC, authenticated full-serverinfo queries on
+all 12 advertised the expected CSQC checksum `0x10381299`. Plain `status` is
+insufficient because its serverinfo is truncated; full replies also carry
+console colour prefixes, which the reader must strip. At 12:38 UTC, a real
+client joined a live lobby and observed a nonzero echoed terminal save ticket,
+new client console output, and a server timer answer without lost ACK. Main
+lobby policy remained intact; no ranked-run or human camera acceptance claimed.
+At 12:18 UTC the primary Windows install and the separate FTESurf mod folder
+under the second install matched all three product progs and the seeded CSQC
+cache. The second install defaults to Quakers: its manifest/game were not
+replaced. Existing primary progs were kept as `.prev`; no owner's game was
+killed. Private generated identities/logs/provenance remain outside public Git.
+
+## Patch 503 - hash and content analysis share one evidence observation  *(APPLIED - READERS ONLY, no engine C or game progs)*
+
+**Problem.** Receipt joins hashed a sidecar/journal and then reopened its path
+for content analysis. Replacement between reads could produce an angle fault
+from unsigned replacement bytes, or hide a signed journal's pitch fault. The
+recording's runid header, session nonces and angles also came from separate opens.
+
+**Change.** Capture uploaded/explicit evidence once per receipt report, including
+absence and I/O errors; digest validation and content parsers consume those same
+bytes. Reject digest-unbound content before claiming a signed-content verdict.
+Capture the selected recording's decoded text through its original handle, and
+share it with nonce and angle analysis; unrelated recordings still cost only a
+header scan. reccheck/hidcheck accept keyword-only `data=` and preserve UTF-8
+replacement/universal-newline semantics, including empty bytes. No schema,
+ranked policy, detector math, engine pin/tag, build number or rewind changes.
+
+**Verified.** Final clean frozen FTESurf `4303a0e`: 74 snapshot falsifiers,
+262 sweep checks, reader 306 and HID 263: zero failures. Close-time replacements
+prove the hook acted and require one captured read; both hiding a signed pitch
+fault and creating an unsigned angle fault are tested, with next-observation
+digest rejection. Parser equivalence covers LF/CRLF/CR, invalid UTF-8, Unicode
+separators and empty bytes. I/O arms cover selected recording tails, CLI nonzero
+exit, stale preservation/recovery, independent digest faults, known versus
+unknown sibling presence, and removal before an ACTED partial recovery.
+Counterfactual final-suite attempts: original `4f16963` has 26 failures; first
+candidate `17da49b` has 7. Some cases abort on unavailable APIs, so these are not
+comparable error rates. Both source-only independent reviewers approve the final
+snapshot; their findings drove the I/O and non-acting-control corrections.
+Runs-only corpus: 267 recordings / 170 with faults before and at completion,
+no increase. Syntax checks clean; LSP records no diagnostics. No QC/engine build.
+
+**Published/deployed, 2026-10-06 09:52:46 UTC.** Exact `4303a0e` published to
+FTESurf main. Nine app suites plus snapshot/recording/HID reader suites pass in
+isolated staging on the Pi. Under the sweep lock, backed up the DB owner-only
+and each existing destination; installed only three readers plus their unchanged
+crypto dependency. All four Pi blob hashes match the commit, and exact tooling
+bytes match both Windows installs; crypto selftests pass in both. Installed
+caller ACTED on a generated signed journal (OK) and changed-digest control
+(FAULT), never stored in the live DB/evidence directories. Real receipt step:
+0 new reads / 0 faults; health ok before and after. No games, worker/lobby
+restart, progs swap or historical reread. Initial post-copy probe failed on a
+private-helper quoting error after all hashes matched; corrected embedded scripts
+were syntax-checked and the full staging/deploy/probe sequence passed. Original
+pre-deploy rollback copies remain retained.
+
+**Limits.** This fixes a report's hash-to-parse binding, not atomic filesystem
+reads, persisted receipt identity, post-timeout arrival scheduling, engine/HID
+attestation or model calibration. Historical rows are not automatically reread.
+Deploy all three readers together because the captured-byte parser API is shared.
+
+## Patch 504 - delayed receipt joins keep their original identity  *(APPLIED - SURFD ONLY, no engine C or game progs)*
+
+**Problem.** A PENDING or explicitly stale receipt reread could join whichever
+receipt now occupied the path, then attribute replacement content to the old
+row's key. A valid replacement signature did not prove continuity with the
+receipt that established that historical observation.
+
+**Change.** Persist a versioned fingerprint of the captured ordered signed block,
+public key/signature, parsed headers and structural/signature findings. Compare
+it and the stored pub before all joins on every reread. Identity drift defers
+without moving evidence, key sightings or policy, and consumes a bounded queue
+attempt. Preserve the original signing-time observation across retimed copies.
+The additive identity column defaults to unknown, with no startup backfill or
+historical reread. Only explicit operator permission can establish a current
+same-pub baseline for legacy rows; migration's stale marker is not permission.
+Admin renders bound/unknown separately from the signature verdict. No engine
+pin/tag, progs, build number, ranked policy or detector threshold changes.
+
+**Verified locally.** 68 identity falsifiers and 262 existing sweep checks pass.
+Controls actually judge replacement signatures and faulty journals, prove no
+join ran on drift, and require restored/format-equivalent receipts to act.
+Covers key and same-key signed-metadata changes, unsigned header/signature
+changes, explicit rereads, unknown/pre-8 migration, timeout, queue fairness,
+partial I/O observations and signing-time preservation. Untouched original
+source against the final identity suite has 40 failures (some unavailable-API
+arms abort; not a comparable error rate). Reader suites: recording 306, HID 263,
+snapshot 74, all zero failures. Seven other local app suites pass. Local admin
+has two network-timing failures reproduced identically on untouched control;
+new migration/admin payload/template checks pass. Python syntax checks pass;
+LSP records no diagnostics, not a Python type/build proof. No QC/engine build.
+
+**Limits / deployment.** This is continuity of a stored receipt observation, not
+engine/HID attestation, atomic filesystem capture or proof of legacy metadata.
+Post-timeout HID and late rec/view scheduling, corpus calibration and detector
+policy remain separate work. No existing row has been automatically reinterpreted.
+
+**Published/deployed, 2026-10-06 10:54:44 UTC.** Exact FTESurf `7414736` published
+to main; identity and sweep suites pass again in a clean detached worktree with
+peer QC excluded. All twelve app suites (including admin and identity) and three
+reader suites pass in isolated Pi staging. Installed only six changed surfd
+files under the sweep lock, with owner-only database and per-file backups.
+All six production hashes and four unchanged paired-reader hashes match the
+frozen commit. Installed caller ACTED on replacement rejection (historical row
+unchanged) and original-receipt delayed-HID recovery (journal OK), using only
+temporary files and an in-memory DB. Real pass: 0 reads / 0 faults; 0 bound rows
+before/after, so historical metadata was not silently reconstructed. Reloaded
+only the proven gunicorn master; same master, new worker, fresh ready log and
+health ok. No game/lobby, progs, binary or Windows tooling swap was necessary.
+First deploy hit the parent timeout with old production files intact; a retained
+backup attempt was not treated as complete. The longer retry copied verified
+bytes, then private probe setup failed (duplicate temporary table, then missing
+temporary migration). Corrected the helper and resumed only hash checks, probes
+and reload, not another source copy. All final controls acted successfully.
+
+## Patch 505 - check journals that arrive after the wait expires  *(APPLIED - SURFD ONLY, no engine C or game progs)*
+
+**Problem.** Once a missing input journal timed out to ABSENT, the receipt sweep
+never checked a later HID upload. A first observation after the wait expired had
+the same blind spot. ABSENT described an observation but was treated as final.
+
+**Change.** A final regular HID sibling now queues a bound ABSENT receipt through
+the existing identity-checked, budgeted journal-only reread. PENDING still expires
+against the original signing-time observation; absence alone never wakes ABSENT.
+Only journal columns and a monotonic receipt fault may move. Prior recording and
+angle findings, key sightings, identity and timestamps remain unchanged. Unknown
+legacy binding is never reconstructed automatically; missing receipts cannot be
+recovered from journals alone. No schema, reader, engine pin/tag, progs, build
+number, ranked policy or detector thresholds change. Late view/recording arrivals
+and calibration remain separate work; BLIND is abstention, not a clean verdict.
+
+**Verified locally.** 156 late-HID checks, 68 receipt-identity checks and 262 sweep
+checks pass, including in a clean frozen worktree. The same final 156-check
+suite has 36 failures on untouched prior source. Reader controls discriminate OK,
+BLIND, content FAULT, digest mismatch and an unsigned sibling contradiction.
+Controls cover initial
+ABSENT and expired PENDING, silence/partial/directory uploads, replacement receipt
+refusal before joins and original restoration, prior signature/nonce/angle faults,
+pruned recording/view pairs, unknown legacy binding, lost receipts, bounded I/O
+attempts and fair recovery without key recounting. Reader suites: recording 306,
+HID 263, snapshot 74 checks, zero failures; seven other app suites pass. Explicit
+run corpus: 269 recordings, 170 with faults (no fault increase over the prior
+170); the default command also reached an unrelated protected save fixture and
+stopped on PermissionError, so the explicit runs-only pass is the corpus evidence.
+Python syntax checks pass; LSP records no diagnostics, not a Python type/build
+proof. No QC/engine rebuild.
+
+**Reviewed / published / deployed, 2026-10-06 14:28:40 UTC.** Two fresh independent
+source reviewers found no defects at frozen FTESurf `a0c6fe1`, with distinct
+scheduling/control-flow and historical-evidence/attribution lenses. Source-only
+reviews do not attest executable validation; parent ran the commands above.
+Published the exact inspected commit. All thirteen app suites and three reader
+suites pass in isolated Pi staging, both before and during deployment. Installed
+only sweep and its two changed test files under the sweep lock, with owner-only
+DB and per-file backups. All three destination SHA256s and five unchanged paired
+files match the frozen commit. Installed-caller controls ACTED on post-timeout
+HID recovery to OK, replacement rejection without historical changes, no repeated
+completed read and late digest contradiction to receipt/journal FAULT, using only
+temporary files and an in-memory DB. Real pass: zero reads/faults, two bound rows
+before/after. Proven gunicorn master and CWD preserved; replacement worker, fresh
+ready log and health confirmed. No lobby/progs/binary or Windows tooling swap.
+This verifies scheduling/integration, not fleet detector/device calibration.
+
+
+## Patch 507 - schedule views observed missing before a late upload  *(APPLIED - SURFD ONLY, no engine C or game progs)*
+
+**Problem.** A completed receipt could capture no view and never check a final
+upload which arrived later. Journal retries sometimes hashed a later view, but
+neither source-specific readiness nor the late view/recording angle join existed.
+A general full reread could clear findings from sources pruned since observation.
+
+**Change.** Complete full reads persist captured missing-view readiness in existing
+sweep scheduling metadata. A final regular view wakes an identity-checked retry
+which hashes only the view and joins available recording/angles, never HID. Only
+new monotonic view findings move; earlier primary fault reasons and angle FAULT,
+journal columns, signing/observation timestamps, identity and key sightings remain
+unchanged. Co-ready HID/view sources alternate within the same durable attempt
+budget; a separately scheduled view is excluded from that journal retry so I/O in
+one source cannot block the other. Journal-only selection requires current journal
+readiness. If queued source eligibility disappears, consume/rotate the bounded
+attempt without any evidence read, never falling through to an unrelated or full
+reread. Unknown historical readiness and initial partial full reads are not
+backfilled; explicit full reads can establish readiness but
+cannot waive receipt binding. Missing receipts cannot be reconstructed from a
+view; incomplete listing never reaps readiness. No schema/reader/engine pin/tag,
+progs/build/ranked policy or detector thresholds change. Rec-only arrival and
+completed-source replacement scheduling remain separate; BLIND is abstention.
+
+**Verified locally.** Final 268 late-view checks pass, versus 102 failures on
+untouched prior source with the same final suite. The original 232-check candidate
+passed but both independent reviewers found a missed source-selection race which
+could erase a completed journal finding. The expanded suite reproduced it with
+12 failures before correction; disappearance/stat-loss controls now preserve both
+completed OK and FAULT journals and prove stable-view recovery ACTS. Independent
+reader controls discriminate matching OK, legacy BLIND, signed off-angle FAULT,
+digest/unsigned-sibling FAULT and missing recording without an invented angle
+verdict. Controls ACT on receipt
+replacement refusal/restoration, preserved signature/nonce/angle/journal findings,
+row- and source-level I/O fairness, partial measured faults and recovery, captured
+absence races, co-arrival and disappearance, unknown readiness/identity, explicit
+baselines, missing receipt cleanup and incomplete enumeration. Existing identity
+68, late-HID 156 and sweep 262 checks pass. Reader suites: recording 306, HID 263,
+snapshot 74, zero failures; seven other local app suites pass. Explicit runs corpus
+269 recordings, 170 faults, unchanged. Python syntax checks pass; LSP records no
+diagnostics, not a Python type/build proof. No QC/engine rebuild.
+
+**Re-reviewed / published / deployed, 2026-10-06 15:28:23 UTC.** Both resumed
+independent reviewers verified the original blocker is closed and found no
+remaining issues at clean held-still FTESurf `ff9d7d2`. Reviews were source-only;
+parent executed final gates. Published the exact inspected correction. All fourteen
+app suites and three reader suites pass in isolated Pi staging against the final
+commit, including during deployment. Installed only sweep and its new test;
+destination hashes and seven unchanged paired files match that commit. Owner-only
+DB and old-source backups retained. Installed-caller controls ACTED on matching
+late-view pairing, signed off-angle FAULT, identity replacement refusal, unchanged
+journal/key history, source-level I/O fairness, and lost-eligibility deferral with
+completed journal FAULT preserved plus stable-view recovery. Fixtures used only
+temporary files and in-memory DB. Real pass: zero reads/faults; two bound rows and
+zero view-wait observations before/after, no automatic legacy readiness backfill.
+Gunicorn master/CWD preserved, replacement worker and fresh ready line proven;
+health good. No lobby/progs/binary/Windows tooling swap or peer uncommitted ship.
+This verifies scheduling/integration, not detector/device/model calibration.
+
+**Deployment limit found and handled.** The first checked 10.6k script sent as an
+SSH command argument truncated after the copy/early probes; a remote heredoc EOF
+warning and missing final sentinels disproved the helper's zero-exit success line.
+Did not recopy. A finish-only body streamed through SSH stdin reverified all nine
+installed/paired hashes and retained backup mode, ran all remaining controls and
+reload/health/UTC gates, and required their sentinels plus exit zero. AGENT_NOTES
+records the transport pitfall. Source copy and fully verified deployment are
+separate events; the timestamp above is the latter.
+
+## Patch 508 — floor Source model ambient without amplifying direct light
+
+**Problem.** The minimum-brightness safeguard keyed on the dark-side base but
+scaled and desaturated both lighting slots. On surf_tensor2's stage1_detail02
+assembly, a base near 4/255 multiplied the lit-side range roughly 3.7x. Changing
+hl2_lt_min alone also left cached prop lighting untouched.
+
+**Change.** VBSP_FloorModelAmbient lifts only the shader ambient base toward
+neutral grey; its additive form equals the former base scale/desaturation when
+the luminance is nonzero. Both folds use the base. The directional amplitude and
+direction are untouched, even for a zero base. Register the minimum eagerly and
+include its float value in the prop cache key. Baked vertex colours stay exempt.
+
+**Verified.** tools/p508ambient.py compiles the production helper with GCC
+-Wall -Wextra -Werror: 68 arithmetic checks plus production call/cache assertions,
+zero failures. An isolated plugin build and the owner's first saved camera show
+base 13.8/16.8/17.7 with min 16 versus 2.0/5.0/6.0 with min 0; directional
+94.8/114.3/127.3 is identical. Min changes acted without a worldlight toggle.
+A fixed wall ROI (400,260)-(800,345) falls from the old 191.96 to 53.90; min 0
+is 49.15, bounce-only 26.82, restoring 16 reproduces 53.90. Adjacent world-ceiling
+control remains 40.14. Second-camera models do not change with the floor, as
+predicted. Plugin build has three pre-existing warnings in img_tth/mat_vmt and
+zero new ones; clangd still reports the pre-existing plugin-header configuration
+errors, not a compiler failure. This does not fix wall occlusion or claim Source
+rendering parity; those are a separate workstream.
+
+
+## Patch 509 — trace local model lights against opaque world geometry
+
+**Problem.** PVS membership was the final light-visibility test, so local lights
+leaked through walls. Source's VRAD and client worldlight code use real rays.
+Using movement's collision tree would include the receiving prop itself and
+make lighting depend on movement-only collision flags/cvars.
+
+**Change.** Build a map-owned, unregistered light-trace model over a separate
+BIH: original Source MASK_OPAQUE world brushes plus opaque, ray-collidable
+displacements; no props or inline movers. Preserve the movement tree. Trace
+contributing local lights after PVS/attenuation/cone rejection; reject hits,
+startsolid and allsolid, and offset surface-light endpoints off the emitter.
+Default hl2_lt_occlusion 1; live 0 is the PVS-only control. The prop cache key
+includes this toggle. hl2_lightprobe reports candidates, trace verdicts and the
+linear six-face direct cube. Missing trace infrastructure fails closed.
+
+**Verified.** Production-helper C harness: 21 checks with GCC -Wall -Wextra
+-Werror, zero failures, including world-only selection, movement-tree retention,
+NOHULL versus NORAY, emitter endpoint, hit/startsolid/allsolid and missing-tree
+controls. The 68 ambient-floor checks still pass. Isolated surf_tensor2 runtime:
+18 probe cubes reconstruct only from visible lights; on/off arms retain exactly
+the same candidate incident RGB/directions. Independent world-brush oracle:
+301 rays, 121 blocked and 180 clear agree, zero disagreements. Second-camera
+architectural-frame ROI changes 58.95 PVS-only -> 37.35 occluded -> 28.27
+bounce-only; restoration returns 37.35. Adjacent world-ceiling stays 38.66;
+first-camera visible-light wall stays 53.90 with occlusion on/off. Three
+pre-existing compiler warnings, zero new ones; existing clangd plugin-header
+configuration errors remain. Graded runtime rays do not independently prove a
+displacement shadow; the helper verifies displacement selection instead.
+
+**Source assessment / limits.** HL2_MODEL_LIGHTING.md records SDK shader and
+VRAD references and within-bounds spatial probes. Source retains six ambient
+faces and evaluates selected local-light distance/direction at vertex world
+positions; our usual path collapses a combined cube at one sample to two slots.
+Prop 46 spans 9152 units: two within-bounds point probes differ 3.85x in +Y
+direct luminance. Source's material-selected half-Lambert is squared; our
+split-fold ramp is not. World occlusion is not per-vertex lighting or full
+Source parity. No prop/mover shadow meshes, sky tracing or Source screenshot
+oracle is claimed. Public BACKLOG keeps the narrower remaining approximation;
+matched visual judgement is in lextest.md.
+
+
+**Deployment / commit proof, 2026-10-06 15:29–15:33 UTC.** The HL2 DLL was
+rebuilt from a clean detached worktree at code commit
+9528fe2a145650f47db19880b2891a06435a1dbc (patch-509), not the shared dirty tree.
+Both C:/FTESurf and C:/FTEQuake received only fteplug_hl2_x64.dll, SHA256
+cd9e0ee01270a77086d1339fbba271af9094b177699041aa6db9770ef1c6cb23;
+old DLLs remain as .prev and backups. Cold launches of each installed exe loaded
+the new behavior and independently passed the 18-cube/301-ray controls.
+The Windows EXEs and game progs are unchanged. No owner process was stopped;
+no player saves/configs, Source install, Pi server or release archive changed.
+
+## Patch 510 - schedule recordings after completed view checks  *(APPLIED - SURFD ONLY, no engine C or game progs)*
+
+**Problem.** Full receipt reads and late-view completions could find no matching
+recording, then retire all pair readiness. A later recording never reached the
+existing nonce/angle checks. Broad full rereads could change unrelated journal
+findings or key/signing observations.
+
+**Change.** Store full-read captured missing-rec readiness in existing sweepmeta,
+separate from view readiness. Late views retain but never invent recording
+readiness; pruning a previously checked rec cannot rearm replacement scheduling.
+Header-only hints scan the reader's evidence/main/stage/bonus locations by runid
+(not filename), once per map per pass. Actual rec-only retries
+check the stored receipt identity/pub before joins and use the unchanged reader's
+final-session nonce, tick, view digest and angle checks, never HID. Missing views
+allow nonce completion without inventing a pair; present checked views are hashed
+again to bind the newly possible pair. Prior faults/reasons, angle FAULTs,
+journal, signature, times, identity and key sightings survive. Co-ready rec and
+other sources alternate; the existing view/HID alternation gives all three turns.
+Partial observations and discovery races retain readiness; complete listing alone
+may reap readiness for lost receipts. No engine pin/tag, progs, schema, reader,
+detector math, badge, ranked policy or legacy automatic backfill changes.
+
+**Verified.** New signed temporary regression suite: 227 checks,
+zero failures. Untouched e920be5 has 48 failures on the same 104 outcome/arrival
+checks, with independent reader controls acting. Both arrival orders, renamed
+unindexed evidence/main/stage/bonus and indexed main locations, OK/legacy BLIND,
+nonce/final-session/angle/digest/unsigned contradictions, receipt tick check,
+pruned views, historical findings/key preservation, replacements rejected before
+joins then restored, selected-tail/view I/O and discovery loss/drift recovery,
+three-source/row fairness under limit=1, partial fault retention, unrelated scan
+I/O, unknown identity/readiness and captured-not-statted readiness are covered.
+Late-view/HID/identity/sweep regressions pass; reccheck/rcptcheck/hidcheck have
+306/74/263 checks and zero failures. Explicit runs sweep: 269 recordings, 170
+with faults, unchanged from pre-slice baseline. Review exposed a completed-rec
+prune/late-view rearm leak on the first candidate; isolated repro and four failing
+scope-regression checks proved it. The correction only retains existing waits and
+also rejects historical-unknown backfill. Python compilation and LSP have
+no new diagnostics. No engine/progs build is needed for this scheduling slice.
+Clean frozen 24e654e and integrated b1be008 have all five receipt/sweep suites
+passing. All 18 isolated Linux staging suites pass with paired installed hashes
+and pre-copy health checked. Both source files are byte-identical between the
+reviewed frozen correction and the clean integration atop a peer's published
+docs/census commit. Both independent re-review lenses found no remaining issues;
+the source-flow reviewer explicitly corrected its earlier rearm acceptance.
+Published exact b1be008 (no shared-HEAD push or published-history rewrite).
+
+**Deployment, 2026-10-06 16:23:30 UTC.** Frozen published b1be008, all 18 staged
+Linux suites passing. Eight paired hashes matched before copy; only sweep.py and
+the new recording suite were installed under the sweep lock, with owner-only DB
+backup and old-source backups. Streamed checked SSH stdin plus required final
+sentinels proved installed view-first readiness, identity replacement rejection,
+matching pair/no HID/history/key preservation, signed nonce and angle faults,
+three-source I/O fairness/recovery, and no completed-recording prune/rearm.
+Temporary files and an in-memory DB only for controls. Real pass: 0 reads/faults,
+2 bound rows and 0 recording waits before/after. Master/CWD preserved, fresh worker
+and ready log plus health confirmed. No lobby/progs/binary/reader tooling swap.
+
+**Limits.** Completed-source replacements and detector/device calibration remain
+separate. Hints require begin within 64 lines of at most 4095 characters; longer
+headers still have explicit full rereads. Content attempts are bounded and fair;
+map/header discovery cost at fleet scale has not been measured.
+
+## Patch 511 - retain receipt angle explanations  *(APPLIED - SURFD / RECEIPT DIAGNOSTICS ONLY, no engine C or game progs)*
+
+**Problem.** The angle reader computed a detail string, but receipt observations
+stored only the angle verdict. Admin could not show the measurement or explain an
+abstaining check. Reconstructing old detail from today's sources would mislabel
+history, and independently updating verdict/detail could mix two observations.
+
+**Change.** Add `receipts.angles_reason` with an empty historical default. Store up
+to 1,000 characters from the captured angle check; the reader's diagnostic string
+now includes its existing abstention note. Completed full and late pair reads
+store verdict/detail together. Automatic recovery retains the matching historical
+detail whenever it retains a verdict; earlier angle FAULTs remain intact, and
+journal-only reads leave both alone. Authenticated admin exposes/renders literal
+text, explicitly reports unknown historic detail, and calls an empty angle verdict
+not checked rather than inferring a missing recording. No detector math, signing
+attribution, badge/ranked policy, automatic backfill/scheduling, engine pin/tag,
+progs, build-number or binary change.
+
+**Verified.** New real signed-pair/migration/executed-DOM suite: 99 checks, zero
+failures; untouched published base has 25 failures on the same suite. Includes OK,
+abstaining and faulting pairs, exact detail, partial/recovery history, completed
+explicit replacements, journal-only preservation, idempotent old-schema migration,
+bounded diagnostic storage, text injection and historical fallback controls.
+Existing late-view/rec/HID/identity/sweep suites: 268/227/156/68/262 checks, zero
+failures. reccheck/rcptcheck/hidcheck: 306/74/263 checks, zero failures. Corpus:
+269 recordings, 170 with faults, unchanged. Python compilation and LSP diagnostics
+show no new issues. Windows admin retains its two identical untouched-base UDP
+failures; all 18 isolated Linux stage suites pass, including admin's 258 checks.
+The new suite has 83 storage/migration checks on Linux; this host lacks Node, so
+its 16 executed-DOM checks were run on Windows only. Source frozen at 5890a293;
+storage/history review found no issues. Admin/test review's P2 (standalone suite
+required Node) was fixed in be530ead by an explicit DOM-only skip; simulated
+no-Node and actual Pi standalone runs each pass 83 checks. Focused retained
+re-review closes P2 and returns OK; product source is unchanged after review.
+Published exact be530ead to main, not shared HEAD.
+
+**Deployment, 2026-10-06 20:34:30 UTC final hashes.** Clean committed source only.
+The deployment script installed 12 selected surfd files, all hash-matched, with
+owner-only SQLite backup (600), old-source backups, no backup pruning and a
+worker reload. Only the reader diagnostic file was copied separately under the
+sweep lock to the configured installed tools location and hash-verified;
+production reader dependencies matched. Installed-source/reader controls pass
+83 checks and explicitly prove module paths. Additive migration preserves all
+old fields of 22 observations exactly against backup, leaving historic details
+empty. Actual authenticated admin response/template and anonymous refusal prove
+the live field/fallback boundary. Real receipt pass: 0 reads, 0 faults, identical
+history. Original master, one new worker, its own fresh ready line and health
+with 12 lobbies are proven. Final production hashes match be530ead. No lobby,
+config, progs, binary, Windows install or release change. Shared build57 diverged
+from published main and was preserved, not rewritten.
+
+**Failed arms resolved.** An incomplete selected stage lacked recplot and failed
+before backup/copy; retry included only three byte-identical import supports and
+passed. An installed-reader assertion caught a fixture importing byte-identical
+staged reccheck after 83 passing checks; finish-only controls preload installed
+modules, rerun and prove paths before live gates. No unrelated source repair or
+silent reinterpretation of failed controls.
+
+**Limits.** Existing rows are not reinterpreted or backfilled. These diagnostics
+explain an observation, not whether a player cheated; detector/device calibration
+remains separate. An initial partial fault's existing automatic journal-only retry
+preserves the deferred angle observation; a completed explicit full reread can
+replace it. No scheduling behavior was changed to manufacture a new measurement.
+
+## Patch 512 — journal mouse-coverage measurements
+
+**Problem.** A journal's identity summary did not say how many judged frames
+carried counts on the axis actually checked, or how much contiguous checked
+input carried none. Presence alone is not a coverage measurement.
+
+**Change.** tools/hidcheck.py reports relevant-axis mouse frames, no-mouse
+frames, percentage of the judged union, and longest contiguous judged no-mouse
+span. An unjudged frame breaks the span; these are frame counts, not elapsed
+seconds or hardware attestation. tools/rcptcheck.py retains the measurements in
+journal_detail. Existing OK/BLIND/FAULT policy and ranking are unchanged.
+Engine code/binary pins and QC build remain unchanged.
+
+**Verified.** Clean published-base worktree: five grammar-built tests cover
+active input, sparse/no mouse, pitch-only counts, diverted axes, excluded-frame
+interruptions, verbose output, receipt digest/content join and fault precedence.
+Published base fails four of those tests for missing metrics. Existing hidcheck
+263, receipt reader 74 and reccheck 306 checks pass with zero failures. Recording
+snapshot: 269 recordings / 360 sources, 170 fault sources / 173 existing faults;
+all per-source faults identical to baseline. No new fault or threshold claimed.
+Deployment and independent batch review are recorded separately after completion.
+
+## Patch 513 — unresolved journal-frame continuity
+
+**Problem.** Equal unresolved-frame totals concealed whether the events were
+isolated or consecutive. That distinction is useful for calibration, not enough
+to attribute a cause or accuse a player.
+
+**Change.** tools/hidcheck.py measures unresolved spans and their longest length
+in original v-record order, resetting on ordinary or ungoverned frames. Event
+lines between v records do not create artificial gaps. Receipt details retain
+these measurements and put diagnostics before descriptive prose so the sweep's
+existing 300-character limit does not silently discard them. No verdict,
+threshold, ranking, evidence format, engine pin or QC build change.
+
+**Verified.** Eight focused tests pass, including active controls, isolated and
+adjacent unresolved events, excluded-frame interruptions, verbose output and the
+receipt digest/content path through its stored-text limit. The Patch 512 base
+fails the continuity checks (one failure, two missing-metric errors). Existing
+hidcheck 263, receipt reader 74 and reccheck 306 checks remain green. The same
+269-recording / 360-source snapshot has identical per-source faults (170 fault
+sources / 173 faults). Frame continuity is not elapsed duration or corroboration
+against server warp records. Review/deployment are recorded after completion.
+
+## Patch 514 — explain journal identity abstention
+
+**Problem.** The receipt reader flattened several existing identity abstentions
+to a generic no-judged-frame sentence, losing the reason already observable in
+the journal's profile and records.
+
+**Change.** tools/hidcheck.py supplies explicit identity_blind explanations for
+legacy/no-view journals, no plain-linear profile, zero yaw scale, insufficient
+governed frames and transitions whose recorded profile/limits admit no check.
+tools/rcptcheck.py retains that explanation for a no-fault BLIND result. Existing
+fault and unresolved-frame explanations retain precedence. The no-data reason
+also survives rather than being flattened. No new detector, gate, board badge,
+evidence grammar, engine binary pin or QC build.
+
+**Verified.** Thirteen focused tests pass; Patch 513 fails four abstention tests.
+Existing hidcheck 263, receipt snapshot 74 and reccheck 306 checks pass. Sweep
+integration proves four generated signed receipts ACTED and retained coverage,
+continuity and abstention explanations in SQLite with unchanged verdicts; all
+sweep cases pass. The fixture's former generic-text expectation now asserts the
+specific missing-input reason. Recording snapshot faults remain identical, and
+all 124 local journal verdict/fault pairs match the published baseline exactly
+(37 OK, 84 BLIND, 3 FAULT). Initial focused fixture mistakes (wrong constructor
+key, absent clock attribute and unmatched replacement literal) were corrected;
+they did not require detector changes. This explains abstention, not additional
+coverage or hardware attestation. Review/deployment recorded after completion.
+
+**Batch review, pre-deployment.** Independent fresh code and test reviews found
+one P2: an existing >=300-character identity fault displaced numeric diagnostics
+from bounded storage. The follow-up reserves a 96-character fault summary,
+preserving the original fault note and FAULT verdict. Fourteen focused tests and
+five genuinely signed SQLite receipts pass, including FAULT plus unresolved
+continuity and coverage. The pre-fix commit fails two retention controls. Retained
+focused re-review closes P2 with no issues. Existing reader suites remain green.
+A stronger corpus control feeds each captured source byte string to both the
+published-base and changed readers, retaining SHA-256 provenance privately:
+269 recordings, 91 views and 124 journals have identical per-source faults and
+journal states. These are local preservation controls, not fleet calibration.
+
+**Batch deployment, 2026-10-06 21:21:56 UTC.** Frozen game commit ebf8462;
+13 staged Pi suites pass (four reader/diagnostic suites and nine application
+suites). Only four paired reader/crypto files installed under the sweep lock,
+using install+rename, source backups and an owner-only SQLite backup. All four
+destination hashes match on the Pi and BOTH Windows installs. Installed readers
+and installed Pi caller paths are explicitly asserted; 14 diagnostics tests and
+five generated signed SQLite observations ACT on each install, including the
+bounded FAULT case. Real receipt pass read 0/faulted 0; no historical reread or
+field-journal calibration claimed. Original master and health/12 lobbies stay
+unchanged. No progs, engine binary, cvar, config, schema, service reload or release.
+Primary build57 branch/index is preserved: two previously clean stale reader
+paths receive owned published-source overlays; other owner paths are untouched.
+Backup tag pre-ac514-20261006-211938; primary source backups retained privately.
+
+**Deployment controls corrected before any copy.** First staging attempt passed
+bytes as subprocess stdin instead of input and stopped before tests/copy. The
+second passed all suites but assumed a systemd unit for a pidfile-managed app;
+its pre-copy master guard refused. Corrected guard verifies the actual pidfile
+and live gunicorn command line, then confirms the same master after installation.
+Both failed stages are retained privately; neither installed source or touched
+production DB. The completed arm proves final hashes, installed controls, health
+and UTC rather than treating the earlier staging passes as deployment evidence.
+
+## Patch 515 — separate yaw and pitch journal mouse coverage
+
+**Problem.** Relevant mouse coverage over the union of judged axes can hide a
+silent axis behind activity on its counterpart. The existing governed pitch
+count is not a denominator of comparisons actually performed.
+
+**Change.** tools/hidcheck.py publishes each axis's actual judged count, relevant
+nonzero-count records, no-count records, percentage and longest no-count span.
+The sets come from existing comparison loops. Spans follow emitted v-record
+order and break on records not judged on that axis; they are not render-frame
+coverage or elapsed duration. Unexecuted global-abstention paths still omit
+these measurements. No verdict, threshold, tolerance, comparison adjacency,
+evidence grammar, engine binary pin or QC build change.
+
+**Verified.** Nineteen diagnostic tests pass, including five new axis controls:
+horizontal-only, vertical-only, both active, seed-only counts, excluded pitch,
+free-cursor/profile gap interruptions, global abstention and verbose reporting.
+The published predecessor fails the new tests (one assertion, three absent-field
+errors). Existing HID 263, receipt 74 and recording 306 checks pass. Identical
+captured bytes from 269 recordings, 91 views and 124 journals retain every
+pre-existing info value, ordered note/fault list and journal classification:
+173 recording/view faults; journals 37 OK, 84 BLIND, 3 FAULT. This is diagnostic
+preservation, not hardware attestation or field calibration. Completed batch
+review and deployment are recorded below Patch 517.
+
+## Patch 516 — branch-faithful journal exclusion ledgers
+
+**Problem.** Existing governed/unjudged counts describe different populations
+and cannot explain how each emitted view record participated in the current
+reader. Inferring pitch eligibility independently would invent comparisons
+suppressed by the existing yaw-shaped global gates.
+
+**Change.** tools/hidcheck.py adds separate yaw/pitch exclusion dictionaries.
+For a valid scale-bearing view stream, each dictionary plus that axis's actual
+judged count accounts for every emitted v record once. Normal paths distinguish
+mode routing, predecessor seed, nonlinear/unusable profile, zero scale, missing
+pitch keyboard term, inactive pitch path and possible pitch clamp. Earlier global
+profile/zero-yaw/short-stream gates account for unexecuted records as gates, not
+measured zeroes. Yaw mode takes precedence over pitch mode, then missing pitch
+term. Pre-305 yaw comparisons are not relabelled exclusions. Existing fields,
+comparison predecessors, faults, notes and verdict policy are unchanged.
+No evidence grammar, engine binary pin, QC build, schema or enforcement change.
+
+**Verified.** Twenty-six diagnostic tests pass; seven ledger tests reconcile
+actual comparisons plus exclusions on active, leading/overlapping mode flags,
+mid-run profile/axis-scale changes, clamp, pre-305 grammar, missing/zero pitch
+constant, global gate-order and absent/invalid-profile controls. Patch 515 fails
+six new ledger tests with absent-field errors. Existing HID 263, receipt 74 and
+recording 306 checks remain green. The same captured 269 rec / 91 view / 124 hid
+sources preserve every pre-existing info value, ordered note/fault list and
+journal state. These are emitted-record partitions, not render-frame coverage,
+input attribution or calibration. Completed batch review/deployment are recorded
+below Patch 517.
+
+## Patch 517 — counts-join opportunity ledger
+
+**Problem.** Counts-join checked/broken/transformed totals omitted the initial
+exemption and absolute-input windows. The transform count also overlaps checked
+and unjoinable populations; it is not another disjoint denominator.
+
+**Change.** tools/hidcheck.py publishes total emitted view windows, initial
+exemption, absolute-input unjoinable windows, transformed checked/unjoinable
+subtotals and availability of the declared-transform profile. Total windows =
+initial exemption + checked + unjoinable. The two transform subtotals sum to the
+existing transform total, excluding the same initial window. No-window streams
+omit the ledger rather than inventing a measured zero or a known profile.
+Existing join tolerance, first-window exemption, fault/note policy and legacy
+pre-312 downgrade stay unchanged. No evidence grammar, engine binary pin, QC
+build, schema, receipt storage or enforcement change.
+
+**Verified.** Thirty-two diagnostic tests pass. Six new join tests prove normal
+and initial-mismatch controls, overlapping absolute/transformed windows, wholly
+unjoinable streams, single seeds, current-profile faults versus legacy notes,
+no-window absence and verbose output. Source angle arithmetic can hold while the
+counts join breaks; that existing distinction is asserted. Patch 516 fails the
+new ledger controls (one assertion, four absent-field errors). Existing HID 263,
+receipt 74 and recording 306 checks pass; the same captured 269 rec / 91 view /
+124 hid sources preserve every pre-existing info value, ordered note/fault list
+and journal state. Opportunities are emitted-record windows, not render frames,
+elapsed time or proof of physical input. Durable receipt metric snapshots require
+separate schema/history-lifecycle work and remain deferred.
+
+**Completed batch review/deployment — P515–517, 2026-10-06.** An independent
+read-only reviewer inspected the exact published-base-to-final diff, source,
+controls and frozen execution evidence; no issues found, verdict OK. The parent
+also compared 500 deterministic synthetic streams against the published reader:
+every existing result, ordered fault/note and info value was identical, while
+both new denominator equations reconciled. Review is not field calibration.
+
+Frozen product source `5390bc1f8a287b3ff6f4f60ebed04ac7933a5998` passed all 18
+staged Pi reader/application/receipt-lifecycle suites before deployment. The
+paired four-reader set (only hidcheck.py changed) was installed under the sweep
+lock with source and mode-0600 database backups. All destination hashes and
+actual reader/caller import paths matched the frozen source. Installed controls
+ran all 32 diagnostics plus generated signed receipts and SQLite checks against
+the destination readers, on the Pi and both Windows installs. Pi verification
+completed at 21:57:40 UTC; Windows verification at 21:57:41 UTC. Gunicorn master
+remained unchanged and health stayed OK with 12 lobbies. The primary checkout
+branch/HEAD/index and unrelated edits were preserved; its reader overlays were
+accepted only after exact predecessor-byte checks. No engine/progs/config/cvar,
+schema, historical reread, service reload or release was deployed.
+
+The real receipt pass read zero new receipts and reported zero faults. The
+installed signed synthetic controls proved execution and integration, not a
+new live field journal or device calibration. Sparse/no-mouse thresholds,
+server corroboration and durable receipt metric snapshots remain open.
+
+## Patch 518 — typed receipt journal observations
+
+**Problem.** Bounded receipt prose drops axis coverage, exclusion reasons and
+counts-join opportunities; callers cannot retain the actual measurements.
+
+**Change.** Receipt exposes a version-1 numeric allowlist snapshot from the same
+captured, digest-checked HID bytes. Includes union/axis coverage, violations,
+unresolved spans, fixed exclusion ledgers and counts-join opportunities/profile.
+Missing keys remain absent; missing/unread/digest-mismatched journals have no
+snapshot. No device IDs, nonce, paths or diagnostic prose are copied. Store-only:
+no verdict, threshold, signature, engine, progs or ranked-policy changes.
+
+**Verified.** Six new reader tests pass; published base fails all six. Active
+mouse and counts-join controls, measured zero, abstention, FAULT/BLIND, capture
+replacement, allowlist and unavailable-source controls pass. Existing 32 journal
+diagnostic tests, 263 HID checks, 74 receipt checks and 306 recording checks pass.
+Captured-byte corpus: 269 recordings/91 views/124 journals; existing faults,
+notes, metrics and journal states identical. Recording faults remain 164; view
+faults 9; journal faults 3. LSP reports no recorded diagnostics (not a Python
+runtime proof). SQLite persistence/admin display and field calibration are not
+claimed by this reader slice.
+
+**Deployed.** Frozen game commit 34840f9 includes P518–520 and passed 23 Linux
+staging suites. Exact receipt-reader bytes and unchanged paired HID/recording/
+Ed25519 readers verified on the Pi and both Windows installs. Installed-reader
+controls passed on Windows; installed-path signed storage controls passed on
+Linux. Pi completion 2026-10-06T22:39:28Z; Windows verification 22:39:27Z.
+No engine/progs/binary/config/build/release deployment.
+
+## Patch 519 — durable receipt journal metric snapshots
+
+**Problem.** Numeric reader observations disappear after the sweep; retaining
+prose alone cannot support later review, and retries must not mispair a historic
+journal verdict with newly measured or unavailable metrics.
+
+**Change.** Add idempotent empty-default receipts.journal_metrics (no schema
+version bump or historical backfill). Full and delayed-journal checks store
+canonical versioned JSON. Snapshot moves atomically with journal verdict/reason;
+I/O and identity-replacement refusals leave history intact, unrelated late
+view/recording joins do not touch it, and partial recovery that retains a journal
+observation retains its exact snapshot. Digest faults have no content snapshot.
+Old signature/angle/key/ranked-policy semantics remain unchanged.
+
+**Verified.** New signed temporary-evidence storage suite passes; P518 fails five
+new assertions. Existing sweep, late HID/view/recording, identity, angle-detail,
+surfd, web and board suites pass. Late-HID contract tests now assert the new
+snapshot against an independent reader while preserving every old field check.
+Migration twice preserves rows, key sightings and scheduling metadata. Active
+full/late reads, I/O, replacement identity, content vs digest fault and partial
+recovery controls pass. Same captured-byte corpus remains identical (269 rec,
+91 view, 124 HID; faults 164/9/3). Windows admin has two UDP/throttle failures
+identical on untouched P518, not repaired here. LSP has no recorded diagnostics.
+Admin display was verified separately in P520.
+
+**Deployed.** Frozen 34840f9 passed all 23 Linux suites, including full admin.
+Additive live migration ran under the sweep lock after a mode-0600 SQLite backup;
+historical rows remain empty, no metric reconstruction. Installed-path synthetic
+signed full/delayed/partial/replacement/I/O controls passed. Real receipt pass
+read 0/faults 0 (integration, not new field metrics). Exact reader/application
+hashes match; source rollback copies retained. Pi completion 22:39:28 UTC on
+2026-10-06. Gunicorn master preserved; replacement workers/ready log proved;
+health still reports 12 lobbies. No thresholds or ranked policy deployed.
+
+## Patch 520 — authenticated journal metric review
+
+**Problem.** Stored numeric journal observations are not visible on the admin
+run detail, and historical empty snapshots must not display as measured zero.
+
+**Change.** Authenticated detail returns bounded, typed version-1 metrics or
+explicit unavailable for empty, malformed, oversized or unsupported snapshots.
+The real DOM renders a collapsible observation panel using textContent, including
+union/yaw/pitch judged denominators, counts-join windows and exclusion ledgers.
+Measured zero stays zero; executed-but-empty differs from no stored snapshot.
+Public board, signature badges, ranked policy and thresholds are unchanged.
+
+**Verified.** New synthetic authenticated API and Node actual-renderer controls
+pass; P519 fails eight assertions. Unknown/malformed versions, NaN/Inf, booleans,
+string values, nested hostile labels, huge values, old/unmigrated rows, public
+board separation and unchanged signature summary exercised. All 22 local reader,
+receipt/lifecycle, sweep, web, board and adjacent suites pass; captured-byte corpus
+unchanged (269 rec/91 view/124 HID; faults 164/9/3). Two Windows admin UDP failures
+reproduce on untouched base; not fixed here. Two independent read-only reviews
+found no product blocker. One review caught fixture cleanup: new admin/storage
+drivers now close owned SQLite/log handles, remove only their own synthetic homes,
+and report failures; normal and forced-exception cleanup controls pass. No live
+browser session or field calibration is claimed. Linux and installed deployment
+provenance follows.
+
+**Deployed.** Frozen 34840f9 passed 23 Linux suites. Installed application/API
+and signed storage controls passed against installed source paths and temporary
+SQLite/evidence only. Linux has no Node: actual DOM controls passed on Windows,
+not on the Pi. Reader/application/template destination hashes match; master
+preserved, new worker/ready log and health (12 lobbies) proved. Completion
+2026-10-06T22:39:28Z; both Windows installed reader controls at 22:39:27Z. Primary
+HEAD/index and unrelated peer work preserved. Raw deployment logs/backups remain
+private. Real receipt read 0/faults 0; no new field calibration or live human
+browser acceptance claimed. No automatic historical backfill or policy change.
+
+## Patch 521 — retain verifier counts observations per attempt
+
+**Problem.** Sweep discards the existing engine's input-ring/view-read counts
+summary, leaving no durable opportunity count beside a verification attempt.
+
+**Change.** Bind narrow typed counts observations only within the engine's
+matching pm_recsim filename section and terminating VERIFY filename. Malformed,
+duplicate, missing, mismatched or truncated sections are unavailable. Persist
+versioned JSON in an additive empty-default verdict column, without backfill.
+Authenticated detail and text-only DOM show record/disagreement opportunities;
+no-records means unmeasured agreement, not honest input. Existing VERIFY reasons,
+verdicts, checked-state/badges, recorder/engine format and policy are unchanged.
+
+**Verified.** Five new synthetic section/storage/API/actual Node DOM tests pass;
+published base fails all five. Distinct multifile counts, mismatch, early REFUSE,
+missing header, duplicate/malformed/reordered/truncated sections, bounded integer
+input, no VERIFY/ERROR and historical/unmigrated rows exercised. Runner ACTED;
+old verdict/reason/ticks and checked state asserted unchanged. Idempotent migration
+leaves historical rows empty. Existing sweep, admin/receipt metrics, web, board,
+surfd, recplot, join, replays, evidence and angle-detail suites pass. Same captured
+269 rec/91 view/124 HID observations and faults 164/9/3 remain identical. Synthetic
+owned SQLite/log handles/homes cleaned with explicit failure. Source printer
+contract inspected; no engine build or live new field observation claimed.
+Initial independent reviews found a concurrent-startup ALTER race and cleanup
+registered after a possibly failing initial import. Fixed before any deployment:
+only duplicate-column OperationalError is tolerated (other I/O errors rethrow),
+with the existing migration convention; fixture cleanup is registered first.
+Seven focused tests now pass, including a two-connection barrier that proves both
+saw absence before ALTER and preserved a historic row, plus forced initial-import
+failure cleanup. Unfixed P521 fails the concurrency control; its original test
+driver demonstrably leaks on forced import failure, and that negative-control
+fixture was explicitly removed. Final whole-batch source reviews close both
+findings.
+
+**Deployed.** Frozen game bf5153d (feature 9d7a9dd, reviewed correction 704f639)
+verified on the Pi at 2026-10-06T23:42:33Z. All 26 Linux staging suites pass,
+including full admin; 25 local suites pass. Full Windows admin retains two
+UDP failures reproduced on untouched published base. Installed authenticated
+storage/API controls acted; all four changed app destinations and paired readers
+hash-match the frozen
+commit, and old verdict metrics remain empty through the backup's id cutoff.
+Source/owner-only SQLite backups retained under the sweep lock; master preserved,
+replacement workers/fresh ready log and health 12 proven. No automatic backfill,
+new real field counts observation, engine/progs/config or policy swap.
+
+## Patch 522 — authenticated historical similarity observations
+
+**Problem.** Stored cross-run observations and unjudgeable reasons have no
+browser review surface; absence and skipped comparisons must not look like low
+scores, and similarity must remain separate from badge/ranked adjudication.
+
+**Change.** Authenticated run detail reads at most 25 stored pairs with a stable
+order/overflow indicator, same/cross/unknown identity categories (no raw identity
+columns), original A/B orientation, observation time, row/move denominators,
+fractions, prefix/offset and clock rates. Skips and invalid/zero comparison
+opportunities have no numeric agreement score. The text-only collapsible panel
+labels history, no source-byte binding/current guarantee and incomplete coverage.
+Legacy reasons project to fixed safe categories and bounded short-run numbers;
+unknown prose stays withheld and raw SQL history is unchanged. No comparisons in
+web requests, public surface, verdict/review/badge/threshold/policy change.
+
+**Verified.** Five new temporary signed-in API/actual Node renderer tests pass;
+pre-panel published base fails the original four tests. Both endpoints, identity
+splits, missing/empty tables, bounded deterministic order, skipped/unmeasured
+opportunities, no mutation/public board change and literal text sinks exercised.
+A real synthetic collector stores a basename-bearing nine-move skip; API and
+actual DOM omit its synthetic identity/filename markers while full SQL history
+stays intact. Raw-projection negative control reproduces the leak and removes its
+owned fixture. Two independent retained reviewers found this projection omission,
+then approved the fix with no remaining source blocker. Counts 7 and runtime
+installer 9 tests plus adjacent suites pass; captured corpus observations remain
+unchanged. No field calibration or live human browser acceptance claimed.
+
+**Operational companion (tooling-only).** Commit 4c519b9 supplies a clean Git-pinned
+single-file runtime package/installer with dry-run, paired-reader hashes,
+predecessor guards and exclusive rollback. It claims no separate product patch.
+Live preflight corrected the old missing-tool assumption: the existing tool is an
+exact published predecessor (34c2984), and the current canonical source differs
+only in comments. Collection was already present (two native rows/one stored
+pair); this is a guarded provenance upgrade, not new algorithm/activation or
+calibration.
+
+**Deployed.** Frozen game bf5153d verified on the Pi at 2026-10-06T23:42:33Z
+and both Windows runtime paths at 23:42:32 UTC. All 26 Linux suites pass; installed
+authenticated API and runtime long-comparison/short-unjudgeable controls acted.
+Four app files and the fixed runtime destination match the commit; four paired
+readers remain unchanged. The primary Windows tool was already canonical; the
+second install received it. Source/SQLite rollback copies retained, historical
+metadata and protected tables preserved; bounded real collector stored no new
+pair. Master-preserving worker replacement, fresh ready log and health 12 proven.
+Two private gates needed finish-only correction: successful import returns a
+loaded path, and an unbounded board snapshot was killed for an unestablished
+cause. Frozen destinations/backups were rechecked without recopy; the replacement
+gate denies protected-table writes and compares bounded metadata/scalar counts.
+No new real similarity sample, complete coverage, calibration or live browser
+acceptance claimed; human layout checks remain in lextest.md.
+
+## Patch 523 — capture-free Source water and honest material menu
+
+**Problem.** Water mode 1 still renders a refraction view. Cheap reflections use
+an unmatched normal/eye frame, omit reflection tint and discard signed authored
+scroll vectors. Plugin cvar registration masks CVAR_SHADERSYSTEM, so switching
+water policy leaves cached materials unchanged. The Graphics menu calls glass 0
+opaque although its shader blends, and promises immediate/reload application
+that several cached material/BSP-time settings cannot deliver.
+
+**Change.** Add opt-in `hl2_water 4`: animated normal layers, fog-colour/tint
+approximation, view-dependent baked-cubemap reflection and ordinary alpha
+blending, with no reflection/refraction framebuffer capture or depth sampler.
+Use the shared signed-scroll/tangent-frame calculation in modes 1/2, honor cheap
+reflection tint, and embed the budget shader through the existing generator.
+The renderer owns only water's shader-policy flag; do not widen plugin flag
+semantics generally. Default remains 3; flat/dither options remain available.
+The menu cycles 0..4, labels budget/no captures and glass 0 Translucent, marks
+other cached material policies for rebuild/load, and warns retry may reuse data.
+No particle, glass shader, recorder, movement or server policy change.
+
+**Verified.** Clean baseline/candidate native client/server/plugin builds have
+zero new warning identities (existing Make pattern and source warnings remain);
+all three QC modules compile with zero warnings. Uninstrumented production
+runtime completes 20/20 same-map transitions on surf_tensor2/surf_garden with
+acting camera frames/screenshots and expected budget/capture-sampler controls.
+An isolated rig using the actual menu/font source validates all 28 value/name
+rows, default 3 before/after startup, 3->4->0->1->2->3->4 via the real menu/seta
+queue, explicit archive save and fresh-process restoration, including early
+startup value 4. Complete product CSQC also exercises that cycle and inspected
+1280x720 layout. Separate diagnostic controls observed nonzero consumer index
+submission and zero budget captures, with modes 1/2 proving live captures acted;
+those hooks are NOT in the production build. Source-contract tests retain the
+menu/default/no-capture boundaries.
+
+**Limits.** Budget water is an approximation, not depth-correct fog, Source
+parity or live reflection. Missing normal/cubemap paths degrade explicitly;
+map cubemap substitution and underwater rendering retain existing engine limits.
+Local fixed-camera wall-frame observations are not GPU timings or portable FPS
+gains. Full/cheap capture sharing, resolution/depth fog, per-row acting graphics
+coverage and a rendered glass baseline remain follow-ups. This entry is source
+and isolated-runtime verification; installation/fleet states are recorded
+separately and no Linux renderer build or Source reference launch is claimed.
+
+---
+
+## Patch 524 — abstain on malformed comparison input
+
+**Problem.** The comparison reader could append only part of a required input
+row, misaligning its parallel arrays; nonfinite consumed values could also
+escape as conversion errors. A surviving fragment is not a measured stream.
+
+**Change.** Convert required values before any append and reject the whole
+comparison source when those values or its required row width are malformed.
+Keep tolerant standalone parsing, preserve valid numeric conversion semantics,
+and reject torn in-memory arrays. Pair inspection distinguishes malformed input
+from successfully read no-input files. This reader is not a general grammar
+validator and does not add movement bounds or detector thresholds.
+
+**Verified.** Five parser tests cover valid/fractional controls, malformed
+required columns and row positions, width/header handling and CLI abstention.
+The CLI assertion first fails against the reviewed candidate and then passes
+with the diagnostic correction. Isolated collector/storage/authenticated-history
+controls retain unavailable metrics for malformed input. Full batch: 13 focused
+and five integration tests pass; adjacent sweep, similarity, runtime-installer
+and reader suites pass, including 306 reader checks. All 269 captured valid
+streams retain identical values; the complete reader/sidecar corpus output is
+byte-identical to baseline (170 existing faulted files). No engine/QC, policy,
+public badge/ranking, schema or historical-row change. Deployment is recorded
+separately.
+
+---
+
+## Patch 525 — retain measured zero-agreement opportunities
+
+**Problem.** A valid pair with no agreeing rows retained a zero-initialized
+winner, losing its real comparison denominator. It was labelled compared but
+presented as unavailable rather than as a measured zero.
+
+**Change.** Retain the first candidate with actual opportunities even if its
+match count is zero; preserve the ordering and ties of positive-match winners.
+An actual zero-opportunity result abstains at the shared comparator boundary.
+No minimum length, shift window, discriminator, threshold or policy change.
+
+**Verified.** Four opportunity tests cover complete disjoint streams, exact and
+perturbed positive controls, malformed parallel arrays and actual unavailable
+opportunities. Isolated SQLite/history controls retain matched zero and a
+positive denominator as a measured result. Original source fails the new
+opportunity assertions. All 499 originally positive results in a deterministic
+500-pair probe retain identical full winner tuples. The complete batch and
+269-stream corpus controls documented in Patch 524 pass. Historical stored
+observations are neither recomputed nor backfilled; deployment is separate.
+
+---
+
+## Patch 526 — distinguish unreadable comparison evidence from no input
+
+**Problem.** The tolerant parser collapsed opening failures into the same
+result as successfully read no-input files. Shared comparisons and census could
+therefore report unavailable evidence as samples-only; mid-read I/O could escape.
+
+**Change.** Strict callers retain per-call I/O outcomes while tolerant parsing
+still returns no result. Shared comparisons, census and pair inspection reserve
+no-input outcomes for successful reads. Census unavailable counters are local,
+not inferred from accumulated global skips. No retry, selection, schema,
+threshold, enforcement, historical interpretation or richer UI taxonomy change.
+
+**Verified.** Four I/O tests cover missing/open-denied sources, mid-read failure
+after valid rows, subsequent valid/no-row controls, repeat census isolation and
+CLI unavailable/no-row diagnostics. Isolated collector and authenticated-history
+controls store skips with unavailable metrics, not measured zeros. Original
+source fails the new I/O assertions while valid controls act. All 13 focused,
+five integration and adjacent suites pass; 269 captured streams and the full
+reader/sidecar corpus remain unchanged. Runtime source is one shared reader;
+engine, progs, app, config, ranking and badge implementations are untouched.
+Deployment/path/hash and host verification are recorded separately.
+
+**P524-526 deployment (2026-10-07 00:27:07 UTC).** Frozen game `4f5c47f`:
+only the fixed comparison reader installed on the Pi and both Windows installs,
+with matching destination hashes, paired-reader/predecessor guards and rollback
+copies. Nine Linux stage suites pass; installed valid, measured-zero, malformed,
+unreadable, no-input and short controls act. The actual Pi reader resolves at the
+expected path and measures a real pair read-only; protected table counts and
+binary/progs/config/app/process state are unchanged. Health OK, 12 lobbies;
+no reload/restart. One private locator probe failed after the correct swap and
+was repaired finish-only without recopying or replacing the original backup.
+This is installed-path/integration verification, not a new fleet calibration,
+historical reinterpretation or engine build.
+
+## Patch 527 — independent run-line controls and a compact HUD pane
+
+**Problem.** The 29-row pane overwhelmed the editor and its apparent master
+switch controlled only the open demo. Selected board lines could not be hidden
+without losing their selection.
+
+**Change.** Seven rows, with independent archived player/demo/board switches,
+all on by default. `lines help` exposes the existing advanced console settings.
+Board visibility no longer changes selection. Mod-side only; engine pins unchanged.
+
+**Verified.** Isolated three-prog build: zero warnings. Private content-overlay
+runtime exercised both opposite switch combinations and console help without
+unknown commands/VM errors. Inspected actual editor screenshot: seven rows, with
+player/board on and demo off. Test runner retains private artifacts and removes
+only its own junctions. This verifies controls/UI, not the later lifecycle,
+contact, save-continuation or comparison fixes.
+
+## Patch 529 — retain the pre-reset trail and rewind head
+
+**Problem.** A start-save load replaced the failed run's picture; untimed practice
+pictures could grow inside a start. Live teleports joined as solid geometry.
+
+**Change.** Armed start loads retain the failed picture/head. Practice extension
+stops at a settled start/stage boundary. New attempts start a one-second default
+fade. Speed-scaled visual discontinuities break the live line without touching
+recordings, mover, evidence or certification. Mod-side only.
+
+**Verified.** Three-prog build: zero warnings. Five dedicated acted controls:
+growing recorded run, retained reset head matching rewind, start-save retention,
+new-attempt fade, and explicit stage-1 retention/fade. Full P502 dedicated suite:
+all main and edge controls pass, including live/cold/demo prefixes, holds,
+queued saves and earlier splice history. Initial fixture used an unregistered
+pre-CSQC cvar and too-short departure wait; corrected and rerun. Stage-2's
+immediate re-launch was not a standing-at-start control and exposed a separate
+TS_RUNNING/clock-back lifecycle case, recorded in BACKLOG. Discontinuity detection
+is visual/tolerance-based, not guaranteed detection of short teleports.
+
+---
+
+## Patch 528 — gate budget-water menu on local native support
+
+**Problem.** Lobby-downloaded CSQC offered water mode 4 even to an older
+native engine or plugin. A plugin/user-created cvar does not prove the native
+live shader-policy hook, so the no-capture promise and live-menu semantics
+could not be relied upon. An archived 4 could reach BSP material generation
+before the new CSQC initialized.
+
+**Change.** Add local extension FTE_CSQC_HL2_WATER_BUDGET, requiring an active
+programmable OpenGL renderer and a loaded material loader with embedded
+vmt/waterbudget on the native engine that owns the live policy. CSQC refreshes
+this capability at initialization, menu-command entry and renderer restart.
+Unsupported pairs retain the legacy 0..3 row/rebuild marker. Their archived 4
+falls back to Dithered 3 and queues flushshaders to replace cached materials;
+capable clients keep 4 and the live 0..4 row. Preserve milk target invalidation,
+default 3 and the plugin API flag mask. Non-OpenGL is conservatively legacy;
+this availability contract is not a driver-compilation guarantee.
+
+**Verified.** Clean owned worktree builds all three product VMs with zero
+warnings plus client/server/plugins with zero new compiler diagnostics against
+P523's full-build baseline. Actual pre-P523 and updated EXEs/plugins, including
+both mixed pairs, run the same menu source: 29 acting phases verify forged cvars
+do not enable 4, archived 4/new or fallback 3/legacy, correct cycle ranges,
+renderer reload, map return and saved value. Budget/fallback shaders have no
+capture samplers; full-reflection/refraction modes are positive controls.
+Legacy cycles explicitly rebuild as advertised. Uninstrumented full product
+CSQC also passes all 11 old/new menu/shader phases; screenshots show the legacy
+star versus live Budget label. Source contracts pass. Verification is Windows
+OpenGL rendering with an owned stub world, not prediction/network gameplay,
+a universal driver/backend claim, Source visual acceptance or fire completion.
+
+## Patch 530 — complete nearby run-line labels and faded teleport endpoints
+
+**Problem.** The overlap grid silently removed visible contact labels; endpoint
+squares remained brighter than a faint teleport join. Contact holds and turn
+history could bridge a discontinuity.
+
+**Change.** Complete labels by default, bounded vertical collision lanes, and an
+optional sparse mode (`hud_lines_declutter 1`). Explicit archived teleport alpha
+fades both endpoints and dashes. Reset ramp/turn history at a visual break.
+Existing view/mark switches and the 128-label frame cap remain. Mod-side only.
+
+**Verified.** Three-prog build: zero warnings. Actual native-record replay draws
+8 labelled contacts in complete mode versus 6 in sparse mode; screenshot inspected.
+Four runtime-log tests check both off switches, mark metadata derived from the
+recording and every drawn speed/energy/vz/delta/time field. Full dedicated P502
+main/edge controls and 306 reccheck checks pass. An initial helper referenced a
+local-only fov component and crashed fteqcc without diagnostics; a clean baseline
+acted and an explicit screen-size cache fixed it. An unavailable initial map
+fixture did not act and was replaced with an installed map, then rerun.
+Impossible density can overprint and more than 128 queued labels hit the explicit
+cap. Adjacent ramp planes, Momentum contact inference, multi-line comparisons
+and segment attribution remain separate work; this patch does not claim them.
+
+**Patch 528 deployment (2026-10-07).** Frozen native f073138ad and water-only product
+bd0f21c built from clean inspected commits; client VMs match the tested bytes.
+Published source integration b4afc5a preserves the independent HUD feature,
+but that peer feature is excluded from this deployment. Both Windows installs
+received the native/plugin/CSQC pair with all ten destination hashes and
+immediate predecessor backups checked; owner configs, SSQC and menu unchanged.
+Pi received the coherent SSQC/CSQC pair through the existing no-player/hash/
+backup/restart procedure, with an additional pre-swap predecessor-hash guard.
+All 12 active lobbies were empty, restarted successfully and remained healthy.
+Their live/previous pair hashes match new/old provenance. Compared with the
+Pi-era P519 source, only water-menu client code changes; server/shared contracts
+are unchanged. Actual fresh-cache downloads on a pre-P523 client and both
+installed updated clients match the new CSQC bytes; spawned bodies and visible
+menu pixels act. Old client shows Dithered with rebuild marker; new clients
+show live Budget. Fresh-process replay of a real saved 4 also retains 4/new or
+falls back and saves 3/old. Lobby map content was explicitly supplied to the
+isolated clients because the existing server map-download path denied the BSP;
+this is CSQC-download/menu compatibility evidence, not a map-download/material
+fix, other-backend acceptance or Source visual parity.
+
+**Run-line P527/P529/P530 deployment (2026-10-07 UTC).** Clean inspected product
+`5ff0b3b` built with zero warnings. Both Windows CSQC destinations and immediate
+predecessor backups verified; native/plugin, SSQC, menu, owner configs/data left
+unchanged. The existing deployed water code is preserved. Pi received the
+coherent SSQC/CSQC pair via no-player/hash/backup/restart gates: all 12 lobbies
+empty before swap, healthy afterward, live and previous pair hashes verified.
+SSQC/shared source is unchanged from the prior deployed water-only product.
+Actual fresh-cache CSQC downloads on both installed native clients match new
+bytes; spawned HUD editor screenshots, independent console controls and
+complete-label/teleport/fade defaults act. All 12 heartbeats empty after controls.
+Read-only local map content supplied to the private clients; not a map-download
+or material fix. Existing archived configs are not rewritten, and the unresolved
+contact-plane/Momentum/attribution/comparison work remains unresolved.
+
+## Patch 531 — native single-channel particle sheet animation
+
+**Problem.** Source fire textures can contain many arbitrary atlas rectangles.
+The existing tcoords/atlas commands select a static cell at spawn; translating
+only the texture stem draws a whole sheet instead of an age-animated flame.
+Per-sprite CSQC polygons are not a scalable replacement for native batching.
+
+**Change.** The scripted normal-sprite backend accepts up to 256 `texframe
+<duration> <s1> <t1> <s2> <t2>` entries with finite normalized rectangles and
+strictly increasing cumulative duration. `texanim static/lifetime/loop/clamp
+[rate]` selects a discrete frame by actual particle age; lifetime mode uses
+its randomized lifespan. Point and trail spawns initialize the same UV fields
+already consumed by existing sprite batches. No extra texture samples, frame
+blend, capture, bloom or light pass. Tables are per-type owned allocations,
+deep-copied for retints and freed on reset/set unload/shutdown. Query/export
+preserves the table (QC query/export buffers enlarged for the bounded maximum). Invalid
+input and unsupported primitive types are reported. `FTE_PART_TEXANIM` reports
+compiled scripted-backend syntax, not current backend selection. Documentation
+and the pure-C selector test are included; legacy effects with no table retain
+their static UVs and random draws.
+
+**Verified.** Isolated Win64 m-rel build; no new compiler warnings (the existing
+p_script point-file `total` warning reproduced from identical baseline source).
+LSP inspected: only pre-existing diagnostics. The actual included C selector
+passes nonuniform durations, boundaries, rate zero, negative/late age, finite
+safety, randomized lifetime and 256-frame controls. Native colored-atlas pixels
+prove red/green/blue advancement, loop return, clamp hold, lifetime expiry,
+legacy tcoords, a real trail, retint surviving source-table replacement, table
+export/re-exec, set unload and two renderer restarts. A 257th frame is rejected;
+all 256 valid rows survive the actual QC query and export. Actual old/new clients both render the map
+and report extension 0/1 respectively. Fixed-camera native flame-layer controls
+on surf_dune and surf_anubis use their actual authored sheets; repeated off
+images match exactly, static/animated/repeated animated pixels all act, active
+pools are 10-14 of an explicitly capped 128, and logs have no shader/runtime
+errors. Bloom, dynamic lights and scene captures are off. Uncapped alternating
+wall-frame observations are not GPU timings or a whole-map budget acceptance.
+
+**Limits.** This is the renderer prerequisite, NOT the product fire fix or a
+Source-exact PCF/material implementation. No product emitter, generated assets,
+owner install or fleet changed. The isolated flame rigs approximate forces,
+size/alpha/material and omit children, smoke/embers, sequence blending and
+secondary UV channels. Product shared/embedded library resolution, graph and
+operator honesty, entity flags/size, visibility/overdraw budgets, off/low and
+old-client gates, ship-set and deployment controls remain open. Existing export
+omission of trail spacing was observed and left untouched; the trail control
+restored its authored step instead of crediting a silent export replay.
+
+## Patch 532 — smooth run-line chunks and proximity-dither lobby bodies
+
+**Problem.** Small published line chunks appeared instantly behind a moving
+player and on demo load. Nearby lobby bodies obscured the view; ordinary alpha
+blending would wash out their colours and lose opaque depth behavior.
+
+**Change.** Heap birth stamps for demo/live/previous slots reveal each chunk
+oldest-to-newest over `hud_lines_reveal` (default 0.18 seconds, 0 instant), using
+smoothstep and a half-duration within-chunk stagger. Only unpublished points
+get births. Rebuild, Clear/reuse and cap compaction respect publication identity.
+Demo playhead alpha composes with publication; board lines remain unchanged.
+Streamed Body_Predraw selects an embedded opaque skin material with screen-space
+4x4 Bayer discard, preserving normal survivor colours and depth. Viewer-local
+`cl_playerfade` defaults on, near/far 32/128 units; off restores the original
+material. Four controls join `hud_edit lines` and default.cfg. Mod-side only;
+no engine code, movement, server rule, recorder grammar or qcbuild change.
+
+**Verified.** Production three-prog build: zero warnings. Isolated test-only
+CSQC: 33 publication/playhead/rebuild/reuse/cap assertions, plus 16 renderer
+screenshots. Live and demo start images are empty; halfway brightness is 0.5416
+of the instant control with back/front brightness 405858/149618; mature pixels
+match the instant control exactly. Body far pixels equal fade-off pixels; middle
+coverage is exactly 0.5, survivors match normal colours, near is fully hidden;
+zero and inverted endpoint controls are opaque. Dedicated reset/rewind regression:
+all five acted controls pass. Production HUD editor screenshot exposes all 11
+rows and the defaults; inspected alongside actual fade screenshots. No runtime
+command/VM or shader errors. Initial test extension called a later-defined
+function and crashed fteqcc without stdout; production built clean throughout,
+and the unnecessary test call was removed before rerunning.
+
+**Limits.** Windows OpenGL rendered evidence, not a universal backend/driver
+claim or subjective high-refresh acceptance. Applies to streamed lobby bodies,
+not ghosts/owner avatar. Birth time is visual client time, not run evidence.
+The rewind HUD/input/contact/Momentum/comparison overhaul remains separate.
+Test-only world-free and Visual_* hooks are confined to private overlay builds.
+
+**Deployment (2026-10-07, verified 04:03:53 UTC).** Frozen clean product `4fdfbdf`
+builds byte-identically to the tested production artifacts; test hooks absent.
+Both Windows CSQC destinations and immediate predecessor backups hash-match.
+Windows SSQC/menu/native and owner configs/data are unchanged. Pi coherent pair
+swap retains .prev; SSQC is byte-identical to its predecessor. All 12 lobbies
+were empty, restarted successfully and remained healthy/empty after controls.
+Default.cfg matches all three destinations with guarded backups (second install
+previously lacked it); the inspected diff also catches up already-approved
+P527/P529/P530 viewer defaults whose progs shipped without that cfg. No movement
+or server-rule values change. Fresh-cache clients using both installed engines
+actually download matching new CSQC, draw the 11-row editor/defaults and receive
+live peer-body streams. Actual live map surf_kitsune has one existing unresolved
+material; this is not a material/map-download fix or high-refresh acceptance.
+Engine pin/tag and qcbuild stay unchanged; native P531 is not shipped here.
+
+## Patch 533 — continuous fade, without chunk or coverage steps
+
+**Problem.** Lex's actual viewing falsifier rejected P532's stepped appearance.
+Line_End restarted a stagger for every publication/chunk, and the tail only
+appeared at each bulk rebuild. Bayer dither had just 16 coverage thresholds.
+
+**Change.** Live birth stamps now belong to sample arrival; rebuilding cannot
+restart them. Constant-rate age alpha replaces smoothstep/stagger. Demo initial
+publication uses one uniform ramp, composed with its playhead fade. Up to three
+normal pending live samples draw every frame with stride 1, no stale sphere/LOD
+culling and correct break termination, without rebuilding the bulk tables.
+Only live pending colours refresh; no board-cache invalidation. Contact/energy
+classifiers retain their existing whole-live-slot walk. Static spatial gradient
+noise replaces the 4x4 threshold pattern; no time seed or temporal flicker.
+Viewer controls, depth and survivor colours stay. Mod-side only.
+
+**Verified.** Extended private overlay: 37 alpha/rebuild/reuse/cap assertions;
+51 actual rendered screenshots. Both uniform half-age line images are 0.4993
+brightness of opaque controls; mature pixels match instant controls. Pending
+tail actually emits and matches mature complete-line brightness; a tail break
+removes its join. Body has 33 distinct monotonic coverage levels over 32 substeps
+(the old pattern could have at most 17 including endpoints), midpoint 0.500146,
+unchanged normal survivor RGB, far identical to off and near fully hidden.
+Production three-prog build zero warnings; five dedicated reset/rewind controls
+pass again. LSP inspected (no QC parser claim); actual screenshots inspected.
+
+**Limits.** Windows OpenGL, not subjective high-refresh acceptance/all backends.
+No worst-case contact-mode FPS claim. Source pose sampling is still tick-based;
+no claim of invented intermediate evidence. No server state, recorder format,
+engine code/pin/tag or qcbuild change. Broader rewind overhaul is separate.
+
+## Patch 534 — authored checker and extruded red ERROR asset
+
+**Problem.** The engine's 16x16 diffuse checker is coarse; the owner supplied
+64x64 missingtexture.png and requested an Impact ERROR placeholder like Source.
+
+**Change.** Asset-only. Ship the owner's unchanged PNG as gfx/env/missingtexture
+and the standard textures/no_texture.png alias. Add a locally generated,
+extruded Impact models/missing_error.md3, red/fullbright faces, darker sides and
+small additive halo rings with a shared palette. The font itself is not shipped.
+Include regeneration/structural controls and exact release/ignore entries. No
+engine/progs rebuild, engine pin/tag or qcbuild change; patch pin advances.
+
+**Verified.** Isolated Windows OpenGL: frontal/angled ERROR renders produce
+58653/53639 red pixels, model-off zero; bloom0. Checker override loads64x64,
+legacy gl_load24bit0 loads16x16; normal/gloss remain4x4. The early rgbgen const
+GPU-alias arm rendered white; baked palette UVs repair the acting red control.
+Final 1/64-quantized MD3 has no degenerate triangles and matches prior frontal
+pixels. Eight structural/PNG/material/ship-entry tests pass; fixture QC compiles
+without warnings and final runtime arms have no shader/command errors.
+
+**Limits.** Standalone model ART, not automatic failed-model selection. Valid
+Source VMT explicit pass maps with absent base textures can still render black;
+that controlled refusal and missing-model renderer/collision integration remain
+in BACKLOG. No all-backend/Source-fidelity, whole-map cost or full-release claim.
+The clean asset worktree lacks ignored particles data, so generic shipguard's
+filesystem precondition is not satisfied; exact new runtime asset entries and
+asset-only archive payloads are checked separately.
+
+## Patch 535 — main rewind HUD and bind-resolved cursor scrolling
+
+**Problem.** Rewind duplicated clock/speed in its own chrome while the main
+clock/units/energy still described the pinned body. Fractional scrub index was
+floored for all presentation. Strafe binds were ignored as navigation.
+
+**Change.** Rewind publishes a visual-only ui_rw snapshot after camera setup.
+The main timer displays fractional cursor time, explicitly display-only; existing
+speed/energy draw it without differentiating scrubs as physics. `e line` is
+relative to the first line sample's total energy, not the live/manual/jump anchor.
+Missing velocity abstains; duplicate clock chooses the last sample; interpolation
+never crosses a break. Separate visual position/velocity/angles do not rewrite
+selected tr_cur fields, sampled practice-save values, resume request or prefix
+bound. Unsupported live ramp/trainer panels are hidden; entry/exit re-latch and
+pending-go/countdown return to the normal HUD. Duplicate chrome numbers removed.
+Bare +moveleft/+moveright bindings scroll with physical ownership, not assumed
+A/D: held-before-open, repeat/release/rebind, slot recycling and overlapping-key
+fallback respect existing guards. No server rule, grammar, mover or engine change.
+
+**Verified.** Private test-only overlay, real dedicated socket: 21 exact-sample
+versus visual/unknown/ownership assertions and 12 acted HUD/input phases. Half
+index changes visual clock/camera while sampled save coordinates/velocity and
+prefix end stay exact. Repeated keydown does not add a step; released slots reuse,
+physical owners differ, remapped held keys release, overlapping direction falls
+back, held-before-open is not adopted. Native viewpos is stationary through
+browsing; pending-go/countdown/closed source clears. Actual main HUD and restored
+live screenshots inspected. Production three-prog build zero warnings. Five reset
+regression controls pass. 306 recorder-reader tests pass; unchanged checker and
+original corpus hashes retain 269 REC observations (164 existing REC faults and
+six faults among 91 paired VIEW files), not new faults.
+
+**Control repairs/limits.** Missing Rewind_Reset prototype fixed in the initial
+seam; first grader expected `origin:` rather than viewpos's `setpos` output. Both
+rerun. An early uncommitted product compile had undefined tr_track/wrong angle
+helper arity, fixed before publication. This is live rewind only, not demo parity,
+compound binds, full P477 27-round acceptance or the stitched idle-tail defect.
+No subjective high-refresh/universal-renderer claim. Engine pin/tag/qcbuild stay.
+P533 documentation correction: TR_BUILD=16 means 15 pending samples; existing code
+already handles it. Extended emit/pixel control proves all 15 (37 alpha checks,
+52 screenshots). Long-sweep opaque endpoint has five one-channel 1/255 differences;
+it uses the existing <=1 survivor-colour tolerance with unchanged coverage masks.
+The original acted images were explicitly regraded, not replaced by a silent run.
+
+## Patch 536 — remove the misleading imported-board Compare control
+
+**Problem.** The Compare chip merely interleaved native and imported board times,
+not the continuous run comparison Lex wants, and was explicitly requested removed.
+
+**Change.** Remove sb_tmix and its rec_sb_mixboth state. Imported tab always
+selects the imported query tier; native remains ranked. Keep imported/refresh
+widgets, native/import provenance and combined read API/database rules intact.
+No backend, recording, permission or engine change; not a new frame comparator.
+
+**Verified.** Actual private board draw hook, not a silent no-call assertion:
+imported and native frames both rendered, getter tiers imported/ranked differ,
+Compare had zero calls while imported/refresh widgets had positive calls. Both
+actual screenshots inspected. Three-prog build zero warnings. First test sentinel
+was an implicit QC constant; explicit var repaired the seam and the complete arm
+reran. Test hooks stay in private overlay builds. Online terms are unaccepted,
+so this proves UI/scope only, not remote row fetch or broadened permission.
+Engine pin/tag and qcbuild unchanged; broader comparison stays in ROADMAP12.9.
+
+## Patch 537 — separate rewind context from the main HUD caption
+
+**Problem.** Final clean production screenshot caught the legacy fixed REWIND
+heading overlapping P535's timer source caption; controls also shared chat rows.
+
+**Change.** While the main cursor snapshot is active, its caption owns top context.
+The footer has an explicit REWIND prefix at 0.80 viewport height; implicit resume
+context sits at 0.76. Keep the prior pending-go/countdown heading/guard behavior.
+No input/physics/evidence change.
+
+**Verified.** Entire 21-unit/12-dedicated-phase rewind control rerun after layout
+changes, zero warnings, native pinned body stationary, actual new screenshot
+inspected: timer caption, speed/energy, controls and default chat are separate.
+Default Windows layout, not every custom HUD arrangement or all renderers.
+Engine pin/tag and qcbuild unchanged.
+
+## Patch 538 — Source swimming and map-scoped colour/fog controls
+
+**Problem.** Source's submerged branch only traced existing velocity: no swimming
+input or water friction. Plain Source water inherited Quake's orange contents
+blend; material fog depended on water-warp being enabled. surf_sidistic's authored
+red scene and dense red fog lacked a cheap user-adjustable alternative.
+
+**Change.** Implement Source WaterMove input, 3D drag, sinking, jump rise, aimed
+swimming, collision sliding/stepping and basevelocity accounting. Live server
+advertises read-only pm_sourceversion=3 (forced to the compiled constant after
+registration so early +set cannot spoof it); prediction follows that key (absent
+means old drift). Non-finite ramp pins are refused before version selection. The existing recorder pin selects mover v1/v2/v3: old pins retain old
+water behaviour without changing any recording columns. Source-only r_sourcewater
+replaces the plain-water orange blend with authored distance fog, independent of
+r_waterwarp, or a low-cost blue-green fallback. Damage/lava/slime blends remain.
+
+hl2_colour_hue (-999 automatic, otherwise degrees) and hl2_colour_hue_strength
+(0..1) rotate HSV after authored LUTs in the same scene-only pass. No extra blur,
+reflection or LUT texture; neutral/no-LUT maps bypass the postprocess completely.
+The automatic hue is 150 degrees on surf_sidistic, zero elsewhere. Archived QC
+vbsp_fog_distance and vbsp_fog_density (-1 automatic) scale Source fog distances
+and maximum opacity; automatic settings are 2/.5 on surf_sidistic, 1/1 elsewhere.
+Sky fog uses the same settings; live changes reapply without restarting the map.
+No per-map exec mutates user settings or leaks into the next map.
+
+**Verified.** Clean-origin Windows client/server/plugin full builds; all three
+progs zero warnings, no new compiler warning in an edited C translation unit.
+Seven numeric swimmer checks plus every existing pm_selftest check pass. Real
+localhost dedicated socket: old submerged input does not accelerate, current
+forward/strafe reaches ~208u/s at maxspeed 260, up/dive/jump act, and inherited
+100u/s drifts forever in the control but decays to ~12u/s in the subject. All
+submerged arms prove input and waterlevel 3; not a listen-server prediction test.
+Native old pin-1 and pin-2 replays reproduce 2347/2347 and 4417/4417 samples,
+identical to the clean base; pin-2 pm_verify PASS, future pin-4 REFUSE. A dry
+pin-3 dry control also reproduces 4417/4417. A fresh full-product swimming run
+with a jump records version 3 despite a startup version-2 override, reproduces
+136/136 packet arrivals and gets native pm_verify PASS (144 rows / 154 ticks).
+Header NaN, applied-restatement NaN and infinity ramp-pin arms REFUSE; ordinary
+version writes are rejected. Invalid early mutation arms were not counted.
+Reader 306 checks / 0 failed; 269-file corpus remains 164 pre-existing faults.
+Real surf_sidistic fixed-camera hue/fog, strength-0, restore and next-map arms
+reach without shader errors; HUD stays exactly red, water toggle above the
+surface is pixel-identical. Source material fog acts with r_waterwarp 0; missing
+material fog uses a smooth low-cost fallback. The same scene at 960x540 gives
+1542/1618/1546/1615 fps (hue on/off/on/off): ~4.5% here, no claim for other GPUs.
+OpenGL visuals only; this does not implement Source's scripted water-lip jump,
+per-volume water fog, or animate the existing global LUT entity weights. Portal
+maps reuse the prior portal-aware sliding path after swimming input/drag, avoiding
+a speculative down-step at an exit. Underwater portal crossing/stair/carrier
+collision cases are not claimed as runtime-verified.
+Deployment/provenance is recorded separately; qcbuild stays 89.
+
+## Patch 539 — preserve cold recorder attachment across repeated cuts
+
+**Problem.** A cold streamed prefix deliberately has no live evidence run ID.
+The old warm-cut gate demanded one; second/third cuts reloaded cold and dropped
+older authoritative snapshots, so the held body no longer matched the selected
+sample. The strict six-cut control exposed both failures.
+
+**Change.** Fresh server-local attachment key at open/cold/session attach, cleared
+on discard/reset/close. Both ordinary and rewind-snapshot saves emit `recbranch`.
+Compare it, serial, run ID and generation/line/byte floors; never adopt it as a
+run ID or nonce. Legacy saves retain the nonempty matching-run-ID gate. No `.rec`
+grammar, evidence identity, detector policy, engine pin/tag or qcbuild change.
+The unpublished P538 recorder candidate was renumbered forward after concurrent
+swimming publication; integrated on that published source without changing its
+engine pin, defaults or C. Recorder source is byte-identical to the tested arm.
+
+**Verified.** Zero-warning product and private probe builds. Buffered and streamed
+real-dedicated six-cut controls pass: native selected-snapshot origin/ticks, held
+clock, release/recording, counted >4s failed waits and persisted raw prefix.
+17 compiled attachment/generation/legacy/reset controls; 19 streamed/18 buffered
+grader counterfactuals. P502 main/edges and nine grader controls pass in both
+modes. Reader 306 checks/0 faults; read-only corpus unchanged at 269 recordings/
+164 recording faults and 91 views/6 view faults, with byte-identical reports. First candidate omitted the separate snapshot writer and stayed red;
+repaired probes/content roots were fully rerun. Integrated product build is zero
+warnings. Human path/camera/label acceptance and broader visual pause/event/
+compare work remain open. Integrated six-cut controls pass in both modes.
+Independent source reviews found no recorder-code regression; one caught an
+empty/truncated-vector `zip` oracle. Complete unique finite native fields and
+eight malformed-field counterfactuals repair it; the prior parser accepts the
+acted empty-body negative. Draft corpus counts were corrected from the complete
+report before publication. No test-only probes belong in shipped progs.
+
+**Deployment.** Production progs from inspected FTESurf `8f87209` reached both
+Windows installs and all 12 Pi lobbies on 2026-10-07; cold-client controls finished
+07:49:48 UTC. Occupancy gate had a current zero-player row for every unit; no
+force. Destination hashes agree, all units are active, ordinary `.prev` retained.
+Engine/plugins/menu, owner configs and the separate Quakers mod unchanged.
+Two fresh clients downloaded matching CSQC and received acted peer streams;
+settings/imported/native UI reached without command/VM/shader errors. Screenshots
+show the terms-unaccepted gate and a missing-map-material warning; this is live
+compatibility, not board-row fetch, full map appearance or camera/path acceptance.
+Independent source reviews and oracle recheck have no residual code blocker;
+parent-owned isolated native controls establish the cut/body/clock behavior.
+
+## Patch 540 — keep rewind presentation inside continuous spans
+
+**Problem.** Raw trail break/stitch columns were ignored by velocity/view
+interpolation, which checked only the legacy recording flag. Chase direction
+used +/-3 points even across a break, pivoting toward an unrelated attempt.
+Four acted compiled controls fail on the unchanged P539 client.
+
+**Change.** Respect raw columns 8/9 alongside the existing legacy/time gates;
+clip chase tangent endpoints at the nearest break around the cursor. Preserve
+fractional continuous presentation and sampled authoritative save/resume state.
+No server selection, recording format/clock, evidence reader/writer, engine C,
+engine pin/tag or qcbuild change. Opt-in private diagnostic builds trace both
+camera modes at quarter-point indices and restore cursor/camera/cvars afterward.
+
+**Verified.** Zero-warning builds. Nine compiled controls pass, including
+continuous/short-yaw/sampled-save, raw break/stitch and chase both sides of a
+break. Six-cut streamed/buffered native body/clock/prefix/refusal controls pass
+at cap 100, and streamed at 300; respective visual scans contain 12,006 / 12,110
+/ 12,142 cursor samples. Genuine 5-second stops stay counted. 17 lineage guards,
+19/18 native grader counterfactuals, 16 visual grader controls, P502 main/edges
+in both modes and reader 306/0 pass. The hold probe now waits 1.2 s for the
+acknowledgement without relaxing any body/clock/prefix check. Low-FPS warm cuts
+keep the existing >10-sample floor; six-decimal print precision sets a derived
+velocity comparison tolerance. Test-only programs must never ship.
+
+**Limits.** Visual 30-FPS buffered scans pass (5,626 samples), but the full
+requested-prefix oracle stays red at two cuts: 0.735 -> 0.690 and 1.500 -> 1.545.
+Both reproduce exactly on the unchanged P539 baseline. Keep this alignment
+follow-up in BACKLOG; do not claim a complete low-FPS resume fix. Human moving-
+camera feel, real teleport/contact coverage and the broader pause/event/compare
+request remain open. Deployment is a separate gate, not claimed by these tests.
+
+**Deployment.** Frozen FTESurf `996462b` production bytes reached both Windows
+installs and all 12 Pi lobbies; compatibility verification finished 2026-10-07
+08:44:27 UTC. Destination/progenitor hashes agree, ordinary `.prev` retained.
+Pi occupancy gate had a current empty row per unit, no force; independent read
+finds all 12 active. Windows native/plugin/menu/personal/default config and
+Quakers bytes unchanged. Production builds contain no private probe commands.
+Two fresh-cache installed clients downloaded matching CSQC and received real
+peer streams without command/VM/shader errors. Inspected screenshots show the
+unaccepted-terms gate and known missing-map material: live compatibility, not
+row-fetch, full map appearance or human camera-feel acceptance. No recording
+submissions, map change or second restart during the finish-only controls.
+
+## Patch 541 — depth-aware Source water surfaces
+
+**Problem.** Live water modes applied authored distortion directly, without
+Source's shallow-water attenuation. On surf_aesthetic, refractamount 5 smeared
+whole-screen samples into high-contrast noise. Surface fog ignored fogstart/end.
+The dormant depth branch used assumed near/far values and a fixed 4096 divisor.
+Worse, `$refractiondepth` set HASREFRACT but not HASREFRACTDEPTH: merely binding
+it returned an absent depth texture, not a real depth control.
+
+**Change.** The parser requests the existing refraction depth attachment. Its
+producer and consumer require the same FBO even at r_refract_fbo 0 (screen-copy
+has no depth attachment). Source live modes bind sampler 2, with a null slot 1
+in mode 1 so it still does not request a planar reflection. Reconstruct eye
+depth from m_projection; use the positive depth gap for shallow distortion and
+material fogstart/end. Keep Fresnel normals unit length. Reject foreground and
+out-of-screen refraction offsets, remove the fixed 1080-pixel offset, respect
+fogenable and abovewater. The generated GLSL header matches the source. Modes
+0/3/4 and movement/progs/evidence are unchanged. This adds a depth attachment,
+not another scene capture; it is not a free performance improvement.
+
+**Verified.** Windows engine/plugin and QC builds pass with zero QC warnings
+and no new warning in edited C units; LSP has only existing diagnostics. New
+`tools/test_water_depth.py --engine <checkout>` passes 12 source/numeric tests,
+including finite/infinite perspective depth, fog range, binding flags and
+copy-mode agreement. Existing water/menu source contracts pass. Real OpenGL
+fixed-camera controls: depth diagnostic changes from absent/zero to active;
+neutral normal restores recognizable reflections; fog ends 32 vs 8192 and
+fogenable 0 visibly act; yaw/pitch/foreground and r_refract_fbo 0/1 render
+without shader errors. Matched neutral controls give pixel-identical mode
+0/3/4 and submerged images before/after. The submerged camera explicitly
+reports water contents, not a solid or merely a wet-looking surface.
+
+**Limits.** Eye-depth gap approximates Source's fog-alpha capture; it is not
+pixel-identical Momentum water, volumetric ray integration or a world-depth
+buffer for mode 4. OpenGL is the runtime-verified backend. Authored underwater
+fog can remain dense; P538 contents tint/fog behavior is retained. Human taste
+and broader material/backend coverage remain open. Build number stays 89.
+
+## Patch 542 — preserve the visual row at a serialized rewind cutoff
+
+**Problem.** A trail raw clock is six-decimal text, while trim/save/load used
+an unrounded float32 cutoff. At native tick 49, 0.015 * 49 is 0.734999955;
+its stored 0.735 row decodes as 0.735000014 and was discarded. At 30 FPS this
+lost a whole 45 ms visual sample even when request, native selection and load
+acknowledgement agreed. The original 0.735 -> 0.690 probe held tick 49, not a
+0.690 native snapshot. A separate forward difference held native tick 103.
+
+**Change.** Normalize only visual trim/save/load cutoffs with the same
+six-decimal formatter/parser as raw samples, once per operation. No FPS
+epsilon, synthesized sample, native selection change, evidence/save-state
+retiming, recording format, engine pin/tag or qcbuild change. Opt-in private
+instrumentation captures the entire native ring, wire request, sampled cursor
+and go acknowledgement for independent nearest-position and exact-prefix checks.
+
+**Verified.** Zero-warning production/diagnostic builds. Baseline 30-FPS cuts
+still drop a 2.025 boundary to 1.980 and compiled normalization controls fail.
+Candidate buffered 30/100/300 and streamed 30 matrices pass all six requested
+cuts, native body/clocks, counted failed waits, hold/release and 17 lineage
+guards. All six independent ring/acknowledged-prefix audits pass in each mode;
+six compiled raw-clock controls retain boundaries and exclude future ticks.
+19 audit counterfactuals, 18/19 existing native negatives and 16 visual negatives
+pass. Nine compiled visuals plus 5,646 / 5,574 both-camera cursor samples pass
+in buffered/streamed 30-FPS controls. Production P502 main/edges pass both modes;
+reader 306/0 and captured 269-file corpus findings are unchanged (164 faulted).
+
+**Limits.** Native nearest-position selection still need not equal the requested
+client clock; the original forward 45 ms difference is not repaired by this
+visual fix. Full teleport/contact coverage, human moving-camera feel and the
+broader reported pause/event/compare request remain open. Private diagnostic
+programs must never ship. Deployment is a separate gate.
+
+**Deployment.** Frozen published game `72e7884` production pair reached both
+Windows installs at 2026-10-07 11:28:21 UTC; ordinary `.prev` retained. CSQC
+SHA256 `ac19e6df987d33393b6c1e526f0ab3d7256d9754fa27e49f47c6741efc36e22b`;
+SSQC unchanged. Installed-client dedicated P502 main/edges pass on both native
+executables; destination and protected-file hashes reverified at 11:34:44 UTC.
+No diagnostic programs, engine/plugin/menu/config or Quakers swap.
+Pi delivery is pending: the normal occupancy gate found one player in lobby 1
+and refused before any copy/restart; no force. Independent 11:32:04 UTC read
+retains predecessor CSQC and all 12 units active. Finish from the same frozen
+source only when the guard permits, then verify fleet hashes and live behavior.
+
+## Patch 543 — readable low-cost water and live material sort changes (2026-10-07)
+
+**Problem.** Cheap/budget water replaced its body colour with a dark baked cube
+at grazing angles. Flat water disappeared in the GLSL-only compatibility path,
+and changing a parsed VMT's sort regenerated the shader but skipped the batch
+resort check, so a newly translucent sheet could draw before the opaque floor.
+Water dither used half-pixel fragment centres as Bayer indices: even forced
+coverage .98 discarded two of sixteen pixels, and default coverage was faint.
+The plugin API masks shader-system flags, so dither coverage edits stayed cached.
+
+**Change.** Limit baked reflection to 65% Fresnel weight in modes 1/4; mode 1
+uses material fog colour when its optional cube is absent/gated. Keep mode 2's
+live reflection unchanged. Embed a sampler-free, 70%-alpha watersheet shader
+for mode 0. Check sort changes after all parsed/generated reload paths and
+resort existing world batches. Water-only Bayer arguments floor pixel centres
+and default coverage has a 65% minimum; explicit force still wins. Glass keeps
+its existing Bayer path. Renderer-owned alpha/force policies enable live
+coverage edits without widening the general plugin flag mask.
+
+**Verified.** Isolated Windows/OpenGL build: zero QC warnings, no new compiler
+warnings; LSP warnings predate these edits. One grouped-dependency Make warning
+occurred after restoring private counters; the final incremental build had
+none. Each changed native byte set passed its own gate. Source contracts and all
+12 depth tests pass. Loaded DLL paths/hashes were attested, not inferred from an
+input filename. Matched fixed-normal old/new captures on surf_aesthetic show
+zero changed pixels for full reflection; an acting synthetic glass dither also
+has zero changed pixels. Flat now blends with the visible floor after both live
+2 -> 0 switches and a fresh load. Water coverage is exactly 10/16 by default,
+16/16 at force .98 and 2/16 at force .1; returning to 0 restores the default.
+Cheap/budget grazing regions brighten, and absent-cube fixtures remain visible.
+Private consumer instrumentation, removed before shipping, counts zero captures
+in modes 0/3/4, one refraction in 1 and one reflection plus one refraction in 2
+at the selected pool view. Both capture dimensions act at 1280x720, 640x360 and
+320x180 after scale change plus flushshaders. Full mode measured about 780-786,
+901 and 936 FPS respectively there; this is a local scene/control, not a fleet
+or universal performance promise. The earlier no-flush scale arm did not act
+and is not used as evidence of a CPU bottleneck.
+
+**Limits.** Baked modes remain approximations; 65% prevents loss of all body
+colour, not arbitrary authored black tint. Full reflection still renders the
+scene twice beyond the main view; reducing capture size does not remove scene
+submission cost. Moving-camera aesthetics, other maps/backends and owner FPS
+remain human gates. No movement, evidence, progs, config, server or qcbuild
+change; dual Windows native deployment is recorded separately after its gate.
+
+**Deployment.** At 2026-10-07 12:54:20 UTC, the exact verified native client and
+HL2 plugin reached both Windows installs, with their preceding bytes in `.prev`.
+Client SHA256 `661caed2ad401db0d6c27696536d8dcf64f3abea0033a16c7a0871638bbb60b2`;
+HL2 SHA256 `b68da9d0e4bddd96d871b3294113da0c17e1f169998845994fd5477c24201bd2`.
+Both installed executables and their actual installed DLL modules passed the
+isolated pool/mode-switch gate; flat-switch identity and 10/16 dither coverage
+pass on each. Destination and protected config/progs/server/addon hashes were
+reverified unchanged at 13:00:51 UTC. No personal setting, server, progs, other
+plugin or Pi deployment. Engine code pin/tag remains the P543 feature commit;
+this provenance note changes neither the shipped bytes nor the product pin.
+
+## Patch 544 — bind-resolved held demo scrolling (2026-10-07)
+
+**Problem.** P535 strafe navigation was live-rewind-only. Demos still accepted
+only discrete arrows/wheel, despite using the same movement-suppressed pin.
+
+**Change.** Watch_Track observes press/repeat/up before every panel and release
+gate. Bare +moveleft/+moveright binds seek demos: a recorded tick on press,
+0.45..9 run seconds per wall second over a 2s hold. Physical ownership, not a
+re-read bind, governs repeats/releases through rebind/close/reopen. Opposing
+directions cancel, same-direction keys remain independent. Pre-open/earlier-panel
+presses cannot acquire navigation via repeat. Open/close/Space and menu/chat or
+IE_FOCUS loss cancel active scrub; taken repeats/up remain swallowed. Reuses
+Watch_Seek cache invalidation/window clamps. Preserves arrows (5s), primary mouse
+chrome, wheel, save controls and the existing outgoing movement gate. No server,
+recording/evidence grammar, engine pin/tag or qcbuild change.
+
+**Verified.** Isolated test-only overlay, real dedicated socket at 30/100/300:
+35 cursor probes and 55 whole-CSQC_InputEvent events per cap. Default/remapped
+keys, held acceleration, quick tap, opposing cancellation/remaining direction,
+two same-direction keys, rebind/release/new press, pre-open/chat-owned repeats,
+close/reopen, chat/console release, menu/IE_FOCUS cancellation, window clamps,
+arrows and Space all ACT. Replay pose/velocity follow the synthetic cursor;
+native pinned body stays exact. Unchanged baseline ACTS but fails held-scroll
+oracle. Positive plus 30 grader counterfactuals pass, including missing/unacted/
+wrong-state/pose/ownership/body/focus probes. Three-prog builds: zero warnings.
+306 reader checks pass; unchanged checker on 269 real recordings retains 170
+existing paired faults. Initial harness used absent menu_main; togglemenu fixed
+both arms. Float32 pose tolerance is .03u at <=14500u coordinates, independent
+of exact cursor stop equality. Tool-only screenshot-barrier work preceded this
+patch and does not change camera semantics.
+
+**Limits.** Bare current binds and at most 16 simultaneous tracked keys, not
+compound/modifier binds. Primary mouse buttons stay reserved for chrome. This
+synthetic whole-chain arm is not actual keyboard/OS-focus or imported-long-demo
+acceptance. Live rewind still prefers the newest opposing held direction;
+requested cancellation parity remains in BACKLOG. Human smoothness/camera/HUD
+judgement remains in lextest.md. No per-user cfg, evidence retiming or Build bump.
+
+**Deployment.** Product commit b7dddf9b5b884db173602f820c96c72f94e80e30
+was rebuilt in an isolated clean worktree, with zero warnings. Committed-byte
+navigation controls and native teleport/stop/camera regressions pass. At
+2026-10-07 13:30:23..32 UTC the guarded empty-fleet progs swap and all 12 lobby
+restarts completed; all units were independently read active with fresh PIDs.
+Windows dual QC deployment completed at 13:30:32 UTC; destination/previous-pair
+hashes match, all protected native binaries and personal/default cfgs untouched.
+QW SHA256 76f4a7bf24f2d7591a1d162583ad505c5d8f541436f78f026de87e97f41907ba;
+CS SHA256 1e42c31e5d03cdebc833c34cb4684693d30c9e192bbda21a13f7e5947c78d16e.
+Pi pair hashes match. A real client connected to the live published CSQC and
+proved clock 20.0000 -> 20.8758 while held, then exact release stability with
+unchanged native body. First live harness used absent ui_close without restarting
+the menu after spawn and inverted vote-key down/up values; corrected arm completed
+without command/VM errors. No PiForce, engine/plugin/config/tool deployment, player
+data cleanup or Build bump. Deployment is not actual-device/human acceptance.
+
+## Patch 545 — in-game Momentum demo requests and run comparison graphs
+
+**Problem.** Imported times without a cached replay were dead rows. The Pi's
+bounded automatic grab only selected top-ten demos. World run lines could be
+loaded together, but lacked a shared elapsed-time speed/energy comparison and
+stable run-name labels.
+
+**Change.** Add validated board demo metadata and a durable, bounded request
+queue (schema 11). A public handle binds the row identity to its upstream SHA1;
+GET only polls, POST queues it. No caller URL or network work on the HTTP path.
+The locked momgrab worker prioritizes explicit requests within its existing
+six-demo budget, size/duration/free-space/hash/CDN-retry/map/time checks, plus
+requested-player matching. It files/links the converted recording and the
+client takes the existing replay delivery/cache path. Selected lines enqueue
+before round-robin polls; unavailable/stale/full/expired requests are explicit,
+and replacing/closing watch intent cannot open an old request later.
+
+Client-only min/max sample envelopes and a shared mouse cursor compare replay
+slot 0 and eight board lines. Align clocks at each run/stage start; show horizontal
+speed and z + full velocity squared / (2g), relative to its first run sample.
+Use recorded pmpin gravity when available; explicitly label the g=800 assumption
+for imported/legacy files. No endpoint clamping or interpolation across retained
+teleport/stitch/gap boundaries. Matching slot colours/names label graph curves
+and visible world paths. The leaderboard's graphs button opens comparison;
+linegraph toggles mouse mode, hud_linegraph controls the passive panel.
+No recording/evidence grammar, ranking, detector, engine pin/tag or qcbuild change.
+
+**Verified.** Three-prog working-tree build: zero warnings. Offline queue suite:
+nine cases including capacity, stale/forged handles, idempotency, TTL/recovery,
+rate, SHA/size refusal, player mismatch and actual filing/linking/replay serving
+(converter explicitly doubled). Existing momboards/momgrab, board, web, recplot,
+replay, join and surfd suites pass. In-game graph controls prove full vertical
+energy, two gravities, stage-start alignment, interpolation, no gap bridging or
+out-of-range clamping, selection changes and clear. In-game HTTP controls prove
+two parsed handles POST before polling, a cold replay transfer, drawn line,
+watching and missing-demo failure, and cached-watch replacement of queued intent.
+Screenshots inspected for labelled curves, shared cursor/readouts and Get demo.
+Rebased onto inspected public origin/main (not the stale shared branch), the
+isolated three-prog build has zero warnings, eleven app/reader suites pass,
+and both private content-overlay game arms pass against those exact progs.
+The earlier sweep failure belongs to the shared tree; it is not present in the
+isolated patch. Private overlay proves the online-consent refusal before spending
+a cached demo handle as well. All eleven Linux suites pass in the deployed
+complete-app stage on NVMe; the unchanged 20 GB downloader floor correctly
+refused worker controls on the 5.1 GB root filesystem.
+
+**Limits.** Graphs use the line's existing retained/decimated samples, not a new
+recorder; imported gravity is an assumption, not evidence of its physics. Worker
+schedule is five minutes and unsupported/unavailable demos can fail. No claim of
+actual mouse/keyboard feel, long-demo fleet performance or independent codec
+coverage from the stub/converter double. Human visual acceptance is in lextest.md.
+
+**Deployment (partial, 2026-10-07T17:01:58Z).** Product game `44197abd` and
+tooling follow-up `1b237d2a` are published; isolated product bytes were used, not
+the shared uncommitted tree. Six Python files hash-match the commit on the Pi;
+SQLite backup is mode 600, original files retain rollback copies, master identity
+is preserved across worker reload and health reports 12 lobbies. Full board
+metadata backfill attached 2,946,541 Momentum handles; tier counts stayed
+2,946,739 Momentum, 125,400 KSF, nine ranked. A real surf_voyager request queued,
+the existing worker downloaded/converted/linked it, and the backend served a
+273,389-byte recording (SHA256 f93bae95a771f6156b0e06a642d29910c3e072967a4535f8b449049b3947409a).
+qwprogs/csprogs on the Pi match the isolated build, all 12 lobbies restarted with
+zero players; both Windows installs also hash-match all three generated progs,
+with previous bytes retained. No engine/plugin/personal config/Build change.
+The minimal nginx prefix is prepared separately and preserves installed routes,
+but the account's sudo policy refused installation before any live nginx file
+changed. Public HTTPS demo-request end-to-end remains BLOCKED until Lex installs
+and reloads that snippet; a backend/localhost success is not that proof.
+
+## Patch 546 — explicit similarity-summary availability *(surfd-only)*
+
+**Problem.** The store-only collector's summary returned measured-zero counters
+for both an absent table and a failed read, and its log line was silent in all
+three cases, including a genuinely empty sample.
+
+**Change.** Read-only summary states distinguish missing, query error, empty and
+available. Unavailable counters are absent (`None`), not measured zeros. Fixed
+log categories avoid exposing query exception text. Existing nonempty identity
+splits, scores and store-only policy are unchanged; no schema, history, ranking,
+engine, progs, configs, pin/tag or Build change.
+
+**Verified.** New temporary SQLite suite: four predecessor-red controls become
+four passes. A real SQLite authorizer denies the read and proves the error arm
+acted; missing-table reads create nothing. Nonempty comparison/skip and measured
+zero controls retain all identity counts/maxima. Existing collector suite passes;
+Python diagnostics record none, diff whitespace check passes. The first green
+run exposed Windows Python 3.10 authorizer-removal behavior in the harness;
+replacing it with an allow callback repaired the test, not production code.
+**Installed.** Shipped only simcheck.py/sweep.py from frozen game ab5146c with
+canonical app deployment, predecessor checks, backups and explicit NoReload. No
+engine/progs/config/tools or Windows-install swap. At 2026-10-07 20:14:39–20:15:25
+UTC, installed-module controls reproduce the missing/denied/empty/nonempty states;
+read-only live counts remain unchanged. All 21 frozen Linux test programs pass.
+Destination hashes match source; health remains ok with twelve lobbies.
+
+## Patch 547 — similarity-pass unavailable diagnostics *(surfd-only)*
+
+**Problem.** Unresolved primary recording paths returned the same empty pass note
+as no work; row exceptions appeared only on stderr. Zero stored pairs could hide
+that every selected source was unavailable or every attempted row failed.
+
+**Change.** Optional pass-local diagnostics retain fixed-category counts for
+unresolved primary sources and failed rows, including zero-store passes. Existing
+return tuples and stderr debugging remain. No fake pair result is inserted for
+unattempted work, and no private path or exception prose enters the new summary.
+No schema/history/reader/ranking, engine/progs/config/pin/tag or Build change.
+
+**Verified.** Three new predecessor-red diagnostics become green; normal control
+stores three 80-opportunity observations without unavailable text. Resolver and
+comparator counters prove each failure arm acted; mixed failure/success still
+stores later rows with no transaction held during comparisons. All eight focused
+SQLite controls and existing simcheck suite pass; diagnostics and diff check clean.
+**Installed.** Same collector-only ab5146c deployment as P546. At 2026-10-07
+20:14:39 UTC, seventeen controls explicitly use the installed subject, including
+unresolved-source and raised-row ACT controls. No fake observations enter the
+protected live database; scalar counts remain unchanged. Frozen Linux suites and
+canonical app deploy suites pass; no engine/progs/config/Windows swap.
+
+## Patch 548 — pass-wide similarity pair-attempt cap *(surfd-only)*
+
+**Problem.** The source-row limit did not cap aggregate pair work: fifty selected
+rows could each admit two hundred peers. Limiting only successful measurements
+would still overrun on unavailable peers or raised comparisons.
+
+**Change.** Share an admission budget across all source rows. New pair attempts
+consume it before peer resolution/comparison, including skips and exceptions;
+already-stored/reverse pairs consume none. The independent `--sims-pairs` CLI cap
+is 200 by default, zero disables the collector entry point before support import,
+and negative CLI limits reject. Completed rows keep the existing short flush;
+unattempted pairs get no fabricated observation. Fixed limit-reached text says
+coverage is not measured. Source-row/peer selection, history and store-only policy
+are unchanged. No schema, reader, engine/progs/config/pin/tag or Build change.
+
+**Verified.** Four predecessor-red controls actually execute the legacy collector
+through a compatibility shim and exceed the budget or violate zero-disable;
+subject controls pass. Seventeen focused tests include exception/skip accounting,
+reverse-pair deduplication, a second pass acting, no comparison-time transaction,
+and three real 80-opportunity comparisons under budget. Two actual shared-locator,
+sweep-wrapper/CLI tests pass, including quiet disable and negative rejection.
+Existing simcheck concurrent-writer and store-only arms, sweep, five reader/SQLite
+observations, five admin controls, seven count controls and 306 reccheck checks
+pass. Captured 269-recording/91-sidecar reader output is identical, with 170
+existing faulted files before/after. Independent fresh-context read-only source
+review found no blockers; reviewer inspected parent test artifacts, did not run
+commands. The real-locator harness first used an invalid generated filename;
+repaired to filing grammar before its passing measurement. Diagnostics and diff
+check clean.
+
+**Installed.** Canonical source-pinned deployment ships only simcheck.py/sweep.py
+from ab5146c after all 21 frozen Linux test programs pass. File/DB backups retained;
+predecessor and destination hashes checked. Explicit NoReload avoids unnecessary
+app restart; collectors import on fresh cron processes. At 2026-10-07 20:14:39 UTC,
+17 controls bound to the installed subject pass. Actual installed sweep/shared
+locator compares 4,418 opportunities from native rows using an isolated shadow
+DB with a one-pair budget. A real denied DML proves the read-only live guard acted;
+runs/replays/sims/verdicts/receipts/reviews scalar counts stay unchanged. At 20:15:25
+UTC, health is ok with twelve lobbies and installed CLI exposes the new cap.
+Source/destination blobs: simcheck c39a5a51e4eaebdeee0261012db90eaee1b0c609,
+sweep 86a7aaa4114febdd31e68170430f3b70e88c3c17. No engine/progs/config/tools,
+Windows-install or lobby swap; no unverified peer work shipped.
+
+**Limits.** Admission is not a hard deadline or individual source/DB scan/memory
+bound. Existing pending/first-peer semantics do not guarantee fairness or complete
+pair coverage. Interrupted row comparisons retain their existing failure/flush
+behavior. No calibration, authenticity, public badge or enforcement claim.
+
+## Patch 550 — live rewind opposing-key cancellation (2026-10-08)
+
+**Problem.** Live rewind chose the newest held navigation owner. Unlike demos,
+holding left and right kept moving the cursor; releasing either side did not
+consistently provide the requested cancel/remaining-side behavior.
+
+**Change.** Mod-side `cl_rewind.qc` derives direction from the presence of owned
+left/right keys. Opposing owners cancel, same-side owners remain independent,
+and either release resumes the remaining side. Press/release and browsing frames
+refresh the effective direction; acceleration restarts only when it changes.
+Physical ownership through repeats/rebinds/pre-open presses stays intact. No
+engine implementation, sampled native selection, recorder/save/resume semantics,
+engine commit/tag or qcbuild change.
+
+**Verified.** The unchanged source ACTS over a real dedicated socket and fails
+the same opposing-key oracle. Subject whole-chain controls pass at 30/100/300 FPS
+and with the second installed client: both press orders, either release, same-side
+holds, accelerating movement, native-sample taps, repeat/rebind/pre-open ownership,
+panel-delivered releases, pending-go/countdown and a stationary server body,
+velocity and tick clock. Native selected tick/origin agree with the existing lower
+sample while visual HUD time remains fractional. Builds have zero warnings;
+28 grader controls reject incomplete/unacted/malformed/nonfinite probes and
+broken cancellation/release/native/pinned-body/pending invariants. Reader suite
+retains 306 checks/zero failures.
+
+**Deployment.** Production from exact game `41410d8` built with zero warnings;
+CSQC SHA-256 `676ca48a7b5d5bf26f76fe0620d50e80c30c248310758b368283841666615f2a`
+is installed in both Windows installs and all 12 empty-gated Pi lobbies. SSQC
+remains `76f4a7bf...`; menu, engine and personal/default configs are unchanged.
+Windows CSQC and fleet progs retain `.prev`. Non-instrumented controls using
+both installed clients and live lobby 1 pass opposing cancellation, either
+release, pin acknowledgement and stationary server body/clock. Fleet hashes,
+unchanged default cfg and all 12 active services rechecked 2026-10-07 22:09:02 UTC.
+No instrumented QC was deployed.
+
+**Limits.** Not physical-device/OS-focus, compound/modifier-bind or camera-feel
+acceptance. Baseline chat/menu opening while held continues scrolling until a
+release: that separate focus-cancellation defect remains in BACKLOG. A 30 FPS
+arm initially hit the cursor's lower bound at 1 s; the same oracle was rerun on
+baseline and subject at an interior 2 s cursor. No low-FPS requested/native
+snapshot-alignment or stitched-tail diagnosis is claimed.
+
+## Patch 549 — fractional demo main HUD clock (2026-10-08)
+
+**Problem.** Replay pose follows fractional visual time, but the main timer and
+full-demo chrome formatted the floored sample tick. A cursor between samples
+therefore displayed an earlier run clock than the body being inspected.
+
+**Change.** One presentation-only helper derives ticks from the visual seconds
+and recording tickrate, bounded to zero and the recorded finish. Main timer and
+full-demo chrome use it. Sampled ticks still own event/split/state semantics;
+stage-cut chrome, live rewind, save/resume and recorder/evidence clocks are
+unchanged. No engine source, pin/tag or Build bump.
+
+**Verified.** All three production progs compile with zero warnings. A real
+private dedicated socket runs 33 acted native/foreign/legacy draw probes: both
+seek directions, adjacent sub-tick positions, paused holds, stationary pose with
+advancing run time and lead-in/finish bounds. Actual panel argument/formatted
+text and chrome agree; sampled ticks stay floored and the server body stays
+exactly pinned. Unchanged baseline acts on every probe but fails fractional-input
+parity. Strict grader passes and rejects 20 counterfactuals, including unacted,
+missing/duplicate/nonfinite input, quantized text, altered sampled ticks/flags,
+terminal overflow and body drift. Retained screenshots inspected. Existing held
+navigation control passes 35 cursor probes/55 input events. Reader suite: 306
+passes; unchanged checker/input hashes retain the existing 269 REC / 91 VIEW
+corpus observation (164 REC plus six VIEW faults). Synthetic foreign/legacy files
+are reader controls, not import-codec, absent-velocity labelling, long-demo camera
+or human smoothness acceptance. Broader run-line overhaul remains open.
+Clean product `b3bfdec` independently rebuilds with zero warnings and
+passes all clock/counterfactual and navigation controls. Native camera regression
+also passes 2977 cursor samples, nine compiled controls, a 333-sample counted
+stop, fixed native freeze and reversible first-person/chase world-pixel change
+(0.403 changed; return 0.000). Diagnostic progs remain private and never ship.
+Final published `11e32ba` retains identical client/server source after the
+unpublished patch-number reassignment and peer tool-only fast-forward.
+
+**Deployed (UTC).** Clean published `11e32ba` production progs: normal empty-fleet
+`build.ps1 -Pi`, no PiForce, all twelve restarts completed 2026-10-07 20:18:51.
+Both Windows installs independently hash-match the same build; progs/LNO .prev
+copies retained and personal cfg unchanged (including absence). Independent
+20:25:57 host read confirms both progs and all twelve active units; directory
+returns to zero players after smoke quit. Production lobby-1 client ACTS on a
+synthetic replay; inspected main timer/chrome show 1.001s, stationary 3.205s and
+exact 6.000s finish, without command/VM errors. Earlier wrong fixture name did
+not act and was retained as a failed harness control, not a pass. This is clock
+rendering, not world-camera/import acceptance. No diagnostic progs, engine,
+server config, evidence clocks or owner settings shipped. Rollback pair retained.
+
+## Patch 551 - bound similarity source ingestion *(SURFD / READER ONLY)*
+
+**Problem.** The pair-attempt budget did not limit source bytes or retained move
+rows. A large file, including ignored records, could exhaust collector resources;
+comparing a truncated prefix would manufacture a misleading measurement.
+
+**Change.** The existing move reader accepts optional byte/move budgets. Byte
+capture reads at most cap+1 from the actual source, including growth; universal
+newlines and locale decoding are preserved. Over-budget sources abstain whole as
+`source limit`. The collector explicitly uses 16 MiB / 200,000 moves per source
+and refuses support without the bounded-input capability. Standalone defaults,
+comparison statistics, badges, progs and engine pin/tag/Build remain unchanged.
+
+**Verified.** Five predecessor-red behavioral controls and one positive control;
+all six pass after implementation. Exact byte/move boundaries and LF/CRLF/bare-CR
+retain 80 measured opportunities. Ignored-byte excess, growing source capture,
+and move excess abstain; collector stores an unjudgeable observation, not a
+measurement. Old support is explicitly unavailable. Existing 17 collector,
+locator/CLI, write-lock, parsing/opportunity/unreadable and observation controls
+pass. Recorder suite: 306 checks, zero failures. Captured 269 recordings / 116
+sidecars: identical baseline/subject recording faults (164 existing faulted
+recordings); all 29 readable input streams unchanged under bounds. Largest
+source is 5,660,099 bytes / 10,926 moves. No overall RSS/hard-deadline, complete
+coverage, authenticity or calibration claim. Added non-ASCII/replacement decoding
+parity control passes on Windows and frozen Linux (seven ingestion controls).
+
+**Deployed (UTC).** Published source `1020b3a69841564adf232d6fb7fb924198f969a1`;
+Pi reader capsule dry-run/apply completed 2026-10-07 22:09:48, BOTH Windows tools
+readers/controls completed 22:17:15. Paired/predecessor/installer/destination and
+rollback hashes proven; only the comparison reader changed in tools. Installed
+80-opportunity, byte/move abstention and newline/decoding controls ACT. App caller
+ships with P552/P553 below. No progs, binary, pin/tag, Build or configs deployed.
+
+## Patch 552 - persist fixed similarity skip categories *(SURFD ONLY)*
+
+**Problem.** New unjudgeable pairs discarded the reader's category and retained
+only prose. Historical reasons cannot safely be treated as a typed observation;
+admin must never expose source paths or exception details to explain a skip.
+
+**Change.** Additive `sims.skip_code` captures fixed reader categories and unresolved
+peers; unrecognized reader categories become `unknown`. Compared pairs carry no
+skip code. Old rows retain the empty default: summaries count `legacy_unknown`
+and never backfill from prose. Read-only summary/admin support both old and new
+schemas; explicit schema ensure migrates idempotently. Authenticated bounded
+admin displays fixed labels (plus existing bounded short-run numbers), with no
+raw code/path/exception exposure. Ranking, metrics and detector policy unchanged.
+
+**Verified.** Five predecessor-red acted tests pass: every supported reader code,
+unknown code, unresolved peer, 80-opportunity compared control, historical
+read-without-migration followed by repeated additive ensure, and admin safe
+projection. Unknown stored codes are withheld. An initial test mock accumulated
+call counts across cases; reset per case before accepting results. Existing
+collector, byte/move bounds, admin auth/DOM/no-mutation, write-lock, sweep and
+board tests pass. No historical reread, source binding, coverage/calibration,
+engine/progs/pin/tag or Build claim.
+
+**Deployed (UTC).** Only admin/simcheck/sweep from `1020b3a` copied using canonical
+shipper: eleven staged tests, owner-only SQLite/file backups, hash readback and
+proven master-preserving gunicorn reload (ready 2026-10-07 22:13:25). Installed
+synthetic skip/control and safe typed projection ACT. Live additive column/readback
+at 22:15:34 retains all existing sample fields/verdict rows; no historical reread
+or live synthetic observations. Health twelve lobbies, anonymous admin refused.
+All 25 frozen Linux programs pass; Linux DOM control skipped, Windows DOM passed.
+Two fresh source reviews OK with notes; no independent test execution/browser
+claim. No peer client/progs, config or detector policy shipped.
+
+## Patch 553 - elapsed similarity admission budget *(SURFD ONLY)*
+
+**Problem.** A finite pair-attempt cap still permits an arbitrarily long pass when
+sources fail or comparisons are slow. Row selection is not measured coverage.
+
+**Change.** Add a ten-second default monotonic cooperative admission window,
+independent of row/pair limits. Loader/schema/query time counts; no new row/pair
+is admitted at the deadline. In-flight work is not interrupted and normal
+observations still flush outside comparison transactions. The wrapper/CLI forward
+`--sims-seconds`; zero disables before support import, negative/nonfinite CLI
+values are rejected before main's database connection. Existing module bootstrap
+may initialize its own database; this is not a no-database-open CLI guarantee.
+Time/pair stop notes explicitly say coverage is not measured. No process kill,
+hard timeout, scheduling fairness, detector threshold or badge gate.
+
+**Verified.** Five predecessor-red fake-monotonic-clock controls plus independent
+pair-cap positive control pass. Slow comparison ACTS, completes 80 opportunities,
+flushes before return, admits no further row/pair and later work ACTS next pass.
+Unavailable primaries, unresolved peer and thrown comparison consume elapsed
+admission. Zero avoids loader/resolver; finite positive values reach actual CLI
+and wrapper, NaN/Inf/negative reject before main connect. All existing collector,
+source-bound/category, locator/write-lock, admin/auth/DOM and sweep tests pass.
+LSP reports no recorded diagnostics; Python execution is the build/test gate.
+Twenty-five frozen Linux programs pass; two fresh source reviews OK with notes
+(parent test evidence, not independent execution). No engine, progs, pin/tag or
+Build changes.
+
+**Deployed (UTC).** Source `1020b3a`, same three-file app swap described in P552;
+installed fake-monotonic control completes 80 opportunities, flushes its admitted
+pair and blocks later admissions at the deadline. Wrapper/CLI forwarding controls
+pass. Pi readback completed 2026-10-07 22:15:34, health twelve lobbies at 22:18:26.
+The real sample is one same-identity comparison, not cross-identity calibration.
+Initial native review setup failed ENOTEMPTY; captured state and same-role native
+retry resolved it. A peer published P550 during review; these unpublished items
+were replayed/renumbered P551–553 before successful exact-SHA push. Runtime blobs
+are identical to the tested snapshot. No peer client/progs deployment.
+
+## Patch 554 — cancel live rewind navigation on focus loss (2026-10-08)
+
+**Problem.** Live rewind retained a taken scrub direction when chat/menu opened
+or keyboard focus was lost. Delivered key-up events stopped it, but keeping the
+key held scrolled behind the panel. Returning focus could not safely be fixed by
+forgetting the press: its repeats/release still belong to the viewer.
+
+**Change.** Separate active navigation from physical press ownership. Cancel
+activity on lost browsing focus or IE_FOCUS keyboard=0; preserve down/owned
+identity until release, so return/repeats cannot restart or leak movement after
+close. A fresh press activates normally. Mouse-only/unchanged keyboard focus
+is not keyboard loss. CSQC_UpdateView passes its modal/chat/cursor focus; the
+existing effective getcursormode check covers the main console, which notmenu
+alone excludes neither. Bare toggleconsole/menu binds also cancel immediately.
+Pending-go/countdown policies, native sampled save/resume selection, pin/body,
+recorder and engine binary/pin/tag/Build number are unchanged.
+
+**Verified.** Unchanged source ACTS and specifically fails chat-without-release
+cancellation. Real dedicated full-CSQC-chain controls pass at 30/100/300 FPS and
+with the second installed client: chat/console/menu/keyboard/arrow cancellation,
+fixed cursor/HUD across return/repeat, fresh press, opposed inactive owners,
+mouse-only event, close ownership, plus existing opposing/rebind/pre-open/tap/
+panel-release/pending/native-selection and exact pinned body/clock controls.
+All three programs compile with zero warnings. Forty-seven grader controls
+reject malformed/unacted/drifting/restarted/lost-ownership/body/clock/native
+counterfactuals. HUD regression: 21 sample/presentation controls and 12 acted
+phases, screenshot inspected; recorder-reader 306 checks, zero failures.
+These are synthetic events, not actual-device/OS-focus delivery, compound/
+modifier binds, imported long-demo acceptance or camera-feel proof.
+
+**Deployed (UTC).** Frozen game `e1c556e`, rebuilt clean/zero warnings: CSQC
+`c948d840cea3073c6b24588513eec547ca9cdf38d83274db779efe3fb746fa45`
+on both Windows installs and the empty-gated twelve-lobby fleet, previous P550
+kept as `.prev`. SSQC/menu/default cfg/engine unchanged; no owner source/index
+or personal cfg edits. Non-instrumented full-chain focus/cancel/return/fresh/
+pin/body/clock controls pass with both installed clients and live lobby 1.
+Final destination hashes, all twelve active services, twelve empty heartbeat
+rows and health OK verified 2026-10-07 23:49:14 UTC. Human acceptance remains
+open as above; this does not complete the whole run-line roadmap.
+
+## Patch 557 - retain partially sampled similarity sources *(SURFD ONLY)*
+
+**Problem.** A source ceased to be pending after any one pair was stored. With a
+small pair budget, four eligible runs accumulated only three of six possible
+observations; later passes silently left the rest unexamined.
+
+**Change.** A source is pending iff it has an eligible same-map/track/leg native
+run-kind peer without a stored pair in either orientation. A skip suppresses only
+its own pair. Preserve oldest-first ordering, source-row limit and lone/completed
+exclusions. This fixes eligibility, not fair retry scheduling or full coverage;
+unavailable old sources can still crowd out newer rows. Store-only, no badge gate.
+
+**Verified.** Four predecessor-red assertions become green in six SQLite
+controls. With four sources, row limit one and pair budget one, six passes each
+ACT and store one distinct comparison, followed by an idle seventh pass. Complete
+sources, skips, imported and mismatched peers retain their boundaries; a positive
+native peer ACTS. Existing collection/time and locator/write-lock tests pass.
+Recorder suite 306 checks, zero failed; current corpus snapshot 269 recordings,
+101 view sidecars has identical predecessor/subject recording and view faults;
+15 HID sidecars are inventoried, not checked by this corpus comparator.
+LSP has no recorded diagnostics; Python tests are the execution oracle. No engine
+binary, engine pin/tag, QC or Build change. Initially unpublished as P554; a peer
+published that number during review, so this owned change was replayed as P557.
+The two reviewers' dry-run label P2 was reproduced and fixed: actual CLI now says
+unobserved eligible pairs, with three partially observed sources and unchanged
+stored observations. Both reviewers confirm the follow-up; no P0/P1 findings.
+
+**Deployed (UTC).** Frozen game `bd31786`, surfd-only app swap at
+2026-10-08 00:04:23; installed focused controls and real reader checks complete
+at 00:05:07. Six temporary native pairs each complete 80 opportunities across six
+one-row/one-pair passes, then become idle. Runtime file hashes match the inspected
+commit; the live sample/verdict tables remain unchanged under read-only/sweep-lock
+checks. No engine/progs/config/Windows-install swap and no peer source deployment.
+
+## Patch 558 - exclude sampled pairs before the peer window *(SURFD ONLY)*
+
+**Problem.** The 200-peer window was chosen before already observed pairs were
+excluded. A source with 200 stored older peers could never reach newer eligible
+peers, even after later source selection admitted it.
+
+**Change.** Exclude stored pairs in both historical orientations in SQL before
+oldest-first peer ordering/LIMIT. Keep the per-peer late recheck for observations
+stored since selection. Complete direct sources return before file resolution.
+Candidate/pair/time limits, stored skips, parser and store-only policy unchanged.
+This is new-pair eligibility, not a fair retry scheduler or a database scan bound.
+
+**Verified.** Five predecessor-red controls pass (eleven including inherited
+eligibility controls). With 200 seeded observations in mixed orientations, five
+new peers ACT, or ACT one per pass under pair budget one. Three/default-200 peer
+limits still cap new candidates, completing 205 peers over three calls. Completed
+sources do no resolution; unavailable new peer consumes one attempt, persists
+peer_unresolved, and the next valid peer ACTS. Existing collector/time/ingestion/
+category/CLI and locator/write-lock tests pass. Recorder suite remains 306/0;
+269-recording current corpus snapshot has identical recording/view faults.
+Two fresh source reviews accept the selection/admission boundaries. LSP has no
+recorded diagnostics. No engine binary, engine pin/tag, QC or Build change; no
+badge, ranking, detector threshold or public surface added.
+
+**Deployed (UTC).** Same frozen `bd31786` swap as P557. Installed real reader
+ACTS on five new peers beyond 200 stored mixed-orientation observations, one
+80-opportunity comparison per pass; old observations are retained. The installed
+module also passes all eleven peer/eligibility controls. Readback 2026-10-08
+00:05:08: simcheck blob `9912ed3`, sweep blob `2cdf49f`; source-pinned comparison
+reader remains unchanged at blob `9e8f20f`. No scoring/enforcement gate.
+
+## Patch 559 - bounded similarity summary result set *(SURFD ONLY)*
+
+**Problem.** The read-only summary materialized every stored pair in Python.
+Accumulating the sample grew this allocation even though only fixed counts and
+identity-split maxima are reported.
+
+**Change.** One aggregate sample query groups into fixed safe skip categories and
+three compared identity buckets: at most thirteen Python result rows. Preserve
+empty/missing/error states, legacy unknown semantics, safe code projection, counts,
+maxima and notable attention labels. Explicitly compare nonempty identity TEXT;
+a textual zero is still an attributed identity. Read never migrates the sample.
+SQLite still scans the table and may allocate working memory; no overall RSS,
+database scan, hard-time, detector threshold or badge gate claim.
+
+**Verified.** Two predecessor-red resource controls pass in six SQLite tests.
+A 2,400-observation mixed fixture matches predecessor statistical semantics and
+returns at most thirteen rows; 500 arbitrary codes collapse to one safe group.
+Boundary matches, textual-zero identities, unknown identity, skips, old schema,
+empty/missing states and an ACTED SQLite authorization denial/recovery pass without
+sample mutation. Existing collector/category, admin authentication/projection,
+board and sweep suites pass. Recorder remains 306/0, current 269-recording corpus
+snapshot has identical recording/view faults. Two fresh source reviews accept
+supported parity and narrow resource claims. LSP has no recorded diagnostics.
+No engine binary, engine pin/tag, QC, Build or parser change.
+
+**Deployed (UTC).** Frozen `bd31786`, same two-file app swap as P557. All 28
+frozen Linux test programs pass at this commit; the committed shipper's eleven
+standard suites also pass. An unchanged clock-sensitive full-board comparison
+failed one frozen run and passed one recorded rerun; its response contains dynamic
+`t` and the earlier timestamp was not retained separately. Recorded as a harness
+follow-up, not repaired in unrelated product code. Installed binding passes all
+23 focused pending/peer/summary controls. Read-only live summary retains one
+same-identity observation and no cross-identity pair: still no fleet calibration.
+At 2026-10-08 00:05:08 destination hashes match; health OK with twelve lobbies,
+anonymous admin access returns 401. Short locked swaps keep predecessor file and
+private DB backups. Only simcheck.py/sweep.py installed; reader/engine/progs/config,
+Windows installs and lobby process state unchanged. App master/worker reload is
+confirmed. Public notes and private checkpoint record limits and provenance.
+
+## Patch 560 — distinguish requested and native rewind clocks (2026-10-08)
+
+**Problem.** Browsing's fractional display and sampled save/go request are not
+identical, and native rewind chooses the nearest eligible recorded position,
+not necessarily the requested clock. The key hint promised "resume here" and
+countdown showed no requested/selected context. Under configured latency the
+native clock can differ visibly while body/ack/prefix restoration remains exact.
+
+**Change.** Display-only context row: sampled request while browsing, requested
+clock/waiting while pending, and correlated native clock/request/signed delta
+through held countdown. Practice resumes explicitly remain untimed; unmatched
+or unavailable metadata never invents a native clock. Reuse existing save/go
+ticket, SLTRAILTAG and SAVETICKS; capture presentation only after correlated
+acceptance. Closed/reset/reopened views cannot leak a selected caption. Key
+hint says native resume/save rather than promising clock-exact "here". Context
+row is below the key legend, clear of speed/e-line. No native selection, camera,
+body, countdown timing, restore/prefix/recorder/evidence, protocol, engine binary/
+pin/tag or Build change.
+
+**Verified.** Actual-draw/timer baseline ACTS and lacks required context. Candidate
+passes four three-warm/three-fresh-cold matrices at caps 30/100/300 and both
+installed clients, with explicit 120ms packet delay: sampled versus fractional
+display, pending, correlated native clock/fixed delta, actual frozen main HUD,
+release/close. Nine compiled presentation controls cover untimed/unmatched/
+negative ticks/pending/closed/reopened/rate cases; five real SV_RewindFind units
+prove repeated-position closest-tick/newest tie/window rules unchanged. Full
+native rings, acknowledged raw prefixes, native body/clock/hold/release and
+camera/discontinuity gates pass. Strict requested-clock checks remain RED on
+three or four cuts; this patch does not claim clock equivalence or general
+alignment. Twenty-five mutated presentation controls reject false/unacted
+claims; prior HUD21/12 and navigation/focus/opposition regressions pass;
+reader 306/0. All programs compile zero warnings. Non-instrumented production
+request/pending/native/delta/timer/close control passes; screenshots inspected.
+Initial probe compile/seam and pending-save/timed-screenshot harness failures
+were retained and corrected without weakening body or clock oracles. Real
+practice-device/camera feel, low-resolution/custom HUD layout and general
+requested/native alignment remain human/follow-up gates.
+
+**Deployed (UTC).** Frozen game `8994b59`, clean rebuilt/zero warnings: CSQC
+`51de3f1eaeb82ff116a7b982fac55f279d87b5eff245653aaf370804919c032a`
+on both Windows installs and the empty-gated twelve-lobby fleet; P554 retained
+as `.prev`. SSQC/menu/configs/engine and owner source/index/personal cfg unchanged.
+Non-instrumented production request/pending/native/delta/actual-held-timer/close
+controls pass with both installed clients and live lobby 1; screenshots inspected.
+Destination/previous hashes and all twelve active services verified; final saved
+health OK/twelve empty heartbeat rows 2026-10-08 01:46:48 UTC. An initial post-probe
+health assertion did not pass and original snapshot was not retained; later
+explicit readbacks passed, with no cause claimed. No general alignment or
+actual-device/layout acceptance implied.
+
+## Patch 563 - durable similarity source admission rotation *(SURFD ONLY)*
+
+**Problem.** An unresolved oldest source could consume each source-row budget
+without storing an observation, indefinitely hiding later eligible sources.
+
+**Change.** Add an internal `sim_cursor` admission table lazily in collector
+schema initialization. Select eligible IDs above the last admitted source first,
+then wrap ascending. Checkpoint an admitted source in a short committed transaction
+before resolution/comparison, including failed attempts. Read-only pending/summary
+never create/advance state; old schemas start at zero. No observations are rewritten.
+
+**Verified.** Four predecessor assertions fail; thirteen source/pending controls
+pass, including connection restarts, unresolved sources1/2/3/1, row exceptions,
+measurable later peers, removed-ID wrap, old-schema reads, quiet disable and expired
+admission. Existing peer/collection/time/CLI/ingestion/category/summary and actual
+locator/write-lock controls pass. Recorder306/0 and current269REC/101view identical
+fault lists;15HID sidecars inventoried only. Two fresh source reviews OK with notes;
+clean/range evidence separately parent-attested after scoped watchdog rejection.
+LSP no recorded diagnostics. Rotation proves finite-fixture progress, not full
+fleet fairness, byte binding, exactly-once or SQL/RSS/hard-time bounds. No engine
+pin/tag, QC, Build or gate change. Unpublished P560 was replayed after a peer
+published rewind P560; peer history preserved, temporary shared claim marker used.
+
+**Deployed (UTC).** Frozen game `1482432`, simcheck.py-only serialized app swap
+at 2026-10-08 01:49:21. Exact-head Linux31 programs and canonical shipper11 suites
+pass. Installed controls finish01:52:12: unavailable admissions1/2/3/1 survive
+connection restarts without observations; a later native pair completes80 real
+bounded-reader opportunities. Additive live cursor init changes no existing sample/
+verdict rows; protected read-only cursor/sample/verdict checks remain unchanged.
+No engine/progs/config/Windows or peer client source swap; engine pin/tag/Build
+unchanged. Runtime source bytes identical to the fresh-reviewed frozen batch.
+
+## Patch 564 - durable per-source similarity peer admission *(SURFD ONLY)*
+
+**Problem.** A repeatedly throwing first peer could consume a source's small
+pair/candidate budget on every pass without an observation to suppress it.
+
+**Change.** Rotate unobserved eligible peers above the last admitted peer first,
+then wrap, independently per source. Persist last admission once per source call
+in a short transaction, including raised comparisons; never advance for stored,
+unadmitted, completed or unresolved-primary work. Stored-both-orientation exclusion
+still precedes the candidate LIMIT, and the late recheck still precedes admission.
+No failure is turned into a fake observation; source and peer cursors are separate.
+
+**Verified.** Seven predecessor assertions fail; twenty-one peer/source/pending
+controls pass. Admin regression found historical direct callers without cursor
+schema; first admitted checkpoint now creates it additively, never on a read or
+unadmitted work. Actual authenticated collector/admin projection control passes.
+Across restarts and one-candidate/one-attempt budgets, a failing peer2 then peers3/4
+ACT, followed by retry2; failed2 remains unobserved. Independent source cursors,
+budget/deadline/primary boundaries, completed sources and a real late-store recheck
+pass. Three comparisons allow an independent connection to commit during each;
+trace records one checkpoint. Existing collector/CLI/category/ingestion/time/summary/
+locator controls and corpus parity pass. Two fresh source reviews OK with notes;
+clean/range separately parent-attested. No general fairness/coverage, hard-resource,
+exactly-once or byte-binding claim; cursors are internal admission state, not
+judgment. Engine/Build unchanged; temporary shared claim marker used.
+
+**Deployed (UTC).** Same `1482432` swap. Installed bounded reader, one-candidate/
+one-attempt direct passes across restarts: fault2, real80-opportunity3, real80-
+opportunity4, retry2. Failed2 has no invented observation and source cursor is
+independent. Installed binding passes55 cases across source/peer/fault suites,
+including inherited repeats (not55 unique coverage claims). One checkpoint and
+independent-writer controls pass. Readback2026-10-08 01:52:13, blob `17f78a7`,
+SHA256 `f2267389f0eb3a94c1ea65b4b3fea7874662d2f16296509344b4ca336a5706eb`.
+
+## Patch 565 - isolate similarity comparison pair faults *(SURFD ONLY)*
+
+**Problem.** One comparison or result-building exception discarded earlier
+buffered observations and stopped later peers, despite their admitted work.
+
+**Change.** Catch these exceptions per admitted pair, leave that pair unobserved,
+continue later peers within budget, and flush valid prior/later observations in
+the existing short transaction. Fixed pass-local pair-failure counts contain no
+exception prose; private stderr retains diagnostic detail. Source/peer cursor
+progress remains admission-only. Selection/checkpoint/storage failures remain row
+failures; observation storage stays all-or-nothing. No fabricated skip/zero result.
+
+**Verified.** Six predecessor assertions fail; twenty-one fault/source/pending
+controls pass. First/middle/all pair faults, missing result metric, legitimate skip,
+measured-zero versus failed-unmeasured, deadline/pair caps and restart persistence
+ACT. A real mid-flush SQLite trigger fires after a first insertion, then aborts:
+all observations roll back, with row-failure reporting. Existing collector/time/
+CLI/reader/category/summary/authenticated projection, board/sweep tests pass.
+Windows RCON poll-rate assertions fail identically in a clean published baseline;
+source equality proven, failure preserved, unrelated product code not repaired.
+Frozen Linux31 programs pass after one recorded rerun of the unchanged dynamic-
+board timestamp comparison; that known failure remains recorded. Recorder306/0,
+identical269REC/101view fault lists;15HID inventoried only. Two fresh source reviews
+OK with notes; exact-range/clean state parent-attested after scoped watchdog failure,
+no alternate runner or independent reviewer execution claim. LSP no recorded
+diagnostics. Counts include possible reverse retries, not unique/full coverage.
+No engine/Build, resource-bound, byte-binding, calibration, exactly-once or gate
+change. Final runtime/test blobs unchanged by preservation of peer rewind P560.
+
+**Deployed (UTC).** Same frozen `1482432` simcheck-only app swap and master/worker
+reload. Installed real-reader middle-fault control ACTS on three admitted peers:
+two80-opportunity comparisons persist, the throwing middle peer has no row, and
+both results survive connection restart. Successful zero versus unmeasured failure
+and real trigger/storage rollback are separately proven by focused controls.
+Only new internal cursor schema is initialized live; no sample/verdict observations
+rewritten or real collection run. At2026-10-08 01:52:13, destination hash matches;
+unchanged sweep blob `2cdf49f` and reader `9e8f20f`. Health OK, twelve lobbies,
+anonymous admin401. Backups retained; no engine/progs/config/Windows swaps.
+Live sample remains one same-identity observation, no cross-identity calibration;
+finite fixture progress is not complete coverage or an enforcement threshold.
+Public operations notes and private checkpoint retain failures, scope limitation,
+exact commands, hashes and residual risks. Owned temporary claim markers removed
+only after both public histories contain these three patches.
+
+## Patch 566 — opt-in modern SUI editor and native-size text (2026-10-08)
+
+**Problem.** FTESurf's editor has useful interactions but square chrome and
+immediate single-line descriptions. A shared rounded/tooltip facility was
+missing. Merely scaling text geometry can also stretch a nearby baked glyph
+size; passing layout bounds is not evidence of crisp/native text.
+
+**Change (QC/assets only).** Added shared `sh_ui.qc` after fonts/SUI in both
+VMs, rounded nine-slice chrome with an authored reproducible 32px mask and an
+explicit release/ignore allowlist entry. `ui_style 1` opts the HUD editor in;
+0 remains classic/default. IDs, actions, dragging, settings and gameplay HUD
+are retained. Modern editor labels/tooltips convert to physical pixels, choose
+the selected face's baked size, convert back on both axes and pixel-align
+origins. No per-frame font rebake. Tooltips delay/wrap/cache, clamp to edges,
+draw above SUI clips, and free cached strings on close/hold/focus loss.
+IE_FOCUS retains independent mouse/key state and -1 unchanged semantics.
+Existing missing-image handling gives usable rectangular fallback. Registered
+`hud_edit ui` probes feed the existing handler chain without claiming actual
+OS-device delivery. Roadmap/native-font policy and pending human acceptance
+updated. No native ImGui module, engine code/pin/tag, Build number, recording,
+run/graph calculations or evidence format changed.
+
+**Verified.** Isolated source based on public FTESurf `21cfeea`, not the shared
+owner tree. All three QC compiles: zero warnings. Seven generator/ship-entry/
+grader tests include missing probes and font/tooltip/closed-work mutants.
+28 runtime checks per fresh real-dedicated/client rig: Windows clients from
+both installs, 1280x720/1920x1080/2560x1440, HUD scale 0.75/1/2, virtual scale
+1/1.5/2; separate fresh missing-mask arm. Native requests resolve to baked
+physical sizes, actual descriptions wrap/cache, holds and independent focus
+changes clear/restore them, actions agree, bounds fit, dirty saves stay in the
+rig, and close releases the cursor with no further SUI frames/submissions.
+Same-style panel pixel floors zero; acted speed-HUD control pixel delta zero.
+Existing p498 navigation: 16/16 with fresh-rig offline-consent/chosen-name
+bootstrap, fixed geometry and 1.5s rendered waits. Untouched fixtures first
+hit consent/default-name prerequisites; no unrelated product repair.
+
+Limits: actual OS/DPI/device feel and font/style judgement remain in lextest;
+CPU/GPU/percentile budgets and broad nested/UTF-8/renderer-restart matrix are
+not certified. Bare-worktree full shipguard is blocked by pre-existing missing
+untracked particles; the exact new asset entry and missing-entry mutant pass.
+No release/archive or fleet result is inferred from these local controls.
+
+**Deployment verified (UTC 8 Oct).** Public source `414cd865d77c`, rebuilt in
+a clean proof tree. At02:46 CSQC/menu/mask hashes matched both Windows
+installs; .prev kept, owner cfgs/server progs unchanged, no Windows process
+stopped by the deploy. CSQC `f6b7ba2dc1479858`, menu `f8fc1c528430a2b7`, mask
+`80634455ba20c093`. Guarded Pi swap verified both progs (.prev retained), found
+12/12 empty lobby rows and restarted 12/12 services; mask copied/hash-verified
+separately. At02:57 an actual client connected to a live lobby, opened the new
+editor and reported round79/asset1. Anonymous directory remained 12 rows/0
+players after the smoke. UDP status did not include CSQC fields and was not a
+checksum grade. Active owner VM reload, other-client asset downloads, font
+judgement, full timing budgets and release/archive acceptance are not claimed.
+
+## Patch 567 - exact bounded similarity source capture *(READER ONLY)*
+
+**Problem.** A stored comparison could not identify which source bytes its
+measurement consumed. Reopening paths after comparison would bind different
+bytes if a source was replaced; normalized text/moves would omit ignored bytes.
+
+**Change.** Hash and size the existing bounded binary buffer before decoding.
+Successful bounded comparisons add a versioned A/B capture snapshot. Existing
+metrics, decoding, parser, limits and skips are unchanged; unbounded standalone
+results have no capture promise. A capability marker identifies support. This
+identifies bytes read and parsed, not an atomic filesystem snapshot, current
+file equality, source authenticity, calibration or complete coverage.
+
+**Verified.** Three predecessor behavioral assertions fail; four reader controls
+pass with actual eighty-row comparisons, original metric equality, distinct
+LF/CRLF/CR/ignored/replacement-byte hashes, and acted after-capture replacement
+that leaves a nine-row current file beside the original eighty-row result/hash.
+Byte/move limits and short sources abstain without partial measured capture.
+Adjacent opportunities/parsing/unreadable/ingestion/runtime controls pass;
+recorder306/0 and captured269REC/101view fault lists are identical (164REC,
+167combined faulted);15HID inventoried only. Fresh read-only reader review OK
+with notes, source/log inspection only; Python execution is parent evidence.
+LSP no recorded diagnostics. Publication byte equality, all34explicit Linux
+programs and installed reader controls pass; see P569 deployment record below.
+No engine/progs/pin/tag/Build change.
+
+## Patch 568 - persist historical similarity source snapshots *(SURFD ONLY)*
+
+**Problem.** Reader capture did not travel with stored comparison metrics, so
+historical observations could not name their input bytes. Later path hashing or
+backfilling existing rows would falsely bind changed files to old measurements.
+
+**Change.** Add one empty-default source_capture column and validate a narrow
+versioned two-source hash/size snapshot. Store reader-returned capture atomically
+with compared metrics, without source reopening. Require capture-capable support;
+legacy/skipped/invalid captures remain unbound. Additive race-aware migration
+preserves historical values. No remeasurement, verdict, badge or public-route
+change. Capture describes consumed bytes, never current-file/authenticity proof.
+
+**Verified.** Five predecessor behavioral assertions fail; eight focused controls
+pass: real eighty-row comparison and concurrent writer ACT outside transaction,
+after-comparison file replacement followed by persisted original hash/size,
+connection reopen, first-observation preservation, A/B orientation, legacy
+migration/repeat without backfill, skip/invalid abstention, capability admission,
+narrow schema and duplicate/future/oversized/boolean rejection. A real trigger
+aborts a later INSERT and rolls back the whole measurement/capture transaction.
+All twenty-one focused/inherited reader/collector/runtime/admin/board/sweep
+programs pass locally. LSP no recorded diagnostics. Final read-only review OK;
+publication byte equality, all34explicit Linux programs and installed collector
+controls pass. See P569 deployment record below.
+No engine/progs/pin/tag/Build or resource-bound/calibration/enforcement change.
+
+## Patch 569 - authenticated historical similarity provenance *(SURFD ONLY)*
+
+**Problem.** The review surface could show metrics but not whether their exact
+historical source buffers were captured. Treating legacy absence as captured or
+hashing present files would invent provenance for old measurements.
+
+**Change.** Read-only optional-column projection returns validated compared
+snapshots or fixed captured/legacy-unbound/unavailable states. Bound SQL capture
+to513BLOBbytes before strict UTF-8 decoding and the shared512byte validator. Preserve valid
+metrics when provenance is absent/invalid, and retain stored A/B orientation.
+Text-only DOM shows hashes/sizes with explicit historical/not-current/not-
+authenticity wording. Authentication,25pair bound, badges and public routes stay
+unchanged; no source reads, comparison execution, ALTER or historical backfill.
+
+**Verified.** Twelve predecessor assertions fail across ten cases (five inherited
+repeats); all ten pass with an actual Node DOM HTML-sink trap, positive measured
+fixture capture, anonymous401, B-page orientation, old-schema read/no-migration,
+legacy/invalid/future/oversized/boolean/skip projection and acted513character SQL
+prefix. Independent review identified reachable TEXT-substr NUL truncation;
+one additional red assertion confirms it. BLOB-prefix/strict-decode/coalesce fix
+passes trailing-NUL, oversized-NUL and invalid-UTF8 controls (empty remains legacy).
+Adjacent admin/sweep/board/collector/reader controls pass; recorder306/0
+and captured269REC/101view corpus fault lists identical;15HID inventoried only.
+Existing fixture ResourceWarnings remain at unchanged fixture sites, not repaired.
+LSP no recorded diagnostics. Independent batch source review OK after correction;
+publication runtime/test/document bytes match reviewed frozen source. No engine/
+progs/pin/tag/Build, calibration/enforcement, current-source/authenticity or full-
+coverage claim.
+
+**Publication/deployment verified (UTC8Oct2026).** Source features2aaeb86,
+770749d,a976089 pushed exactly; peer published history preserved. Exact final
+commit34explicit Linux programs pass; Node-free Pi skips DOM, actual Windows
+renderer passes. Broad Windows admin's two UDP/RCON failures match untouched
+baselinee2d621b exactly; Linux admin passes, unrelated code not repaired.
+Git-pinned reader capsule dry-run/apply checks paired/predecessor/installer
+hashes and retains an exclusive600rollback copy. Canonical surfd shipper installs
+ONLY simcheck.py/admin.py/template froma976089, keeps owner-only SQLite/file
+backups, verifies bytes and proven gunicorn HUP/ready/health. No game restart,
+progs/binary swap, owner config/player-file change, release/archive or loose-peer ship.
+
+Initial readback found reload alone had not initialized capture on existing
+sims; installed ensure_schema then ran under canonical sweep lock, metadata only.
+At03:36UTC installed22cases (five inherited, three Node-DOM skips) pass with real
+installed reader/collector/admin, eighty-row comparisons, replacement/rollback
+and authenticated fixture projection. Original rows/values from six live tables
+match pre-deploy snapshots; added capture stays empty for legacy observations. Actual
+measured legacy projection, read-only pending/summary, health and anonymous401
+ACT. Four installed SHA256s match exact Git blobs: readeraa65869737f5885d,
+collector4d300e17af7fd986, adminf55b8fb5ee276cef, templatefc82d933597262fc.
+No live-browser/real-player calibrated finding or retrospective capture claim.
+
+## Patch 570 — genuinely native physical-pixel modern text (2026-10-08)
+
+**Problem.** P566 converted requested physical sizes back to virtual units, but
+`Font_LoadFont` also converts its virtual loadfont ladders to pixels. The engine
+selected a ladder using truncated virtual sizes; at non-default console scales
+it could therefore resample a different physical bake. The horizontal draw scale
+used the vertical ratio, and a float round-trip could floor an integer origin one
+pixel early. QC's physical-size probe alone did not establish a native raster.
+
+**Change.** `loadfont` accepts `pixels=1` in its size list, preserving those physical
+bakes through reload. Legacy lists still default to virtual units. Font selection
+matches the actual physical bake height, retaining fractional request precision.
+Scaled strings convert each axis independently and repair near-integer origins
+and near-unit scales. QC lazily allocates separate physical mirror slots only for
+modern text; classic UI/HUD slots and their larger virtual bakes are unchanged.
+Adds a disposable MQC gallery/driver and reader falsifiers, with input hashes,
+black/white backgrounds, three faces, 8–24px samples, half-alpha composition,
+repeat/menu/renderer-reload arms and an intentional unbaked-size control.
+
+**Verified.** Windows OpenGL, isolated control/subject engines built from inspected
+source. Final matched pre-patch scale-1/2 gallery has 30,764 different pixels and
+fails the strict comparison while both activity arms reach. Corrected physical
+scale-1/1.5/2 galleries are pixel-identical; corrected scale 1 preserves the old
+image. Every +0.75px request acts; same-process repeat, menu_restart and vid_restart
+restore identical images with bounded legacy/mirror initialization. Sixteen reader
+mutant tests and seven modern-UI tests pass. Actual CSQC editor controls pass at
+console scales 1 and 2 (28 checks per arm). QC and changed engine units build with
+zero new warnings; the clean native control has pre-existing third-party/engine
+warnings. LSP after database refresh has only pre-existing integer-division notes
+in pr_menu.c, not changed lines. Full CPU/GPU timing, other renderers, real monitor
+DPI/device delivery, glyph-family aesthetic judgement, atlas exhaustion and native
+ImGui are NOT accepted by these controls. No physics/evidence/Build-number change.
+
+**Delivered.** Engine `60dfdc102` / `patch-570`, clean game proof `efcfe0d`.
+Pi CSQC hashes/all 12 active lobbies verified at 2026-10-08T04:19:39Z; live
+editor actions reach, but its scene-dependent A/A pixel floor fails and is not
+accepted. Windows preflight initially stopped on the owner's executable lock
+without swapping any file. After the game closed, both installs hash-verified
+at 05:28:54Z, retaining `.prev` and UTC backups. Installed-client copies pass
+native gallery/reload/unbaked controls at console scales 1/2 with zero matched
+pixel differences, plus 28 dedicated/editor checks per client. Owner sources,
+settings and processes untouched; no release or new Pi engine deployment.
+
+## Patch 571 - bound similarity source-selection SQL reads *(SURFD ONLY)*
+
+**Problem.** A selected-row limit did not cap SQLite work finding eligible sources.
+A slow query could hold the collector before its cooperative admission checks.
+
+**Change.** Connection-owner opt-in ReadBudget reserves a residual quantum and
+interrupts selected cursor/pending reads at a finite pass-wide VM instruction
+allowance. No partial rows, zero/skip or coverage finding on exhaustion. Sweep
+exposes --sims-sql-steps (default 1000000, zero disables); dry-run reports unavailable
+counts. Callback/cursor are released on success, denial and interruption; unbudgeted
+standalone calls preserve existing callbacks. Not time, lock waits, schema/writes,
+file/mover work, RSS, enforcement or fair/full coverage. No engine/QC/pin/tag/Build.
+
+**Verified.** Source predecessor control has four failures across six cases; subject
+six pass, with acted pending interruption, positive real eighty-opportunity records,
+callback cleanup/query-error/recovery, foreign connection refusal and conservative
+many-short-query charge. Actual CLI zero disables before lazy loader, invalid parser
+rejects before main connect, tiny dry-run budget says unavailable, explicit scalar
+forwarding and unchanged observations. Adjacent pending/cursor/source/time/collection
+controls pass. LSP no recorded diagnostics; independent batch review, recorder/corpus,
+exact publication and Linux/installed gates recorded at batch completion.
+
+## Patch 572 - bound similarity peer-selection SQL reads *(SURFD ONLY)*
+
+**Problem.** Source selection alone left peer sorting/exclusion and late pair
+rechecks outside the selected-read instruction allowance.
+
+**Change.** Peer cursor/candidate/recheck reads share the pass allowance. Whole
+candidate queries abstain before source resolution; a late recheck interruption
+stops new admission and flushes already completed observations/checkpoints.
+Fixed SQL read-limit note reports unknown coverage once, not a row fault, skip
+or zero. No detector/statistic, historical refresh, write-lock or policy change.
+
+**Verified.** Three predecessor behavioral failures across four cases; four
+subject cases pass. Real SQLite peer-sort interruption ACTS on a large same-map
+fixture, admits nothing and clears callback; fresh allowance then stores eighty
+opportunities. Exhaust next recheck after real first comparison: preserve exactly
+one observation/peer cursor, then resume without rewriting it. Positive orientation/
+exclusion and step diagnostic controls; adjacent peer cursor/pair fault/time/
+pending/source/CLI tests pass. LSP no recorded diagnostics; final batch gates follow.
+
+## Patch 573 - bound similarity sample-summary SQL reads *(SURFD ONLY)*
+
+**Problem.** A fixed thirteen-row result bound did not cap SQLite work scanning
+and aggregating the stored similarity sample; unavailable scans could look empty.
+
+**Change.** Optional owner allowance covers summary metadata/aggregate fetching.
+Whole-query exhaustion returns limited state with every count/max/category unknown
+and a fixed unavailable/sample-not-measured line. Dry-run summary gets a fresh
+allowance independent of pending selection; zero reports reads disabled. Missing/
+empty/query-error distinctions and no-budget standalone behavior are unchanged.
+No schema migration, historical reconstruction, calibration, badge or ranking gate.
+
+**Verified.** Two predecessor behavioral failures across five cases; all five
+subject cases pass. Real aggregate interruption ACTS; no prefix/false zero, exact
+1000-pair/800-compared/200-skipped recovery and category identity parity. Metadata
+abstention, old-schema read/no-migration, actual authorizer denial/error/recovery,
+empty/missing and external unbudgeted callback preservation. Actual CLI tiny/zero
+read budgets report unavailable, not empty, and preserve observations. Adjacent
+summary/code/collector tests pass; LSP no recorded diagnostics. Final independent
+review, recorder/corpus, commit-pinned Linux and installed gates follow.
+
+**Batch publication/deployment verified (2026-10-08 04:32:39 UTC).** P571/P572/P573
+source commits b0159a2/891ab5b/789de86 and companion ece06e8a6/5724e8e06/45c9df855
+pushed by exact inspected SHA after replaying owned features over published peers.
+Engine pin/tag/Build stay as published by P570; no engine/QC/progs/runtime config
+change in this batch. Frozen review and publication surfd blobs are byte-identical.
+Two fresh native reviewers found no blockers; independent adversarial execution
+also proved naturally exhausted late SELECT preserves an eighty-opportunity result,
+original-base aggregate parity and total selected-read cap across multiple statements.
+
+Fifteen SQL and three CLI cases pass; predecessor controls fail 4/3/2 assertions
+for the three interfaces. Exact publication: all43Linux programs pass; Windows42
+pass with only the broad admin's two UDP/RCON assertions matching untouched baseline.
+Recorder306/0 and same captured269REC/101view fault lists are identical (164REC,
+167combined faulted);15HID inventoried only. Python compilation and LSP recorded
+checks pass; existing fixture warnings/skips remain, no new-warning claim for
+unrelated code. No QC/engine build is required or claimed for these Python-only files.
+Initial Linux harness omitted NVMe TMPDIR, triggering unchanged worker disk floors;
+corrected one rerun passes. Existing volatile-board timestamp gate also failed once;
+retained source proof/failed log and unmodified rerun, no unrelated product repair.
+
+Canonical shipper installs ONLY simcheck.py/sweep.py from789de86, under sweep lock,
+with600SQLite/file rollback backups and no pruning. Hashes match Git; proven gunicorn
+master HUP/ready/worker/health, no game restart or uncommitted peer ship. Installed
+fifteen cases and real installed sweep wrapper ACT on owned fixtures. Live mode=ro/
+DML-denial source/summary low-limit and fresh default reads ACT, healthOK/admin401.
+Installed SHA256: collector5215d28bd7324008, sweepb08dd30ef1062294.
+
+Original sample/receipt/verdict/review/replay rows match the before-snapshot exactly.
+Mutable board runs drift was present BEFORE file copy and continued under normal
+service; six-table immutability is NOT claimed. An overbroad private diagnostic was
+stopped by its proven owned PID after timing out, without touching owner processes;
+health remained OK. Full mutable-board preservation, real-player calibration,
+complete/fair/concurrent scheduling, hard time/RSS/lock-wait limits remain unverified.
+
+## Patch 574 - atomic similarity peer flush *(SURFD ONLY)*
+
+**Problem.** A separately committed peer admission checkpoint survived an aborted
+observation insert, pointing beyond discarded measurements. It was admission, not
+completion, but storage rollback unnecessarily changed retry order.
+
+**Change.** Non-committing checkpoint helper joins the peer upsert and observations
+in one short transaction after comparisons. All-failed admitted pairs still rotate
+without observations. Source admission remains independently committed before work;
+no reservation, exactly-once, crash-in-flight or complete/fair scheduler claim.
+No detector, schema, evidence metrics, ranking, engine pin/tag or Build change.
+
+**Verified.** Five temporary-SQLite controls pass. Predecessor fails two assertions:
+real middle-insert abort leaves prior peer cursor changed, and normal flush uses
+two transactions. Subject restores exact prior cursor and no new observations
+across reopen, cursor-abort rolls back, normal bounded reader compares two80-move
+pairs with concurrent writer ACTING outside transactions, and flush uses one commit.
+All-failed and old direct-call admission controls pass. Adjacent pair-fault, peer/
+source-cursor, SQL-peer and source-capture suites pass; LSP no recorded diagnostics.
+Independent batch review, broad pinned Linux and installed gates pending.
+
+## Patch 575 - scoped similarity SQLite lock waits *(SURFD ONLY)*
+
+**Problem.** Selected-read VM budgets cannot interrupt SQLite busy waits. Store-
+only schema/checkpoint/flush work used the shared five-second wait before checks
+that actually gate badges, without a collector-specific allowance.
+
+**Change.** Explicit sweep-owner busy-handler scope, default1000ms per SQLite
+lock operation; --sims-lock-ms0 means immediate/no waiting. Numeric prior timeout
+restores on all exits; disabled collection never touches it. CLI rejects invalid
+integer range before main connect. Direct unopted/dry-run waits stay unchanged.
+No generic native-handler preservation, hard pass deadline, retries, write/RSS
+budget, detector, ranking, engine pin/tag or Build change.
+
+**Verified.** Six focused controls pass on Python3.10 and3.13; corrected predecessor
+has five failures. Real second-connection EXCLUSIVE lock ACTS,20ms policy abstains
+within broad400ms tolerance, previous500ms restores, then unlock permits three
+real80-opportunity comparisons. Real no-wait read raises, exception/interrupt/
+nested scopes restore, invalid input leaves connection untouched. Actual isolated
+sweep wrapper/CLI proves forwarding, disabled bypass and parser rejection before
+connect. Existing budgetCLI three cases pass; LSP no recorded diagnostics. Python
+3.10 lacks SQLite error-code attributes; typed diagnosis is a later independent
+feature, not claimed by these controls. Batch review/Linux/installed gates pending.
+
+## Patch 576 - typed similarity contention availability *(SURFD ONLY)*
+
+**Problem.** Real SQLite contention was indistinguishable from arbitrary row/
+query faults; continuing row admission could repeat waits on a contended connection.
+A stored-sample summary could not distinguish contention from generic query failure.
+
+**Change.** BUSY/LOCKED primary result-code classification, including extended
+codes, returns fixed database-busy/coverage-not-measured telemetry. Stop new source
+admission and retain prior committed observations; no retries/fake skips/zeros.
+Summary busy state has all counters unknown and sample-not-measured wording. No
+exception-message inference: old Python without result codes retains generic
+error behavior. Other query/storage faults and all detector/ranking semantics stay.
+No engine pin/tag/Build change.
+
+**Verified.** Five controls pass on Python3.13; predecessor fails four assertions.
+Real two-connection EXCLUSIVE locks obstruct schema and summary, unlock recovers
+three native80-opportunity pairs/exact prior sample. A later-row real lock stops
+admission after one committed80-opportunity observation without losing it. Actual
+same-connection open-cursor DROP produces LOCKED; synthetic extended codes classify,
+prose-only/other errors do not. Real read denial remains generic query error.
+Python3.10 executes non-code control and explicitly skips four code-required arms;
+no old-interpreter typed-contention claim. Adjacent lock/atomic/summary/collection/
+pair-fault tests pass; LSP no recorded diagnostics. Batch review/live gates pending.
+
+**Batch gates (2026-10-08, before delivery).** Two fresh independent read-only
+source/artifact reviews of1ca1342..2a9148d find no blocker (OK/OK with notes); they
+could not independently execute commands/generate the Git-range diff. Runtime
+remains identical after22c4022 explicitly closes the owned atomic test connections.
+49 pinned Linux programs pass across the first48 and one unmodified rerun of the
+existing verifier-counts dynamic-board timestamp failure (one established optional
+case skipped). Windows3.10 has48 passing programs and the same two UDP/RCON admin
+assertion failures as the clean published baseline. Windows3.13 retains the older
+source fixture's baseline-proven connection-cleanup error and the same admin
+limits; its dynamic-board metrics test passes one unmodified rerun. Failed logs
+retained, unrelated code untouched. Recorder306 checks/0failed;269 captured local
+recordings have164faulted files/164faults in both predecessor and subject, exact
+per-file parity. No corpus-fault reduction claim. Installed/live delivery pending.
+
+**Batch publication/deployment verified (2026-10-08 06:01:09-06:03:30 UTC).**
+P574/P575/P576 feature commitsf3f11b3/28d1df1/2a9148d and companion entries
+04c2e22a8/09269999e/85c0be8a2 are pushed. Publication74dcca0 preserves only already
+published incoming documentation; all collector/sweep/reader/test Python blobs
+match the frozen22c4022 Linux stage. Two committed app files only, simcheck.py and
+sweep.py, ship via canonical commit-pinned -Only -NoReload deployment with its11
+staged suites, serialized sweep lock, destination SHA256 equality, rollback files
+and database backup mode600 retained; no pruning/release/QC/engine/game/config/
+Windows artifact or owner-process restart. Engine pin/tag and Build unchanged.
+No peer uncommitted work shipped.
+
+Installed Python3.11/reader binding passes all15 unique new atomic/lock/contention
+controls without skips. Additional actual WAL sweep-wrapper control proves a real
+competing writer obstructs,20ms wait abstains/restores876ms, unlock compares80
+opportunities, and later synthetic verifier ACTS with the original wait. Explicit
+mode=ro live checks under sweep lock prove DML denial ACTED, low-limit source/
+summary abstention then default read recovery and no cursor mutation; no live
+collection or contention stimulation. HealthOK, anonymous admin401. Bounded
+SQL comparison with ACTED changed-value/deleted-row fixture proves original sims,
+receipts, verdicts and reviews rows/values equal the canonical pre-copy backup.
+Mutable board/replay preservation remains unverified, not silently assumed.
+
+Extended captured corpus control:269REC plus91paired VIEW reports,15HID inventoried
+only; predecessor/subject have exact per-file parity,170combined faulted reports/
+173faults. Sidecars were captured later than REC snapshot; no simultaneous corpus
+snapshot or full HID adjudication claim. Private failed auxiliary gates are retained:
+unsupported shipper -DryRun rejected before work; private corpus helper initially
+used nonexistent API and history helper nonexistent guard, corrected using real
+reader/ReadBudget interfaces and ACTED controls. These were harness failures, not
+product repairs. Hard total-time/RSS/write limits, crash-in-flight/concurrent/fair
+scheduling, calibration and ranking/authenticity conclusions remain unverified.
+
+## Patch 577 - validate similarity source budgets before I/O *(READER ONLY)*
+
+**Problem.** Optional source budgets accepted invalid types and negative read
+sizes. Configuration errors could act on a file before rejection instead of
+preserving the bounded-input contract.
+
+**Change.** Reject noninteger/boolean/negative limits and byte sizes whose
+sentinel read cannot fit the host read-size type before any open, including
+same-file and non-strict calls. Configuration errors are ValueError, not sample
+skips. None/default and nonnegative integer budgets, including zero, retain
+existing behavior. No metric, format, detector, ranking, engine pin/tag/Build change.
+
+**Verified.** Three new controls pass; predecessor fails the invalid-configuration
+control. Spied real binary reads request exactly limit+1 for both80-row sources;
+exact byte/move bounds retain default metrics and exact capture. One-less/zero
+budgets abstain whole. Existing source/parsing/unreadable/opportunity suites pass;
+LSP no recorded diagnostics. Final source review found no issues; complete batch
+and partial dual-Windows deployment evidence/limits are recorded with Patch 580.
+
+## Patch 578 - report actual similarity flush additions *(SURFD ONLY)*
+
+**Problem.** Buffered comparisons were counted as new observations even when
+INSERT OR IGNORE lost to a same-key collector insertion during comparison.
+
+**Change.** Count insertion-local rowcount within the existing atomic peer
+checkpoint/observation transaction; skipped/notable counts describe only inserted
+rows. No checkpoint or trigger writes inflate counts. Attempt budgets, uniqueness,
+selection and historical winner stay unchanged. No reservation/exactly-once claim,
+metric, detector/ranking, engine pin/tag/Build change.
+
+**Verified.** Four new SQLite controls plus five inherited atomic controls pass;
+predecessor fails three same-key overlap counts. Real second-connection inserts
+ACT during real80-row comparisons, survive reopen unchanged, and ignored notable/
+skip/all-duplicate results do not invent additions. Admission still checkpoints;
+trigger writes do not inflate counts. Adjacent atomic/pair-fault/source/peer suites
+pass including acted rollback. LSP no recorded diagnostics. Final source review
+found no issues; final Linux/installed/live evidence is recorded with Patch 580.
+
+## Patch 579 - acted bounded reader capsule preflight *(TOOLS ONLY)*
+
+**Problem.** The canonical reader capsule checked callable/path capability only;
+a callable could lack current bounded-input/capture support or not exercise it.
+
+**Change.** Require literal integer version1 bounded-input/capture markers. Before
+any destination mutation, compare disposable80-row sources under exact bounds,
+check exact captured hashes/sizes, and require whole-pair abstention for one-less
+byte and move limits. Recheck installed capability as before. Canonical current
+capsules only; historical readers missing these capabilities are not installable
+with this installer. Trusted-code smoke contract, not sandbox/resource/code
+attestation. No metric, detector/ranking, engine pin/tag/Build change.
+
+**Verified.** Twelve installer controls pass on Windows without skips. The generated
+negative reader's file-size check closes no handles because it uses stat, removing
+its initial test-only ResourceWarning. Predecessor fails all three new feature
+controls: marker variants preserving callable, hash-valid ignored limits, and
+incorrect captured hash. Dry/apply preserve prior bytes/mode/backup inventory on
+rejection; real dry/apply installed comparison/capture ACT. Predecessor guards,
+paired drift/race, exclusive backups and exact Git preparation still pass.
+LSP no recorded diagnostics. Final source review found no issues; final Linux/
+installed evidence and primary Windows deployment blocker recorded with Patch 580.
+
+## Patch 580 - bind similarity reader per collection pass *(SURFD ONLY)*
+
+**Problem.** A collection pass loaded support at startup then discarded it and
+reloaded for every source, allowing module changes inside one admitted pass.
+
+**Change.** Thread the initially resolved module through source comparisons.
+Direct compare_run callers still resolve their explicit tools directory without
+a supplied reader. Later passes re-resolve; no process-global cache. This binds
+reader code for one pass, not an atomic recording/filesystem snapshot, source
+reservation or code-authenticity claim. No metric, detector/ranking, engine pin/tag/
+Build change.
+
+**Verified.** Three new controls and source-cursor/pair-fault/pending/time/overlap
+suites pass. Predecessor fails pass-binding assertion. Actual temporary support
+file replacement ACTS during real80-opportunity comparison; all three first-pass
+pairs use initial module with one load, three next-pass pairs use replacement,
+and later missing support abstains without cache. Direct calls observe replacement
+with explicit tools; disabled pass performs no loads/writes. LSP no recorded
+diagnostics. Final source reviewer finds no issues, with inspected evidence only.
+All 52 explicit Linux programs pass across 51 first-run passes and one retained
+unmodified dynamic-board timestamp rerun, with established optional skips. Windows
+51/52 programs pass; unchanged admin's same two UDP assertions reproduce on the
+byte-identical baseline. Recorder 306/0; 269REC plus pairedVIEW manifests and full
+reports exactly match baseline, including 170 faulted reports.
+
+**DEPLOYED (UTC 2026-10-08).** Frozen source 952d586: Pi reader 07:00:37 and ONLY
+simcheck.py via canonical -Only -NoReload -SkipTests (explicit 52program stage
+already completed). Destination hashes, rollback files and mode600 database backup
+verified. Installed reader/collector pass25 cases including5 inherited, no skips;
+actual isolated installed sweep wrapper stores80 opportunities with capture. Live
+mode=ro/DML-denial/read-limit controls prove no cursor mutation/collection. Bounded
+SQL with ACTED exact/changed/deleted owned controls proves original sims/receipts/
+verdicts/reviews rows equal the pre-copy backup. No mutable board/replay preservation
+claim. Final installed/health/auth gates07:02:31. Secondary Windows reader installed
+07:01:07, exact hash/rollback/3controls pass. PRIMARY Windows reader is tracked and
+modified by another session: deployment BLOCKED, existing bytes preserved. No game/
+engine/QC/progs/config/release/Build change or owner-process restart. Broader hard
+resource bounds, fairness/reservation/completion/authenticity/calibration and browser
+acceptance remain unverified; primary Windows deployment remains incomplete.
+
+## Patch 581 — usable native plugin memory-image handles *(ENGINE)*
+
+Initial claim 577 collided with concurrently published reader work. Renumbered
+forward; published `51dfe46ef` / `patch-577` history is retained, not rewritten.
+The P577-named harness preserves its original pre-registered probe identifiers.
+
+**Problem.** Plugin `2D.LoadImageData` uploaded a valid image but its type-3
+shader path returned 0. Zero/negative handles could index before the shader
+table on unload; query/draw accepted non-live slots. Encoded size_t lengths
+were narrowed to the decoder's int without checking; no-renderer/null input
+could enter decoder/upload work.
+
+**Change.** Register/cache the uploaded texture's normal 2D shader and return
+its reference. Gate renderer/name/data/INT_MAX length before decoding. Share
+positive/in-range/live-slot validation across lookup/query/draw/quad/unload;
+avoid decrementing a signed invalid ID. Correct width/height types and the
+header's false restart-persistence comment. Existing shader IDs still require
+balanced release/reacquisition and are not generation-safe capabilities.
+
+**Verified.** P570 control returns 0 while disk/memory-lookup pixels act;
+subject's returned image is pixel-identical, including half-alpha composition,
+replacement and renderer restart. Temporary release rejects query/draw/quad,
+reload visibly acts; 7 invalid inputs and 4 invalid IDs reject/unload safely.
+Normal startup autoload proves no-renderer rejection before graphics, exits 0;
+disabled-plugin arm reaches/rejects commands, draws no sentinel. 30 grader
+mutation tests pass. Client/server compiler controls retain exactly their 2/5
+baseline warnings, zero new. Initial dedicated-client probe reached rejection
+but crashed in untouched shutdown; retained, not accepted/repaired. No indexed
+mesh, clipping, QC bridge, ImGui, performance/device or hostile-decoder claim;
+no movement/evidence/Build-number change.
+
+**Delivered.** `710087cb7` / annotated `patch-581`, clean full build stamp
+`git-7096-patch-581-0-g710087cb7`. Clean game proof `e172392` repeats atlas,
+zero-warning QC and all 28 dedicated/editor checks. Native client + matching
+HL2 plugin only deployed to both Windows installs at 2026-10-08T07:51:06Z,
+keeping `.prev` and timestamped backups. Both installed-client copies repeat
+all atlas controls; destination/protected cfg/progs/reader hashes rechecked.
+No owner process stop, progs/config/reader/asset/server/Pi swap or release.
+
+## Patch 582 — validate similarity admission limits *(SURFD ONLY)*
+
+**Problem.** SQLite negative LIMIT means unlimited. Collector source/peer APIs
+accepted negative or noninteger limits; CLI --sims accepted negatives, while huge
+values could fail only after optional support loading or database work.
+
+**Change.** Require exact integers in 0..9223372036854775807 for source, peer and
+pair admission limits before optional loading or SQL. Zero performs no query or
+loader work. CLI rejects invalid source/pair limits before main connects; existing
+import-time initialization is unchanged. No detector, threshold, history, schema,
+ranking, engine/progs/pin/tag or Build change.
+
+**Verified.** Five focused warning-clean tests pass with actual 80-opportunity
+comparison and CLI/wrapper consumers. Predecessor fails 20 assertions plus 7
+errors across invalid/zero arms; subject rejects without loader/query action.
+LSP has no recorded diagnostics, not a parse/build guarantee. General hard
+elapsed/RSS/write limits and complete scheduling are not supplied by validation.
+Batch regression, review and installed delivery: see Patch 585 batch gates below.
+
+## Patch 583 — preserve similarity caller transactions *(SURFD ONLY)*
+
+**Problem.** Enabled direct/embedded collection could implicitly commit unrelated
+caller DML through executescript/connection contexts, or hold its writer lock
+across file comparison. This is a reachable API gap, not a proven cron incident.
+
+**Change.** Idle-connection precondition before enabled collection/comparison,
+schema initialization or source admission. Step reports fixed unavailable/coverage
+not measured; direct write APIs reject. Wrapper checks before optional loading or
+busy/progress-slot changes. Disabled and read-only paths retain caller ownership;
+no auto-commit/rollback, detector, gate, history, engine/progs/pin/tag/Build change.
+
+**Verified.** Six warning-clean real SQLite/actual wrapper tests pass; predecessor
+fails four ownership arms. Pending caller DML remains rollbackable and invisible
+to another connection. Idle control ACTS with independent writer during files and
+stores 80 opportunities. Borrowed read callbacks/numeric timeout preserved. Initial
+own test expected empty summary to be ok; corrected fixture assertion and reran
+both arms. LSP no recorded diagnostics. Batch gates/delivery: see Patch 585 below.
+
+## Patch 584 — close the sweep-owned connection *(SURFD ONLY)*
+
+**Problem.** Embedded main calls relied on SQLite connection garbage collection;
+a retained exception traceback can retain the owned handle. Cron process exit
+usually masks this; no live handle leak is claimed.
+
+**Change.** Main dispatches connected steps inside try/finally and explicitly
+closes only its created connection. No blanket transaction or changed step
+commit/rollback decisions; borrowed APIs remain usable. No detector/gate/history,
+engine/progs/pin/tag or Build change.
+
+**Verified.** Actual main subprocess passes six warning-clean cases: normal,
+dry-run, schema error, step error, KeyboardInterrupt and borrowed-step control.
+First five assert one explicit close and unusable SQL, retaining exception
+tracebacks where applicable; predecessor fails all five, borrowed control acts.
+LSP no recorded diagnostics. Batch gates/delivery: see Patch 585 below.
+
+## Patch 585 — scalar pending-similarity diagnostics *(SURFD ONLY)*
+
+**Problem.** Dry-run fetched up to one million full replay rows only to take len;
+selected VM instruction limits did not bound Python payload materialization.
+
+**Change.** One scalar COUNT over a capped eligible-ID subquery. Reuse the exact
+pending predicate; collection rotation is unchanged. Retain one-million cap,
+label equality as at least, retain whole-query unavailable and independent summary
+allowance. No cursor mutation, detector/gate/history, engine/progs/pin/tag/Build
+change. This limits Python result shape, not SQLite scans, native RSS or time.
+
+**Verified.** Four warning-clean tests pass; predecessor fails scalar/projection
+and actual dry-run consumer assertions. Wide replay payload control fetches one
+one-column row; eligible/ineligible, both observed orientations, short skips,
+source cursor and cap controls match existing pending semantics. Actual VM
+interruption abstains and higher allowance recovers. Actual CLI consumer avoids
+row materializer and cap-label branch ACTS with synthetic count. LSP no recorded
+diagnostics. Batch regression and delivery are recorded below.
+
+**P582-585 batch gates.** Reviewed frozen de0180c runtime equals published705ce1b;
+metadata-only peer deployment notes merged without rewriting history. Independent
+source/artifact review finds no issue; reviewer did not re-execute/hash-attest Git.
+Original30min reviewer timeout recovered through same native run after clean/ref
+proof. Separate private CLI and source-admission red/green controls cover earlier
+fail-fast predecessor gaps. Linux57/57 standalone programs pass after retained root
+filesystem disk-floor failures and full unmodified NVMe-TMPDIR rerun. Windows56/57;
+same2UDP-admin failures reproduce unchanged baseline. Argument-required momindex
+mis-invocation excluded, not passed. Existing fixture ResourceWarnings reproduce
+20/40/12lines in baseline, not globally warning-clean. Recorder306/0;269REC+91VIEW
+captured full reports equal,170combined faulted reports unchanged. Owned scratch
+retained after failed rmdir; no cleanup claim.
+
+**DEPLOYED UTC2026-10-08.** Exact705ce1b canonical normal stage tests, ONLY installed
+simcheck.py/sweep.py, NoReload. Destination/predecessor hashes, rollback files and
+mode600 SQLite backup verified; no prune. Installed synthetic HOME binds actual
+collector/wrapper/reader, stores80opportunities and ACTS on all four seams. Bounded
+mode=ro/DML-denial/read-limit controls and exact/changed/deleted preservation controls
+prove original sims/receipts/verdicts/reviews rows equal pre-copybackup. Final08:06:26
+health12lobbies, admin302/API401, board200. Initial parameter/path/state harness
+failures retained and corrected without runtime edits. No live collection, worker/
+game/server restart, Windows/progs/reader/config/engine swap or release. Prior primary
+Windows reader ownership blocker remains untouched. Broader hard elapsed/RSS/write
+bounds, complete/fair scheduling, reservation/authenticity/calibration and million-row
+performance remain unverified; no mutable board/replay/cursor preservation claim.
+
+## Patch 586 — bound authenticated metric snapshot fetches *(SURFD ONLY)*
+
+**Problem.** Journal/counts decoder caps ran after SQL fetched the entire stored
+JSON. Oversized observation rows could allocate arbitrary payloads in Python.
+
+**Change.** Select at most 8193 journal bytes or 513 counts bytes as BLOB prefixes;
+one sentinel byte rejects oversize values rather than decoding a truncated prefix.
+Strict UTF-8 and the existing typed/versioned validators preserve valid snapshots,
+measured zero and legacy unavailable. No schema/history/reread/detector/gate,
+engine/progs/pin/tag or Build change. This bounds these result fields, not total
+query work, native RSS or the complete review response.
+
+**Verified.** Three warning-clean authenticated consumer tests pass; inspected
+ad99bc6 predecessor fails all three. Recording cursor measures real fetched sizes
+for large payloads, embedded NUL, invalid UTF-8, exact caps and multibyte text;
+valid measured/empty/BLOB/legacy-column controls ACT and database rows stay exact.
+Existing verifier-counts (7), admin-metrics and receipt-metrics suites pass. LSP
+records no diagnostics. Batch regression, independent review and delivery follow.
+
+## Patch 587 — bound the historical similarity panel's SQL work *(SURFD ONLY)*
+
+**Problem.** A 26-row result cap did not bound sorting work for a run with many
+stored pairs. An optional observation panel could monopolize a review request.
+
+**Change.** The authenticated handler explicitly owns its fresh connection's
+progress-handler slot and gives selected PRAGMA/history reads one million VM
+instructions via existing ReadBudget. The initial sqlite_master probe is outside
+that allowance. Whole-panel read_limit abstention is distinct
+from missing schema and empty history; no partial observations escape. Teardown
+precedes following SQL. Borrowed API defaults leave callbacks alone. Storage errors
+still propagate. No schema/history/reread/detector/gate, engine/progs/pin/tag/Build
+change. This is selected SQL work, not hard time/RSS or a whole-request budget.
+
+**Verified.** Four warning-clean tests pass and all fail P586 predecessor. Actual
+10,001-pair query is interrupted under tiny allowance, retains useful run review,
+clears callback before following SUM query, and default allowance recovers the
+80-opportunity measured control. Borrowed callback continues to act, direct owner
+opt-in abstains, missing schema stays missing, I/O remains error and actual DOM
+labels limits accurately. History rows unchanged. Existing similarity5/sources10
+and metrics3 tests pass; LSP no diagnostics. Initial unrelated-row arm did not
+exercise work due to indexes; corrected to related-row sorting and reran both
+versions. Initial import/API mismatch and too-small default were caught before
+commit. Batch regression, independent review and delivery follow.
+
+## Patch 588 — non-initializing similarity dry-run diagnostics *(SURFD ONLY)*
+
+**Problem.** The similarity diagnostic subsection initialized/migrated the
+collector's schema before reporting availability. Observing a missing subsystem
+created it; observing legacy history ALTERed it and could require a writer lock.
+
+**Change.** Remove only that initializer. A budgeted table probe reports explicit
+unavailable for absent history; existing schemas get the scalar eligible-candidate
+count and independent read-only summary. Normal collection still initializes.
+General main/import schema setup is unchanged: the whole CLI is NOT read-only.
+No historical backfill, detector/gate, engine/progs/pin/tag/Build change.
+
+**Verified.** Four warning-clean actual-connected-consumer tests pass. P587
+predecessor fails all three dry-run schema arms under a real similarity DDL/DML
+authorizer; normal collector control passes both and stores a real 80-opportunity
+comparison with exact byte hashes. Absent, legacy and current schema/rows remain
+exact; legacy category and actual scalar count are reported. Pending4/CLI3 and
+owned-connection test pass; LSP no diagnostics. Initial cursor-name/argument/
+capture-key fixture mistakes and Python3.10 authorizer teardown quirk were caught,
+corrected and both versions rerun. Batch regression, review and delivery follow.
+
+**P586–588 final verification/delivery.** Frozen public game
+`b4f4d31e6bd986406a0aaac638dfa8959eb4e62f`: all60 explicit Linux programs pass;
+Windows59/60, with the same2 UDP-admin assertions reproduced on baseline56/57
+and byte-identical test_admin source. Argument-required momindex excluded, not
+counted pass; established Linux Node/conversion skips remain. New3/4/4 cases are
+warning-clean; Python compile and LSP clean. Recorder306/0; captured269REC and
+91pairedVIEW hashes/full fault lists exact, existing170faulted reports unchanged.
+Read-only source/evidence review found no concrete blocker, did not rerun tests,
+and narrowed the metadata-query scope above.
+
+Canonical exact-commit allowlist with NORMAL stage tests deployed only admin.py,
+templates/admin_run.html and sweep.py. Initial wrong path-prefix preflight changed
+nothing; corrected invocation needed no SkipTests/NoReload flags. All3 installed
+blobs and their predecessor rollback copies match, mode600 DB backup retained.
+Gunicorn master2479950 preserved, worker re-forked/ready2026-10-08T09:05:04Z.
+Installed-path isolated HOME/DB suite runs11new cases (10pass/1absent-Node skip),
+actual live authenticated native review200/anonymous401 and read-only diagnostic
+queries ACT. Original sims/receipts/verdicts/reviews rows match pre-copy backup via
+bounded SQLite EXCEPT; exact/changed/deleted oracle controls ACT. First finish
+probe expected the wrong summary state, then final shell probe streamed CRLF;
+corrected finish-only gates ran with no recopy/reload. Final independent host
+read2026-10-08T09:11:25Z: hashes/rollback/backup mode good, healthOK, all12lobbies
+active. No live collection/reread, detector/badge/enforcement change, reader/QC/
+engine/Windows/config ship. Mutable board/replay/cursor preservation, hard time/
+RSS, calibration, million-row performance and live-browser acceptance unverified.
+
+## Patch 589 — versioned plugin-owned indexed 2D meshes
+
+**Problem.** The legacy plugin `2D` ABI exposes quads and shared shader-table
+references, not indexed command lists with caller-owned texture lifetimes. The
+native UI roadmap needs a separately negotiable prerequisite; extending `2D`
+in place would break its exact-size negotiation and existing callers.
+
+**Change.** Add exact-size `2DMesh/1`, immutable bounded raw RGBA8 uploads and
+non-repeating 64-bit plugin-owned tokens. Release, plugin close and pre-renderer
+teardown reclaim resources and permanently invalidate tokens. Validate the whole
+synchronous batch before submission: counts, command/index/vertex offsets,
+finite positions/UVs/clips and texture ownership. Triangle lists clip in physical
+top-left pixel space with interpolated UV/color, then submit bounded real meshes
+through BE_DrawMesh_Single. Flush pending 2D first; do not write caller color,
+blend flags or backend-dependent BE_Scissor. Straight alpha, linear/clamped atlas
+filtering, both windings; legacy ABI unchanged. Native callers are trusted code,
+not a hostile-pointer/thread sandbox. No QC/ImGui/service/input bridge in this
+milestone; MQC/CSQC draw-site dispatch and mixed inherited clipping remain next.
+
+**Verified.** Disposable Windows GL/NVIDIA native gallery: P581 control refuses
+new ABI while legacy sentinel ACTS; subject accepts exact size and rejects
+short/long/version mismatch. Physical gallery is pixel-identical at virtual
+scales 1/2, repeat, renderer restart and main-plugin unload/reload. Nonzero
+index/vertex offsets, both windings, atlas/tint alpha, partial/empty clips,
+multiple mesh chunks, invalid-second-command no-partial draw and legacy
+before/after color/order markers pass. 25 invalid probes, seven lifetime probes,
+61 texture-count-budget assertions, foreign destroy/submit rejection, fresh
+32-texture budget after automatic unload cleanup, stale restart/reload rejection
+and no-renderer startup ACT. Both fixture DLLs compile -Wall -Wextra -Werror;
+33 portable grader tests pass. Full client/server/plugins retain the same 74
+compiler warning messages/counts as inspected P581 full build, zero new. Plugin
+and renderer TUs retain only baseline clang-tidy warnings; standalone header/
+fixture diagnostics lack engine context. Older P581 atlas regression passes.
+Evidence: tools/p589mesh.py and tools/p589mesh.md in the game repo. These are
+native-only controls, not mixed QC clipping, non-GL parity, actual-device input,
+ImGui acceptance, exhaustive byte/global-budget stress or CPU/GPU cost approval.
+No progs/config/reader/evidence/Pi/release or Build-number change. Clean tagged
+build, frozen regression and guarded dual-native delivery are recorded in game
+AGENT_NOTES.md separately from this implementation verification.
+
+## Patch 590 — bound authenticated log-tail acquisition *(SURFD ONLY)*
+
+**Problem.** A log tail used a path stat before opening and unsized reads after
+seeking. Rotation or growth could invalidate positioning or exceed the intended
+byte window; a newline-free tail also performed an unbounded discard.
+
+**Change.** Size and position the opened handle, acquire at most the existing
+byte allowance, and discard the partial first line from the bounded buffer.
+Byte-window-limited output is explicit; existing redaction remains in force.
+No game binaries, evidence verdicts, ranking, schema, engine pin or Build change.
+
+**Verified.** Six warning-clean real-file tests pass; the predecessor fails five
+acquisition/rotation/growth controls. Small redacted and large multiline tails
+act, newline-free output is bounded and marked, and unreadable stays distinct.
+This bounds selected Python acquisition, not hard elapsed time, filesystem
+snapshot atomicity or whole-request memory. Deployment is recorded separately.
+
+## Patch 591 — bounded historical key-association review *(SURFD ONLY)*
+
+**Problem.** The optional receipt panel fetched every historical signing-key
+association in both directions and rendered list lengths as exact totals.
+Large groups bypassed the separately bounded similarity panel.
+
+**Change.** Cap each selected association query at 26 rows, display 25 with
+separate more flags, and render partial counts as lower bounds. The request's
+fresh connection opts into a cumulative selected-read instruction budget;
+exhaustion withholds both association lists while retaining the receipt and
+explicit unavailable state. Borrowed callbacks are untouched by default.
+No key decisions, public badges, schema, historical rows or game builds change.
+
+**Verified.** Six warning-clean authenticated synthetic DB/actual DOM tests
+pass: both directions act, 1000-row groups acquire only cap+1, first-result
+completion followed by real second-query interruption withholds the subsection,
+recovery acts, missing schema stays read-only, and borrowed callback survives.
+Five initial predecessor controls fail. Combined selected regressions pass 19
+cases; the legacy admin script retains two unrelated UDP-control failures and
+all three template syntax checks pass. This is not a whole-request/time/RSS
+budget or human-browser acceptance. Deployment is recorded separately.
+
+## Patch 592 — exact plot-reader byte acquisition *(SURFD ONLY)*
+
+**Problem.** The plot reader checked its byte allowance only after acquiring a
+full line chunk, so small or non-aligned limits overshot, including during
+long-line draining. Coercion accepted ambiguous byte-budget configurations.
+
+**Change.** Require an exact nonnegative integer allowance before opening and
+constrain every normal/drain read to its remaining bytes. At the cap, report
+conservative truncation without an EOF probe; do not interpret a budget-cut
+line as a complete sample. Ordinary complete and recovered plots remain
+read-only observations, not evidence verdicts. No game/progs/engine pin change.
+
+**Verified.** Six warning-clean real-file tests pass; the predecessor fails
+12 boundary/configuration subcases. Positive complete plots and overlong-line
+recovery act; zero, one, non-aligned and drain budgets never overshoot, and an
+incomplete sample at the cap is withheld. The existing plot script passes.
+The byte allowance is not a hard elapsed-time/RSS or concurrent-file snapshot
+guarantee; exact-cap files conservatively show truncated. Deployment separately.
+
+### P590–592 verification and delivery — 2026-10-08
+
+Frozen game source/test commit `2ea4035aeede1454df67f071324de42db9a681e5`
+passed clean-checkout verification and native source/artifact review (reviewer
+inspected supplied evidence, did not independently rerun). Each product change
+has its own commit; later commits only repair actual DOM harness dependencies
+and compare board evidence without the generated response timestamp. The
+published integration `1d152893b469d4992b46a159dc2fe4e2d4180550` preserves
+these exact product bytes while retaining already-published peer tooling.
+
+Selected controls: 25 warning-clean tests, no local skips; all three template
+syntax checks pass. All 55 candidate surfd scripts were compared with the clean
+baseline except argument-required momindex; no new failures. Two legacy UDP
+admin failures remain. Reccheck: 306 checks, zero failures. Frozen corpus:
+269 recordings, 101 view files, unchanged 170 faulting recordings; private
+manifest verifies fixture preservation. No all-green legacy/warning claim.
+
+DEPLOYED the eight selected source/template/test files only via surfd-deploy,
+from frozen `2ea4035`, after Pi stage gates, owner-only SQLite backup and locked
+copy. All eight destination hashes match, rollback copies remain, gunicorn
+master is preserved with a replacement ready worker. At
+2026-10-08T10:16:14Z, live worker controls ACT on a nonempty bounded log window,
+nonempty authenticated historical associations, and a nonempty plot; anonymous
+access is refused and health reports 12 lobbies. Installed synthetic controls
+pass 25 cases with two Linux Node-dependent skips; local Node tests passed.
+No live collection/backfill, game or Windows artifact, engine/progs/pin/tag or
+Build change. Human browser readability remains unverified in lextest.md.
+
+## Patch 593 — explicit VM-owned native UI dispatch prerequisite
+
+**Problem.** P589's indexed renderer had no caller-owned MQC/CSQC service route.
+Automatic plugin Tick/Sbar/Menu drawing could not prove mixed QC order, inherited
+clipping, VM ownership or synchronous fallback at a particular panel draw site.
+
+**Change.** Copy an exact-size/version/capability `NativeUI/1` service table;
+expose named optional status/open/draw/close builtins in MQC and CSQC. Frontend
+entry/exit authorizes only explicit draw-site calls, not init/input/commands.
+One live owner per VM gets a process-monotonic float-exact handle, separate from
+its caller owner ID. Frames carry frontend/owner/generation/frame identity,
+virtual/physical dimensions and inherited top-left physical clip, never QC
+memory pointers. Enforce one dispatch per VM per host frame even across
+close/reopen; reject fractional/foreign/stale/exhausted handles and render targets.
+Flush QC-before/native queues, intersect indexed commands with the caller clip,
+and restore caller colour, flags and backend scissor. Failed open/draw, explicit
+close, VM teardown, plugin unload and renderer shutdown release owners once;
+renderer release precedes texture invalidation. Missing service/ABI stays an
+explicit usable QC fallback. Open/Close allocate/release only; callbacks are
+trusted synchronous native code, not a hostile-pointer/thread/reentry sandbox.
+
+**Verified.** `p590bridge` retains its provisional fixture identity; this is one
+forward-renumbered product patch after peers published 590-592. Five disposable
+Windows GL/NVIDIA arms: acting P589 legacy baseline, subject without service,
+MQC/simple CSQC HUD at two independently scaled virtual axes and full CSQC
+UpdateView. 52 screenshots prove QC-before/native/QC-after overlap, inherited
+clip and legacy failure recovery. Seven ABI controls, both VM ownership,
+outside/fractional/foreign/duplicate/stale calls, explicit close, menu restart,
+disconnect/reconnect, plugin unload/reload, renderer restart and failed partial
+open/draw act; every allocated texture is released exactly once. Real core host
+stubs pass 149 assertions including colour/flags/scissor restoration, nested
+bracket rejection, render-target refusal and handle exhaustion. 24 portable
+grader falsifiers pass. Full isolated predecessor and subject builds have the
+same 74 compiler warning message/count fingerprints, zero new; all QC compiles
+have zero warnings. P589 gallery and its 33 grader controls pass. LSP translation
+units retain baseline warnings; isolated headers/fixtures lack engine context.
+No ImGui, widgets/model/input transport, actual panel migration, preference,
+Build number, evidence policy, non-GL/device-input or cost acceptance. Frozen
+build/publication/delivery provenance is recorded separately in game notes.
+
+## Patch 594 — reject non-finite inherited native UI clips
+
+**Problem.** P593 intersected inherited caller clipping after P589 validated the
+mesh's own commands. A non-finite caller clip, or overflow converting a finite
+virtual clip to physical pixels, could therefore reach the service and bypass
+that validated-input boundary.
+
+**Change.** Validate all four final physical inherited-clip coordinates with
+FTE's NaN/Inf bit predicate before authorizing a native callback or flushing its
+queues. Reject invalid coordinates, release the opened owner once and return
+false for explicit QC fallback. Valid, empty and off-screen finite clips keep
+existing behavior. No ABI/input/model/panel/preference/Build-number change.
+
+**Verified.** Actual host implementation with acting callbacks: P593 fails 12
+assertions across NaN, infinity and finite-conversion-overflow controls. Subject
+passes 170 assertions, including no callback/no flush and one owner release in
+each malformed case; existing ownership/lifetime/caller-state controls remain
+active. All 24 portable grader controls pass. Host predicate matches FTE's
+NaN/Inf bit semantics rather than relying on libc finite assumptions. Full
+stamped build, valid GL galleries and guarded delivery are separate recorded
+gates; malformed-clip controls are host tests, not driver fault injection.
+Published patch-593 remains immutable. No ImGui/non-GL/device/cost acceptance.
+
+Frozen full source `bed572f50` / `patch-594` built as
+`git-7118-patch-594-0-gbed572f50`: identical 74 baseline compiler warning
+fingerprints, zero new; QC zero warnings. Valid bridge and P589 GL galleries
+pass. Both actual installed Windows executable paths ACT after guarded native-only
+swaps, zero failed, hashes/progs/config/data/server/DLL preservation verified
+2026-10-08T11:34:11Z; rollback retained. The rejected Draw path does not flush;
+resource cleanup may independently flush for P589 texture lifetime. No second
+Pi/progs swap or release. Exact evidence/provenance: game tools/p594clip.md.
+
+## Patch 595 — disclose bounded verifier history *(SURFD ONLY)*
+
+**Problem.** The authenticated history displayed only the newest 200 attempts,
+without saying older attempts existed; its summary could call the visible stale
+subset the entire history. Stored counts are per attempt, not a complete census.
+
+**Change.** Acquire one sentinel row, display the same 200 id-descending attempts,
+and add limit/more metadata. Literal-text summaries label partial counts as shown
+and disclose omitted older attempts. Latest/current/public verdict queries remain
+unchanged. No total-count scan, evidence rewrite, detector/policy, engine/QC,
+Build/pin/tag or Windows artifact change.
+
+**Verified.** Three warning-clean actual API/SQL/Node DOM tests pass; inspected
+predecessor fails all three (seven assertions/subcases). Boundaries 0/199/200/201/
+400 acquire at most 201, preserve ordering/history/public board and anonymous401.
+An oldest-current/latest200-stale fixture preserves Verified via the unchanged
+public query but refuses a universal all-stale display claim. Existing counts
+fragment harness now includes the actual summary helper; counts and receipt DOM
+controls pass. Initial fixture timestamp and Windows argv-length mistakes were
+corrected and predecessor re-run; these were not product failures. Final independent
+review, frozen Linux proof and delivery are batch gates recorded separately.
+
+## Patch 596 — reject ambiguous stored metric projections *(SURFD ONLY)*
+
+**Problem.** Ordinary JSON decoding discarded duplicate object keys before the
+owner-only typed validator saw them. Ambiguous historical journal/counts snapshots
+could consequently display the last value as a measured denominator or zero.
+
+**Change.** One local duplicate-rejecting JSON decoder for both historical metric
+validators, at every object nesting level. Existing byte caps, UTF-8, version/type
+allowlists, unavailable fallback and stored observations remain unchanged. No
+reader/sweep acceptance, backfill, detector/threshold, badge/ranking, engine/QC,
+Build/pin/tag or Windows artifact change.
+
+**Verified.** Five warning-clean actual authenticated API/bounded-fetch tests pass
+(three inherited controls); predecessor fails ten duplicate-key text/BLOB subcases.
+Top-level version/state, metrics, nested exclusions and escaped-equivalent keys
+abstain; unique zeros, empty metrics and no-records remain exact. Original stored
+strings/verdicts unchanged, no historical reader invocation, anonymous401. Existing
+actual receipt/counts Node renderers pass their unavailable/zero controls. Final
+independent review, frozen Linux and delivery gates are recorded separately.
+
+## Patch 597 — budget the initial similarity schema probe *(SURFD ONLY)*
+
+**Problem.** The optional owner similarity panel budgeted PRAGMA/history reads,
+but its initial table-existence query ran outside the cumulative SQL allowance.
+A tiny allowance could consequently claim confirmed absence without budgeting
+that observation.
+
+**Change.** Create the existing opt-in owned ReadBudget before all three selected
+reads. Initial schema exhaustion returns whole-panel read_limit, not missing or
+partial observations. Adequately budgeted absence/empty/success stay distinct;
+borrowed callbacks remain untouched by default. No whole-request time/RSS/I/O,
+scoring/threshold/history, engine/QC, Build/pin/tag or Windows artifact change.
+
+**Verified.** Three warning-clean actual API/SQLite tests pass; predecessor fails
+two assertions. A one-step allowance ACTS at the schema SELECT with its progress
+handler installed, before PRAGMA/history; actual callback interrupts and finally
+clears, after-close-path SQL still acts. Adequate default recovers an 80-opportunity
+stored measurement. Missing/tiny unknown and adequately budgeted missing/empty
+remain distinct, original DB unchanged, anonymous401; borrowed callback survives
+and unrelated I/O still returns storage error. All four existing panel-budget and
+five historical similarity controls pass. Final independent review, frozen Linux
+and delivery gates are recorded separately.
+
+**Final P595/P596/P597 batch gates.** Independent fresh source review found no
+issues; parent strengthened its two predecessor-proof qualifications in test-only
+38eb243 (actual old summary execution and independent journal/counts reds).
+Frozen38eb243 passes59Linux programs including recorder; Windows57/58 with only
+the same two admin UDP failures reproduced on untouched4f066479. Recorder306/0;
+same captured local REC/view fault observations unchanged, no blocked reads;
+HID inventoried only. New focused suites warning-clean, not all legacy fixtures.
+Only admin.py/template shipped from exact committed bytes, under sweep lock with
+under-lock predecessor checks, atomic swaps and retained mode600 DB/file backups.
+Installed-source complete staged harness22tests/fourNode skips and authentic
+worker API/anonymous401 ACT; worker replaced, health12, selected stored history/
+public board and protected support/config/progs/reader bytes unchanged. Final
+UTC2026-10-08T13:59:52Z. No game/engine/Windows/reader/config/release swap. Private
+procedure failures (online backup churn, probe-cookie name, absent kernel children
+interface, transient legacy board-clock fixture) and exact restoration are recorded
+without repairing unrelated source. Actual source/control commands, ship-set,
+failed arms and limits: game `tools/p595observers.md`. No human browser/calibration,
+whole-request resource or enforcement claim; no new product patch for these records.
+
+## Patch 598 — optional explicit-QC Dear ImGui command-list service
+
+**Problem.** P589/P593/P594 proved indexed meshes, VM-owned native dispatch and
+inherited clipping, but no actual Dear ImGui draw lists exercised that path.
+A global overlay hook would not prove QC ordering, fallback or per-VM ownership.
+
+**Change.** Optional `ui_imgui` C++ plugin with unmodified, SHA256-pinned MIT
+Dear ImGui 1.91.9b (`f5befd2d29e66809cd1110a152e375a7f1981f06`). It exports the
+existing NativeUI/1 C service, accepts diagnostic owners only and makes no
+Tick/Menu/Sbar drawing exports. MQC and CSQC receive separate contexts and
+immutable embedded-font RGBA atlases, released by host lifecycle callbacks.
+Ini/log writes are disabled. The adapter preflights all lists, totals, finite
+transforms/UVs/clips, atlas identity, offsets/indices and consumed-index budgets
+before any Submit; unknown callbacks reject, reset-state is a host-owned no-op.
+Reusable bounded scratch batches expand triangles for arbitrary 16/32-bit source
+indices/VtxOffset, intersect physical inherited clips and use only 2DMesh/1.
+No raw graphics hooks, C ABI change or engine/dedicated C++ linkage. Windows
+C++/pthread runtimes are static in the DLL. Vendor stays unmodified at -O1 to
+avoid GCC 16 upstream -O2 mouse-array diagnostics; adapter -O2, both -Werror.
+Development build includes/copies the optional DLL. Its newly acting -NoDeploy
+switch isolates QC outputs and blocks native copies; unknown flags now reject
+instead of silently deploying. Real panels/defaults/input/model/widget transport,
+performance budgets, fonts/DPI policy, release packaging and Build number do not
+change. Multi-batch backend failure cannot roll back earlier successful batches;
+QC must redraw its covering legacy equivalent when Draw returns false.
+
+**Verified.** Real source host controls: 107 assertions each with 16- and 32-bit
+indices, zero failures; >64K generated vertices, offsets/transform/RGBA/UVs,
+whole-data rejection, bounded splitting, atlas/submit failure, two-context and
+closed-zero-work cleanup act. Real MQC/CSQC GL gallery: 23 screenshots across
+missing-service control and two virtual scales, zero failed, physical output
+identical. Glyphs, rounded control, clipped 1000-row table/tooltip, before/native/
+after markers, caller state, close/VM/restart/reload/reconnect and closed counter
+balance act. 16 grader mutations reject false successes. Existing actual bridge
+host 170 assertions, bridge/mesh graders 24/33 and their 52-shot runtime galleries
+pass. Native plugin compilation adds no warnings; both plugin files pass clangd
+with their actual C++17 database/driver (cached C-only session diagnostics are not
+that gate). Acting -Engine -NoDeploy build: 65 native/rollback/progs/cfg byte/path
+witnesses unchanged; three QC targets zero warnings; typo/NoDeploy+Pi refusal
+acts. Earlier ignored-switch native swaps were hash-guard restored from rollback
+copies; the new plugin was parked before proceeding. Full frozen-stamp build and
+guarded dual delivery are separate final gates, recorded in game tools/p598imgui.md.
+No non-GL/device/input/performance/real-panel/appearance or release acceptance.
+
+The provisional native 595 claim collided with concurrently published surfd-only
+P595-597 during final gates. Those entries are preserved unchanged; canonical
+native feature is P598. Already-published provisional tag patch-595 remains
+historical and immutable (not the canonical surfd-only P595 entry). Test fixture
+cvar/command/log names retain their provisional p595 prefix for replay continuity;
+canonical public tooling is p598imgui. No published history/tag was rewritten.
+
+Canonical frozen source `d5e828f03` / `patch-598`, game `a659cab`, built with
+actual Makefile SVN_VERSION/SVNREVISION inputs as byte-verified
+`git-7125-patch-598-0-gd5e828f03`. Worktree auto-detection's .git-directory test
+and unused FTEBUILD* wrapper inputs had produced an unstamped provisional build;
+that failed byte gate was not shipped. Full build: identical 74 baseline compiler
+warning occurrences / 49 distinct fingerprints, zero new; QC zero warnings and
+65 install/rollback/progs/cfg witnesses unchanged under -NoDeploy. Canonical
+107/index-arm hosts, 23-shot real ImGui gallery and bridge/mesh regressions pass.
+Published game integration `ae020d2` additionally merges peer off-ramp tooling/docs;
+no differences in QC/build/native-gallery sources versus the frozen game commit.
+Guarded native-only dual swaps and repeated actual installed executable-path
+controls pass at `2026-10-08T14:20:11Z`: 46 screenshots, four destination hashes
+and rollback verified, all 38 progs/config/data/server/unrelated-DLL protected
+hash groups unchanged across the repeated gates. The first whole-data comparison
+was HOLD because the independent scheduled public-map sweep ran at 14:07 UTC;
+its writer/task witness and failed gate are retained, no data restored/excluded.
+No Pi/progs/server/config/data copy, release or Build-number change. Full receipt,
+commands/hashes and remaining input/model/panel/cost limits: game tools/p598imgui.md.
+
+## Patch 599 — fence new verifier observations to stable recording bytes
+
+**Problem.** The sweeper's submission-time fence did not establish source-byte
+stability around verification. A terminal result/counts observation could attach
+when its recording was replaced or disappeared without a database refile.
+
+**Change.** Sweeper-only: fresh SHA-256 before admission and after verifier plus
+row/stage checks. Known-current filing digests must agree before admission; both
+lobby and KEEP copies of evidence must agree. Descriptor/path metadata changes
+or I/O make the capture unavailable. Instability stores retryable ERROR, ticks
+unknown and counts unavailable, never a cheating judgement or new PASS. Hashing
+uses streaming reads outside writer transactions. Existing ERROR caps and refile/
+recheck semantics, unknown/stale-digest compatibility and existing PASS/owner
+approvals remain. No schema, historical reread/revocation, receipt-reader,
+detector threshold, engine/QC/progs/pin/tag/Build or release change. This is a
+before/after fence, not immutable engine input or hostile-host intermediate
+change-and-restore detection; it does not persist verdict source provenance.
+
+**Verified.** Eight initial file/SQLite/badge controls: six fail on untouched
+published game 0eafc347, honest and legacy controls pass; all pass with the fix.
+Extended source suite: 15 passing cases, including both evidence copies, hash-time
+replacement/read failure, metadata-only change, grouped companion independence,
+retry exhaustion/recovery/refiling, no hash-time writer transaction and retained
+historical PASS policy. Independent read-only review found no blockers. Full
+Windows boundary: 70 programs, 69 pass; only test_admin's two preexisting UDP/
+RCON failures, reproduced in clean 0eafc347. Reader suite passes; immutable
+REC+sidecar snapshot: 269 REC / 440 files, 164 existing fault files / 164 faults,
+unchanged reader blob and no fault increase. Owned Python compiles warning-free.
+Linux exact-commit stage: all 70 programs pass after four staging-only controls
+are rerun with missing client fixtures, neutral path and adequate temp storage
+corrected; no product changes. Selected sweeper/control-only Pi copy verified at
+2026-10-08T15:29:27Z, rechecked 15:31:14Z. Installed module's 15 controls act;
+exact destination hashes, 125 protected support/static/template/reader files,
+stored verdict/review/receipt fingerprints and worker identities unchanged;
+health OK/12 lobbies. Canonical sweep lock, completed read-snapshot DB backup and
+owned source rollback retained. The first deferred-read backup timed out before
+swaps and is recorded, not hidden. No reload/game/Windows/progs/config/reader
+swap. Commands, actual hashes, failed controls and limits: game tools/p599sources.md.
+
+## Patch 600 — bounded explicit native input/actions, diagnostic owners only
+
+**Problem.** P598 could draw a passive gallery, but had no QC-owned event/action
+transport. Borrowing engine input hooks would bypass the existing routing and
+cursor contract. A per-Draw event counter alone cannot bound ImGui's trickled
+residual queue, and owner generation cannot identify refreshed real browser rows.
+
+**Change.** Add the exact-size copied optional `NativeUIInput/1` table from the
+same registered provider, leaving `NativeUI/1` layout unchanged. Optional named
+MQC/CSQC status/input/poll builtins admit finite bounded scalar mouse/button/wheel,
+compact navigation-key, Unicode-scalar and reset events for a live VM-local
+handle. No native engine bind/scancode/command interpretation, input destination,
+cursor claimant or implicit capture. Bound host events at 128 per host frame
+(reopen cannot bypass), both plugin accepted and actual residual queue at 128,
+and action polls at 16 after successful same-frame explicit Draw. Reset clears
+queued/held input, active focus and action authority even at the event limit;
+malformed actions/callback failure/overflow release once to QC covering fallback.
+Diagnostic owners 103/204 expose a button, checkbox and 128-byte text buffer;
+clipboard/OS IME hooks are disabled. Compile all upstream/adapter units with
+IMGUI_USE_WCHAR32 to preserve supplementary scalars as exact UTF-8. No vendor
+source changes, dynamic model protocol, production panel, preference, progs/Pi,
+non-GL/device-input/performance/font/DPI/Build/release or install change.
+
+**Verified.** Real bridge source: 929 new plus 171 passive assertions, zero
+failures. Real plugin/core/adapter: 699 interactive plus 108 passive assertions per
+16/32-bit index arm, zero failures; actual clicks/toggle/text/backspace, exact
+supplementary UTF-8, fixed text cap, reset of queued/held input, acting trickled
+backlog and repeated refill bounds, generation/VM separation, atlas balance and
+external-context restoration. MQC/CSQC disposable GL runtime: 33 screenshots,
+zero failures across new/absent/older-draw-only providers and two virtual scales;
+actual actions, changed glyph/widget state, reset, close/reopen, simultaneous VMs,
+plugin/renderer teardown, no implicit files and physically identical scale arms.
+17 evidence mutation controls pass. Existing P598 gallery: 23 shots + 16 grader
+controls; bridge 24 and mesh 33 grader controls pass. Full Windows native/QC
+compiler stages complete: same 74 compiler-warning occurrences / 49 fingerprints
+as P598, zero new, three zero-warning QC programs. The unchanged clean NoDeploy
+final-summary bug returns exit 1 AFTER compiler/native stages (BACKLOG.md); no
+summary repair or silent install seeding. These are synthetic explicit QC events,
+not physical device/cursor/minus acceptance. Frozen source/tag/stamp, pushes and
+any deployment are separately recorded in FTESurf tools/p600input.md.
+
+The initial local frozen gate failed after a late include rearrangement placed
+third-party/standard headers inside FteImGui via input.inc; the compiler and new
+LSP errors correctly caught it. Headers restored to global scope; actual host,
+frozen compiler and runtime gates repeat before publication. Failed logs retained;
+no bad binary/tag was published or deployed.
+
+Claim 600 after fetching both origins: concurrent verifier P599 is preserved;
+disposable p599/P599 probe markers remain for preregistered evidence continuity.

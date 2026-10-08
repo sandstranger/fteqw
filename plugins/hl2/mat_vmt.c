@@ -24,6 +24,7 @@ was reachable from a cvar.  Now:
                1  refraction only, no reflection
                2  refraction + reflection, which is what shipped
                3  DITHERED FLAT  (DEFAULT since build 12)
+               4  budget animated -- translucent normals/baked cube, no captures
 
   hl2_refract  0  glass draws as plain translucency, no framebuffer copy
                1  Source's refraction
@@ -204,7 +205,7 @@ and it fits progargs[256] with 57 bytes to spare, so the SHADER is not truncated
 only this copy of it was.  A diagnostic that lies about the thing it exists to
 show is worse than no diagnostic, hence the exact size and this note.
 */
-char vmt_stat_waterargs[256];
+char vmt_stat_waterargs[1024];	//Match progargs, including signed water scroll vectors.
 
 /*
 FTESurf Patch 254: the map's underwater fog, for the engine's FOGTYPE_WATER slot.
@@ -679,7 +680,12 @@ static float VMT_WaterDitherAlpha(float fogend)
 		if (a < 0.35f) a = 0.35f;
 		if (a > 0.90f) a = 0.90f;
 	}
-	return VMT_DitherScale(a);
+	a = VMT_DitherScale(a);
+	//Keep water readable without changing the glass coverage scale. An
+	//explicit force still wins, including intentionally sparse coverage.
+	if ((!hl2_dither_force || hl2_dither_force->value <= 0) && a < 0.65f)
+		a = 0.65f;
+	return a;
 }
 
 static plugfsfuncs_t *fsfuncs;
@@ -885,12 +891,14 @@ typedef struct
 	*/
 	float refractamount, reflectamount;
 	qboolean refractamount_set, reflectamount_set;
+	qboolean waterfog_disabled, water_below;
 	float refracttint[3], reflecttint[3];
 	qboolean refracttint_set, reflecttint_set;
 	float fogcolor_f[3];
 	qboolean fogcolor_set;
 	float waterscale;		//$scale, the normal-map tiling
 	qboolean waterscale_set;
+	float waterscroll1[2], waterscroll2[2];	//signed normal-layer UV velocity
 	char *blendfunc;
 	qboolean alphatest;
 	qboolean culldisable;
@@ -2035,7 +2043,7 @@ static char *VMT_ParseBlock(const char *fname, vmtstate_t *st, char *line)
 		else if (!Q_strcasecmp(key, "$bumpframe"))
 			;	//nettest: recognised-but-ignored Source key; silenced (was per-field developer-1 spam)
 		else if (!Q_strcasecmp(key, "$fogenable"))
-			;	//nettest: recognised-but-ignored Source key; silenced (was per-field developer-1 spam)
+			st->waterfog_disabled = !atoi(value);
 		else if (!Q_strcasecmp(key, "$fogcolor"))
 		{
 			Q_strlcpy(st->fogcolor, value, sizeof(st->fogcolor));	//FTESurf: hl2_water 0 draws this
@@ -2046,17 +2054,9 @@ static char *VMT_ParseBlock(const char *fname, vmtstate_t *st, char *line)
 			st->fogcolor_set = VMT_ParseColour(value, st->fogcolor_f);
 		}
 		/*
-		FTESurf Patch 251: $scale, the Water shader's normal-map tiling -> TXSCALE.
-
-		Hammer writes it as "[1 1]", "[.5 .5]" or a bare number, and only the first
-		component is ever used here: water.glsl applies TXSCALE1/TXSCALE2 as
-		vec2(TXSCALE1)*tc, a single scalar per wave layer, so a material asking for
-		different S and T tiling cannot be expressed and the first component is the
-		closer of the two answers.
-
-		Parsed inside the Water arm's neighbourhood rather than globally: $scale
-		means something different on a VertexlitGeneric (a texture transform), and
-		this must not start claiming to implement that.
+		Water-only legacy $scale -> scalar normal UV tiling (first component).
+		Keep that compatibility independent of signed scroll velocity. This is
+		not an implementation of Source's $bumptransform or anisotropic tiling.
 		*/
 		else if (!Q_strcasecmp(key, "$scale") && !Q_strcasecmp(st->type, "Water"))
 		{
@@ -2070,7 +2070,7 @@ static char *VMT_ParseBlock(const char *fname, vmtstate_t *st, char *line)
 		else if (!Q_strcasecmp(key, "$fogend"))
 			st->fogend = atof(value);	//FTESurf build 12: drives the dither coverage at hl2_water 3
 		else if (!Q_strcasecmp(key, "$abovewater"))
-			;	//nettest: recognised-but-ignored Source key; silenced (was per-field developer-1 spam)
+			st->water_below = !atoi(value);
 		else if (!Q_strcasecmp(key, "$underwateroverlay"))
 			;	//nettest: recognised-but-ignored Source key; silenced (was per-field developer-1 spam)
 		else if (!Q_strcasecmp(key, "$reflectentities"))
@@ -2080,9 +2080,9 @@ static char *VMT_ParseBlock(const char *fname, vmtstate_t *st, char *line)
 		else if (!Q_strcasecmp(key, "$bottommaterial"))
 			Q_strlcpy(st->bottommaterial, value, sizeof(st->bottommaterial));	//FTESurf Patch 233, see VMT_BottomRecord
 		else if (!Q_strcasecmp(key, "$scroll1"))
-			;	//nettest: recognised-but-ignored Source key; silenced (was per-field developer-1 spam)
+			VMT_ParseVec3(value, st->waterscroll1, 2);
 		else if (!Q_strcasecmp(key, "$scroll2"))
-			;	//nettest: recognised-but-ignored Source key; silenced (was per-field developer-1 spam)
+			VMT_ParseVec3(value, st->waterscroll2, 2);
 
 		else if (*key == '%')
 			;	//editor lines
@@ -2243,7 +2243,7 @@ static void Shader_GenerateFromVMT(parsestate_t *ps, vmtstate_t *st, const char 
 	modes are whole-program selections and an alpha mask on a water plane means
 	nothing.
 	*/
-	char progargs[256];
+	char progargs[1024];
 
 	*progargs = 0;
 
@@ -3514,7 +3514,7 @@ static void Shader_GenerateFromVMT(parsestate_t *ps, vmtstate_t *st, const char 
 	{
 		int wmode = hl2_water?hl2_water->ival:3;
 		if (wmode < 0) wmode = 0;
-		if (wmode > 3) wmode = 3;
+		if (wmode > 4) wmode = 4;
 		vmt_stat_water++;
 
 		/*
@@ -3565,7 +3565,11 @@ static void Shader_GenerateFromVMT(parsestate_t *ps, vmtstate_t *st, const char 
 		$cheapwaterstartdistance/expensive hints.
 		*/
 		if (wmode == 1)
+		{
 			Q_strlcpy(progargs, "#LQWATER", sizeof(progargs));
+			if (!Q_strcasecmp(st->envmap, "env_cubemap") && (!hl2_envcubemap || hl2_envcubemap->ival))
+				st->wantenvcube = 1;
+		}
 
 		/*
 		FTESurf Patch 251: hand water.glsl the keys it has always been able to read.
@@ -3580,20 +3584,22 @@ static void Shader_GenerateFromVMT(parsestate_t *ps, vmtstate_t *st, const char 
 		Appended, not assigned: the two lines above use Q_strlcpy and this must not
 		undo them.
 
-		WHAT IS DELIBERATELY NOT WIRED, so the next person does not assume it was
-		missed.  #DEPTH is the interesting one -- it is what turns $fogstart/$fogend
-		into a real depth-graded fade instead of a constant tint -- but its branch
-		samples s_refractdepth, and water.glsl's `!!samps` line declares only
-		refract and reflect.  Wiring #DEPTH without also declaring and binding that
-		sampler would produce a shader that fails to compile, so $fogstart/$fogend
-		stay where they are: driving the dither coverage at hl2_water 3, which is
-		the default mode and the one most people see.
+		Patch 541 binds the existing refraction depth attachment as sampler 2.
+		It uses the unmodified screen projection, unlike the colour-only oblique
+		capture. Surface fog and shallow distortion use that depth. This adds an
+		attachment, not another scene render.
 
 		AND THE HONEST HEADLINE: hl2_water defaults to 3, the dithered flat mode,
 		which uses none of this.  Everything below changes hl2_water 1 and 2 only.
 		*/
 		{
-			char t[192];
+			char t[256];
+			Q_snprintfz(t, sizeof(t), "#DEPTH#FOGSTART=%f#FOGRANGE=%f", st->fogstart, max(1.0f, st->fogend - st->fogstart));
+			Q_strlcat(progargs, t, sizeof(progargs));
+			if (st->waterfog_disabled)
+				Q_strlcat(progargs, "#NO_WATERFOG", sizeof(progargs));
+			if (st->water_below)
+				Q_strlcat(progargs, "#UNDERWATER", sizeof(progargs));
 			if (st->refractamount_set)
 			{
 				Q_snprintfz(t, sizeof(t), "#STRENGTH_REFR=%f", st->refractamount);
@@ -3624,11 +3630,14 @@ static void Shader_GenerateFromVMT(parsestate_t *ps, vmtstate_t *st, const char 
 			}
 			if (st->waterscale_set)
 			{
-				//Both layers from the one key: Source has a single $scale and the
-				//shader's two are its two wave layers, which are meant to tile
-				//together and drift apart only in time (the +e_time offsets differ).
-				Q_snprintfz(t, sizeof(t), "#TXSCALE1=%f#TXSCALE2=%f",
-					st->waterscale, st->waterscale);
+				Q_snprintfz(t, sizeof(t), "#TXSCALE1=%f", st->waterscale);
+				Q_strlcat(progargs, t, sizeof(progargs));
+			}
+			// Velocity is independent of tiling. Any active axis enables the
+			// extra Source-style normal layers (including signed/Y-only scroll).
+			if (st->waterscroll1[0] || st->waterscroll1[1] || st->waterscroll2[0] || st->waterscroll2[1])
+			{
+				Q_snprintfz(t, sizeof(t), "#MULTITEXTURE#SCROLL1=%f,%f#SCROLL2=%f,%f", st->waterscroll1[0], st->waterscroll1[1], st->waterscroll2[0], st->waterscroll2[1]);
 				Q_strlcat(progargs, t, sizeof(progargs));
 			}
 			//What the census will print. See the note beside vmt_stat_waterargs
@@ -3637,7 +3646,20 @@ static void Shader_GenerateFromVMT(parsestate_t *ps, vmtstate_t *st, const char 
 				sizeof(vmt_stat_waterargs));
 		}
 
-		if (wmode == 3)
+		if (wmode == 4)
+		{
+			// Separate program: no render-target samplers or capture-triggering maps.
+			// A literal env_cubemap can use the existing baked-cube sentinel path.
+			if (!Q_strcasecmp(st->envmap, "env_cubemap") && (!hl2_envcubemap || hl2_envcubemap->ival))
+				st->wantenvcube = 1;
+			Q_strlcatfz(script, &offset, sizeof(script),
+				"\tprogram \"vmt/waterbudget%s\"\n"
+				"\tprogblendfunc blend\n", progargs);
+			if (*st->normalmap)
+				Q_strlcatfz(script, &offset, sizeof(script), "\tnormalmap \"%s%s.vtf\"\n",
+					strcmp(st->normalmap, "materials/")?"materials/":"", st->normalmap);
+		}
+		else if (wmode == 3)
 		{
 			/*
 			Dithered flat -- the default since build 12, and the cheapest of the
@@ -3653,7 +3675,7 @@ static void Shader_GenerateFromVMT(parsestate_t *ps, vmtstate_t *st, const char 
 			VMT_FogColorString(st->fogcolor, fog, sizeof(fog));
 			Q_strlcatfz(script, &offset, sizeof(script),
 				"\t{\n"
-					"\t\tprogram \"vmt/flatdither\"\n"
+					"\t\tprogram \"vmt/flatdither#WATER=1\"\n"
 					"\t\tmap $whiteimage\n"
 					"\t\trgbgen const %s\n"
 					"\t\talphagen const %f\n"
@@ -3671,18 +3693,16 @@ static void Shader_GenerateFromVMT(parsestate_t *ps, vmtstate_t *st, const char 
 			so that is what this uses -- flat, translucent, and the same idiom
 			the engine's own r_waterstyle 0 uses (gl_shader.c:7205).
 
-			No program and no render target, so the backend never reaches the
-			GLR_DrawPortal branches at all.
+			A top-level colour shader avoids the compatibility-context progless
+			path (compiled out under GLSLONLY). No texture, capture or colourgen.
 			*/
 			char fog[64];
 			VMT_FogColorString(st->fogcolor, fog, sizeof(fog));
+			for (char *p = fog; *p; p++)
+				if (*p == ' ') *p = ',';
 			Q_strlcatfz(script, &offset, sizeof(script),
-				"\t{\n"
-					"\t\tmap $whiteimage\n"
-					"\t\trgbgen const %s\n"
-					"\t\talphagen const 0.7\n"
-					"\t\tblendfunc blend\n"
-				"\t}\n", fog);
+				"\tprogram \"vmt/watersheet#FOGTINT=%s#ALPHA=0.7\"\n"
+				"\t{\n\t\tblendfunc blend\n\t}\n", fog);
 		}
 		else
 		{
@@ -3697,7 +3717,9 @@ static void Shader_GenerateFromVMT(parsestate_t *ps, vmtstate_t *st, const char 
 					"\t\tmap $refraction\n", progargs);
 			if (wmode >= 2)
 				Q_strlcatfz(script, &offset, sizeof(script), "\t\tmap $reflection\n");
-			Q_strlcatfz(script, &offset, sizeof(script), "\t}\n");
+			else
+				Q_strlcatfz(script, &offset, sizeof(script), "\t\tmap $null\n");
+			Q_strlcatfz(script, &offset, sizeof(script), "\t\tmap $refractiondepth\n\t}\n");
 		}
 
 		/*
@@ -3706,7 +3728,7 @@ static void Shader_GenerateFromVMT(parsestate_t *ps, vmtstate_t *st, const char 
 		load two VTFs per water material to never read them.  The point of the
 		mode is that it is cheap.
 		*/
-		if (wmode != 3)
+		if (wmode != 3 && wmode != 4)
 		{
 			Q_strlcatfz(script, &offset, sizeof(script),	"\tdiffusemap \"%s%s.vtf\"\n", strcmp(st->tex[0].name, "materials/")?"materials/":"", st->tex[0].name);
 			Q_strlcatfz(script, &offset, sizeof(script),	"\tnormalmap \"%s%s.vtf\"\n", strcmp(st->normalmap, "materials/")?"materials/":"", st->normalmap);

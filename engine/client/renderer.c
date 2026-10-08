@@ -561,8 +561,10 @@ cvar_t vid_conheight						= CVARFD ("vid_conheight", "0",
 cvar_t vid_conwidth							= CVARFD ("vid_conwidth", "0",
 												CVAR_ARCHIVE | CVAR_RENDERERCALLBACK, "Specifies the virtual width of the screen. Should generally be left as 0 to allow the correct aspect to be used despite video mode changes.");
 //see R_RestartRenderer_f for the effective default 'if (newr.renderer == -1)'.
+//Patch 494: NOTFROMSERVER -- an archived value is loaded at RESTRICT_LOCAL on the
+//next launch, so a server-written "gl <dll>" here outlived Patch 488's gate.
 cvar_t vid_renderer							= CVARFD ("vid_renderer", "",
-													 CVAR_ARCHIVE | CVAR_VIDEOLATCH, "Specifies which backend is used. Values that might work are: sv (dedicated server), headless (null renderer), vk (vulkan), gl (opengl), egl (opengl es), d3d9 (direct3d 9), d3d11 (direct3d 11, with default hardware rendering), d3d11 warp (direct3d 11, with software rendering).");
+													 CVAR_ARCHIVE | CVAR_VIDEOLATCH | CVAR_NOTFROMSERVER, "Specifies which backend is used. Values that might work are: sv (dedicated server), headless (null renderer), vk (vulkan), gl (opengl), egl (opengl es), d3d9 (direct3d 9), d3d11 (direct3d 11, with default hardware rendering), d3d11 warp (direct3d 11, with software rendering).");
 cvar_t vid_renderer_opts					= CVARFD ("_vid_renderer_opts", NULL, CVAR_NOSET|CVAR_NOSAVE, "The possible video renderer apis, in \"value\" \"description\" pairs, for gamecode to read.");
 
 cvar_t vid_bpp								= CVARFD ("vid_bpp", "0",
@@ -843,6 +845,17 @@ cvar_t r_glsl_turbscale_refract				= CVARFD  ("r_glsl_turbscale_refract", "1", C
 cvar_t r_glsl_emissive						= CVARFD  ("r_glsl_emissive", "1", CVAR_SHADERSYSTEM, "When set, specifies that the _luma or _glow textures are emissive... When 0 they are taken as a mask for the proportion of the lightmap that will apply (for q2e compat, has issues with overbrights).");
 
 cvar_t r_fastturbcolour						= CVARFD ("r_fastturbcolour", "0.1 0.2 0.3", CVAR_ARCHIVE, "The colour to use for water surfaces draw with r_waterstyle 0.");
+// Renderer-owned opt-in: the plugin API deliberately masks CVAR_SHADERSYSTEM,
+// and Cvar_Get2 does not add it to an existing variable. Keep the policy narrow.
+static cvar_t hl2_water_shaderpolicy = CVARFD("hl2_water", "3", CVAR_SHADERSYSTEM,
+	"Source water mode. 0: flat translucent, no captures. 1: live refraction with baked reflection. "
+	"2: live refraction/reflection. 3: depth-writing dither (default). "
+	"4: budget animated, translucent fog colour/normals/approximate baked reflection, no captures or screen copy. "
+	"Budget water is not depth-correct or Source-exact. Changes rebuild materials without restarting the map.");
+static cvar_t hl2_dither_alpha_shaderpolicy = CVARFD("hl2_dither_alpha", "1", CVAR_SHADERSYSTEM,
+	"Coverage multiplier for dithered Source surfaces. Water keeps a readable minimum unless force is set.");
+static cvar_t hl2_dither_force_shaderpolicy = CVARFD("hl2_dither_force", "0", CVAR_SHADERSYSTEM,
+	"Explicit coverage for dithered Source surfaces; 0 uses each material's derived coverage.");
 cvar_t r_waterstyle							= CVARFD ("r_waterstyle", "1", CVAR_ARCHIVE|CVAR_SHADERSYSTEM, "Changes how water, and teleporters are drawn. Possible values are:\n0: fastturb-style block colour.\n1: regular q1-style water.\n2: refraction(ripply and transparent)\n3: refraction with reflection at an angle\n4: ripplemapped without reflections (requires particle effects)\n5: ripples+reflections");
 cvar_t r_slimestyle							= CVARFD ("r_slimestyle", "", CVAR_ARCHIVE|CVAR_SHADERSYSTEM, "See r_waterstyle, but affects only slime. If empty, defers to r_waterstyle.");
 cvar_t r_lavastyle							= CVARFD ("r_lavastyle", "1", CVAR_ARCHIVE|CVAR_SHADERSYSTEM, "See r_waterstyle, but affects only lava. If empty, defers to r_waterstyle.");
@@ -858,6 +871,7 @@ cvar_t vid_desktopgamma						= CVARFD ("vid_desktopgamma", "0",
 
 cvar_t r_fog_cullentities					= CVARD ("r_fog_cullentities", "1", "0: Never cull entities by fog...\n1: Automatically cull entities according to fog.\n2: Force fog culling regardless ");
 cvar_t r_fog_linear							= CVARD ("r_fog_linear", "0", "0: Use Exp/Exp2 fog. 1: Use linear fog.");
+cvar_t r_sourcewater = CVARFD("r_sourcewater", "1", CVAR_ARCHIVE, "Source BSPs: replace Quake's orange water overlay with material distance fog, independent of water warp. Use a subtle blue-green fallback if no material declares fog. 0 restores legacy rendering.");
 cvar_t r_fog_exp2							= CVARD ("r_fog_exp2", "1", "Expresses how fog fades with distance. 0 (matching DarkPlaces's default) is typically more realistic, while 1 (matching FitzQuake and others) is more common.");
 cvar_t r_fog_permutation					= CVARFD ("r_fog_permutation", "1", CVAR_SHADERSYSTEM, "Renders fog using a material permutation. 0 plays nicer with q3 shaders, but 1 is otherwise a better choice.");
 //FTESurf Patch 266: r_fog_permutation only reaches shaders that HAVE a program.
@@ -959,6 +973,7 @@ void GLRenderer_Init(void)
 	Cvar_Register (&gl_dither, GRAPHICALNICETIES);
 	Cvar_Register (&r_fog_cullentities, GRAPHICALNICETIES);
 	Cvar_Register (&r_fog_linear, GLRENDEREROPTIONS);
+	Cvar_Register (&r_sourcewater, GLRENDEREROPTIONS);
 	Cvar_Register (&r_fog_exp2, GLRENDEREROPTIONS);
 	Cvar_Register (&r_fog_permutation, GLRENDEREROPTIONS);
 	Cvar_Register (&r_fog_progless, GLRENDEREROPTIONS);	//FTESurf Patch 266
@@ -1427,6 +1442,9 @@ void Renderer_Init(void)
 
 	Cvar_Register (&r_fastturbcolour, GRAPHICALNICETIES);
 	Cvar_Register (&r_waterstyle, GRAPHICALNICETIES);
+	Cvar_Register (&hl2_water_shaderpolicy, GRAPHICALNICETIES);
+	Cvar_Register (&hl2_dither_alpha_shaderpolicy, GRAPHICALNICETIES);
+	Cvar_Register (&hl2_dither_force_shaderpolicy, GRAPHICALNICETIES);
 	Cvar_Register (&r_lavastyle, GRAPHICALNICETIES);
 	Cvar_Register (&r_slimestyle, GRAPHICALNICETIES);
 	Cvar_Register (&r_telestyle, GRAPHICALNICETIES);
@@ -1950,6 +1968,10 @@ void R_ShutdownRenderer(qboolean devicetoo)
 
 	//make sure the worker isn't still loading stuff
 	COM_WorkerFullSync();
+#ifdef PLUGINS
+	Plug_NativeUI_RendererShutdown(); //owners release while shader/image APIs are live
+	Plug_Mesh_RendererShutdown();
+#endif
 
 	CL_AllowIndependantSendCmd(false);	//FIXME: figure out exactly which parts are going to affect the model loading.
 
@@ -2709,7 +2731,41 @@ qboolean R_BuildRenderstate(rendererstate_t *newr, char *rendererstring)
 
 	rendererstring = COM_Parse(rendererstring);
 	if (*com_token)
-		Q_strncpyz(newr->subrenderer, com_token, sizeof(newr->subrenderer));
+	{
+		//FTESurf Patch 488: THE SUBRENDERER TOKEN IS A DLL NAME, AND A SERVER COULD
+		//CHOOSE IT.  GLInitialise passes it to Sys_LoadLibrary (gl_vidnt.c) and the
+		//Vulkan path passes it straight to LoadLibrary (`*info->subrenderer ?
+		//LoadLibrary(info->subrenderer) : NULL`), so whatever ends up here is native
+		//code inside the client process.  The path filter on the gl_driver branch
+		//beside this one already says why that matters ("don't allow this to contain
+		//paths. that would be too exploitable"), but it never ran on an EXPLICIT
+		//token -- and `setrenderer` is registered with no restriction level, so a
+		//remote server's stufftext reaches R_SetRenderer_f and hands argv(1) here.
+		//Driven: the canary DLL's DllMain ran in the client's pid, and a
+		//non-existent path proved the string reaches LoadLibrary verbatim.
+		//FILTERING ON A PATH SEPARATOR IS NOT ENOUGH: a bare name is also a DLL
+		//name, and LoadLibrary resolves it through the standard search order (which
+		//includes the client's own cwd), so the token is refused whole rather than
+		//screened for slashes.  The caller keeps every renderer it may legitimately
+		//pick -- the renderer NAME above is untouched, and an empty token falls
+		//through to gl_driver and then the system opengl32, so the client still
+		//comes up.  A local console or cfg caller is RESTRICT_LOCAL and is never
+		//insecure, so this costs the user nothing.
+		//NOT gated on vid_renderer's CVAR_SERVEROVERRIDE, deliberately: that would
+		//refuse a LOCAL user's own explicit `setrenderer gl <path>` for as long as a
+		//server held that cvar, and the route it would defend was MEASURED as not
+		//reaching the loader (p482b's B1: the cvar took the path, GLInitialise
+		//printed `Reusing renderer dll`, the canary did not run).  A gate whose cost
+		//is a local false positive, defending a route measured dead, is the wrong
+		//trade; it is in BACKLOG with that measurement and a falsifier instead.
+		if (Cmd_IsInsecure())
+		{
+			Con_Printf("Blocking insecure renderer: %s\n", com_token);
+			*newr->subrenderer = 0;
+		}
+		else
+			Q_strncpyz(newr->subrenderer, com_token, sizeof(newr->subrenderer));
+	}
 	else if (newr->renderer && newr->renderer->rtype == QR_OPENGL)
 	{
 		Q_strncpyz(newr->subrenderer, gl_driver.string, sizeof(newr->subrenderer));
@@ -3041,7 +3097,8 @@ void R_SetRenderer_f (void)
 			Cvar_Set(&vid_bpp, Cmd_Argv(2));
 	}
 
-	if (newr.renderer->rtype != QR_HEADLESS && !strstr(param, "headless"))	//don't save headless in the vid_renderer cvar via the setrenderer command. 'setrenderer headless;vid_restart' can then do what is most sane.
+	//Patch 494: never persisted from an insecure caller -- see vid_renderer.
+	if (newr.renderer->rtype != QR_HEADLESS && !strstr(param, "headless") && !Cmd_IsInsecure())	//don't save headless in the vid_renderer cvar via the setrenderer command. 'setrenderer headless;vid_restart' can then do what is most sane.
 		Cvar_ForceSet(&vid_renderer, param);
 
 	if (!r_blockvidrestart)

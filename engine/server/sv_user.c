@@ -118,10 +118,30 @@ const char *sv_pmpin_names[SV_PMPIN_COUNT] =
 	"ladderangle", "slide"
 };
 
+//Patch 492: the mover a pin's numbers need.  Below fixrampbugs 2, version 1
+//replays them identically, so older verifiers still can.  An engine that
+//pinned 1 at 2 ran other rules (pre-492, or 492's first cut).  0 is no mover:
+//a NaN, which no cvar holds and only an edited file can.  A bump that moves
+//runs below 2 as well edits this.  The name check is here so the verifier,
+//which never fills a pin, makes it too.
+int SV_PMSrcVer(const float *pin)
+{
+	float f = pin[SV_PMPIN_FIXRAMPBUGS];
+	if (strcmp(sv_pmpin_names[SV_PMPIN_FIXRAMPBUGS], "fixrampbugs"))
+		Sys_Error("SV_PMSrcVer: SV_PMPIN_FIXRAMPBUGS is \"%s\"", sv_pmpin_names[SV_PMPIN_FIXRAMPBUGS]);
+	//Reject non-finite pins before the shortcut, even with fast-math enabled.
+	if (IS_NAN(f))
+		return 0;
+	//Patch 538: v3 includes swimming at every ramp setting; retain both old movers.
+	if (pin[0] == 3)
+		return 3;
+	return f >= 2 ? 2 : f < 2 ? 1 : 0;
+}
+
 static void SV_PMPinFill(float *v)
 {
 	float *o = v;
-	*o++ = PMSRC_VERSION;	*o++ = movevars.physicsmode;	*o++ = pmove.pm_type;	*o++ = sv.gamespeed;
+	*o++ = movevars.sourceversion;	*o++ = movevars.physicsmode;	*o++ = pmove.pm_type;	*o++ = sv.gamespeed;
 	*o++ = pmove.player_mins[0];	*o++ = pmove.player_mins[1];
 	*o++ = pmove.player_maxs[0];	*o++ = pmove.player_maxs[1];	*o++ = pmove.capsule;
 	*o++ = sv_maxvelocity.value;	*o++ = pm_trisoup_bevels.value;	*o++ = pm_rotatedboxhulls.value;	*o++ = pm_portalcsg_scanall.value;
@@ -142,6 +162,7 @@ static void SV_PMPinFill(float *v)
 	*o++ = movevars.slide;
 	if (o - v != SV_PMPIN_COUNT)
 		Sys_Error("SV_PMPinFill: %i values for %i names", (int)(o - v), SV_PMPIN_COUNT);
+	v[0] = SV_PMSrcVer(v);
 }
 
 //name=value, %.9g: every float32 round-trips.  Returns 0 if it would not fit.
@@ -236,6 +257,7 @@ int SV_PMPinParse(const char *text, float *v)
 void SV_PMPinApply(const float *v)
 {
 	const float *o = v + 4;
+	movevars.sourceversion = v[0];
 	movevars.physicsmode = v[1];	pmove.pm_type = v[2];
 	pmove.player_mins[0] = *o++;	pmove.player_mins[1] = *o++;
 	pmove.player_maxs[0] = *o++;	pmove.player_maxs[1] = *o++;	pmove.capsule = *o++;

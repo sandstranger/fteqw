@@ -34,6 +34,9 @@ Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
 
 #include "../plugin.h"
 #include "quakedef.h"
+
+//Source MASK_OPAQUE, before movement's contents remap drops MOVEABLE.
+#define VBSP_MASK_LIGHTOPAQUE (0x00000001u|0x00000080u|0x00004000u)
 #ifdef HAVE_CLIENT
 #include "glquake.h"
 #endif
@@ -132,7 +135,7 @@ extern int vmt_stat_addprog, vmt_stat_addpass;	//FTESurf Patch 300
 extern cvar_t *hl2_additivefog;	//FTESurf Patch 300
 extern int vmt_stat_unknown;	//FTESurf Patch 263, materials whose shader class is unimplemented
 extern char vmt_stat_unknown_name[4][64];
-extern char vmt_stat_waterargs[256];	//FTESurf Patch 251
+extern char vmt_stat_waterargs[];	//Water program diagnostics (owned by mat_vmt.c)
 //FTESurf Patch 254: the water material's own fog, for the engine's FOGTYPE_WATER slot.
 extern char  vmt_stat_waterfog[64];
 extern float vmt_stat_waterfogstart, vmt_stat_waterfogend;
@@ -389,6 +392,7 @@ typedef struct dispinfo_s
     pvscache_t pvs; //which pvs clusters this displacement is visible in...
     unsigned int contents;
     unsigned int collflags;	//FTESurf Patch 250: DISPSURF_* -- the mapper's per-displacement collision opt-out.
+    qboolean lightopaque;	//Source MASK_OPAQUE, independent of movement flags/remapping.
     unsigned int width;
     unsigned int height;
     vecV_t *xyz;    //(width+1)*(height+1)
@@ -459,6 +463,8 @@ typedef struct vbspinfo_s
 
 	int				numbrushes;
 	q2cbrush_t		*brushes;
+	qboolean		*brushlightopaque;
+	model_t			*wl_trace_model;	//unregistered world-only light BIH; map-owned
 
 	int				numvisibility;
 	q2dvis_t		*vis;
@@ -1406,6 +1412,8 @@ static void VBSP_LoadColourCorrection(model_t *loadmodel, const qbyte *entdata, 
 	cc_shader[0] = 0;
 	cc_script[0] = 0;
 	cc_n = cc_seen = cc_over = cc_falloff = cc_disabled = cc_volumes = 0;
+	cvarfuncs->SetFloat("hl2_colour_luts", 0);
+	cvarfuncs->SetFloat("hl2_colour_maphue", 0);
 
 	//Cleared even when the feature is off, and this is not defensive noise: the
 	//cvar is machine-set and persists across a map change, so a map with no
@@ -1548,11 +1556,9 @@ static void VBSP_LoadColourCorrection(model_t *loadmodel, const qbyte *entdata, 
 		cc_n++;
 	}
 
-	if (!cc_n)
-	{
-		cvarfuncs->ForceSetString("r_colourcorrection", "");
-		return;
-	}
+	//Patch 538: also generate a screen-only hue program for ungraded maps.
+	//The renderer bypasses neutral/no-LUT programs: no gratuitous FBO pass.
+	cvarfuncs->SetFloat("hl2_colour_luts", cc_n);
 
 	/*
 	THE NAME HAS TO BE CONTENT-DERIVED.  R_LoadShader returns an EXISTING shader
@@ -1573,6 +1579,7 @@ static void VBSP_LoadColourCorrection(model_t *loadmodel, const qbyte *entdata, 
 		if (s)
 			*s = 0;
 	}
+	cvarfuncs->SetFloat("hl2_colour_maphue", !Q_strcasecmp(base, "surf_sidistic") ? 150 : 0);
 	Q_snprintfz(cc_shader, sizeof(cc_shader), "ftesurf/cc/%s_%08x", base, hash);
 
 	/*
@@ -1601,7 +1608,9 @@ static void VBSP_LoadColourCorrection(model_t *loadmodel, const qbyte *entdata, 
 	{
 		char args[256];
 		int k;
-		args[0] = 0;
+		Q_snprintfz(args, sizeof(args), "#MAPHUE=%g", !Q_strcasecmp(base, "surf_sidistic") ? 150.0 : 0.0);
+		if (cc_n)
+			Q_strlcat(args, "#LUT0", sizeof(args));
 		for (k = 0; k < cc_n; k++)
 		{
 			Q_snprintfz(tmp, sizeof(tmp), "#W%i=%f", k, cc_w[k]);
@@ -1844,6 +1853,7 @@ static qboolean VBSP_LoadBrushes (model_t *mod, qbyte *mod_base, vlump_t *l)
 	}
 
 	prv->brushes = plugfuncs->GMalloc(&mod->memgroup, sizeof(*out) * (count+1));
+	prv->brushlightopaque = plugfuncs->GMalloc(&mod->memgroup, sizeof(*prv->brushlightopaque) * (count+1));
 
 	out = prv->brushes;
 
@@ -1859,6 +1869,7 @@ static qboolean VBSP_LoadBrushes (model_t *mod, qbyte *mod_base, vlump_t *l)
 		//FIXME: missing bounds checks
 		out->brushside = &prv->brushsides[LittleLong(in->firstside)];
 		out->numsides = LittleLong(in->numsides);
+		prv->brushlightopaque[i] = !!(LittleLong(in->contents) & VBSP_MASK_LIGHTOPAQUE);
 		out->contents = VBSP_TranslateContentBits(prv, LittleLong(in->contents));
 		VBSP_FinalizeBrush(mod, out);
 	}
@@ -3235,6 +3246,7 @@ static qboolean VBSP_LoadDisplacements (model_t *mod, qbyte *mod_base, vlump_t *
 		out->surf = surf;
 		prv->surfdisp[faceidx] = out;	//the surface needs to be able to get its proper info when building vbos
 		ClearBounds(out->aamin, out->aamax);
+		out->lightopaque = !!(in->contents & VBSP_MASK_LIGHTOPAQUE);
 		out->contents = VBSP_TranslateContentBits(prv,in->contents);
 		//FTESurf Patch 250: only a flags word when the magic bit says so; a bare
 		//minTess is a tessellation level and means no opt-out at all.
@@ -7073,6 +7085,8 @@ there.  The same sharp edge already exists on r_glsl_rtenvsphere (vertexlit.glsl
 :283) and is inherited, not introduced.
 */
 static cvar_t *hl2_lt_fold;
+static cvar_t *hl2_lt_min;
+static cvar_t *hl2_lt_occlusion;
 /*
 FTESurf Patch 233: WHAT IS THIS NAME, AND WILL I EVER SEE IT.
 
@@ -7158,6 +7172,70 @@ static qboolean VBSP_MissReason(model_t *mod, const char *name, char *out, size_
 	else
 		Q_snprintfz(out, outsize, "%i world face(s)", faces);
 	return true;
+}
+
+/* Patch 509: movement's NativeTrace includes the receiver prop itself, omits
+ * NOHULL displacements and obeys movement-only collision switches. Build a
+ * separate world-only tree. No prop shadow meshes or inline movers are present;
+ * this is world occlusion, not Source's full light cache or VRAD shadow scene.
+ */
+static void VBSP_BuildLightBIH(model_t *mod)
+{
+	vbspinfo_t *prv = mod->meshinfo;
+	cmodel_t *sub = &prv->cmodels[0];
+	struct bihleaf_s *leafs, *l;
+	struct bihnode_s *collisionnodes = mod->cnodes;
+	size_t i, j, count = sub->num_brushes;
+
+	if (!prv->numworldlights)
+		return;
+	for (i = 0; i < prv->numdisplacements; i++)
+		count += prv->displacements[i].numindexes/3;
+	leafs = l = plugfuncs->Malloc(sizeof(*l)*(count ? count : 1));
+	for (i = 0; i < (size_t)sub->num_brushes; i++)
+	{
+		q2cbrush_t *b = &prv->brushes[sub->firstbrush+i];
+		if (!prv->brushlightopaque[sub->firstbrush+i])
+			continue;
+		l->type = BIH_BRUSH;
+		l->data.brush = b;
+		l->data.contents = FTECONTENTS_SOLID;
+		VectorCopy(b->absmins, l->mins);
+		VectorCopy(b->absmaxs, l->maxs);
+		l++;
+	}
+	for (i = 0; i < prv->numdisplacements; i++)
+	{
+		dispinfo_t *d = &prv->displacements[i];
+		if (!d->lightopaque || (d->collflags & DISPSURF_NORAY_COLL))
+			continue;
+		for (j = 0; j < d->numindexes; j+=3)
+		{
+			index_t *v = d->cidx+j;
+			l->type = BIH_TRIANGLE;
+			l->data.tri.xyz = d->xyz;
+			l->data.tri.indexes = v;
+			l->data.contents = FTECONTENTS_SOLID;
+			VectorCopy(d->xyz[v[0]], l->mins);
+			VectorCopy(d->xyz[v[0]], l->maxs);
+			AddPointToBounds(d->xyz[v[1]], l->mins, l->maxs);
+			AddPointToBounds(d->xyz[v[2]], l->mins, l->maxs);
+			l++;
+		}
+	}
+	//Build through the real map so all allocations belong to its one memgroup.
+	//Retain only trace fields in a zeroed, unregistered model; never free it alone.
+	prv->wl_trace_model = plugfuncs->GMalloc(&mod->memgroup, sizeof(*prv->wl_trace_model));
+	memset(prv->wl_trace_model, 0, sizeof(*prv->wl_trace_model));
+	modfuncs->BIH_Build(mod, leafs, l-leafs);
+	prv->wl_trace_model->cnodes = mod->cnodes;
+	prv->wl_trace_model->funcs.NativeTrace = mod->funcs.NativeTrace;
+	VectorCopy(mod->mins, prv->wl_trace_model->mins);
+	VectorCopy(mod->maxs, prv->wl_trace_model->maxs);
+	mod->cnodes = collisionnodes;	//movement tree and its contents are unchanged
+	Con_DPrintf("%s: worldlight occluders %u brushes/displacement triangles (no props or movers)\n",
+		mod->name, (unsigned)(l-leafs));
+	plugfuncs->Free(leafs);
 }
 
 static void VBSP_BuildBIHMain(void *ctx, void *unusedp, size_t unuseda, size_t unusedb)
@@ -7469,6 +7547,7 @@ static void VBSP_BuildBIHMain(void *ctx, void *unusedp, size_t unuseda, size_t u
 	}
 
 	modfuncs->BIH_Build(mod, bihleaf, l-bihleaf);
+	VBSP_BuildLightBIH(mod);
 	plugfuncs->Free(bihleaf);
 	plugfuncs->Free(phyprobe);	//FTESurf Patch 262
 	phyprobe = NULL;
@@ -8753,8 +8832,14 @@ static void VBSP_PrepareFrame(model_t *mod, refdef_t *r_refdef, int area, int cl
 			//the right knob for a live A/B within one arm.
 			static int cubelight_live = -1;
 			int wantcube = (hl2_cubelight && hl2_cubelight->ival) ? 1 : 0;
-			if (want != vbsp_vc_live || vbsp_vc_mod != mod || wantsign != dirsign_live || wantdir != bakeddir_live || wantwl != worldlight_live || wantfold != fold_live || wantcube != cubelight_live)
+			static float min_live = -1;
+			static int occlusion_live = -1;
+			float wantmin = hl2_lt_min ? hl2_lt_min->value : 16.0f;
+			int wantocclusion = (hl2_lt_occlusion && hl2_lt_occlusion->ival) ? 1 : 0;
+			if (want != vbsp_vc_live || vbsp_vc_mod != mod || wantsign != dirsign_live || wantdir != bakeddir_live || wantwl != worldlight_live || wantfold != fold_live || wantcube != cubelight_live || wantmin != min_live || wantocclusion != occlusion_live)
 			{
+				occlusion_live = wantocclusion;
+				min_live = wantmin;
 				cubelight_live = wantcube;
 				fold_live = wantfold;
 				worldlight_live = wantwl;
@@ -9791,18 +9876,13 @@ static void VBSP_LoadWorldLights (model_t *mod, qbyte *mod_base, vlump_t *hdr, v
 /*
 FTESurf Patch 302 -- the direct term, added into a six-face cube.
 
-This is AddEmitSurfaceLights (utils/vrad/leaf_ambient_lighting.cpp:92-136) with
-the emitter test generalised from emit_surface to the three local types, and
-VRAD's per-light TestLine visibility replaced by a PVS test.
-
-WHAT THE PVS TEST IS AND IS NOT.  VRAD traces a ray to every light.  We test
-only whether the light's cluster is in the sample point's PVS, which is a
-strictly looser question: light will leak to a point that is around a corner
-but still in the visible set.  It is not a rounding detail -- ungated, the same
-sum at the surf_tensor2 prop comes out 38-55x instead of 4.4-4.8x, because 377
-of the map's lights "reach" that point geometrically and only the ones sharing
-its PVS are real.  So the PVS test is doing nearly all of the work here, and a
-per-light trace is the known next refinement rather than a nicety.
+This generalises AddEmitSurfaceLights (utils/vrad/leaf_ambient_lighting.cpp:92-136)
+from emit_surface to the three local types. Patch 302 originally replaced VRAD's
+TestLine with only a PVS test. That removed most unrelated lights, but a visible
+cluster does not mean an unobstructed light ray: it still leaked around walls.
+Patch 509 keeps PVS as a broadphase, then traces each contributing local light
+against opaque world brushes and ray-collidable displacements. Prop/mover
+shadows and skylight tracing remain outside this world-only approximation.
 */
 /*
 FTESurf Patch 308, the second half: `ignoresuppress`.
@@ -9840,7 +9920,26 @@ is exactly "compile the shader that reads this cube", the cube has no other
 consumer that is ever injected, and one value driving both halves is the Patch 304
 lesson.  hl2_cubelight 0 is therefore bit-for-bit today, including this.
 */
-static void VBSP_AddWorldLightCube (model_t *mod, const vec3_t point, vec3_t cube[6], qboolean ignoresuppress)
+static qboolean VBSP_WorldLightVisible(model_t *mod, const vec3_t point, const struct vworldlight_s *wl)
+{
+	vbspinfo_t *prv = mod->meshinfo;
+	vec3_t end, zero = {0, 0, 0};
+	trace_t tr;
+	if (!hl2_lt_occlusion || !hl2_lt_occlusion->ival)
+		return true;
+	if (!prv->wl_trace_model || !prv->wl_trace_model->funcs.NativeTrace)
+		return false;	//a requested trace must not silently become PVS-only
+	VectorCopy(wl->origin, end);
+	//Surface emitters sit ON their brush: finish outside that face, rather than
+	//blocking on the emitter itself. Do not move the receiving point.
+	if (wl->type == VWL_SURFACE)
+		VectorMA(end, 0.125f, wl->normal, end);
+	prv->wl_trace_model->funcs.NativeTrace(prv->wl_trace_model, 0, NULLFRAMESTATE,
+		NULL, point, end, zero, zero, false, FTECONTENTS_SOLID, &tr);
+	return !tr.startsolid && !tr.allsolid && tr.fraction == 1;
+}
+
+static void VBSP_AddWorldLightCube (model_t *mod, const vec3_t point, vec3_t cube[6], qboolean ignoresuppress, qboolean report)
 {
 	vbspinfo_t	*prv = (vbspinfo_t*)mod->meshinfo;
 	qbyte		*visbits;
@@ -9950,6 +10049,16 @@ static void VBSP_AddWorldLightCube (model_t *mod, const vec3_t point, vec3_t cub
 		ratio = falloff * angle;
 		if (ratio <= 0)
 			continue;
+		{
+			qboolean visible = VBSP_WorldLightVisible(mod, point, wl);
+			if (report)
+				Con_Printf("[lightprobe] light %u %s incident %.6f %.6f %.6f dir %.6f %.6f %.6f\n",
+					(unsigned)i, visible ? "visible" : "blocked",
+					wl->intensity[0]*ratio, wl->intensity[1]*ratio, wl->intensity[2]*ratio,
+					dir[0], dir[1], dir[2]);
+			if (!visible)
+				continue;
+		}
 
 		for (f = 0; f < 6; f++)
 		{
@@ -9988,6 +10097,44 @@ static void VBSP_CubeAlongDir (vec3_t cube[6], const vec3_t dir, vec3_t out)
 			VectorMA(out, w, cube[i*2 + ((dir[i] >= 0)?0:1)], out);
 	}
 }
+static void VBSP_LightProbe_f(void)
+{
+	model_t *mod = vbsp_propstat.mod;
+	vec3_t point, cube[6] = {{0}};
+	char arg[64];
+	int i;
+	if (!mod || cmdfuncs->Argc() != 4)
+	{
+		Con_Printf("hl2_lightprobe x y z -- load a Source map and render a frame first\n");
+		return;
+	}
+	for (i = 0; i < 3; i++)
+	{
+		cmdfuncs->Argv(i+1, arg, sizeof(arg));
+		point[i] = atof(arg);
+	}
+	Con_Printf("[lightprobe] point %.3f %.3f %.3f occlusion %i\n",
+		point[0], point[1], point[2], hl2_lt_occlusion ? hl2_lt_occlusion->ival : 0);
+	VBSP_AddWorldLightCube(mod, point, cube, true, true);
+	for (i = 0; i < 6; i++)
+		Con_Printf("[lightprobe] face %i %.6f %.6f %.6f\n", i, cube[i][0], cube[i][1], cube[i][2]);
+}
+
+//The former scale + desaturate of the base simplifies to a neutral additive lift.
+//res_diffuse is the shader's ambient BASE; res_ambient is its directional range.
+static void VBSP_FloorModelAmbient(vec3_t base, float minimum)
+{
+	float lum = 0.3f*base[0] + 0.59f*base[1] + 0.11f*base[2];
+	int c;
+	if (minimum <= 0 || lum >= minimum)
+		return;
+	if (lum <= 0.001f)
+		VectorSet(base, minimum, minimum, minimum);
+	else
+		for (c = 0; c < 3; c++)
+			base[c] += minimum - lum;
+}
+
 static void VBSP_LightPointValues	(struct model_s *model, const vec3_t point, vec3_t res_diffuse, vec3_t res_ambient, vec3_t res_dir)
 {
 	vbspinfo_t	*prv = (vbspinfo_t*)model->meshinfo;
@@ -10076,7 +10223,7 @@ static void VBSP_LightPointValues	(struct model_s *model, const vec3_t point, ve
 		{
 			for (j = 0; j < 6; j++)
 				VectorCopy(best->rgb[j], lcube[j]);
-			VBSP_AddWorldLightCube(model, point, lcube, false);	//the LEVEL: suppression stands
+			VBSP_AddWorldLightCube(model, point, lcube, false, false);	//the LEVEL: suppression stands
 			rgb = lcube;
 		}
 
@@ -10337,73 +10484,8 @@ static void VBSP_LightPointValues	(struct model_s *model, const vec3_t point, ve
 	setting: near-black leaf ambient renders near-black.  That is only a sensible
 	option now because Patch 152 made the cube itself arrive correct.
 	*/
-	{
-		static cvar_t *minamb;
-		float m, lum;
-		//16, not 64.  This exists so nothing renders pure black, and that is all
-		//it should do.  At 64 it was lifting 486 of surf_666's 653 props and was
-		//effectively the map's lighting -- which it could only be because the
-		//ambient cube was arriving as zeros and, once that was fixed, arriving
-		//un-gamma-encoded and ten times too dark.  With both fixed the real
-		//values average 60/255 and the floor goes back to being a floor.
-		if (!minamb) minamb = cvarfuncs->GetNVFDG("hl2_lt_min", "16", 0, "Minimum model ambient on Source/HL2 maps (0-255), applied by SCALING the colour rather than clamping each channel -- a per-channel clamp desaturates, which is what made every prop in a dim leaf render pale grey. 0 = off.", "");
-		m = minamb->value;
-		if (m > 0)
-		{
-			/*
-			FTESurf Patch 304: WHICH VECTOR THE FLOOR IS ALLOWED TO ASK.
-
-			This floor exists so nothing renders pure black, so it has to key on
-			the darkest value the model will actually show.  Under the legacy fold
-			that is res_ambient, which is the six-face mean and a fair proxy for
-			"how bright is this sample".  Under the split fold res_ambient is the
-			directional AMPLITUDE -- a difference, not a level -- and it is
-			legitimately near zero for a bright, evenly-lit sample.  Reading it
-			there would send a perfectly well-lit prop down the lum<=0.001 branch
-			and clamp it flat to 16, and the lum<m branch would multiply a bright
-			base by m/amp.  The darkest value the split fold can render is base,
-			at w(n)=0, which is res_diffuse -- so that is what it asks.
-
-			Both vectors are still scaled by the SAME factor, which is what keeps
-			base:amp constant and so lifts the level without flattening the
-			shading.  Only the question changes, not the remedy.
-			*/
-			float *level = (hl2_lt_fold && hl2_lt_fold->ival && prv->fold_prop) ? res_diffuse : res_ambient;
-			lum = 0.3f*level[0] + 0.59f*level[1] + 0.11f*level[2];
-			if (lum <= 0.001f)
-			{	//no colour to preserve.
-				VectorSet(res_diffuse, m, m, m);
-				//...but under the split fold the directional half is a difference
-				//that may be perfectly good -- a prop lit hard from one side has a
-				//genuinely black unlit face -- and overwriting it with the floor
-				//would delete the shading instead of flooring it.
-				if (level == res_ambient)
-					VectorSet(res_ambient, m, m, m);
-			}
-			else if (lum < m)
-			{
-				//t is how much of the floor the sample reached, and so how much
-				//of its hue is signal rather than mantissa noise.  Each vector
-				//is desaturated toward ITS OWN post-lift grey, not toward m --
-				//res_diffuse carries the directional term and lands at a
-				//different luminance, and pulling it to the ambient's grey
-				//would flatten the shading as well as the colour.
-				float t = lum/m, k;
-				float ga, gd;
-				int c;
-				VectorScale(res_ambient, m/lum, res_ambient);
-				VectorScale(res_diffuse, m/lum, res_diffuse);
-				ga = 0.3f*res_ambient[0] + 0.59f*res_ambient[1] + 0.11f*res_ambient[2];
-				gd = 0.3f*res_diffuse[0] + 0.59f*res_diffuse[1] + 0.11f*res_diffuse[2];
-				k = 1.0f - t;
-				for (c = 0; c < 3; c++)
-				{
-					res_ambient[c] = res_ambient[c]*t + ga*k;
-					res_diffuse[c] = res_diffuse[c]*t + gd*k;
-				}
-			}
-		}
-	}
+	//Patch 508: floor only the shader base, in both folds. Never scale the range.
+	VBSP_FloorModelAmbient(res_diffuse, hl2_lt_min ? hl2_lt_min->value : 16.0f);
 }
 #else
 static void VBSP_LightPointValues	(struct model_s *model, const vec3_t point, vec3_t res_diffuse, vec3_t res_ambient, vec3_t res_dir)
@@ -10481,7 +10563,7 @@ static void VBSP_LightPointCube(struct model_s *model, const vec3_t point, vec3_
 	//cube, whose anisotropy is too small to see -- which is the whole reason
 	//"the rocks have no bumpmap relief" survived Patch 268 C and Patch 302 both.
 	VBSP_AddWorldLightCube(model, point, res_cube,
-		(hl2_cubelight && hl2_cubelight->ival) ? true : false);
+		(hl2_cubelight && hl2_cubelight->ival) ? true : false, false);
 }
 
 
@@ -10881,7 +10963,7 @@ static qboolean VBSP_LoadModel(model_t *mod, qbyte *mod_base, size_t filelen, ch
 	mod->lightmaps.height = LMBLOCK_SIZE_MAX;
 
 	mod->fromgame = fg_new;
-	mod->engineflags |= MDLF_NEEDOVERBRIGHT;
+	mod->engineflags |= MDLF_NEEDOVERBRIGHT | MDLF_SOURCEBSP;
 	header.version = LittleLong(srcheader->version);
 	for (i=0 ; i<HL2_MAXLUMPS ; i++)
 	{
@@ -11846,7 +11928,7 @@ qboolean VBSP_Init(void)
 		hl2_cubemaps stays MAPLATCH: it decides what VBSP_LoadCubemaps puts in
 		mod->envmaps while the BSP is being read, which no shader flush revisits.
 		*/
-		hl2_water = cvarfuncs->GetNVFDG("hl2_water", "3", CVAR_SHADERSYSTEM, "How Source water is drawn, and what it costs.\n0: flat translucent -- a $fogcolor sheet, no extra scene render, but it still blends and still sorts.\n1: refraction, no reflection -- one extra scene render, and what Source's own cheap water does.\n2: refraction and reflection -- two extra scene renders per batch, which is what shipped before build 10.\n3: dithered flat (default) -- an ordered dither of $fogcolor. Opaque geometry with a discard: no blend, no sort, no render target, and it writes depth, so what is under the water is z-rejected instead of overdrawn. The cheapest of the four.", MAPOPTIONS);
+		hl2_water = cvarfuncs->GetNVFDG("hl2_water", "3", CVAR_SHADERSYSTEM, "How Source water is drawn, and what it costs.\n0: flat translucent -- a $fogcolor sheet, no extra scene render, but it still blends and still sorts.\n1: live refraction with approximate baked-cubemap reflection -- one extra scene render per batch.\n2: live refraction and reflection -- two extra scene renders per batch.\n3: dithered flat (default) -- an ordered dither of $fogcolor. No blend, no sort, no render target; writes depth.\n4: budget animated -- translucent fog-coloured water with normal-map animation and approximate baked-cubemap reflection. No reflection, refraction, depth capture or screen copy; still blends/sorts and does not write depth. Not depth-correct or Source-exact.", MAPOPTIONS);
 		hl2_refract = cvarfuncs->GetNVFDG("hl2_refract", "2", CVAR_SHADERSYSTEM, "How Source's Refract materials (glass, windows) are drawn.\n0: plain translucency, with no framebuffer copy.\n1: Source's refraction, which copies the framebuffer once per batch.\n2: dithered flat (default) -- the pane keeps its own texture, $alpha sets the coverage, and it becomes opaque geometry that writes depth.", MAPOPTIONS);
 		hl2_vertexcolor = cvarfuncs->GetNVFDG("hl2_vertexcolor", "1", CVAR_SHADERSYSTEM, "FTESurf Patch 232: $vertexcolor / $vertexalpha on LightmappedGeneric and WorldVertexTransition materials -- the per-vertex tint and opacity a mapper paints onto a DISPLACEMENT (every other surface carries white at alpha 1, so this cannot change them).\n0: ignore both keys, which is what every build before P232 did.\n1: draw what the material asks for (default). 41 transition materials in 20 maps and 494 LightmappedGeneric ones in 111 maps carry them; surf_rise's ivy is the reported case.", MAPOPTIONS);
 		hl2_bottommaterial = cvarfuncs->GetNVFDG("hl2_bottommaterial", "1", CVAR_SHADERSYSTEM, "FTESurf Patch 233: a water material's $bottommaterial -- the underside of the water -- when the map names one and does not ship it.\n0: leave it unresolved, which is what every build before P233 did; the underside draws with the default wall shader and the map reports a missing material.\n1: draw it as the water material that names it (default). surf_aesthetic's water/clear_beneath is 325 faces and surf_demise's water_tar_beneath 7; neither exists in any pack, in either spelling.", MAPOPTIONS);
@@ -11935,6 +12017,10 @@ qboolean VBSP_Init(void)
 		*/
 		hl2_colourcorrection = cvarfuncs->GetNVFDG("hl2_colourcorrection", "1", CVAR_SHADERSYSTEM, "Source's color_correction entities -- a 32x32x32 lookup table applied to the whole frame, which is how a Source map's author set its colour.  FTE has never applied any of them, so every graded map in the library has been rendering ungraded.\nOnly the global form is implemented (minfalloff/maxfalloff -1, which is the common idiom); a correction with a real distance falloff, and color_correction_volume entirely, are counted and declined in the map's census line.\n0: no grade, the way every build before this one looked.  Live -- it takes effect on the current frame, and 0 is bit-for-bit the ungraded scene.\n1: apply the map's own grade (default).  Going from 0 to 1 needs a map load if the map was loaded with it off, because the shader is generated then.\nFractional values scale the grade: .5 is half of it.", MAPOPTIONS);
 
+		cvarfuncs->GetNVFDG("hl2_colour_hue", "-999", CVAR_ARCHIVE, "Source scene hue rotation in degrees, after the map's LUT. -999 = map default (150 for surf_sidistic, 0 elsewhere); 0 = original hue. Live; HUD is not graded. Set hl2_colour_hue_strength 0 to disable the hue change.", MAPOPTIONS);
+		cvarfuncs->GetNVFDG("hl2_colour_hue_strength", "1", CVAR_ARCHIVE, "Blend strength of the Source hue rotation, clamped 0..1. 0 leaves the authored scene unchanged; 1 applies the full shift.", MAPOPTIONS);
+		cvarfuncs->GetNVFDG("hl2_colour_luts", "0", CVAR_NOSAVE, "Active global Source LUT count for the current map (loader output).", MAPOPTIONS);
+		cvarfuncs->GetNVFDG("hl2_colour_maphue", "0", CVAR_NOSAVE, "Default hue rotation for the current Source map (loader output).", MAPOPTIONS);
 		hl2_additivefog = cvarfuncs->GetNVFDG("hl2_additivefog", "1", CVAR_SHADERSYSTEM, "Draw ADDITIVE Source materials with a real GLSL program, so that fog fades them toward BLACK instead of toward the fog colour.\nA shader with no top-level program gets fixed-function GL fog, which mixes toward GL_FOG_COLOR on RGB and cannot know the surface is additive.  On a gl_one/gl_one sprite the only mask is black -- light_glow02/03.vtf are BGR888 with no alpha channel at all -- so a masked-out texel picks up fogcolour*(1-f) and is then ADDED, and the sprite draws as a flat translucent rectangle instead of a glow.  surf_tensor2 is the reported case: a negative fogstart (-2500) makes its fog factor 0.857 even at zero depth, so the lift is there at every distance.\nOnly ADDITIVE materials move, which is what keeps surf_boreas's cloud layer (Patch 266) out of it -- cloods.vmt has its $additive line commented out and is alpha-blended, so it never enters this path.\n0: keep every additive material on a pass, i.e. the pre-P300 behaviour, fog artefact included.\n1: give them vmt/unlit and the correct fog4additive (default).  1,659 additive UnlitGeneric and 838 additive Sprite materials in the library are eligible.", MAPOPTIONS);
 
 		hl2_twoframes = cvarfuncs->GetNVFDG("hl2_twoframes", "1", CVAR_SHADERSYSTEM, "The DISTANCE-DRIVEN FLIPBOOK on an UnlitTwoTexture material.  comshieldwall.vtf is 31 frames and its proxy chain picks one by how far away you are -- frame 0 inside 120 units, frame 30 beyond 270 -- so a combine shield gets DENSER as you approach and not merely brighter.\nOnly materials that point $basetexture and $texture2 at the SAME file can take it (7 of the 48 in the mounted packs), because a 2DArray sampler has to be filled by a pass and only a one-sampler shader has ever worked here; the rest are counted as declined in the map's census line.\n0: draw frame 0, which is the close-up frame and the right one to be stuck on.\n1: sample the frame the distance asks for (default).", MAPOPTIONS);
@@ -11961,7 +12047,8 @@ qboolean VBSP_Init(void)
 		it.  The menu marks them * for exactly that reason.
 		*/
 		cvarfuncs->GetNVFDG("hl2_lt_baked_scale", "2", 0, "Overbright applied to VRAD's baked static prop lighting. 2 is the same factor gl_overbright already gives the world lightmap and which model lighting has never had; 1 is the raw baked value, as VRAD wrote it.", MAPOPTIONS);
-		cvarfuncs->GetNVFDG("hl2_lt_min", "16", 0, "Minimum model ambient on Source/HL2 maps (0-255), applied by SCALING the colour rather than clamping each channel -- a per-channel clamp desaturates, which is what made every prop in a dim leaf render pale grey. 0 = off.", MAPOPTIONS);
+		hl2_lt_occlusion = cvarfuncs->GetNVFDG("hl2_lt_occlusion", "1", 0, "Trace local worldlights against opaque world brushes and ray-collidable displacements before lighting models. Independent of movement collision. No prop/mover shadows or sky tracing. Live; 0 restores PVS-only lighting for comparison.", MAPOPTIONS);
+		hl2_lt_min = cvarfuncs->GetNVFDG("hl2_lt_min", "16", 0, "Minimum model ambient base on Source/HL2 maps (0-255). Lift only the base toward neutral grey; never amplify the directional light. Live on unbaked props. 0 = off.", MAPOPTIONS);
 		cvarfuncs->GetNVFDG("hl2_lt_scale", "255", 0, "Model-lighting brightness scale, applied after the encode. 255 maps a fully-lit luxel to white.", MAPOPTIONS);
 		cvarfuncs->GetNVFDG("hl2_lt_srgb_mag", "1", 0, "sRGB-encode model lighting (0 = plain linear scale by hl2_lt_scale). Source's ambient cube is LINEAR light and needs a gamma encode to be displayed; a multiply is not one.", MAPOPTIONS);
 		//FTESurf Patch 302.  A plain cvar, not CVAR_MAPLATCH: the lump is loaded
@@ -12013,6 +12100,7 @@ qboolean VBSP_Init(void)
 		{
 			cmdfuncs->AddCommand("hl2_missing", VBSP_Missing_f, "ftesurf (P231): list every material the loaded map failed to resolve, and every one that was found but would not parse. The map-load warning shows the first 24 of the first list; this shows all of both.");
 			cmdfuncs->AddCommand("prop_census", VBSP_PropCensus_f, "ftesurf (P257): what the last frame did with the map's static props -- how many drew, and how many each cull dropped. `prop_census <index>` or `prop_census <part of a model name>` reports one prop's verdict together with the fade, PVS and lighting state behind it. Use it when something is solid but not drawn.");
+			cmdfuncs->AddCommand("hl2_lightprobe", VBSP_LightProbe_f, "Report local direct lights, world occlusion and the six-face direct cube at x y z (linear RGB). No player data or scene changes.");
 			cmdfuncs->AddCommand("vbsp_pvsstat", VBSP_PvsStat_f, "ftesurf (P273): how many entity visibility tests ran since the last call, how many of those fell back to the whole-tree headnode descent, and how many nodes that descent touched. sv_perfdump says the visibility test is ~98% of the server's cost on a big Source map; this says whether the tree descent is why.");
 		}
 

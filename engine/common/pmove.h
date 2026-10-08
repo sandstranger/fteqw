@@ -222,8 +222,11 @@ typedef struct
 
 /* FTESurf Patch 346: bump on ANY change to pm_source.c or the trace layer that can
    alter a trajectory.  Recordings pin it (`pmsrcver` in the pin text); a verifier
-   running a different number cannot vouch for a replay and must say so. */
-#define PMSRC_VERSION 1
+   running a different number cannot vouch for a replay and must say so.
+   Patch 492/538: versions 1/2 retain drift-only water and their original
+   fixrampbugs clip cycle. Live version 3 adds swimming at either ramp setting.
+   SV_PMSrcVer accepts old pins only with their original matching ramp setting. */
+#define PMSRC_VERSION 3
 
 typedef struct {
 	//standard quakeworld
@@ -303,6 +306,7 @@ typedef struct {
 								//cosine below which ladderdampen starts applying.
 	float	slide;				//FTESurf Patch 280. pm_slide: honour func_slide. 0 leaves every slide
 								//physent's flag byte unread, which is the pre-280 mover exactly.
+	int		sourceversion;		//Patch 538: live serverinfo or replay pmsrcver. <3 retains the old water drift.
 } movevars_t;
 
 #define PHYSMODE_QUAKEWORLD	0

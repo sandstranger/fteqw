@@ -399,7 +399,8 @@ typedef struct
 typedef struct	//for huds and menus alike
 {
 	F(qboolean,	GetVideoSize,	(float *vsize, unsigned int *psize));	//returns false if there's no video yet...
-	//note: these use handles instead of shaders, to make them persistent over renderer restarts.
+	//Shader-table references: release each successful load once, reacquire after UpdateVideo.
+	//Renderer restarts invalidate them; freed slots may be reused (not generation-safe).
 	F(qhandle_t,LoadImageData,	(const char *name, const char *mime, void *data, size_t datasize));	//load/replace a named texture
 	F(qhandle_t,LoadImageShader,(const char *name, const char *defaultshader));	//loads a shader.
 	F(qhandle_t,LoadImage,		(const char *name));	//wad image is ONLY for loading out of q1 gfx.wad. loads a shader. use gfx/foo.lmp for hud stuff.
@@ -447,6 +448,135 @@ typedef struct	//for huds and menus alike
 	} media;
 #define plug2dfuncs_name "2D"
 } plug2dfuncs_t;
+
+//Separate exact-size ABI. All calls are main-thread, inside a host plugin callback.
+//Physical top-left pixels, half-open clip bounds, normalized UVs, straight RGBA8.
+//Tokens belong to the calling plugin; release/restart/unload permanently invalidate them.
+#define plugmeshfuncs_name "2DMesh/1"
+
+//ExportInterface: one trusted synchronous service; no QC pointers cross the ABI.
+//Open/Close allocate/release only. Draw must not reenter the engine or retain frame
+//pointers. Only main-framebuffer indexed 2D is supported; no input/widget ABI.
+#define PLUGUI_VERSION 1u
+#define PLUGUI_CAP_INDEXED2D 1u
+#define PLUGUI_VM_MENU 1u
+#define PLUGUI_VM_CLIENT 2u
+#define PLUGUI_CLOSE_EXPLICIT 1u
+#define PLUGUI_CLOSE_VM 2u
+#define PLUGUI_CLOSE_PLUGIN 3u
+#define PLUGUI_CLOSE_RENDERER 4u
+#define PLUGUI_CLOSE_FAILED 5u
+typedef struct
+{
+	unsigned int vm, owner, generation;
+} pluguiowner_t;
+typedef struct
+{
+	unsigned int structsize;
+	pluguiowner_t owner;
+	unsigned int frame;
+	float virtualwidth, virtualheight, pixelwidth, pixelheight;
+	float clip[4]; //physical top-left half-open left/top/right/bottom
+} pluguiframe_t;
+typedef struct
+{
+	unsigned int structsize, version, capabilities;
+	//Open may allocate partially on failure: Close is called even when false.
+	F(qboolean, Open, (const pluguiowner_t *owner));
+	//Only called from explicit QC dispatch inside the frontend draw callback.
+	//False releases this owner and lets QC render its legacy fallback immediately.
+	F(qboolean, Draw, (const pluguiframe_t *frame));
+	F(void, Close, (const pluguiowner_t *owner, unsigned int reason));
+} pluguiservice_t;
+#define pluguiservice_name "NativeUI/1"
+
+//Optional additive transport. No engine input interception; QC owns routing.
+#define PLUGUI_INPUT_VERSION 1u
+#define PLUGUI_INPUT_CAP_EVENTS 1u
+#define PLUGUI_INPUT_MAX_EVENTS 128u
+#define PLUGUI_INPUT_MAX_ACTIONS 16u
+#define PLUGUI_INPUT_MOUSEPOS 1u
+#define PLUGUI_INPUT_BUTTON 2u
+#define PLUGUI_INPUT_WHEEL 3u
+#define PLUGUI_INPUT_KEY 4u
+#define PLUGUI_INPUT_TEXT 5u
+#define PLUGUI_INPUT_RESET 6u
+//Compact navigation key ids, not engine/platform scancodes.
+#define PLUGUI_KEY_TAB 1u
+#define PLUGUI_KEY_LEFT 2u
+#define PLUGUI_KEY_RIGHT 3u
+#define PLUGUI_KEY_UP 4u
+#define PLUGUI_KEY_DOWN 5u
+#define PLUGUI_KEY_HOME 6u
+#define PLUGUI_KEY_END 7u
+#define PLUGUI_KEY_PAGEUP 8u
+#define PLUGUI_KEY_PAGEDOWN 9u
+#define PLUGUI_KEY_BACKSPACE 10u
+#define PLUGUI_KEY_DELETE 11u
+#define PLUGUI_KEY_ENTER 12u
+#define PLUGUI_KEY_ESCAPE 13u
+#define PLUGUI_KEY_SPACE 14u
+#define PLUGUI_KEY_CTRL 15u
+#define PLUGUI_KEY_SHIFT 16u
+#define PLUGUI_KEY_ALT 17u
+#define PLUGUI_KEY_SUPER 18u
+#define PLUGUI_KEY_MAX PLUGUI_KEY_SUPER
+
+typedef struct
+{
+	unsigned int structsize, type;
+	float a, b;
+} pluguiinputevent_t;
+typedef struct
+{
+	unsigned int id, generation;
+	float value;
+} pluguiaction_t;
+typedef struct
+{
+	unsigned int structsize, version, capabilities;
+	F(qboolean, Input, (const pluguiowner_t *owner, const pluguiinputevent_t *event));
+	//False means empty. Invalid nonempty results cause host owner release.
+	F(qboolean, Poll, (const pluguiowner_t *owner, pluguiaction_t *action));
+} pluguiinputservice_t;
+#define pluguiinputservice_name "NativeUIInput/1"
+#define PLUGMESH_MAX_VERTICES 16384
+#define PLUGMESH_MAX_INDICES 65535
+#define PLUGMESH_MAX_COMMANDS 128
+#define PLUGMESH_MAX_TEXTURES 32
+#define PLUGMESH_MAX_TEXTURE_BYTES (32u*1024u*1024u)
+typedef quint64_t plugmeshtex_t;
+typedef struct
+{
+	float xy[2], uv[2];
+	qbyte rgba[4];
+} plugmeshvertex_t;
+typedef struct
+{
+	plugmeshtex_t texture;
+	float clip[4]; //left, top, right, bottom (empty is allowed)
+	unsigned int firstindex, indexcount, vertexoffset;
+} plugmeshcommand_t;
+typedef struct
+{
+	size_t structsize;
+	const plugmeshvertex_t *vertices;
+	const unsigned int *indices; //32-bit indices, relative to each command's vertexoffset
+	const plugmeshcommand_t *commands;
+	unsigned int numvertices, numindices, numcommands;
+} plugmeshbatch_t;
+typedef struct
+{
+	F(qboolean, GetVideoSize, (float *vsize, unsigned int *psize));
+	//Immutable raw RGBA8; exact width*height*4 bytes, <=4096 per axis, budget above.
+	//Host global cap is 256 textures / 128 MiB. Filtering is linear, clamped, no mips.
+	F(plugmeshtex_t, CreateTextureRGBA, (unsigned int width, unsigned int height, const qbyte *rgba, size_t bytes));
+	F(qboolean, DestroyTexture, (plugmeshtex_t texture));
+	//Call only in a 2D drawing callback (not Tick). Native callers are trusted code.
+	//Synchronous: no retained caller pointers. Validate the WHOLE batch before drawing.
+	//Flushes existing 2D work; caller colour/blend/clip remain owned by the caller.
+	F(qboolean, Submit, (const plugmeshbatch_t *batch));
+} plugmeshfuncs_t;
 
 #if defined(FTEENGINE) || defined(FTEPLUGIN)
 struct entity_s;

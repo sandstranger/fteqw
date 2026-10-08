@@ -1765,6 +1765,29 @@ char *Cmd_AliasExist(const char *name, int restrictionlevel)
 	return NULL;
 }
 
+//Returns the execlevel the named alias's body must run at, or 0 -- which is the
+//alias table's own spelling of "the caller's level" (Cmd_Alias_f sets 0 for a
+//locally created alias and RESTRICT_SERVER for a server-created one, and
+//Cmd_ExecuteString's alias branch resolves it the same way).
+//A caller that has just fetched the body through Cmd_AliasExist cannot distinguish
+//"no such alias" from "run at my level", and does not need to.
+//Matching is !strcmp, deliberately the same as Cmd_AliasExist: two lookups of one
+//name that could disagree would be worse than either.
+int Cmd_AliasExecLevel(const char *name, int restrictionlevel)
+{
+	cmdalias_t	*a;
+	for (a = cmd_alias ; a ; a=a->next)
+	{
+		if (!strcmp(name, a->name))
+		{
+			if ((a->restriction?a->restriction:rcon_level.ival) > restrictionlevel)
+				return 0;	//not at this level...
+			return a->execlevel;
+		}
+	}
+	return 0;
+}
+
 static void Cmd_AliasLevel_f (void)
 {
 	cmdalias_t	*a;
@@ -4280,6 +4303,17 @@ static void Cmd_toggle_f(void)
 	v = Cvar_Get(Cmd_Argv(1), "0", 0, "Custom variables");
 	if (!v)
 		return;
+	//Patch 494: the checks `set` and `inc` make; toggle had neither.
+	if (v->flags & CVAR_NOTFROMSERVER && Cmd_IsInsecure())
+	{
+		Con_Printf ("Server tried setting %s cvar\n", v->name);
+		return;
+	}
+	if (v->flags & CVAR_NOSET)
+	{
+		Con_Printf ("variable %s is readonly\n", v->name);
+		return;
+	}
 
 	if (Cmd_Argc() >= 3)
 	{
@@ -4651,7 +4685,13 @@ static void Cmd_WriteConfig_f(void)
 
 		if (!strncmp(fname, "data/", 5) || !strncmp(fname, "cfg/", 4))
 			nohidden = true;	//we're writing to a dir mods may potentially read (see QC_FixFileName). don't write any settings they're not allowed to see.
-		else if (Cmd_IsInsecure())
+		//that exemption restricts the CONTENT of the file, it is not a grant of
+		//PERMISSION to write one: as an else-if it meant a data/ or cfg/ path never
+		//reached this test, so a server's stufftext could write a config there --
+		//and data/ is where the gamecode reads its own data files from.  Strict, to
+		//match the cfg_save branch below: one command, one permission rule.
+		//(Patch 483)
+		if (Cmd_IsInsecure())
 		{
 			Con_Printf ("%s %s: not allowed\n", Cmd_Argv(0), Cmd_Args());
 			return;

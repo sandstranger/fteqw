@@ -142,6 +142,8 @@ static qboolean BIH_BoundsIntersect (const vec3_t mins1, const vec3_t maxs1, con
 		}
 
 #define	DIST_EPSILON	(0.03125)
+int bih_sourceclip;	//Patch 492: Source's clip rules, set by the Source mover (see BIH_ClipBoxToBrush)
+#define NEVER_UPDATED	-9999	//Patch 492: Source's "no enter plane yet", where Quake 2 has -1
 /*static void BIH_ClipBoxToPlanes (struct bihtrace_s *fte_restrict tr, vec3_t plmins, vec3_t plmaxs, const mplane_t *plane, int numplanes, const q2csurface_t *surf)
 {
 	int			i, j;
@@ -970,6 +972,25 @@ static void BIH_TestToTriangle(struct bihtrace_s *fte_restrict tr, const struct 
 }
 
 #if defined(Q2BSPS) || defined(Q3BSPS)
+/*FTESurf Patch 492: Source's brush test, set by the Source mover around its own
+  traces (PMSrc_PlayerMove) when movevars.fixrampbugs >= 2, so a replay of an
+  older recording traces exactly as it was recorded.  Three rules differ from
+  the Quake 2 code below; each was the first tick a Momentum recording of
+  surf_voyager disagreed with us (ENGINE_PATCHES.md, Patch 492):
+   - the early-out is "both ends in front of the face", not "moving away";
+   - a hit is decided on the DIST_EPSILON-adjusted enter/leave fractions, and
+     an enter counts once it is above NEVER_UPDATED, not -1: a box starting
+     inside the epsilon on a short move gets an enter below -1, which Quake 2's
+     test skipped (ending the move inside the brush) and Source takes at 0;
+   - a brush compares its unclamped enter strictly and is clamped to 0 after,
+     as Source's is, so of two brushes the box starts inside the epsilon of,
+     the later tested wins.
+  It compares against truefraction, which a brush sets to its adjusted enter, so
+  among brushes that is Source's own test; triangles, patches and embedded models
+  keep Quake 2's test on their true fractions, and the two meet on the one number
+  the tree also culls by.  Source's displacement rules for them are BACKLOG.
+  A global, not a trace flag: the mover's traces run on the main thread and
+  nothing else traces while it does. */
 static void BIH_ClipBoxToBrush (struct bihtrace_s *fte_restrict tr, const q2cbrush_t *brush)
 {
 	int			i, j;
@@ -983,7 +1004,7 @@ static void BIH_ClipBoxToBrush (struct bihtrace_s *fte_restrict tr, const q2cbru
 	q2cbrushside_t	*side, *leadside;
 
 	float nearfrac=0;
-	enterfrac = -1;
+	enterfrac = bih_sourceclip ? NEVER_UPDATED : -1;
 	leavefrac = 2;
 	clipplane = NULL;
 
@@ -1009,7 +1030,7 @@ static void BIH_ClipBoxToBrush (struct bihtrace_s *fte_restrict tr, const q2cbru
 			startout = true;
 
 		// if completely in front of face, no intersection
-		if (d1 > 0 && d2 >= d1)
+		if (bih_sourceclip ? (d1 > 0 && d2 > 0) : (d1 > 0 && d2 >= d1))
 			return;
 
 		if (d1 <= 0 && d2 <= 0)
@@ -1018,7 +1039,7 @@ static void BIH_ClipBoxToBrush (struct bihtrace_s *fte_restrict tr, const q2cbru
 		// crosses face
 		if (d1 > d2)
 		{	// enter
-			f = (d1) / (d1-d2);
+			f = bih_sourceclip ? (d1-DIST_EPSILON) / (d1-d2) : (d1) / (d1-d2);
 			if (f > enterfrac)
 			{
 				enterfrac = f;
@@ -1029,7 +1050,7 @@ static void BIH_ClipBoxToBrush (struct bihtrace_s *fte_restrict tr, const q2cbru
 		}
 		else
 		{	// leave
-			f = (d1) / (d1-d2);
+			f = bih_sourceclip ? (d1+DIST_EPSILON) / (d1-d2) : (d1) / (d1-d2);
 			if (f < leavefrac)
 				leavefrac = f;
 		}
@@ -1042,12 +1063,14 @@ static void BIH_ClipBoxToBrush (struct bihtrace_s *fte_restrict tr, const q2cbru
 			tr->trace.allsolid = true;
 		return;
 	}
-	if (enterfrac <= leavefrac)
+	if (bih_sourceclip ? enterfrac < leavefrac : enterfrac <= leavefrac)
 	{
-		if (enterfrac > -1 && enterfrac <= tr->trace.truefraction)
+		if (enterfrac > (bih_sourceclip ? NEVER_UPDATED : -1) && (bih_sourceclip ? enterfrac < tr->trace.truefraction : enterfrac <= tr->trace.truefraction))
 		{
 			if (enterfrac < 0)
 				enterfrac = 0;
+			if (bih_sourceclip)
+				nearfrac = enterfrac;	//already pulled back by DIST_EPSILON
 
 			tr->trace.fraction = nearfrac;
 			tr->trace.truefraction = enterfrac;

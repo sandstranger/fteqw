@@ -352,6 +352,25 @@ qboolean Material_RegisterLoader(void *module, plugmaterialloaderfuncs_t *driver
 	}
 }
 
+//Native query: a downloaded CSQC must not infer mode 4 from a plugin cvar.
+qboolean R_HL2WaterBudgetSupported(void)
+{
+	size_t l;
+	const struct sbuiltin_s *progs;
+
+	if (qrenderer != QR_OPENGL || !sh_config.progs_supported)
+		return false;
+	for (l = 0; l < materialloader_count; l++)
+	{
+		if (!materialloader[l].funcs || !materialloader[l].funcs->builtinshaders)
+			continue;
+		for (progs = materialloader[l].funcs->builtinshaders; *progs->name; progs++)
+			if (progs->qrtype == QR_OPENGL && !strcmp(progs->name, "vmt/waterbudget"))
+				return true;
+	}
+	return false;
+}
+
 //===========================================================================
 
 static qboolean Shader_EvaluateCondition(shader_t *shader, const char **ptr)
@@ -3796,7 +3815,7 @@ static qboolean Shaderpass_MapGen (parsestate_t *ps, shaderpass_t *pass, char *t
 	}
 	else if (!Q_stricmp (tname, "$refractiondepth"))
 	{
-		shader->flags |= SHADER_HASREFRACT;
+		shader->flags |= SHADER_HASREFRACT|SHADER_HASREFRACTDEPTH;
 		pass->texgen = T_GEN_REFRACTIONDEPTH;
 	}
 	else if (!Q_stricmp (tname, "$ripplemap"))
@@ -9391,6 +9410,7 @@ void Shader_DoReload(void)
 		live++;
 		ps.s = s;
 		ps.saveshaderbody = NULL;
+		oldsort = s->sort;
 
 		strcpy(cleanname, s->name);
 		argsstart = *cleanname?strchr(cleanname+1, '#'):NULL;
@@ -9406,22 +9426,24 @@ void Shader_DoReload(void)
 				char drivername[MAX_QPATH];
 				Q_snprintfz(drivername, sizeof(drivername), sh_config.shadernamefmt, cleanname);
 				if (Shader_ParseShader(&ps, drivername))
-					continue;
+					goto sortcheck;
 			}
 			if (Shader_ParseShader(&ps, cleanname))
-				continue;
+				goto sortcheck;
 			if (strcmp(cleanname, shortname))
 				if (Shader_ParseShader(&ps, shortname))
-					continue;
+					goto sortcheck;
 		}
 		if (s->generator)
 		{
 			regenerated++;
-			oldsort = s->sort;
 			Shader_Regenerate(&ps, shortname);
-			if (s->sort != oldsort)
-				resort = true;
 		}
+	sortcheck:
+		//Material loaders and shader files can change sort too. Their early
+		//continues left live water/glass batches in the old world bucket.
+		if (s->sort != oldsort)
+			resort = true;
 	}
 
 	TRACE(("Resorting shaders\n"));

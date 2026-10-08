@@ -8397,6 +8397,14 @@ static qboolean check_pext2_vrinputs		(extcheck_t *extcheck) {return !!(extcheck
 static qboolean check_notrerelease		(extcheck_t *extcheck) {return !extcheck->world->remasterlogic;}
 //static qboolean check_rerelease			(extcheck_t *extcheck) {return !!extcheck->world->remasterlogic;}
 
+#ifdef HAVE_CLIENT
+static qboolean check_hl2_waterbudget(extcheck_t *extcheck)
+{
+	(void)extcheck;
+	return R_HL2WaterBudgetSupported();
+}
+#endif
+
 #define NOBI NULL, 0,{NULL},
 qc_extension_t QSG_Extensions[] = {
 	//these don't have well-defined names...
@@ -8563,6 +8571,9 @@ qc_extension_t QSG_Extensions[] = {
 	{"FTE_CSQC_RAWIMAGES",				NULL,	2,{"r_uploadimage","r_readimage"}, "Provides raw rgba image access to csqc. With this, the csprogs can read textures into qc-accessible memory, modify it, and then upload it to the renderer."},
 	{"FTE_CSQC_RENDERTARGETS",			NULL,	0,{NULL}, "VF_RT_DESTCOLOUR exists and can be used to redirect any rendering to a texture instead of the screen."},
 	{"FTE_CSQC_REVERB",					NULL,	1,{"setup_reverb"}, "Specifies that the mod can create custom reverb effects. Whether they will actually be used or not depends upon the sound driver."},
+#ifdef HAVE_CLIENT
+	{"FTE_CSQC_HL2_WATER_BUDGET", check_hl2_waterbudget, 0,{NULL}, "Local programmable OpenGL renderer has the live hl2_water policy and a loaded material loader providing vmt/waterbudget. Mode 4 needs no scene captures; availability is not a driver-compilation guarantee."},
+#endif
 	{"FTE_CSQC_WINDOWCAPTION",			NULL,	1,{"setwindowcaption"}, "Provides csqc with the ability to change the window caption as displayed when running windowed or in the task bar when switched out."},
 	{"FTE_ENT_SKIN_CONTENTS",			NULL,	0,{NULL}, "self.skin = CONTENTS_WATER; makes a brush entity into water. use -16 for a ladder."},
 	{"FTE_ENT_UNIQUESPAWNID"},
@@ -8597,6 +8608,7 @@ qc_extension_t QSG_Extensions[] = {
 #endif
 #ifdef PSET_SCRIPT
 	{"FTE_PART_SCRIPT",					NULL,	0,{NULL}, "Specifies that the r_particledesc cvar can be used to select a list of particle effects to load from particles/foo.cfg, the format of which is documented elsewhere."},
+	{"FTE_PART_TEXANIM",					NULL,	0,{NULL}, "The scripted particle backend supports bounded single-channel arbitrary UV texframe duration/rectangle tables and texanim static/lifetime/loop/clamp [rate]. This is syntax availability, not a claim that the scripted backend is currently selected."},
 	{"FTE_PART_NAMESPACES",				NULL,	0,{NULL}, "Specifies that the engine can use foo.bar to load effect foo from particle description bar. When used via ssqc, this should cause the client to download whatever effects as needed."},
 #ifdef HAVE_LEGACY
 	{"FTE_PART_NAMESPACE_EFFECTINFO",	NULL,	0,{NULL}, "Specifies that effectinfo.bar can load effects from effectinfo.txt for DP compatibility."},

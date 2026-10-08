@@ -322,7 +322,9 @@ static cvar_t fs_automount_spec		= CVARFD	("fs_automount_spec", "", CVAR_NOSAVE,
 static cvar_t fs_hdmodels			= CVARFD	("fs_hdmodels", "0", CVAR_ARCHIVE, "nettest: prefer Half-Life's high-definition model pack. Mounts the \"<game>_hd\" sibling of every fs_addons.txt game just ABOVE that game, so valve_hd/bshift_hd override valve/bshift. Needs an fs_restart to take effect.");
 static cvar_t fs_noreexec			= CVARD		("fs_noreexec", "0", "Disables automatic re-execing configs on gamedir switches.\nThis means your cvar defaults etc may be from the wrong mod, and cfg_save will leave that stuff corrupted!");
 static cvar_t cfg_reload_on_gamedir = CVAR		("cfg_reload_on_gamedir", "1");
-static cvar_t fs_game				= CVARAFCD	("fs_game"/*q3*/, "", "game"/*q2/qs*/, CVAR_NOSAVE|CVAR_NORESET, fs_game_callback, "Provided for Q2 compat. Contains the subdir of the current mod.");
+//Patch 494: NOTFROMSERVER -- the callback re-issues `gamedir` at RESTRICT_LOCAL, so a
+//server setting this cvar walked around Patch 485's gate on `gamedir` itself.
+static cvar_t fs_game				= CVARAFCD	("fs_game"/*q3*/, "", "game"/*q2/qs*/, CVAR_NOSAVE|CVAR_NORESET|CVAR_NOTFROMSERVER, fs_game_callback, "Provided for Q2 compat. Contains the subdir of the current mod.");
 static cvar_t fs_gamepath			= CVARAFD	("fs_gamepath"/*q3ish*/, "", "fs_gamedir"/*q2*/, CVAR_NOUNSAFEEXPAND|CVAR_NOSET|CVAR_NOSAVE, "Provided for Q2/Q3 compat. System path of the active gamedir.");
 static cvar_t fs_basepath			= CVARAFD	("fs_basepath"/*q3*/,    "", "fs_basedir"/*q2*/, CVAR_NOUNSAFEEXPAND|CVAR_NOSET|CVAR_NOSAVE, "Provided for Q2/Q3 compat. System path of the base directory.");
 static cvar_t fs_homepath			= CVARAFD	("fs_homepath"/*q3ish*/, "", "fs_homedir"/*q2ish*/, CVAR_NOUNSAFEEXPAND|CVAR_NOSET|CVAR_NOSAVE, "Provided for Q2/Q3 compat. System path of the base directory.");
@@ -6214,6 +6216,18 @@ void FS_ReloadPackFiles(void)
 
 static void FS_ReloadPackFiles_f(void)
 {
+	//FTESurf Patch 485: refuse an insecure caller.  Registered with no restriction
+	//level, and it rebuilds the whole filesystem from an arbitrary flag word.  The
+	//mod's own sv_player.qc calls it "the single most expensive command in the
+	//build" and notes the dangling-bucket crash this file documents, so one stuffed
+	//line is a denial of service before it is anything else.  Every internal caller
+	//re-queues it at RESTRICT_LOCAL and is unaffected.
+	if (Cmd_IsInsecure())
+	{
+		Con_Printf("Blocking insecure command: %s %s\n", Cmd_Argv(0), Cmd_Args());
+		return;
+	}
+
 	if (Sys_LockMutex(fs_thread_mutex))
 	{
 		if (*Cmd_Argv(1))
@@ -8753,6 +8767,22 @@ static void FS_ChangeGame_f(void)
 	if (cmd_blockwait)
 		return;
 
+	//RELOCATED, not added: this test used to sit BELOW the two forms that RETURN, so
+	//neither ever reached it and a server's stufftext could switch to any installed
+	//mod by index, or drive FS_ModInstall -- which switches to an already-installed
+	//mod with no prompt at all.  Strict, like FS_RefuseInsecure and Patch 481's fs_*
+	//gates, and for the reason 481's own comment gives: a server's stufftext and a
+	//csprogs/menu localcmd BOTH run at INSECURE and these macros cannot tell them
+	//apart.  So QC loses fs_changegame too; typed or exec'd locally it is unchanged
+	//(RESTRICT_LOCAL).  Do NOT narrow this with !Cmd_FromGamecode(): the levels are
+	//ordered LOCAL 29 < INSECURE 30 < SERVER 31, so that reads as "block untrusted,
+	//allow QC" and means "block QC, allow the server" -- measured, Patch 483.
+	if (Cmd_IsInsecure())
+	{
+		Con_Printf("Blocking insecure command: %s %s\n", Cmd_Argv(0), Cmd_Args());
+		return;
+	}
+
 	if ((i = strtol(arg, &end, 10)) && !*end)
 	{	//for use by qc. loading mods by number...
 		mod = Mods_GetMod(--i);
@@ -8784,11 +8814,8 @@ static void FS_ChangeGame_f(void)
 		FS_ModInstall(arg, Cmd_Argv(2));
 		return;
 	}
-	else if (Cmd_IsInsecure())
-	{
-		Con_Printf("Blocking insecure command: %s %s\n", Cmd_Argv(0), Cmd_Args());
-		return;
-	}
+	//the Cmd_IsInsecure() branch that stood here is now unreachable: the same
+	//test runs before the two early-return forms above.
 	else if (!*arg)
 	{
 		Con_Printf("Valid games/mods are:\n");
