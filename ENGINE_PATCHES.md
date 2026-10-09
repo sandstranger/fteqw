@@ -40232,3 +40232,121 @@ no bad binary/tag was published or deployed.
 
 Claim 600 after fetching both origins: concurrent verifier P599 is preserved;
 disposable p599/P599 probe markers remain for preregistered evidence continuity.
+
+## Patch 602 — bind new ranked PASS observations to the indexed finish ticks *(SURFD ONLY)*
+
+**Problem.** Filing checks the claimed ticks against the replay's filename and
+identity header, but neither proves that those ticks are the finish pm_verify
+reproduced. The sweeper could attach a trajectory PASS to a different indexed
+ranking duration. Real POST/file/SQLite/public-board synthetic controls demonstrate
+this on the untouched baseline; a clean matching-time arm positively verifies.
+
+**Change.** Select the replay's indexed ticks with each pending observation. Parse
+the actual engine's bounded `ticks N rows N` PASS payload; for finished ranked
+runs, compare confirmed finish ticks to the index. Disagreement stores HOLD while
+retaining measured ticks and counts. Unusable/ambiguous/out-of-range duration is
+retryable ERROR with unknown ticks and no counts snapshot, not an accusation.
+Evidence-only abandon promotion, source/header/stage checks, ERROR budget,
+refile/recheck/tie and owner-review precedence remain intact. Historical PASSes
+and approvals are not reread or revoked. No schema, engine/QC/format/detector,
+config, pin/tag, progs or Build change.
+
+**Verified.** Nine focused integration tests: five failures on the baseline, zero
+on the subject; honest/mismatched durations, present/fileless arrival, malformed
+output, grouped independence, unchanged HOLD/REFUSE, header mismatch, approval
+precedence and abandoned evidence all act. Existing sweep/counts/source suites
+pass; the counts fixture now uses its indexed 662 ticks rather than unrelated
+100. Fresh read-only independent review: no findings. Full Linux70 pass. Actual
+Windows70 programs retain only the two pre-existing admin UDP/amplification
+assertions; an initial nonexistent extra tooling path was a boundary-script error,
+not a product failure. Strict owned Python compilation adds zero warnings.
+Immutable copied corpus269 rec/91 view: baseline and subject170 faulted files /
+173 faults, no increase. Native Pi pm_verify on an owned port confirms one
+existing recording PASS with parseable matching duration; not physics/detector
+calibration. Selected deployment/provenance and limits: FTESurf tools/p602finish.md.
+
+**DEPLOYED 2026-10-08T20:27:40Z.** Exact published product a4a75be; sweep and two
+controls only, under the canonical sweep lock. Three destination SHA256s match;
+actual installed finish9/counts7/sources15 pass in temporary homes. Completed
+mode600 SQLite/source rollback retained. All137 protected source/support/game
+files, verdict/review/receipt history, scalar board/replay counts, original web
+master/worker and health12 unchanged. No reload, historical reread, Windows game,
+engine/progs/config or Build swap. Source publication and installation are distinct
+proofs; this surfd-only entry does not move engine pin/tag or claim detector
+calibration. Full public-safe hashes/limits: FTESurf tools/p602finish.md.
+
+## Patch 601 — counted native widget/model snapshots, diagnostic owners only
+
+Reserved before concurrent Patch 602; entries remain immutable and numbered once.
+
+**Problem.** Owner generations alone cannot distinguish actions from a renamed,
+reordered or deleted snapshot row. The scalar diagnostic gallery has no copied QC
+model contract; migration would otherwise invent pointer/index/label authority.
+
+**Change.** Add copied optional `NativeUIModel/1` from the same draw/input provider.
+Draw-bracketed QC begin/widget/commit publishes a counted immutable snapshot:
+64 text/button/checkbox widgets, positive exact widget/row/revision IDs, unique
+widget IDs, 95-byte valid UTF-8 labels rendered without ImGui label-ID parsing.
+Staging failures poison the transaction; revisions strictly increase per owner.
+Host/plugin deep-copy, replace atomically, reset queued/held input and pending
+actions, and revoke poll authority until redraw. Typed actions bind owner
+generation, model revision, widget and row; host validates membership/type/value.
+Malformed callback results/failure release once to covering QC fallback. No native
+commands, production panel/input route, preference/default, progs/install/Pi,
+release or Build-number change. Existing draw/input ABIs stay unchanged.
+
+**Verified.** Real host: 463 model plus 172 passive assertions, zero failed.
+Actual plugin/ImGui/adapter: 184 model assertions per 16/32-bit index arm, zero
+failed, including actual button/checkbox clicks and queued/held/unpolled stale
+controls. Existing input regressions: 929 host and 700 interactive plus 109
+passive assertions per relevant arm, zero failed. Real MQC/CSQC runtime at two
+virtual scales, absent plugin and older draw/input-only hosts: 42 screenshots,
+zero failed; 21 grader falsifiers pass. QC production and diagnostic programs
+compile with zero warnings; native controlled units use -Werror. Full engine
+compiler stages complete; serial retry resolves transient untouched plugin ZIP
+locks. Known NoDeploy final-summary failure is separate, not a successful wrapper
+exit. Protocol/controls/provenance and remaining gates: FTESurf tools/p601model.md.
+No physical-device, panel migration, non-GL/font/DPI or cost acceptance claimed.
+
+## Patch 603 — bind a finished receipt to the captured recording clock *(READER ONLY)*
+
+**Problem.** Receipt checking compared signed ticks to unsigned server ticks but
+not to the recording selected by runid/nonce. Genuine signed controls with both
+receipt clocks agreeing could still describe a different readable recording
+finish. This is evidence-content consistency, not signature failure or cheating.
+
+**Change.** Compare a positive kept-run statement with the selected readable
+closed recording's exact integral finish. Nonce, clock and angle checks share one
+captured byte body and grammar parse; a new capture resets the cache. New full,
+recording-only and view-only joins participate; journal-only does not rejudge old
+recordings. Zero abandon and -1 unkept are sentinels, not durations. Unavailable/
+malformed/nonintegral recordings remain unmeasured under current receipt policy.
+Use separately initialized Report.finish_ticks, not header info, and raw Decimal
+parsing with finite/integral signed32 and128-character limits. Legacy float info
+and grammar stay intact. Mismatch preserves valid signature and independent angle
+result. No wire format/schema, detector threshold/calibration, ranking/review,
+history reread, engine/QC/progs/config/pin/tag or Build change.
+
+**Verified.** Initial12 genuine crypto/file/SQLite/CLI tests have8 baseline
+failures; final18 pass. Both mismatch directions, sentinel/off-host/old-grammar
+controls, one-parse and replacement/rejoin boundaries, partial observations and
+header/near-integer/range/exponent controls ACT. Initial independent source review
+found header collision and float rounding; corrected source re-review closes both,
+no remaining findings. Existing receipt74/recorder306 and sweep/angle-reason
+controls pass. Final Linux71 pass; Windows71 only the two established admin UDP
+assertions. Strict owned Python compilation adds zero warnings. Immutable269 rec
+and91 paired view: baseline/subject170 faulted files/173 faults, unchanged. New
+parsing without a view is intentional, not fleet-cost acceptance. Exact publication,
+selected installation hashes and remaining blockers: FTESurf tools/p603receiptclock.md.
+
+**DEPLOYED 2026-10-09.** Exact published7e24d9d reader pair/test only: secondary
+Windows04:09:08Z, primary04:10:06Z, Pi04:13:28Z; three destination hashes and actual
+installed18 controls pass on each. Primary peer edit cleared before guarded copy;
+no dirty peer path was overwritten. Canonical Pi sweep lock, completed mode600
+SQLite/source rollback retained;137 protected files, receipt/verdict/review/sim/
+cursor histories, scalar run/replay counts, original master/worker and health12
+unchanged. Windows protected6/195 files and shared index unchanged. Initial
+primary/Pi context-gate failures restored exact predecessors; corrected only private
+harness imports, without weakening path assertions or changing product code. No
+worker reload, history reread, engine/progs/config/game or Build swap. Public-safe
+hashes/provenance/limits: FTESurf tools/p603receiptclock.md.
