@@ -352,10 +352,39 @@ LONG CALLBACK nettest_CrashAddrLogger(PEXCEPTION_POINTERS ei)
 	 || code == EXCEPTION_STACK_OVERFLOW   || code == EXCEPTION_IN_PAGE_ERROR
 	 || code == EXCEPTION_PRIV_INSTRUCTION)
 	{
-		//was ...\nettest\crashaddr.txt; that gamedir is now quakers, so crashes were logging into a
-		//directory that no longer exists and the file was never created.
-		HANDLE h = CreateFileA("C:\\FTEQuake\\quakers\\crashaddr.txt", FILE_APPEND_DATA,
+		//Patch 609: IN THE BASEDIR THIS SERVER IS RUNNING.  It was the hard-coded
+		//C:\FTEQuake\quakers\crashaddr.txt, the path sys_win.c's copy of this function was
+		//cured of: one server exe serves two games, so every FTESurf server fault was recorded
+		//in the other game's gamedir, and nowhere on a machine without that folder.  Not beside
+		//the exe as the client does -- the one installed server lives in the OTHER install --
+		//but where its game is: com_gamepath, "" (so the cwd) until the filesystem is up.
+		//Beside the exe is the fallback.  The buffers are static and the exe is not asked for
+		//until the first line is down (review): this runs on the faulting thread's stack,
+		//which a stack overflow has all but used, and GetModuleFileName may want a heap lock
+		//a heap fault is holding.  Two threads faulting at once write the same bytes here.
+		static char path[MAX_OSPATH+16], exe[MAX_OSPATH+8];	//exe: "exe " + the path + "\r\n"
+		DWORD en = 0;
+		HANDLE h;
+		path[0] = 0;
+		snprintf(path, sizeof(path), "%.*scrashaddr.txt", MAX_OSPATH-1, com_gamepath);
+		h = CreateFileA(path, FILE_APPEND_DATA,
 			FILE_SHARE_READ|FILE_SHARE_WRITE, NULL, OPEN_ALWAYS, FILE_ATTRIBUTE_NORMAL, NULL);
+		if (h == INVALID_HANDLE_VALUE)
+		{
+			DWORD pn;
+			en = GetModuleFileNameA(NULL, exe+4, MAX_OSPATH-16);
+			if (en >= MAX_OSPATH-16)
+				en = 0;
+			for (pn = en; pn && exe[4+pn-1] != '\\' && exe[4+pn-1] != '/'; pn--)
+				;
+			if (en)
+			{
+				memcpy(path, exe+4, pn);
+				memcpy(path+pn, "crashaddr.txt", 14);
+				h = CreateFileA(path, FILE_APPEND_DATA,
+					FILE_SHARE_READ|FILE_SHARE_WRITE, NULL, OPEN_ALWAYS, FILE_ATTRIBUTE_NORMAL, NULL);
+			}
+		}
 		if (h != INVALID_HANDLE_VALUE)
 		{
 			char buf[80];
@@ -366,6 +395,17 @@ LONG CALLBACK nettest_CrashAddrLogger(PEXCEPTION_POINTERS ei)
 			buf[0] = 0;
 			snprintf(buf, sizeof(buf), "=== crash code=0x%08lx ===\r\n", (unsigned long)code);
 			WriteFile(h, buf, (DWORD)strlen(buf), &wrote, NULL);
+			//which binary, in one append: the file is shared with the client's records, and
+			//the frames below only resolve against this exe's own .db
+			if (!en)
+			{
+				en = GetModuleFileNameA(NULL, exe+4, MAX_OSPATH-16);
+				if (en >= MAX_OSPATH-16)
+					en = 0;
+			}
+			memcpy(exe, "exe ", 4);
+			memcpy(exe+4+en, "\r\n", 2);
+			WriteFile(h, exe, 4+en+2, &wrote, NULL);
 			nettest_logmod(h, "fault", ei->ExceptionRecord->ExceptionAddress);
 			nf = CaptureStackBackTrace(0, 40, frames, NULL);
 			for (fi = 0; fi < nf; fi++)
@@ -856,6 +896,9 @@ Sys_Error
 ================
 */
 #include <process.h>
+//Patch 609: every way out of Sys_Error is Sys_Quit, whose exit(0) reported a fatal error
+//as success (the exit(1) after each call is unreachable).
+static int sys_exitcode;
 void Sys_Error (const char *error, ...)
 {
 	va_list		argptr;
@@ -863,11 +906,14 @@ void Sys_Error (const char *error, ...)
 	double end;
 	STARTUPINFO startupinfo;
 	PROCESS_INFORMATION processinfo;
+	qboolean autoreset;
+	DWORD conmode;
 
 	va_start (argptr,error);
 	vsnprintf (text,sizeof(text)-1, error,argptr);
 	va_end (argptr);
 	COM_WorkerAbort(text);
+	sys_exitcode = 1;
 
 
 //    MessageBox(NULL, text, "Error", 0 /* MB_OK */ );
@@ -882,13 +928,23 @@ void Sys_Error (const char *error, ...)
 		Sys_Quit();
 #endif
 
-	if (COM_CheckParm("-noreset"))
+	//Patch 609: the respawn below is ASKED FOR now (-autoreset), no longer what happens
+	//unless -noreset.  Every Windows server this fork runs is somebody's test process (the
+	//fleet is Linux, under a supervisor) and a copy started here is nobody's child: on a
+	//mistyped +map, a new orphan every 13 s.  The fault in Con_Log above had been hiding that
+	//from every server with log_enable 1.  A console still gets its 10 s so the error can
+	//be read; a stdin that is not one (a harness, a pipe, NUL) has no key to wait for.
+	autoreset = COM_CheckParm("-autoreset") && !COM_CheckParm("-noreset");
+	if (COM_CheckParm("-noreset") || (!autoreset && !GetConsoleMode(GetStdHandle(STD_INPUT_HANDLE), &conmode)))
 	{
 		Sys_Quit();
 		exit(1);
 	}
 
-	Sys_Printf ("A new server will be started in 10 seconds unless you press a key\n");
+	if (autoreset)
+		Sys_Printf ("A new server will be started in 10 seconds unless you press a key\n");
+	else
+		Sys_Printf ("Closing in 10 seconds, or on a key press (-autoreset starts a new server instead)\n");
 
 
 	//check for a key press, quitting if we get one in 10 secs
@@ -901,6 +957,11 @@ void Sys_Error (const char *error, ...)
 			Sys_Quit();
 			exit(1);
 		}
+	}
+	if (!autoreset)
+	{
+		Sys_Quit();
+		exit(1);
 	}
 
 	Sys_Printf("\nLoading new instance of FTE...\n\n\n");
@@ -1443,7 +1504,7 @@ void Sys_Quit (void)
 		SetServiceStatus (ServerServiceStatusHandle, &MyServiceStatus);
 	}
 #endif
-	exit (0);
+	exit (sys_exitcode);
 }
 
 int restorecode;

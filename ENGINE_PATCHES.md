@@ -40350,3 +40350,4406 @@ primary/Pi context-gate failures restored exact predecessors; corrected only pri
 harness imports, without weakening path assertions or changing product code. No
 worker reload, history reread, engine/progs/config/game or Build swap. Public-safe
 hashes/provenance/limits: FTESurf tools/p603receiptclock.md.
+
+## Patch 604 — Vulkan device enumeration pointer; D3D11 screenshot row order
+
+Both found by Patch 605's backend gate; neither is ImGui's.
+
+**Problem.** `Win32VK_EnumerateDevices` (gl_vidnt.c) declared a local
+`vkGetInstanceProcAddr` and assigned it only on the branch that loads
+`vulkan-1.dll`. With the library already loaded it handed the uninitialised local
+to `VK_EnumerateDevices`, which called through it: an intermittent 0xC0000005 at
+startup while the renderer option list is built, before any config command.
+Separately, `D3D11_VID_GetRGBInfo` filled its buffer bottom-up and returned a
+positive stride, so every D3D11 `screenshot` was upside down.
+
+**Change.** Initialise the local to NULL and resolve the symbol from the loaded
+module on the other branch; `VK_EnumerateDevices` already returns false for NULL.
+Fill the D3D11 buffer top-down. Nothing else: no other renderer, screenshot
+format, cvar or default.
+
+**Verified.** The crash stack, resolved through the build's symbol table:
+Host_Frame, R_UpdateRendererOptsNow, Win32VK_EnumerateDevices,
+VK_EnumerateDevices+0x37, then a jump into .bss. `tools/vkenum_coldstart.py`
+alternates cold `vid_renderer vk` starts of the unfixed and fixed client, 20 each,
+run twice: unfixed 1/20 and 9/20 crashed (10/40), fixed 0/40. The two clients
+differ by exactly this diff; both also carried Patch 605's stage, and this commit
+was not built on its own. In the second run
+the fixed client listed the GPU in `_vid_renderer_opts` 20/20; the first run's
+listing check read a wrong cvar name and measured nothing. D3D11: on the unfixed
+client the scoreboard gate faulted on rank-column ink differing between virtual
+scales; the same capture flipped by hand matched GL (421 ink pixels at both
+scales, 0 mask difference). On the fixed client D3D11 passes all four arms
+unflipped and Vulkan passes all four, including the legacy arm that had crashed.
+GL, D3D11 and Vulkan captures of one page were also compared by eye.
+Limits: one machine (the desktop PC), one GPU. D3D9 and D3D8 have the same copy loop and do not
+start there (FTESurf BACKLOG.md). D3D11 captures in older retained evidence are
+flipped. Commands and rigs: FTESurf `tools/p603scores.md`.
+
+## Patch 605 — opt-in native scoreboard table on dense NativeUIModel/2
+
+**Problem.** The ranked scoreboard is the first panel that wants a real table
+(scrollbar, row buttons, paging), but `NativeUIModel/1` carries 64 widgets --
+six nine-cell rows -- and enlarging an exact-size struct breaks every older
+peer. Nothing real had used the bridge either, so its lifetime rules had only met
+galleries: an owner closing during action polling freed a Vulkan atlas the
+recorded frame still referenced.
+
+**Change.** Engine: additive exact-size `NativeUIModel/2` (256 widgets) beside
+the unchanged /1, converted either way for an older peer; builtins
+`ui_native_model_limit` (256, 64 or 0) and `ui_native_gamefocus`; at most 4 open
+attempts per VM per host frame; `VK_DestroyTexture` defers its native handles to
+the frame fence and `VK_R_DeInit` drains them before the device goes;
+`VK_DestroySampler` stops at its match instead of reading the freed node.
+Plugin: owner 205 (`scores.inc`), one ImGui table inside the inherited clip, up
+to 24 rows of nine cells plus a metadata prefix, four ProggyClean bakes
+(13/16/20/24 physical px) in one atlas; a clip that is too small, non-finite or
+larger than the framebuffer is refused. QC: `cl_scores_native.qc` behind
+`ui_native_scores 1` (default 0) and `ui_native_scores_font`. It replaces only
+the ranked table at `Scores_Draw`'s draw site; any refusal leaves legacy drawing
+for that gesture. Clicks are hit-tested at SUI's cursor and resolved by slot,
+then checked against the row key; every label is rewritten to what
+`PlugUI_LabelValid` accepts in each QC string mode; the page survives
+close/reopen within one map/leg/tab/filter; the page is rebuilt only when
+something that moves a row, authority or input changes, else at 10 Hz. The
+release ship-set is unchanged; development builds already copy the optional
+DLL. No recorder, evidence, ranking, server, default or Build change.
+
+**Verified.** One machine (the desktop PC), synthetic rows, real dedicated sockets. QC 0 warnings;
+no engine warning at a line this work added. Host: 629 /2 bridge checks, 2872
+dense + 3750 scoreboard per 16/32-bit index width, model/input regressions
+unchanged, 0 failed. Runtime, GL six arms (two virtual scales, P601 plugin, P601
+engine, legacy, no plugin): 0 faults, 69/69 reader controls; D3D11 and Vulkan
+four arms each: 0 faults (after Patch 604). Controls that fail as they should:
+the pre-fix product source opens row 8's recording where the fixed one opens row
+0's after motion the table never saw; progs built before the sanitizer drop to
+legacy on 14 hostile owner names where the fixed ones stay native in all four
+string modes; a row cap of 6 fails exactly the 24-row acceptance. Cost, QC
+UpdateView median us/frame open: 828 and 852 native against 1050 and 1095
+legacy at 20 and 32 rows (0.78-0.79x), closed equal to legacy within 1%. That
+number moves with the engine's QC temp-string collector: the same held-open
+table reads 822 us with the collector off and 1159 us with it cycling. Soak:
+per-cycle open/close/upload counters held on every cycle of 150 slow and 800
+fast open/close cycles. Memory took three runs. The first two missed their
+bounds and found a real cost, the table making five times legacy's temp-string
+garbage by rebuilding ~220 labels a frame, fixed by the rebuild rule above; a
+6-row control with the same 800 opens showed a flat floor, so there is no
+per-open leak. In the third the floor rose 21.0 MiB against legacy's 1.9 over
+800 cycles (bound 32) and held-open growth was below legacy's, but its
+leak-control arm was killed by the host's memory reaper, so the instrument's
+discrimination rests on the second run (leak arm +294 MiB against +54).
+Review: three lenses on the committed stage, one fresh reader on the fixes; no
+memory-safety defect; one wrong-row bug (a stale private cursor copy) and the
+hostile-label fallback fixed, the rest in FTESurf BACKLOG.md. Not claimed: real
+online boards, another machine or GPU, D3D9, Linux, DPI, font or appearance
+(FTESurf lextest.md), GPU cost. Commands, rigs and limits: FTESurf
+`tools/p603scores.md` (historical harness number, not Patch 603).
+
+**DEPLOYED 2026-10-10, Windows only (Patches 604 and 605, one build).** A `-Full`
+rebuild of the published commit, with `SVN_VERSION`/`SVNREVISION` supplied by
+hand because the Makefile's `.git` directory test fails in a worktree and stamps
+nothing: client and server both contain `git-7142-patch-605-0-gf6b92f413`. 77
+compiler warning lines, the same count as before the stage, none at a changed
+line; the progs are byte-identical to the ones the gates ran on. On these
+binaries the host suites, GL six arms with 69/69 reader controls, the
+hostile-name arms and the D3D11 and Vulkan four arms were rerun, 0 failed; cost
+and soak were not. Both installs at 01:35:58Z: 25 files (client, server, five
+plugins, three progs and their line tables) match the build by hash, 23 were
+replaced, each first checked against its pre-task hash and kept as `.prev`. No
+game was running, and none was started from an install; the owner's config was
+not opened. Not deployed to the Pi. Hashes and rigs: FTESurf
+`tools/p603scores.md`.
+
+## Patch 606 — one dark pastel theme behind `ui_style 1`, and a laid-out leaderboard
+
+**Problem.** Patch 566's modern SUI style reached one panel, hud_edit, as a
+bright outline on every control. The map picker, both leaderboards and the
+save-lock and Source-renderer menus each carried their own hard-coded colours and
+square 1 px boxes. The +showscores board had only ever been added to: 12 px
+text, time before player, the room list hanging off one side. Patch 605's native
+table drew ImGui's default blue inside it.
+
+**Change.** Mod-side, except the provider's colours. `sh_ui.qc` holds one token
+set (five slate surfaces, a text ramp, seven pastel accents) and
+`sui_style_panel`, `sui_style_thumb`, `sui_style_hud` and pastel `^x` escapes;
+each panel's own palette macros read the tokens under `ui_style 1` and keep
+their literals under 0, which stays the default. hud_edit: the fill carries a
+chip's state and a hairline appears only under the cursor. Save-lock and
+Source-renderer menus: one rounded card, a keycap per row, page names and dots,
+values coloured by meaning. Map picker and its leaderboard panel: pills, rounded
+wells and buttons, a tier colour ramp, podium colours, a primary start button,
+tooltips on the filters and on the `? ~ k` tier marks. Tooltips now choose the
+UI face themselves (`m_draw` resets it before `sui_end`) and answer a mouse
+hover only; `ui_hover` is the menu harness's way to hold one. +showscores gets a
+second layout, `Scores_DrawModern`, over the same data, row drawers, sui ids and
+hand-offs: a header band, the sources as one segmented control, the legs as a
+sidebar, player before time, right-aligned time and delta, podium plates for
+clean runs, a key-hint footer, and the board centred as a pair with the room
+list at a width that does not change with the source. It sizes itself in steps
+(type 8, 7, 6 units, then why/date/run-class columns, then a narrower room list)
+and draws nothing under the room list; when its smallest form does not fit it
+returns before drawing and the classic layout runs. Both row drawers read a
+per-frame column table that the classic layout fills from its old character
+offsets. Provider: `ScoresTheme` sets colours, two rounding values and
+`DisabledAlpha` 0.85 and no size, because the p603 gates click at fixed offsets
+inside the table; it applies in either style (the provider cannot see
+`ui_style`). No server QC (qwprogs.dat is byte-identical), recorder, evidence,
+ranking, default, ship-set or Build change. The owner retired the old look
+after seeing this one (10 Oct); Patch 607 removes it.
+
+**Verified.** One machine (the desktop PC), GL, 1920x1080 at hud_scale 2 unless said; synthetic
+rows, a loopback stub for lobbies and boards, real dedicated sockets. Three
+progs at 0 warnings. `tools/test_ui_theme.py` against the previous build's
+progs: 13 panel states at `ui_style 0` differ by 0 pixels (whole frame less the
+ping cell in game, the opaque panel interior in the menu); every one differs at
+`ui_style 1`; a csprogs the test rebuilds with one classic colour moved is
+caught on the three hud_edit shots (76,248-76,734 pixels) and reads 0 on the
+save-lock shot it cannot reach; a synthetic mouse parked on a map-picker chip
+reads back its tooltip at style 1 and none at style 0. `test_ui_modern.py`
+28/28. Its first run failed one check that was real: the themed snap lines
+crossed the speedometer (58 changed pixels, bound 30), so those lines stay one
+colour in both styles. A second run failed four with a foreground-focus line in
+its log between stages; the next, on the same files, passed. `p498keys.py`
+16/16 once its fixture had accepted terms and a chosen name. The new board
+acts: `p603scores.py`, legacy arm, 0 failures at `--style 0` and at `--style 1`
+(a row click opens row 0's own recording, the line box builds row 0's line,
+focus and console precedence hold, and real clicks on the source switch step
+Online, Segmented, Local), and the dense suite in the new board, native at two
+virtual scales plus legacy, 0 failures. Predicted and wrong: the basic suite's
+native arm fails "page controls did not act" at `--style 1` -- and identically
+at `--style 0`, because it expects a 6-row page from 8 rows and the dense
+provider's page is 24; not a layout fault, noted in BACKLOG. Looked at, not
+gated: the board at 1280x720, 1024x768 (why/tag dropped), 800x600 (type 12,
+five columns, the room list 200 wide beside it) and 640x480 (the classic
+layout, as designed). Cost is reported, not gated, and this hour it mostly measured the machine,
+which the owner and another agent's jobs were using: QC UpdateView median
+us/frame at 20 rows with the board open, legacy / no-plugin / native arms. The
+final build's modern board read 1594 / 1537 / 1465 at 15:57 and 1169 / 1173 /
+1075 at 16:12, with the same draw calls and indices both times; the first
+review copy read 1208 / 1190 / 1114 in between, and the classic board 1329 /
+1157 / 1000 at 16:01 with a foreground-focus line in every arm. The spread
+between two runs of one build (36%) is larger than any difference between the
+layouts or the builds, so neither is called cheaper. Two independent reviews of the committed tree,
+integrity only. The first found two classic colours changed by a shared macro
+in the room list (the gallery has one player and no hover there), the provider
+theme reaching `ui_style 0`, and a one-frame disagreement about the source on
+the frame a tab is clicked; the second, on the fixes, found no integrity defect
+and that nothing clicked the source switch, which the gate above now does. The
+owner then retired the old look, so the provider's theme stayed unconditional
+by decision rather than oversight. Not claimed: appearance (FTESurf
+lextest.md), another machine, DPI, D3D/Vulkan for the QC panels, a real mouse
+on the menu's tooltips.
+
+**DEPLOYED 2026-10-10, Windows only (Patch 606).** A `-Full` rebuild of the
+published commit with `SVN_VERSION`/`SVNREVISION` supplied by hand: client and
+server both contain `git-7144-patch-606-0-g93828165c`. 426 log lines hold the
+word `warning`, the same count and kinds as Patch 605's final build, none in
+`plugins/ui_imgui`; the progs are byte-identical to the ones the gates ran on.
+On these binaries the host suites, GL six arms with 69/69 reader controls, the
+hostile-name arms and the D3D11 and Vulkan four arms were rerun, 0 failed, and
+FTESurf's board-action gate in each style and `test_ui_modern.py`. Its theme
+gate failed three menu comparisons on the first run, with the rig's window in
+the foreground and the real pointer on it for exactly those shots (the log says
+so), and passed 32 of 32 on the rerun; cost was not rerun. Both installs at
+05:51:29Z: 25 files (client, server, five plugins, three progs and their line
+tables) match the build by hash, 21 were replaced, each first checked against
+the hash recorded after the Patch 605 deploy and kept as `.prev`. No game was
+running, and none was started from an install; the owner's config was read for
+four settings and not written. Not deployed to the Pi. Hashes and rigs: FTESurf
+`tools/p603scores.md`.
+
+## Patch 607 — the old SUI look and `ui_style` are removed
+
+**Problem.** Patch 606 put the designed look behind `ui_style 1` and kept the
+earlier one pixel-identical behind 0. The owner then retired the earlier look
+("I never designed it ... we have it in the git"). Keeping both meant every
+restyled panel carried two drawing paths and the board two layouts, the new
+board fell back to the old layout on a small window, and everyone but the owner
+still got the look nobody wanted.
+
+**Change.** Mod-side only. `ui_style` is no longer registered or read and
+`sui_style_modern` is gone: every `(style ? token : literal)` palette macro is
+its token, and the classic branches of hud_edit (its own latched tooltip with
+them), the save-lock and Source-renderer menus, the room list, the map picker
+and the menu leaderboard are deleted; the scrollbar draws the one thumb. The
+board keeps one layout: `Scores_Draw` is Patch 606's `Scores_DrawModern`, and
+the classic body, its character-offset column table and `Scores_ColsClassic`
+are deleted. Where that layout used to decline, it now shrinks its type toward
+8 px, and a window too small even for that clips the table. `Gfx_Row` stays,
+for the vote box. `scores status` reports the drawn column count and the row
+type size, and the board treats `hud_scale` above 16 as 16. Tools follow:
+`ui_gallery.py` takes window sizes where it took styles, can pair its shots
+against another rig's and reports a rig whose window took the foreground as
+interfered; `test_ui_theme.py` is a look gate between two builds with an
+on-screen witness per panel; `test_ui_modern.py`'s classic stage is the closed
+editor; the p603 tools lose `--style`, and the lifecycle dock arm, the perf
+tool's screenshot crop and the dense reader's one-pixel control follow the new
+layout instead of the classic one's positions. No engine source change (the provider
+was already unconditional), no server QC (qwprogs.dat is byte-identical),
+recorder, evidence or ranking change. The old look is at FTESurf 562a6c9 and
+before.
+
+**Verified.** One machine (the desktop PC), the Patch 606 binaries as installed. Three progs at 0
+warnings; qwprogs.dat byte-identical. `tools/test_ui_theme.py`, now a look gate
+between two builds: all 13 panel states on screen and differing by 0 pixels
+from Patch 606 at `ui_style 1`; a csprogs with the theme's butter moved differs
+on the two shots that draw it and by 0 on one that does not; the parked mouse
+reads its tooltip back; 30 checks, 0 failed. Its first run read 16 and 18
+changed pixels on the map picker, all in the panel's rounded corners where the
+animated backdrop shows through a region two pixels in; the regions moved to
+six. At 1280x720, 1024x768 and 800x600 every in-game shot matches Patch 606's
+but for ping digits; 640x480, where 606 drew the old layout, draws this one at
+8 px. The board acts: real clicks on a row, the line box and the three source
+tabs, 0 failures; the dense suite, 0. GL six arms 0 failed with 69/69 reader
+controls (68 until the one-pixel control followed the table's rectangle rather
+than the classic position), hostile names, D3D11 and Vulkan 0 failed.
+`test_ui_modern.py` 27/27 without its classic stage, `p498keys.py` 16/16. The
+lifecycle suite's dock arm, which raised hud_scale to dock the room list, could
+no longer reach its condition; narrowing the canvas to 560 does, and it passes.
+Cost at 20 rows: 1194 / 1197 / 1121 us/frame (legacy / no plugin / native),
+inside Patch 606's range for the same layout. One independent review: the QC
+equal to the modern arm in all nine files, one way to hang the sizing loop
+(`hud_scale` large enough to overflow to infinity; the board now treats it as
+16), and three test-side gaps, fixed. Found and left, both in FTESurf BACKLOG:
+the board's small labels outgrow its rows under 11 px of type, and the native
+table lands up to 2 px off its rectangle because the host passes it float
+products and the provider truncates them, so the dense gate's rank-ink equality
+holds only while both arms round alike; a geometry tried here did not. Not
+claimed: appearance, another machine, DPI, the panels that were never restyled.
+
+**DEPLOYED 2026-10-10, Windows only (Patch 607, progs only).** FTESurf
+`5474c48`. No engine rebuild: the installs keep the Patch 606 binaries
+(`git-7144-patch-606-0-g93828165c`). The progs built from the published commit
+are byte-identical to the ones the gates ran on. Both installs at 07:16:07Z:
+`csprogs.dat` and `menu.dat` with their line tables replaced (8 files), each
+first checked against the hash recorded after the Patch 606 deploy and kept as
+`.prev`; `qwprogs.dat` was already identical. No game was running. Not deployed
+to the Pi.
+
+**DEPLOYED TO THE PI 2026-10-10 07:29 UTC (Patches 606 and 607, progs only),
+on the owner's request.** `build.ps1 -Pi` from a clean worktree at FTESurf
+`5b3f181`, nobody on any of the 12 lobbies. The live pair reads back as the
+build's (csprogs `162aaf018682ca0b`); the previous pair is kept as `.prev`.
+The old and new qwprogs differ in two bytes, the compiler's date stamp, so no
+server QC shipped, and `default.cfg` already matched. All 12 units restarted
+07:28:57-07:29:07. A fresh client with no csprogs of its own joined lobby 1
+and lobby 2: the file each lobby served hashes to the build, and the board
+drew. The Pi's aarch64 engine and surfd were not touched. FTESurf
+`tools/p603scores.md` has the hashes; `tools/pi_lobby_smoke.py` is the check.
+
+**CORRECTION 2026-10-10, Patches 604-607: the test machine.** These four
+entries said "one laptop". Every rig ran on the desktop PC: the client logs
+read `GL_RENDERER: NVIDIA GeForce RTX 2080 SUPER/PCIe/SSE2`. The word is
+corrected in place above. Nothing was measured on the N100 laptop, so no
+cost figure in these entries says anything about it.
+
+## Patch 608 — a ramp leave mark sits on the ride's last real contact *(MOD ONLY, csprogs)*
+
+**Problem.** The run line's "left the ramp" chevron, and the speed and energy
+beside it, were stamped on the sample where the 0.08 s ramp hold ran out, not
+where the ride ended. On a surf_kitsune recording all 38 ramp leaves sat 0.090 s
+late, a median 211 u (84..315) past the last sample that touched the ramp.
+BACKLOG "Off ramp labels appear well beyond the actual ramp exit"; ROADMAP 12.4.
+
+**Change.** `cl_lines.qc:Line_Point` remembers each ride's last sample carrying
+the native ramp bit and, when the hold expires, stamps the leave mark with that
+sample's clock, ordinal, position and velocity (`Line_EvAt`). The classifier,
+its edges, the hold and the Segments column are unchanged, so a bridged gap
+still marks nothing and no mark is added or removed. A ride with no contact of
+its own since the slot began or the last break or stitch takes its first such
+sample, which keeps the table in clock order. Each mark also keeps the clock of
+the sample its edge fell on (`ln_ec`, the last column of `replay marks`): a
+Segments row still starts there, and containment is graded on it. The contact
+colour is built from the marks, so the ramp colour now ends with the ride.
+`tools/p449mark.py` models the new stamp and gains the hold reset at a break
+that Patch 530 gave the client; `p452col.py` colours from the file-derived
+marks. No engine source, server QC, recorder, evidence, ranking, default,
+ship-set or Build change: `qwprogs.dat` and `menu.dat` are byte-identical.
+FTESurf `26e350e`.
+
+**Verified.** Three progs at 0 warnings. Private overlays (`runlines_smoke.py`),
+changed build against a control built from the parent commit:
+- `runlines_rampleave.cfg`: `test_runlines_rampleave.py` 8 of 8. On a copy of a
+  recorded surf_kitsune run (10,252 samples) all 38 ramp leaves are on a sample
+  carrying the ramp bit, with that sample's own clock, position and velocity,
+  no later sample of the ride touching, and the hold expired exactly at the
+  edge sample; 266 points between a leave and its edge are drawn as air; every
+  Segments row starts on a mark's edge and none on a leave's stamp. That
+  recording's rides are one shape, so the arm also replays an authored body
+  (`runlines_rampshapes.rec`: a one-sample ride, a bridged gap, a ride the hold
+  opens off ground, a stitch on a repeated clock inside the hold, a ride ending
+  on ground) against a 13-mark table written by hand. The control fails five of
+  the eight tests: 0 of 38 on a contact sample.
+- `p449mark.py` on its eight recorded fixtures (surf and bhop, 4,659 marks):
+  every mark equals the file-derived one in kind, sub-code, ordinal, time, speed,
+  vz and edge clock. Its stamp is the patch author's own, so this shows the two
+  agree, not that either is right. Three of the eight failed on the control with
+  the grader as published (the model lacked the break reset). One still fails
+  containment, on the control as well: BACKLOG.
+- `p452col.py` 4 of 4 (9,965 points graded for contact, 0 wrong; 152 wrong on
+  the control). `test_runlines_labels.py` 4 of 4; the dedicated live-line
+  `test_runlines_reset.py` 5 of 5.
+- The mark cap's compaction, which no fixture reaches, with a private
+  `LN_EVCAP 20` build: the 20 kept marks are rows of the uncapped table field
+  for field.
+- Screenshots of both builds at the same replay time: the labels draw, with the
+  exit's own time and numbers.
+One review round. It found a stitch on a repeated clock (no break, so the hold
+survives) putting a leave behind the stitch mark, fixed and in the authored
+recording, and three test assertions that did not test what they said,
+rewritten. Its fixes were not reviewed again.
+
+**Limits.** The stamp is the first sample at or past the exit, so it can be a
+tick late; no interpolated crossing. Where the ramp bit alternates a ride can
+end on a clear tick and the mark sits that gap early. The LIVE line reads the
+bit from a server stat beside a predicted position: its lag is not measured or
+changed. No curved or prop ramp, and no tick-rate, frame-rate or LOD sweep.
+A human look is in lextest.md section 13.
+
+**DEPLOYED 2026-10-10, Windows only (Patch 608, csprogs only).** FTESurf
+`26e350e`. The progs built from that commit in a clean worktree are
+byte-identical to the ones the gates ran on. Both installs at 08:07:18Z:
+`csprogs.dat` and its line table replaced (4 files), each install first checked
+to hold the published Patch 607 csprogs (`162aaf01`) and that pair kept as
+`.prev`; `qwprogs.dat` and `menu.dat` were already identical and were not
+touched. No engine rebuild. No game was running when the files were read back.
+Not deployed to the Pi.
+
+**DEPLOYED 2026-10-10 to the Pi (Patch 608).** FTESurf `26e350e`, `build.ps1
+-Pi` from the clean worktree, 08:09:00Z to 08:09:40Z. Before it, in one read: the
+Pi held the published Patch 607 csprogs (`162aaf01`), a `qwprogs.dat` identical
+to this build's and the repo's `default.cfg`; 12 lobby rows, 0 players; and the
+only QC changed since the Patch 607 deploy was this patch's two client files.
+Both files hash-verified on the Pi and swapped, the previous pair kept as
+`.prev`; all 12 lobbies restarted. Read back from the host: `csprogs.dat`
+`69515b32`, 12 lobby processes started 08:09:32Z to 08:09:41Z, 12 directory rows.
+`tools/pi_lobby_smoke.py` against lobby 1: a client with no csprogs of its own
+was served `69515b32`, drew the board and logged no QC error. No config, engine
+or surfd change.
+
+## Patch 609 — the Windows dedicated server's fatal-error path: no fault, an error status, no orphan, and a crash record where its game is
+
+**Problem.** Four things on one path, each hidden by the one before it.
+*The fault.* On a dedicated server `SV_Error` calls `SV_Shutdown`, which ends in
+`Cvar_Shutdown`, and then `Sys_Error`. sv_sys_win.c's `Sys_Error` calls
+`Con_Log`. `Cvar_Shutdown` NULLs every cvar's `.string` and leaves `.value`, so
+`Log_String` passed its `log_enable` test and read `log_name[lognum].string[0]`:
+an access violation on every SV_Error while `log_enable` is 1, which is every
+harness server. The CRT's signal handler then called `Sys_Error` again and
+faulted the same way. Found with `+map` naming a map nobody has: the server asks
+`cl_download_mapsrc`, gets 404, and `SV_Map_DownloadCanceled` raises SV_Error.
+*The status.* With logging off nothing faulted and the process left through
+`Sys_Quit`, whose `exit(0)` reported the fatal error as success.
+*The orphan.* Unless `-noreset` was given, `Sys_Error` then waited 10 s for a
+key and CreateProcess()ed the server's own command line. That copy is nobody's
+child, and on a mistyped `+map` there is a new one every 13 s. The fault had
+been hiding this from every server with logging on, so curing the fault alone
+would have handed it to every harness whose server dies (the review's finding).
+*The record.* `nettest_CrashAddrLogger` in sv_sys_win.c wrote to the hard-coded
+`C:\FTEQuake\quakers\crashaddr.txt`, the path sys_win.c's copy of the same
+function was cured of earlier: every FTESurf server fault was recorded in the
+other game's gamedir, and nowhere on a machine without that folder. This
+patch's own first four reproductions were written up as "crashaddr.txt is not
+written" while the record sat there.
+
+**Change.** `Log_String` returns when `log_name[lognum].string` is NULL.
+`Sys_Error` in sv_sys_win.c sets a file-static exit status of 1 and `Sys_Quit`
+passes it to `exit`; an ordinary quit still exits 0. The respawn is asked for
+with `-autoreset` and is no longer the default: without it a server whose stdin
+is a console still waits its 10 s, so the error can be read, and then exits; a
+stdin that is not a console (a pipe, NUL, a harness) exits at once. `-noreset`
+keeps its meaning and wins over `-autoreset`. The crash record goes to
+`<com_gamepath>crashaddr.txt`, the basedir the server is running (the cwd until
+the filesystem is up) and not beside the exe as the client's does, because the
+one installed server exe lives in the other install; beside the exe is the
+fallback when that cannot be opened. Each record gains an `exe <path>` line,
+since the file is now shared with the client's records and the frames resolve
+only against that binary's own `.db`. Not changed: the Linux server's
+`Sys_Error` (it aborts, by design) and the client.
+
+**Verified.** The fault, from the crash file resolved against the installed
+build's own `fteqwsv64.exe.db`: main, ServerMainLoop, SV_Frame, COM_DoWork,
+HTTP_CL_Think, DL_Close, SV_Map_Downloaded, SV_Error, Sys_Error,
+Log_String+0x46; the second record enters through Signal_Error_Handler.
+FTESurf `tools/p609sverr.py --respawn`, one server per arm, no client. Control
+is the installed Patch 606 server (sha256 13ecc334cc2ba536; no file under
+engine/ or plugins/ differs between its commit and this patch's parent),
+subject is this patch built `sv-rel` in a worktree. 12 arms, 0 failed:
+
+| arm | control | subject |
+|---|---|---|
+| missing map, `log_enable 1`, `-noreset` | exit 0xC0000005, crash file +2684 bytes | exit 1, no record |
+| missing map, `log_enable 0`, `-noreset` | exit 0 | exit 1 |
+| missing map, no flag, piped stdin | (`log_enable 0`) exit 0 after 13.1 s and a copy running | exit 1 in 2.8 s, no copy |
+| missing map, no flag, its own console | not run | exit 1 after 13.0 s, no copy |
+| missing map, `-autoreset` | not applicable | exit 1 after 12.9 s and a copy running |
+| a real fault, scratch basedir as cwd | record in the hard-coded file, +344 bytes | `<cwd>\crashaddr.txt`, +429 bytes |
+| a real fault, `-basedir` elsewhere | not run | that basedir's `crashaddr.txt` |
+| a real fault, basedir that does not exist | not run | beside the exe |
+
+Every `log_enable 1` arm has `SV_Error: Couldn't download map no_such_map_zz.`
+in its log, and each copy was found by the arm's own log name on its command
+line and stopped. The real fault is a thread started at address 5 inside the
+server from outside: the release build cannot fault on request (`crashme` is
+`_DEBUG` only, and `sv-dbg` does not link here: plugin.c's unused input stubs
+are undefined at -O0, and ld rejects `--no-dynamicbase`). Each subject record
+carries the `exe` line and a frame inside fteqwsv64.exe; the owner's
+`C:\FTESurf\crashaddr.txt` kept its hash through the run. The first commit's
+arms, before the respawn changed, showed the copy the review predicted: alive
+14 s after a subject exit, twice. A client and the first commit's server on
+surf_kitsune through FTESurf `tools/conbridge.py`: connect, spawn, `status`, 68
+server log lines, both quit with exit 0. The server build holds the word
+`warning` on 147 lines, 127 of them make's peer-target notice, none in the two
+files changed. Two independent reviews, one per commit. The first (the fault and
+the status) found no defect in its lines and the orphan above. The second (the
+respawn and the record) found none either and two ways the logger could lose a
+record it used to keep, both taken in a third commit and neither driven by an
+arm: its path buffers are static, because the handler runs on the faulting
+thread's stack and a stack overflow leaves it almost none, and it asks for the
+exe's name only after the first line is written, because that call may want a
+heap lock a heap fault is holding. The fault arms were rerun on that commit.
+The hard-coded file also holds five records older than this work, three of them
+at fteqwsv64.exe+0x72947 or +0x72957 in other binaries: not resolved here, and
+possibly this same fault, met before and read by nobody.
+Limits: one machine (the desktop PC). Only the missing-map route into SV_Error
+was driven, not a QC error or a `Host_Error`. The console arm proves the 10 s
+and the exit, not that a key press ends it. A first subject build measured
+nothing and is not counted: a fresh worktree has no `libs-x86_64-w64-mingw32`,
+so it linked `zlib1.dll` and every arm ended in 0.1 s with 0xC0000135; the
+builds above pass `ARCHLIBS=` the main checkout's.
+
+**DEPLOYED 2026-10-10, Windows, the server binary only (Patch 609).** A clean
+`sv-rel` of the tagged commit `d43004f60` in a worktree, with `SVN_VERSION` and
+`SVNREVISION` supplied by hand and `ARCHLIBS=` the main checkout's: the exe
+contains `git-7151-patch-609-0-gd43004f60`, imports the same DLLs as the Patch
+606 server, sha256 `fa9dc4e82b9265d0`; 147 lines hold the word `warning`, as in
+the builds above. On that file before it was installed: `p609sverr.py
+--respawn`, 12 arms, 0 failed. `C:\FTEQuake\fteqwsv64.exe` was replaced at
+08:24:47Z, after checking that it was the recorded Patch 606 build
+(`13ecc334cc2ba536`) and that no process had it open; that build is kept as
+`.prev`, and the Patch 605 server it displaced there is gone. On the installed
+file: the 8 subject arms, 0 failed, and a client and server on surf_kitsune
+through `conbridge.py` whose server reports the stamp. Not replaced:
+ftesurf64.exe, fteqw64.exe and the plugins in either install, which are still
+Patch 606's, so FTESurf ENGINE.txt's `tag` has not moved; nor the Pi. For
+whoever starts that exe by hand: `C:\FTEQuake\start_dedicated_server.bat` passes
+no flag, so its server no longer restarts itself after a fatal error (it needs
+`-autoreset` for that), and its crash record is now `C:\FTEQuake\crashaddr.txt`.
+
+## Patch 610 — the strafe trainer and the run graphs redrawn, an off switch for the HUD graph, a scroll thumb that can be held *(MOD ONLY, csprogs + menu.dat)*
+
+**Problem.** The owner asked for the strafe trainer and the run graphs to be
+improved and given one look, for a way to remove the graph that appears bottom
+right when a leaderboard line is ticked, whether Dear ImGui draws graphs better
+for this, and, mid-task, for a scroll bar that does not shrink away on a long
+list. Measured first, on the published build: `hud_linegraph 0` was the only
+switch and nothing on screen named it; the graph was 760 x 370 px at 1080p and
+sat on the key and mouse blocks; its curves were `drawline` calls, and that
+builtin ignores its width (`pr_menu.c:1089`) and issues one aliased hardware
+line and one draw call a call, two per filled bin per run per plot, 2.96 ms of
+QC a frame under the profiler with three runs; its axes stepped by a quarter of
+whatever the range was; its legend drew leader lines from where a shorter run
+ended, which read as data; and the `^2` in one caption was taken as a colour
+escape. The trainer was a flat box with unnamed columns and a turn-rate trace
+drawn at +-100% of ideal where real strafes sit inside +-30%. The map picker's
+thumb, in proportion, was under 6 px of a 452 px list.
+
+**Change.** Mod-side only: csprogs and menu.dat. `cl_plot.qc` (new) is what
+both instruments draw with: the key menus' panel and header band (Patch 606),
+round axis steps, and a mitred anti-aliased strip over `cl_lines.qc`'s
+`Line_Emit`. The trainer keeps its measurement to the line (nothing above
+`Trn_Grade` changed) and gets that panel: the jump's grade in the header, named
+columns, each strafe's own speed gain, lanes and a trace at +-60% with grade
+A's +-20% shaded. The graphs keep Patch 545's sampling, bins, breaks, gravity
+labels and console lines. The envelope is now binned over a VIEW, into a second
+buffer that swaps in when complete, so the comparison panel zooms about the
+cursor (wheel), pans (drag) and returns (right button, `fit`); `linegraph zoom`
+does the same from a cfg. Curves are drawn from a cache: each run's bins cut,
+once, to the fewest vertices within a physical pixel of what the bins hold. The panel wears the
+board's chrome and type: runs as chips, a card at the cursor with every run's
+speed, its gap to the fastest there and its energy, an assumed gravity said on
+the plot and starred in the card. The HUD graph is a hud_edit element (`graph`:
+`hud_linegraph_x/_y/_plots/_size`), 300 x 160 px under the map info, speed by
+default; it yields to the finish card and a held TAB board, marks an open
+replay's clock on its curve, and switches off from the board (`hud graph`,
+beside the line boxes that raise it), from the panel, or from the editor.
+`sui_scrollbar` gives a thumb a floor of four gutter widths (never over half
+the list) and shortens its travel to match; `sui_style_thumb` adds a grip.
+`_sui_round_draw` is written out cell by cell instead of looping over nine.
+For tests: `hud_edit ui hover|down|up` acts on whichever panel holds the
+cursor, the menu gains `ui_hover @id` and `ui_mouse down|up` (a drag), and
+`linegraph status` prints the view, the value ranges, the vertex counts and
+the playhead. No engine source, server QC, recorder, evidence, ranking, config
+default or Build change.
+
+On the ImGui question: Dear ImGui's own `PlotLines` is one unlabelled series;
+the library that draws such plots well is ImPlot, which is not vendored, and
+this host could not feed it (one native owner per VM per frame; 256 labelled
+widgets, no sample arrays). What it would have brought here, round axes, a
+legend that toggles, a hover readout, zoom and pan, smooth lines, is in the QC
+panel now, where every lobby player gets it. FTESurf ROADMAP 13 stage D holds
+what a native graph would still need.
+
+**Review.** One independent review of the first cut, six findings, all fixed:
+curves at the edge of a zoomed view (a row outside it was joined in across a
+break or a gap), a view that could be left outside the run, the cut's tolerance
+(the cone was three times as wide as the notes said: now half a pixel from each
+point it is fed), a drag that outlived another panel's cursor claim,
+`linegraph cursor`'s arguments, and an arm that counted vertices and read no
+ink (it now reads the trainer's panel, the cursor's line and the replay's
+playhead as pixels).
+
+**Verified.** FTESurf `eafb117`, on `31a70a6` (Patch 615 and its deployment
+record). Its progs are byte-identical to the build gated on `6fc1695`; nothing
+under `src/` differs between the two. Three progs at 0 warnings; qwprogs.dat is
+the installed Patch 615 file (`199ffdd83dec9651`). `tools/p610ui.py`: 0
+failures at 1920x1080 on GL and at 1280x720, 800x600 and 640x480 (where the
+map list has no height and its thumb is printed NOT GRADED), and 34 failures on
+main's build, as it should. `tools/test_ui_theme.py` against main: 0 failed
+with 15 declared rectangles, on the third run: one was lost to another
+session's window taking the foreground, and one to the real mouse cursor
+resting over the rig's menu, which moved a hover and nothing else.
+`p545graph.py` PASS; the `p603scores.py` board arm 0 failures. Curves: 104
+vertices on the HUD's speed plot, 197 and 542 on the panel's two, from about
+2300 points.
+Before the review fixes and the rebase over Patches 611 to 615, on the same UI
+code otherwise: D3D11 and Vulkan 0 failures, `test_ui_modern.py` 0 failed, the
+p603 six-arm suites 0 failures with the reader at 69/69, `p603life` the same 4
+failures the Patch 606 and 607 builds show and no other, p498 16/16. Profiled
+QC a frame on the desktop PC: HUD graph 0.24 ms (0.38 with both plots) against
+2.96, the panel 1.28 against 3.11, the trainer 0.36 against 0.16 (0.26 against
+0.20 in an earlier run).
+
+**Limits.** The curve's one-pixel bound is by construction; no arm measures a
+deviation. No marker for the player's own live run on the HUD graph (a replay
+has one). The trainer panel costs about half again the QC of the box it
+replaced; it is off by default. The map picker has no list at 640x480. A click
+in a scroll gutter away from the thumb still does nothing. Nothing ran on the
+N100 laptop, and no real mouse drove the wheel or a drag. FTESurf BACKLOG
+"Patch 610, left open" has the rest.
+
+**DEPLOYED 2026-10-10 14:12 to 14:14 UTC.** Both Windows installs, by a guarded
+copy that refuses unless each installed file is main's build (compared with
+fteqcc's compile date masked) and each source is the gated one: csprogs.dat
+`fe286a637a2d1ebb` and menu.dat `a8ef786dad01bb12` with their line tables.
+qwprogs.dat was already this build's (`199ffdd83dec9651`, Patch 615's) and was
+not written. `.prev` beside each is Patch 615's csprogs (`a28719be71d38908`)
+and the 10 Oct menu.dat (`d38891771c3ae376`). The Pi: `build.ps1 -Pi` from a
+clean worktree at `eafb117`, nobody on, all 12 lobbies restarted 14:14:04 to
+14:14:13 UTC. Read back in one call: csprogs `fe286a637a2d1ebb`, qwprogs
+unchanged, `.prev` the Patch 615 pair, 12 units active, no `.new` left.
+`tools/pi_lobby_smoke.py`: lobby 1 served `fe286a63` to a client with no
+csprogs of its own, and the board drew. Roll back: on an install copy each
+`.prev` over its file; on the Pi `cp -p csprogs.dat.prev csprogs.dat` in the
+game directory and restart `ftesurf@1..12` one at a time.
+
+## Patch 611 — the live run line takes each sample from the frame the server's stats describe *(MOD ONLY, csprogs)*
+
+**Problem.** The player's own live run line (`cl_trail.qc`) built each sample from
+two clocks. The position, velocity and ground flag were the client's PREDICTION
+for the current command frame; the ramp-contact bit and the run clock were server
+STATS, which describe the last command the server had acknowledged. On a local
+server those are the same frame. Behind a ping the stats are older by the round
+trip, so every stat was drawn beside a body that much further along its path, and
+the line's "landed" and "left the ramp" marks with it. Measured on a real socket
+against the server's own recording of the run (a scripted ride on surf_kitsune,
+exit at 890 u/s): the ramp-exit mark 44 u from its recorded contact sample at
+`sv_minping 60`, 79 and 100 u at `sv_minping 120` (101 u at 100 tick); every
+sample of the 120 ms run a median 69 u from the recorded sample carrying its
+clock. With no added latency it was 3 u. BACKLOG "Ramp-leave marks: what Patch 608
+left open", item 1; ROADMAP 12.4.
+
+**Change.** `Trail_Keep` keeps the predicted state of the last 64 command frames
+(position, velocity, ground flag, jump key, yaw, wish direction, client time),
+whether or not a run is on the clock. `Trail_Pair` picks the kept frame the stats
+in hand describe: `servercommandframe + 2`, because the engine draws one net
+interval behind real time (`cl_pred.c` CL_GetPredictionRealtime), so the state
+after acknowledged command A is on screen while the client's counter reads A + 2.
+On a local dedicated server that is the current frame and nothing changes. A frame
+with no new server state takes no sample; when the next snapshot acknowledges two
+commands, the frame between is sampled as well, its clock between its neighbours'
+and its ramp bit set only if both have it, so the line keeps one sample a command
+and a ride's marks stay on samples the server said were in contact. The current
+frame is used, as before, on a listen server, with `cl_nopred`, and once the
+client is 63 frames ahead (where the engine itself stops predicting).
+Teleports: one the client predicted (`cl_triggers.qc` now records the command it
+fired on, `tg_teleseq`) leaves the kept frames valid, because the server makes the
+same move on the same command; one the server made alone, a load and a hold move
+`tr_kfrom`, before which no kept frame is used. `trail` prints a `pairing` row.
+No engine source, server QC, recorder, evidence, ranking, default, ship-set or
+Build change: `qwprogs.dat` and `menu.dat` are byte-identical. FTESurf `14dee5d`.
+
+**Verified.** Three progs at 0 warnings. A dedicated server and one client on
+loopback in a private overlay, `sv_minping` holding the client's packets back,
+the changed build against the build deployed before it:
+- New arm `runlines_livelag.cfg` (`runlines_smoke.py --dedicated --map
+  surf_kitsune --server-arg "+set sv_minping 120"`), graded by
+  `test_runlines_livelag.py` against the recording the arm's saves leave in the
+  rig: 4 of 4. Land and leave marks 2.5 and 3.3 u from the recorded samples
+  carrying their clocks, 116 samples for 116 commands; the control is refused
+  (67 and 79 u). On a listen server the grader exits 2, CANNOT MEASURE.
+- Every sample the changed build took, from a diagnostic build that prints
+  them: at 120 ms 113 samples a median 2.5 u (at most 9.3) from the recorded
+  sample with the same clock, the ramp bit the recorded sample's on all 113;
+  at 60 ms a median 2.5 u (at most 4.8).
+- The arm at `sv_minping 250`: 2.4 and 4.1 u. At cl_maxfps 300 and 1000: leave
+  mark 1.3 and 0.6 u. At 100 tick, on a private copy of the map under a `bhop_`
+  name (the name loads the 100 Hz mode): 0.0 and 0.0 u, the control 73 and
+  101 u.
+- Under the tick rate, with a wider allowance: at 60 fps 20 and 28 u, at 30 fps
+  30 and 24 u. That is the frame rate, not the latency: the build before, with
+  no added latency, has one sample in ten a frame off at 60 fps (17 u at the
+  90th centile) and a median 12 u at 30 fps.
+- A run with a `cmd setpos`, a fall into a map teleporter the client predicts,
+  and six hops, at 120 ms: the predicted teleporter is classed as predicted and
+  the line runs to within a tick of it (3.3 u); the setpos is classed as the
+  server's and draws one sample of the old path; seventeen marks a median 0.6 u
+  (at most 1.6) from their recorded samples, 15.6 u (at most 28) on the control.
+- The existing dedicated lifecycle arm `runlines_reset.cfg` (grow, reset, rewind
+  cursor, load, fade, stage run): `test_runlines_reset.py` 5 of 5 with no added
+  latency, where no sample is taken from an older frame, and again at
+  `sv_minping 120`.
+- Recorded lines are not touched; `p449mark.py` on its eight recorded fixtures
+  gives the same result as before the change (seven pass, one fails containment
+  as it did: BACKLOG).
+One review round, on the first cut. It found that cut dropping the last round
+trip of path before a predicted teleporter, losing a one-tick ground contact in a
+frame no snapshot described, taking no sample at all under 12 fps with ping, and
+breaking the line after a 0.25 s stall; and the grader mixing two runs' reports,
+passing its control check on any mark and reporting "cannot measure" with a
+defect's exit status. All of that is what the Change above and the grader now do
+instead; the rework was measured as listed and not reviewed again.
+
+**Limits.** Under a tick each at 67 fps and above: the engine blends a sample up
+to one rendered frame past its clock (3 u at 100 fps and 890 u/s, under 1 u at
+1000 fps); a ride whose first or last contact tick fell between two snapshots is
+marked a tick late or early (10 u). Under the tick rate the line is only as right
+as it is with no latency at that frame rate; pairing by time instead of by frame
+count read about 2 u at 30 fps offline and is not built. On a listen server the
+stats lead the drawn body by under a tick (12 to 19 u at 890 u/s) and nothing
+corrects it. A save's picture and the rewind's resume point take the line's
+newest sample, which for a player with ping is now their ping short of where they
+are. The latency was `sv_minping`, not a real internet path; one ramp of one map;
+the predicted-teleporter case is one run; no ramp-to-ground exit. Human
+acceptance is lextest.md section 14.
+
+## Patch 612 — Steam accounts, stage 1: surfd signs a player in through Steam and stores the account *(MOD ONLY, surfd; schema 12)*
+
+**Problem.** A player is an engine guid: one per install, handed to any server
+that sends the fleet's `sv_guidkey`, and not a person. The owner wants records
+kept under a Steam account, which also gives the name and the picture, and a ban
+that is a ban on that account (FTESurf ROADMAP 14). surfd did not know what a
+Steam account was, and it had no ban.
+
+**Change.** surfd only: no engine source, QC, recorder, verifier, ranking or
+Build change. `surfd/accounts.py` and `surfd/steam.py`; schema 11 -> 12 is four
+additive tables (`accounts`, `links`, `linkcodes`, `linknonces`) that nothing
+ranking, verifying or publishing reads. With `SURFD_BOARD_URL` set,
+`/board/link` signs a browser in through Steam's OpenID and shows a ten-minute,
+single-use code; `POST /api/link` (shared key and a trusted source) binds the
+install that sends the code to that account, and `POST /api/account` says who an
+install is and whether the account is banned. The code goes from the browser to
+the game, so a link sent to someone cannot bind their account to the sender's
+install. A reply is put to Steam only if it holds exactly Steam's ten fields, its
+signed list is exactly Steam's seven, it is fresh and unseen, and it came back to
+the browser that left; a valid reply landing in another browser is recorded as
+seen. Steam is asked at most 3 times a minute per source, 30 for everyone and 2
+at once. An install that is already linked moves only on a second, confirmed
+request, and a ban never pins an install to its account. `SURFD_STEAM_KEY` adds
+the persona and avatar hash; a persona handed to a lobby goes through an
+allowlist and a 31-byte cap. `run.sh` creates gunicorn's log owner-only, because
+its access lines now carry sign-in return addresses. No lobby calls the two
+`/api` routes yet (ROADMAP 14.2), and a link carries no proof of the install's
+key until it does.
+
+**Review.** Three lenses on the first cut (the verification logic; what an
+attacker gains; stored data, migration and whether the tests measure). None
+found a way to get a code for an account one does not hold. What changed
+because of them: extra `openid.*` names were forwarded to Steam, whose parser
+might fold them onto real ones (not demonstrated; now an exact set); a reply
+that landed without the cookie could be finished by the cookie's holder if the
+victim handed the address back (now burned); a rule that refused to move a
+banned account's install let one player lock another out (removed); three
+addresses could spend everyone's sign-in budget (per-source cap and cool-off;
+thirty still can); `http.client` errors escaped as a 500; `^...$` patterns
+accepted a trailing newline, which made a second replay key; the persona
+sanitiser was a blocklist. The fix round's own suite then caught a lockout the
+fixes introduced (a table cap checked before its prune).
+A second round on the fixes, integrity only: the burn is best effort (a reply
+refused before it, by the victim's page limit, nginx or a lock, stays usable
+for the nonce window, now 120 s; FTESurf BACKLOG has it first), made-up strays
+could fill the replay table and close sign-in for an hour (they now stop at
+half of it, and a row lives five minutes), and one install could spend every
+lobby's `/api/link` allowance (its own limit now comes first). The feature is
+store-only, so the loop stops here; the first item is a gate on stage 3.
+
+**Verified.** `surfd/test_accounts.py`, with Steam faked and counting what it is
+asked and `steam.http` driven against a loopback server: 210 checks, 0
+failed, on Windows (Python 3.10, Flask 3.1) and in the Pi stage (3.11, Flask
+2.2). 89 single-edit mutants of the new code: 86 fail the suite and 3 survive
+alone, each one half of a doubled check whose pair dies. The other 60 surfd
+suites match the parent commit, test_admin's two Windows-only failures
+included. Against real Steam: a made-up assertion returns exactly
+`ns:http://specs.openid.net/auth/2.0\nis_valid:false\n` in 0.3 s from the
+desktop and from the Pi and reads as a refusal, a 302 is not followed, a bad key
+is a 403, and the real key returns a persona and a 40-hex avatar hash. Both
+pages were looked at as rendered. **Not verified:** a real sign-in's positive
+reply (FTESurf lextest.md), any game-side caller, and the race `BEGIN IMMEDIATE`
+is there for. Open items are in FTESurf BACKLOG, "Steam sign-in: what the review
+left".
+Published as FTESurf `76cfd63`. That commit deploys nothing.
+
+**Deployed.** 2026-10-10 10:20 UTC, surfd only (FTESurf `76cfd63`, recorded in
+`aa3a25f`): `surfd-deploy.ps1 -Ref 76cfd63 -Only` the seven files the patch owns.
+Twelve staged suites pass on the Pi, the files hash-match the commit, master
+2479950 SIGHUP'd, `schema migrated 11 -> 12`, `surfd ready` 10:20:14, /health
+12 lobbies. `surfd.env` gained `SURFD_STEAM_KEY` and `SURFD_BOARD_URL`;
+`logs/gunicorn.log` went 644 -> 600. Read back live through proto.bar: the page
+200 under the board's CSP, the redirect accepted by Steam's own sign-in form,
+the `__Host-ftl` cookie's attributes, 400 for a return with no assertion, 405
+for a HEAD, and both `/api` routes 404 through either vhost. The four tables
+are empty. Rollback and the database backup's name are in FTESurf AGENT_NOTES,
+"Steam accounts". No lobby, progs, binary or config changed. A real sign-in is
+still unmade.
+
+## Patch 613 — a replay's Segments rows are told where the line broke; the peak that fills the mark table goes with the rest *(MOD ONLY, csprogs)*
+
+**Problem.** A replay builds two things from a recording: the run line with its
+marks (`Watch_ScanRange` feeding `Line_Point`) and the Segments rows
+(`Watch_BuildSeq` feeding the live HUD's own segment machine, `Board_Frame`). The
+line knows where the recording moved the body, a break, and clears its ramp hold
+there. The segment machine only noticed a position step of over 512 u
+(`SEG_JUMPDIST`). So across a shorter teleport, and from standing still across any
+teleport, it carried on:
+- a ramp ride whose bit had just cleared stayed held, and its row ended where the
+  0.08 s hold ran out. On `bhop_monster_jam` a 154 u teleport 0.06 s after a ramp's
+  last contact left a row starting 0.02 s past it, at a tick the line marks
+  nothing on: the containment failure `tools/p449mark.py` has reported on that
+  recording since Patch 530 gave the line its reset;
+- an air row opened "off the ground" across a teleport was measured from the
+  ground left behind. One surf_rookie recording had a 0.54 s "Bhop" row reading
+  +23807 at 99.96%; seven such rows over 1500 in size across four of eight
+  recordings.
+Separately, `Line_EvAt` cuts every apex and trough when a slot's mark table
+(4096) fills, and then appended the very mark that triggered the cut even when it
+was itself a peak. BACKLOG, the two entries under Patch 608's.
+
+**Change.** `Watch_ScanRange` lists the file lines it broke the line on
+(`rec_wt_bkl`, 4096, over that it says so) and `Watch_BuildSeq` calls the new
+`Board_LineBroke` before `Board_Frame` on those lines. It ends the held ride, as
+the line's does; forgets the launch point, so a hop opened next is measured from
+where it starts; has `Board_Frame` move the open segment's reference by the energy
+step across the break, height and speed both, so no row is charged what the engine
+did; sets `seq_break`, so the rows either side are not merged; and a fall that
+begins with a teleport, with no launch point, is not named Jump or Bhop (build
+pass only). The live board is not told and behaves as before. `Line_EvAt` returns
+when the mark that filled the table is a peak. `tools/p449mark.py` takes a break
+mark as a mark a row may end on and counts its "marks with no row" per mark. No
+engine source, server QC, recorder, evidence, ranking, default, ship-set or Build
+change: `qwprogs.dat` and `menu.dat` are byte-identical. FTESurf `63eea9c`.
+
+**Verified.** Three progs at 0 warnings. Private overlays (`runlines_smoke.py`),
+the changed build against the published one:
+- New arm `runlines_segbreak.cfg` replays an authored body
+  (`runlines_segbreak.rec`, 155 samples, no player data) holding three teleports
+  under 512 u: off standing ground into a fall; a ramp ride moved 150 u along and
+  60 u down 0.045 s after its last contact; a fall moved 160 u up with its speed
+  cut. `test_runlines_segbreak.py`, with rows written by hand, 5 of 5: the three
+  touched rows read -3.5, -0.2 and -2.6 and the ramp row ends on its teleport's
+  tick. The published build is refused: +196 at 89% named a hop, -60.5 ending
+  three ticks late, +107.6. A variant that removed only the step's height is
+  refused too (-52.7 on the row whose teleport rewrites speed).
+- `p449mark.py` on its eight recorded fixtures (surf and bhop): 8 of 8, the bhop
+  save included; all 4,659 marks unchanged. Of 1,894 rows 86 change and none is
+  added or dropped. The seven rows over 1500 in size that touched a break read
+  124, 125, 138, 20, 8.5, -5.9 and -2.2. With the grader's new rule on the
+  published build that recording still fails, so the rule is not what passes it.
+- The mark-table fix with a private `LN_EVCAP 20` build on a surf run: one apex
+  row beside `cut 1` before, none after, 20 marks kept both times.
+One review round. It found no regression, and gaps: the merge could re-sew a cut
+ride onto the next, the cut row still closed at the post-teleport energy, the cap
+was silent, the post-teleport fall kept a hop's name, and the grader could skip
+its control. Those are in the Change above; they were not reviewed again.
+While measuring: cutting the hold alone made one surf_4am row worse (+4935: with
+the phantom held ramp gone, the next row took the ground left behind as its
+launch point), which is what the launch-point half is for; and taking out only
+the step's height charged a fail teleport's zeroed speed to the hop (-76 where
+the flight gained 99), which is why the whole step goes.
+
+**Limits.** The live Segments column is unchanged and has the same faults when
+the server moves the body; not measured live. A segment moved over 512 u is still
+dropped whole rather than kept with the step taken out. The arm's recording is
+one whole range with no `board` record, no cut ride under 0.10 s and no merge
+across a break: a stage window's break list and those paths were read, not run.
+Three rows of the surf_rookie recording still read under -2700 with no break in
+them and were not looked at. Human acceptance is lextest.md section 15.
+
+**DEPLOYED 2026-10-10 (Patches 611 and 613, together).** A build of FTESurf
+`f141ee4`, whose QC is `63eea9c`'s: `csprogs.dat` `7dca72dc`; `qwprogs.dat` and
+`menu.dat` identical to what was already installed.
+Windows, 10:28Z: `csprogs.dat` and `csprogs.lno` into `C:\FTESurf\ftesurf` and
+`C:\FTEQuake\ftesurf`, each of which held the Patch 608 csprogs (`69515b32`) and
+is kept beside it as `.prev`. No game was running.
+The Pi: `build.ps1 -Pi` from the clean worktree, 10:28Z to 10:29Z. Before it, in
+one read: the Pi held the Patch 608 csprogs and a `qwprogs.dat` identical to this
+build's; 12 lobby rows, 0 players. The only QC changed since the Patch 608 deploy
+is these two patches' five client files. Both files hash-verified on the Pi and
+swapped, the previous pair kept as `.prev`; all 12 lobbies restarted. Read back
+from the host: `csprogs.dat` `7dca72dc`, 12 lobby processes started 10:28:55Z to
+10:29:04Z, 12 directory rows. `tools/pi_lobby_smoke.py` against lobby 1: a client
+with no csprogs of its own was served `7dca72dc`, drew the board and logged no QC
+error. No config, engine or surfd change.
+
+## Patch 614 — the run graphs' plots on ImPlot: a counted sample-series interface, ImPlot 1.0 vendored, native owner 206
+
+**Problem.** Patch 610 gave the run-graph panel a view, chips and a readout in
+QC, and its record said what a native graph would still need: the host
+(`cl_plugin_ui.inc`) had no way to hand a provider sample arrays, only 256
+labelled widgets; ImPlot, the library that draws multi-series plots on Dear
+ImGui, was not vendored; and one owner a VM draws once a frame. The owner then
+asked for it: plots a player can manipulate, in a game that is about analysing
+movement. The QC plots are a 384-bin envelope a view, redrawn through the QC
+polygon path: every zoom rebuilds the bins over frames, the value axes are QC
+arithmetic, and there is no selecting a stretch or giving one plot more room.
+
+**Change.** Engine, plugin and mod.
+
+*Engine.* `NativeUIPlot/1` (`plugins/plugin.h`) is a third additive table from
+the NativeUI provider: `SetPlot` takes a revision of up to 16 series, each a
+run of rows (x, two values, a break flag; 65,536 rows a series, 589,824 a
+revision), and `SetView` takes what moves between revisions (hidden and
+emphasis masks, a marker, the caller's caption size, a one-shot x range).
+Numbers only; no string crosses it. Six CSQC/MQC builtins stage it
+(`cl_plugin_ui_plot.inc`): `ui_native_plot_status/begin/series/rows/commit/view`.
+`rows` is the first native UI builtin handed QC POINTERS: each is resolved with
+the VM's own bounds check (`PR_PointerToNative_MoInvalidate`, `count` floats at
+offset 0), read through memcpy (a QC pointer need not be aligned), copied into
+host arrays that live and die with the owner, and the whole copy is validated
+(`PlugUI_PlotValid` in `plugins/ui_model.h`: counts, contiguous ranges, x never
+decreasing, and every number finite and within `PLUGUI_PLOT_MAX_VALUE`, 1e9
+either way, x judged less its offset) before the provider is called; the
+provider validates again. A bad call poisons its transaction; a VM may begin
+two a frame. `cl_plugin_mesh.inc`, for every owner: a triangle wholly inside
+its clip skips the four clipping passes (which return it unchanged), and a
+backend draw carries up to 4,096 vertices where it carried 512.
+
+*Plugin.* ImPlot 1.0 (`epezent/implot` v1.0, `524f9fcd`) is vendored beside
+Dear ImGui: `implot.h`, `implot.cpp`, `implot_internal.h` and its MIT licence,
+byte-identical to that commit's blobs and pinned in `vendor/SHA256.json`. Its
+item templates (`implot_items.cpp`, 6.9 MB of objects) are not vendored: owner
+206 draws its own curves, and `ImPlot::BustItemCache`, the one symbol the core
+needs from that file, is an empty function. Owner 206 (`plots.inc`) is two
+plots on one linked time axis inside the inherited clip: wheel zoom about the
+cursor, drag to pan, right-drag to select a stretch, the right button or a
+double click for everything, a bar between the plots that drags, value axes
+that fit the rows in view. Curves are cut by a swing filter to the fewest
+vertices within 0.25 px of every row they replace and kept per plot until the
+revision, the series shown, an axis or the plot's rectangle changes. It reports
+the visible range, the time under the cursor, the points drawn and the plots
+cut afresh as `NativeUIInput/1` actions 1 to 5, each bounded to the 1e6 the
+host accepts from an action; a range request is cut to the run before ImPlot
+sees it; a vertex is bounded before it is a float; a marker outside the view is
+not drawn. The plugin is built with asserts live, so for this owner ImGui's
+recoverable-error asserts are off and an error callback fails the frame
+instead. Axis labels are a 10,596-byte ASCII subset of Roboto Regular (SIL OFL
+1.1, `fonts/`), baked at eight sizes. The plugin grows from 1.36 to 1.65 MB.
+
+*Mod.* `cl_linegraph.qc`: where `NUI_PlotAvailable()` and `ui_native_graphs`
+(default 1) say so, the panel's two plots are owner 206's. QC still draws the
+panel, the chips, the footer and the readout card, and still owns every number:
+it sums an energy array a run (`lgn_e`, 8192 rows a frame), publishes revisions
+by pointer into the line arenas, sends the view each frame, forwards the mouse
+as one event a frame (the latest position or one wheel notch, taking turns:
+ImGui takes a wheel after a move a frame later), and reads the range and the
+cursor's time back; the card reads `LineGraph_At` at that time. Anything
+missing or refused and the QC plots draw in the same frame. A draw refused once
+is another owner's frame (the board's native table has drawn when its chip
+opens the panel) and costs that frame only; refused, or the owner lost, on
+three frames running, the plugin is given up for that open. The HUD graph stays
+QC. `linegraph status` prints the native state; `linegraph probe` sends twenty
+hostile transactions through the real builtins, one a frame; `refuse` and
+`lose N` let a cfg force the two ways out.
+
+**Review.** Two independent reviews of the first cut, one on memory safety in
+the host and plugin, one on the QC state machine and the harness. No
+out-of-bounds read, use after free or leak was found. Found and fixed: a draw
+refused in the frame the board's table drew was latched as the plugin failing;
+a zoom request outside the run came back as a report past what the host
+accepts, the owner was dropped at the poll and the panel opened a new one every
+frame; a button held when another panel took the mouse stayed held; a position
+ahead of every wheel notch outran ImGui's one-a-frame queue; conversions of
+unbounded values to int and float; ImGui asserts live in the plugin build. In
+the harness: the native arm passed when the plugin did not draw, the fallback
+arms read no pixels, one check compared a variable with its own copy, and five
+grammar cases were refused by a neighbouring rule.
+
+**Verified.** FTESurf `56d8582`; engine `a67cebe1e`, tag `patch-614`. A full
+rebuild from the tagged commit (client, server, five plugins), stamped
+`git-7165-patch-614-0-ga67cebe1e`; the compiler's warnings are the same set as
+the Patch 606 build's. Client `7c97e69b27cad2b2`, server `1c338f6407b15489`,
+ui_imgui `69929fe57fa06826` (1.65 MB), hl2 `4406ae6a98515b7e`, box3d
+`1c84820d8875a915`, cod `0075ba6836efa39a`, ode `69a1707306958895`.
+*Unit* (`tools/test_p614plot_unit.py`): the host bridge over a small VM, 352
+checks; the shared grammar, 63 cases; the provider under a fake host at both
+index widths, 1894 checks each, with the swing filter at 0.250 px over 301 runs
+and nine full series of noise drawn in 12,000 points; 0 failed.
+`tools/p614mutants.py`, one edit to a copy of the tree a mutant: 29 of 30 host
+mutants caught, 42 of 46 grammar, 28 of 30 provider. The seven survivors are
+named equivalent there with their reasons, and a mutant that does not build is
+NO RUN, not a catch: two of the first sweep's catches had been an unused
+variable and an unused function under -Werror. The older native-UI suites on
+this tree: p590 174, p600 702, p601 184, p603dense 2872, p603scores 3750
+checks, 0 failed.
+*Live* (`tools/p614plots.py`, the stamped binaries, three made-up 50 s runs).
+The native arm, 0 failures on GL at 1920x1080, 1280x720, 800x600 and 640x480
+and on Vulkan: three series from 2550 points; a view that is only read is never
+cut afresh (328 frames, none of them QC's); hover, zoom, wheel, pan, right
+button, box, hide, emphasis, a replay's marker, twenty hostile transactions and
+a renderer restart graded on the panel's own lines and on pixels. Each defect
+the review found has a step, and the build from before the fixes fails each:
+one out-of-range zoom opened the plugin's owner 133 times in 0.7 s (now none);
+the wheel with the mouse moving ended in refusal 6 (now 160 events in 478
+frames, nothing refused); a button held when another panel took the mouse left
+the plots panning 2.6 s under a bare cursor (now still); opening from the
+board's chip was refusal 5 (now one draw refused, and the plugin drawing).
+Off, no plugin, a Patch 606 plugin, a Patch 606 engine: 0 failures, the QC
+plots read as pixels. The native scoreboard on the new mesh path
+(`p603scores.py` native1, native2, legacy): 0 failures.
+*Cost*, uncapped at 1080p on the desktop PC, the two routes alternating in one
+run: 2.06 ms a frame native against 1.39 to 1.51 for the QC plots; 2.19 against
+1.61 with the cursor on the plots; 0.88 against 0.83 with no curve shown.
+
+**Limits.** The plugin is not in the release ship set: only the two development
+installs draw native plots, and shipping it is a release decision (the DLL, the
+MIT notices for Dear ImGui and ImPlot, the OFL notice for the Roboto subset).
+D3D11 is graded on the open panel's pixels alone (the same counts as GL): the
+real mouse reached that rig in both of its runs, 77 and 106 positions, and the
+arm said INTERFERED before any gesture. The plugin is built with ImGui's
+asserts live; owner 206 routes the recoverable ones to a callback, the other
+owners do not, and a plain `IM_ASSERT` still ends the process. The native plots
+cost about 0.6 ms a frame more than the QC ones on this machine and were not
+measured on the N100 laptop. No real mouse drove them. A number past 1e9 (an
+energy at a gravity near zero) is refused whole and the QC plots draw. One
+owner a VM: the native scoreboard and the native plots are never up together.
+The value axes always fit what is in view; the time axis steps in ImPlot's
+tens. FTESurf BACKLOG "Patch 614, left open" has the rest.
+
+**DEPLOYED 2026-10-10 15:03 to 15:07 UTC.** Both Windows installs, by guarded
+copies that refuse unless every installed file is the published one it
+replaces and every source is the gated build: the client (`7c97e69b27cad2b2`
+as C:\FTESurf\ftesurf64.exe and C:\FTEQuake\fteqw64.exe), the server
+(`1c338f6407b15489`, C:\FTEQuake\fteqwsv64.exe), the five plugins in both,
+csprogs.dat `ce6397a5a3de525e` and menu.dat `19874c5a21619d1b` with their line
+tables. qwprogs.dat was not written (`199ffdd83dec9651`). `.prev` beside each
+replaced file is what it replaced: the Patch 606 client and plugins, the Patch
+609 server, Patch 610's csprogs and menu.dat. The Pi: `build.ps1 -Pi` from a
+clean worktree at `56d8582`, nobody on, all 12 lobbies restarted 15:06:34 to
+15:06:42 UTC; read back in one call: csprogs `ce6397a5a3de525e`, qwprogs
+unchanged, `.prev` Patch 610's pair. `tools/pi_lobby_smoke.py` with a copy of
+the installed client and hl2 plugin: lobby 2 served `ce6397a5` and the board
+drew on a Source map.
+ONE THING THE PATCH'S WORDS GOT WRONG, found after the deploy: the plugin
+draws only where it is LOADED, and a normal boot does not load it. Measured
+in an isolated rig with the mod's own default.cfg and both DLLs beside the
+exe: `plug_loaddefault` reads 3, `plug_list` says `fteplug_ui_imgui_x64.dll:
+not loaded`, `ui_imgui_status` is an unknown command until `plug_load
+ui_imgui`. Every arm loads it explicitly, so none noticed. On an install the
+native plots therefore want `plug_load ui_imgui` typed once a session; loading
+it by default is the owner's decision and is asked in FTESurf lextest.
+Roll back: copy each `.prev` over its file on an install; on the Pi
+`cp -p csprogs.dat.prev csprogs.dat` in the game directory and restart
+`ftesurf@1..12` one at a time.
+
+## Patch 615 — Steam accounts, stage 2: `link <code>` in the game, and every connect proves its install's key *(MOD ONLY, qwprogs + csprogs + surfd; schema 13)*
+
+**Problem.** Patch 612 gave a player a code on the board site and nothing took
+it: no lobby called `/api/link`, and a link was keyed on the engine guid, which
+any server that sends the fleet's `sv_guidkey` is handed. A link that anyone
+holding a harvested guid could move, or take before its owner did, is not
+something to rank times under (FTESurf ROADMAP 14.3).
+
+**Change.** No engine source. `src/server/sv_account.qc`,
+`src/client/cl_account.qc`, `surfd/accounts.py`; schema 12 -> 13 adds `linkkeys`
+(keyed on the install's `fskey` public key) and `linkcodes.claim`, and drops
+12's guid-keyed `links`, which no caller ever wrote, if it is empty. Still
+store-only: nothing ranks, verifies, publishes, kicks or refuses on it.
+
+An install is its key, and every lobby call carries a signature by it over
+rec_sign's own statement, whose ticks line says which of three kinds it is: -2
+a connect, -3 asking to link, -4 confirming. No run signs below -1 and
+`SV_RecRcpt` refuses below -1, so `Account_Proof`, which now sees each
+`rec_rcpt` before `SV_RecRcpt`, takes exactly those three and passes every
+other receipt on untouched.
+
+- **Connect.** The client's game code asks, the lobby mints a nonce from the
+  OS, the client signs it, `/api/account` answers for that key, and the lobby
+  says who the install is linked to or how to link it.
+- **`link <code>`, then `link <number>`.** The client sends a digest of the
+  code, never the code, and signs a second digest of it; surfd checks the
+  signature and that the address the CLIENT signed is this fleet's on that
+  lobby's port, keeps the code for the key that asked, and names the account.
+  The lobby prints a six-digit number of its own; `link <number>` signs it, and
+  that signature spends the code and links. A linked install is told where it
+  would move from. Two commands because text another server left in a client
+  can type the first and cannot read the second.
+- **The sign-in page** lists the account's installs and unlinks one (two GETs),
+  in the browser that signed in.
+- Per-player limits are keyed on the client address the lobby saw, not the
+  guid. surfd marks every lobby reply, because a request that never connected
+  reaches QuakeC as code 0 with no body and must not read as "not linked".
+
+**Review.** Two rounds. Three lenses on the first cut (evidence, the game
+code's flow, what an attacker gains), which was one command, sent the code in
+clear and signed ticks 0. They found: a proof could be filed as a kept
+abandon's receipt, or eat one (hence the three negative kinds); text left in a
+client by another server could type the whole link (hence the number); the
+code crossed an unencrypted channel (hence the digest and the claim); limits
+keyed on a guid let one player spend another's; an unlink link worked from any
+browser; a reply with no body read as "not linked". The second round read the
+redesign through two lenses and found no way to lose, misfile or forge a run's
+receipt. It found that THE NUMBER DOES NOT STOP WHOEVER CAN WRITE TO THE
+CONNECTION: `link` is a game-code command, and one that arrives as stufftext
+is signed like a typed one. Measured afterwards with a probe build whose server
+typed both commands at the client: linked. It also found that a server the
+player was on earlier can take the command's name, and that the digest of a
+40-bit code can be searched. None costs anything while nothing ranks on a
+link, and all three have one fix, `link` in the engine for the local console
+only, which is now the first paragraph of FTESurf ROADMAP 14.3 and a condition
+of it. Fixed from that round: account state and a pending request survived into
+the next occupant of a client slot until their `spawn`; the account commands
+now wait for ClientConnect; the game code warns when `link` is already a cvar.
+The feature is store-only, so the loop stops there.
+
+**Verified.** `surfd/test_accounts.py`: 292 checks, 0 failed. 150 single-edit
+mutants of the surfd code (`tools/accounts_mutants.py`): 141 fail the suite and
+9 survive alone, each one part of a doubled check whose pair fails. The sweep
+first left eight more: five wanted tests, one a pair, and two checks changed no
+answer and were deleted. `tools/p615link.py`, the installed server and client
+in a private rig against this checkout's surfd with Steam faked, typing into
+the client and reading the lobby's number back: 19 checks, 0 failed, among them
+a wrong number, a blind guess, a signature over the wrong nonce, and two
+run-shaped receipts reaching the run's handler while a link was owed.
+`--refuse-address` (the address check's control), `--taken` (`link` already a
+cvar) and `--receipt` (a whole run on these progs leaves one receipt that
+`rcptcheck.py` reads as valid) pass; `--receipt` failed on a build that takes
+every receipt, against the first cut's dispatch. ONE FAILURE WAS FOUND BY THE
+ARM AND NOTHING ELSE: 1 reconnect in 9 had its connect proof refused, because
+the game clock jumps at connect, the ask and its retry fired together, and the
+first signature was posted under the second nonce. Forced by one console line
+(two nonces issued, `proof`), fixed at both ends, and the arm keeps the case.
+test_board, test_surfd, test_web and test_join pass. Build: 0 warnings.
+**Not verified:** more than one client on a lobby, a client that sends account
+commands before it spawns, the browser's side of the cookies, and a real
+player's link on a real lobby (FTESurf lextest.md).
+Published as FTESurf `6fc1695`. That commit deploys nothing.
+
+**After publishing.** `surfd-deploy.ps1 -Ref 6fc1695` refused to install: in its
+suite stage on the Pi, test_board's two-threads-migrating arm raised `no such
+table: main.links`. A process still in schema step 12's script reached `CREATE
+INDEX ... ON links` just after another had finished step 13 and dropped the
+table. Every desktop run had passed. FTESurf `3adb6f8`: step 12 no longer makes
+that table, and test_accounts.py lets a second connection finish both steps at
+each of their six statements in turn, failing on the old script at the third
+with the Pi's error (294 checks; 151 mutants, 142 killed, 9 expected pairs).
+The live database was already at 12, so its own upgrade was never the one at
+risk.
+
+**Deployed.** 2026-10-10 13:45 to 13:49 UTC, FTESurf `3adb6f8` (recorded in
+`31a70a6`). surfd: the five files the patch owns, twelve staged suites passing
+on the Pi, files hash-matched, `schema migrated 12 -> 13`, `surfd ready`
+13:45:47, /health 12 lobbies; `links` gone, `linkkeys` empty, the one account
+row intact. Lobbies: `build.ps1 -Pi` from the clean worktree, 0 players,
+`qwprogs.dat` `199ffdd8` and `csprogs.dat` `a28719be` hash-verified on the Pi,
+the Patch 613 pair kept as `.prev`, all 12 restarted. Windows: the same two
+progs and their `.lno` into both installs, no game running; `.prev` there is
+now the Patch 613 pair; `menu.dat` and every binary untouched. Read back live
+once: `pi_lobby_smoke.py` through `play.proto.bar:27510`, a rig client with a
+new key and no csprogs, was served `a28719be`, drew the board, and 18 s after
+connecting was told its install is not linked; surfd logged that lobby's `POST
+/api/account` 200. Nobody has typed `link` on a real lobby yet. Rollback and
+what was not measured about it are in FTESurf AGENT_NOTES, "Steam accounts".
+
+## Patch 618 — fteplug_ui_imgui is loaded at client boot *(MOD ONLY, cfg/default.cfg)*
+
+**Problem.** Patch 614's ImPlot plots draw only where `fteplug_ui_imgui` is
+loaded, and nothing loaded it. FTESurf's `cfg/default.cfg` names hl2 alone, and
+the `plug_loaddefault 3` beside it does nothing for a DLL next to the exe: the
+scan that cvar controls runs in `Plug_Initialise`, before the file is read, and
+the cvar is not saved between boots. Found after Patch 614 was deployed, by
+booting a plain rig: every arm of that patch types `plug_load ui_imgui`
+itself. The owner had to type it each session, and when asked said "yes, make
+it default".
+
+**Change.** One line in FTESurf `cfg/default.cfg`, beside hl2's:
+`if $dedicated == 0 plug_load ui_imgui`. `$dedicated` is the engine's own
+macro (`cmd.c`, "1" or "0"), so a dedicated server never touches the DLL.
+`ENGINE.txt`'s `patch` moves to 618. No QC, progs, engine source, recorder,
+evidence, ranking or Build change; the binaries are Patch 614's.
+
+**Verified.** FTESurf `9239f6f`. Three plain boots of the stamped Patch 614
+binaries on that default.cfg, in isolated rigs that issue no `plug_load` of
+their own: a client with the DLL beside it lists
+`fteplug_ui_imgui_x64.dll: loaded` and answers `ui_imgui_status`; a client
+without it boots with the plugin absent and the QC panels; a dedicated server
+with the DLL beside it lists it not loaded. The control, the same server on a
+default.cfg with the guard taken out: it loads the DLL, the plugin refuses, and
+the log reads `Couldn't load plugin ui_imgui`. `tools/p614plots.py`'s native
+arm on a rig carrying the file (so the plugin is loaded twice over, by the file
+and by the arm): 0 failures.
+
+**Limits.** A client without the DLL, which is every release so far, prints
+`Couldn't load plugin ui_imgui` once at boot; whether a release ships the DLL
+or drops the line is the release decision Patch 614 left open. The line was
+not run through the Pi's own server binary: the lobbies were not restarted for
+a line they skip, and the three things it could do there (skip on the macro,
+skip on an unexpanded `$dedicated`, or print that one line) are all harmless.
+The plugin now runs in every session on a development install, where before
+it ran only when asked; what is known about that is Patch 614's gate, on GL
+and Vulkan. `plug_loaddefault 3` still does nothing.
+
+**DEPLOYED 2026-10-10 15:30 to 15:31 UTC.** `cfg/default.cfg`
+`e971b8cb0ced3e67` (42,742 bytes) in both Windows installs, by a copy that
+refuses unless the installed file is the predecessor (`8fd357ac59147c8a`); the
+predecessor is kept beside each as `default.cfg.pre618-20261010T153048Z`. The
+Pi's copy was replaced too, for parity with the repo and nothing else
+(`default.cfg.pre618-20261010-153115` beside it, hash read back in the same
+call); no lobby was restarted. Roll back: copy the `.pre618` file over
+`default.cfg`.
+
+## Patch 617 — the Steam link is made in a box, by key presses and nothing else *(MOD ONLY, qwprogs + csprogs + surfd page text)*
+
+**Problem.** Patch 615 took a link as two console commands, `link <code>` and
+`link <number>`, on the argument that text a server left in a client cannot
+read the number. Its own review then had a probe server type both commands at
+a client and link it: the engine runs a stuffed game-code command, and game
+code's `localcmd` sits one level above where `rec_sign` refuses. And a cvar
+named `link`, left by an earlier server, turned a typed code into a `setinfo`
+sent in the open. The owner, separately, asked whether the number could just
+be an OK box.
+
+**Change.** No engine source. `link` opens a box drawn by the client's game
+code (`cl_account.qc`). The code, ten characters now, is typed INTO the box;
+Enter sends its digest and the engine's signature for it; the lobby answers
+with the account's name and its number as a stuffed `acct_ask`; Enter on "link
+this game to X?" signs the number, and that links. Esc cancels. No console
+command carries a code or produces either signature.
+
+The box acts only on key events the ENGINE delivered. `CSQC_InputEvent` is now
+a five-line entry that sets `cl_input_real` round `CL_InputEvent` (the old
+body), and nothing in QC may call it; `vote key` and `spectate look`, harness
+commands that feed the input chain from the console, call `CL_InputEvent` and
+find the box deaf. It takes presses and never releases, keeps its own account
+of which keys are down, ignores a held key's repeats and every key for 0.6 s
+after the question appears, and answers to Enter, Y, N and Esc only: the
+engine's `in_journal_synth` injects SPACE through the device path. The server
+side (`sv_account.qc`) sends the box words in place of sprints; surfd's
+protocol is unchanged.
+
+**Review.** One round, two lenses on the committed tree. "Can anything but a
+key press make a link" found the box sound and TWO OTHER ROADS TO THE SAME
+SIGNATURE, both older than this patch. The run's receipt (`cl_replay.qc`)
+signed `rec_sign <nonce> <ticks>` with both taken from the server, and -3 and
+-4 are tick counts: it signs nothing below -1 now. And game code builds console
+lines out of text: `zone_goto` and `ghost speed` pasted a typed argument in
+whole, so a quoted `1;rec_sign ...` ran as a second command at game code's
+level; both take a number now. About fifty more `localcmd` calls carry text and
+have not been read for the same thing. The honest state is therefore: the BOX
+is keyboard-only, the CLIENT is not yet, and whoever can write to a player's
+connection may still find a line that signs. FTESurf ROADMAP 14.3 now opens
+with the fix, which is in the engine (signing as a builtin for game code, the
+console command for the typed console alone), and nothing ranks on a link
+before it. "Did the input change break anything" found nothing for a player
+who never opens the box, and with it: the release of a key the box took was
+swallowed while its repeats went to the game once the box closed (a held `2`
+loaded a saveloc), Esc after a confirm printed "cancelled" over a link that
+went through, and the box drew under panels it took keys ahead of. All fixed.
+
+**Verified.** `tools/p615link.py`, which now presses real keys in the rig's
+window (WM_KEYDOWN on its queue) beside console lines on stdin: 25 checks, 0
+failed, against the Patch 614 binaries. Its controls: an Enter fed down the
+input chain from the console, the engine's injected SPACE presses and a held
+Enter's repeats link nothing; an answer nobody asked for raises no question; a
+code given on the console is not sent; no .qc under src/ calls
+`CSQC_InputEvent`; a marker is no longer echoed through `zone_goto` or `ghost
+speed`. THE SAME ARM FAILS ON TWO BUILDS MADE TO FAIL IT: with the key guard
+removed the console's Enter moved the link, and on the build before the two
+command fixes both markers were echoed. `--refuse-address`, `--taken` and
+`--receipt` pass. `surfd/test_accounts.py` 294 checks, 0 failed; 153 mutants,
+144 fail the suite, 9 survive alone as halves of doubled checks. Build 0
+warnings. EACH STATE OF THE BOX WAS LOOKED AT AS DRAWN, and that found what
+the arm could not: one line sat on the footer, and with the console window
+open nothing was drawn at all, so `link` appeared to do nothing. The arm
+itself was wrong twice on the way: it typed into a box that was not up yet,
+having matched an earlier box's "open" line, and a second Esc of its own
+opened the game's menu, which took the keyboard for the rest of the run.
+**Not verified:** that the run's receipt signs nothing below -1 (needs a server
+that sets the stat; by reading), more than one client on a lobby, and a real
+player's link in the box (FTESurf lextest.md).
+Published as FTESurf `7c1161c`. That commit deploys nothing.
+
+**Deployed.** 2026-10-10 15:49 to 15:52 UTC, FTESurf `7c1161c` built at `2dd135a`
+(recorded in `4d37d16`), after eleven minutes waiting for the owner to leave a
+lobby. Lobbies: `build.ps1 -Pi` from the clean worktree, 0 players, `qwprogs.dat`
+`092f9880` and `csprogs.dat` `4355bdf0` hash-verified on the Pi, the previous
+pair kept as `.prev`, all 12 restarted. Windows: the same two progs and their
+`.lno` into both installs; `menu.dat`, binaries, plugins and default.cfg
+untouched. surfd: accounts.py and test_accounts.py, twelve staged suites
+passing on the Pi, both files hash-matched, `surfd ready` 15:51:49. Read back
+live twice through `play.proto.bar:27510`: a rig client with no csprogs was
+served `4355bdf0` and told how to link in the new words; and a rig client
+opened the box on that lobby, typed a made-up code with real key presses and
+was refused by the live surfd (`POST /api/link` 200 in its log), linking
+nothing. A link made in the box is still unmade: it needs a Steam account.
+Rollback is in FTESurf AGENT_NOTES, "Steam accounts".
+
+## Patch 616 — the live Segments column is told where the body teleported *(MOD ONLY, csprogs)*
+
+**Problem.** Patch 613 told a REPLAY's segment machine where its recording moved
+the body. The player's own column is the same machine (`Board_Frame`), run once a
+rendered frame on the predicted body, and it still only noticed a step of over
+512 u, and that only while a segment was open. So while playing:
+- an air row opened "off the ground" across a teleport was measured from the
+  ground left behind. surf_kitsune does it at the start of every session: the
+  spawn room's door lifts a walking body 300 u onto the floor above, where it
+  lands within a tick or two. That fall is too short to be a row, so its +300 was
+  carried into the next one, and the first jump up there read +358 for a jump
+  worth +57.5;
+- a row a teleport under 512 u fell inside took the teleport's energy step: a
+  jump moved 247 u up in mid-air read +301, a body moved 200 u up off the floor a
+  "Jump" of +201.
+BACKLOG, "Segments rows at a teleport", item 1.
+
+**Change.** `Board_LiveMoved` (`cl_board.qc`), called from the HUD just before the
+live `Board_Frame`, calls `Board_LineBroke` on a frame the body was moved. Two
+signals.
+A map teleporter the client predicted (a dedicated server only: on a listen
+server the engine does not run the prediction hook). `cl_triggers.qc` keeps the
+command it fired on (`tg_teleseq`) and the command its hook last ran on
+(`tg_lastseq`), which is the upper of the two states the drawn body lies between.
+The engine blends a move under 128 u between those two, so every frame on which
+the two are equal is told, and the first frame past it, and the frame a teleport
+is first predicted on. The command counter only bounds a stale pair.
+Anything else: the replay's own kinematic rule between two rendered frames, 64 u
+more than the two velocities explain, and no looser.
+A save-lock load is NOT told. Its restore puts the open row back with the
+reference the save holds, the event and the placed origin need not share a
+frame, and letting a hold go moves the body with no event at all. So nothing is
+told from the event (`Board_ResetContact` starts a 2 s clock; or the event is
+still unread this frame; or `ui_rs_armed`) or while a hold or a rewind's pin is
+up, until the next step is seen.
+`Board_Frame`'s break block also moves `seg_laste`: an air time that lands on
+the frame it is moved closes at "last frame's" energy (build 88), which was the
+other side of the step. That line runs in the replay pass too. An air row opened
+with no ground sample is not named Jump or Bhop live either (it was build-pass
+only). `replay seq live` prints the column and how many teleports it was told
+of, predicted and kinematic; `cl_trigdebug 1` prints each, and each load step
+kept quiet. `tg_teleseq` is cleared on map load.
+No engine source, server QC, recorder, evidence, ranking, default, ship-set or
+Build change. FTESurf `adc724d`.
+
+**Verified.** Three progs at 0 warnings. New arm `runlines_seglive.cfg` with
+`test_runlines_seglive.py`, private overlays (`runlines_smoke.py`), on the Patch
+614 client. It stays in surf_kitsune's spawn room, which has no zone, and prints
+the column after each of seven stages: a plain jump; that jump moved 247 u up in
+mid-air; a body moved 200 u up off the floor; the same put back on the floor 0.3 s
+into the fall; a third such fall saved, then loaded with the load key's own pair
+from 200 u away; the room's door (a map teleporter, 300 u up); and a jump on the
+floor above. Eight variants, 10 tests each, 8 of 8: a listen server at 60, 99 and
+286 fps drawn; a dedicated server at 99 fps, and behind `sv_minping 120` at 30,
+72, 99 and 281 fps drawn (`cl_predtrace` prints the rate; `cl_maxfps` only caps
+it). Across the eight the plain jump reads 57.44 to 57.52, the jump moved in
+mid-air 56.89 to 58.49, the body moved off the floor -0.01 to 0.08 and not
+named a hop, the fall put back on the floor -0.01 to 0.13, the column over the
+load moves -0.01 to 0.14 with the load's own step (288 to 295 u) printed as
+kept quiet, and the jump after the door reads 57.87 to 57.96. Against a server
+the door is told as predicted (1 predicted, 5 kinematic); on a listen server
+all six are kinematic.
+Three controls, each one edit compiled out, two runs each (a server, a listen
+server), each refused for its own reason: without the call the four rows read
+243.4, 200.9, 200.9 and 300.4 more than they should; without the `seg_laste`
+line the row put back on the floor reads +200.71 and +200.78; with a load's
+step told like any other the column moves -183.25 and -185.75 over the load.
+One review round, on the first cut. It found that letting a held load go is a
+step with no event (shown afterwards: behind 250 ms a 400 u/s save moved 129 u on
+release and that cut told it as a teleport; this one prints it as a load's and
+tells nothing); that the predicted window was keyed on the command counter, which
+is the wrong command about half the time, hidden because the door is too far to
+be blended and the grader summed both kinds; that the LOAD stage passed when no
+load happened; and that a frame with no clock advance moved the baseline
+untested. Those four are in the Change above and in the grader, which now wants
+the door's break to be the predicted kind where the hook runs and wants the
+subject to say it saw the load's step. They were measured where an arm reaches
+them and were not reviewed again.
+ONE FIX MADE AFTER THE REVIEW WAS WRONG AND IS NOT IN THIS PATCH. The review
+also calculated that correcting a booster the client had not predicted would
+read as a teleport, and the threshold was given that speed change times the
+unacknowledged time. On the next full pass the arm failed 1 variant of 8: at
+30 fps behind 120 ms the server put a falling body back on the floor, 157 u,
+and the column was not told (the count after STOP read 3 for 4), where two
+earlier passes of that variant had been green. The allowance is out again and
+the booster is BACKLOG item 3, open and unobserved. That variant five times on
+each build, same controls: with the allowance 1 of 5 pass (the move untold in
+4), without it 5 of 5, the move told as a step of 108 to 119 u against a
+threshold near 68. So the one green run that variant had given on the pass
+before was the fifth, and a longer round trip than 120 ms will lose the move
+with or without the allowance; where is not measured.
+Replays, on the same build: Patch 613's arm 5 of 5 (-3.51, -0.18, -2.61; the
+build before 613 refused). Eleven recordings of eleven maps replayed on this build
+and on the control, whose replay pass is the published one: 1,782 rows, none
+differs. That shows no row moved; it does not exercise the `seg_laste` line in
+the replay pass, since no break in these files is also a landing. The live STOP
+stage and its control are what show that line.
+
+**Limits.** One room of one map; a walk, jumps and falls, no ramp; expectations
+written by hand, not `replay seq` of the same run. NOT DRIVEN BY ANY ARM: a
+predicted teleporter under 128 u, which the engine blends across a command (the
+arm's is 300 u); it is read and reasoned, and it is the case the review's second
+finding was about. The correction of a booster the client did not predict may
+still be told as a teleport: calculated, never observed, and not cured (see
+above). A move under 128 u that the client did not predict (every teleporter on a
+listen server) is seen only at a low frame rate, and under 64 u never. After a
+load the column is deaf until the next step it sees, or 2 s. A load without the
+hold from standing ground into a mid-air save still breaks its restored row, as
+it did before. The latency was `sv_minping` on loopback. BACKLOG, "Segments rows
+at a teleport". Human acceptance is lextest.md section 16.
+
+**DEPLOYED 2026-10-10 (Patch 616).** A build of FTESurf `adc724d` in a clean
+worktree: `csprogs.dat` `ebc342f0`, the file every measurement above was taken
+on; `qwprogs.dat` (`092f9880`) and `menu.dat` (`19874c5a`) byte-identical to
+what both Windows installs and the Pi already held, read before the deploy.
+The only commit between the build that was live and this one is this patch.
+Windows, 16:15:00Z: `csprogs.dat` and `csprogs.lno` into `C:\FTESurf\ftesurf`
+and `C:\FTEQuake\ftesurf`, each of which held Patch 617's csprogs (`4355bdf0`),
+kept beside it as `.prev`. Read back afterwards with a second tool. Another
+session's test rigs were running; they take their progs from their own
+directory and that session said so before the copy.
+The Pi: `build.ps1 -Pi`, 16:15:26Z to 16:16:05Z. 12 lobby rows, 0 players. Its
+own recompile gave the same two hashes; both files hash-verified on the Pi and
+swapped, the previous pair kept as `.prev`, which is now the whole Patch 617
+build (the `qwprogs.dat` before 617 is no longer kept there). Read back from
+the host: `csprogs.dat` `ebc342f0`, and all 12 lobby processes started
+16:15:57Z to 16:16:06Z. `tools/pi_lobby_smoke.py` against lobby 1: a client
+with no csprogs of its own was served `ebc342f0`, drew the board (screenshot
+looked at) and logged no QC error. That smoke does not pass a teleporter: the
+rule was measured in rigs on this file against a local server, and one lobby of
+twelve was connected to. No config, engine or surfd change.
+
+## Patch 620 — names drawn whole and in real letters; the name on a line slides along it *(MOD ONLY, csprogs + menu.dat)*
+
+**Problem.** The owner: "a lot of names have characters the text doesn't have
+or something? so we get these glitched looking names", and of the name on a
+ticked line in the world, that it is in the engine's bitmap font and "sort of
+jumps segment to segment, instead of smoothly sliding along". Measured before
+anything was changed: on five Momentum boards 74 of 845 names hold characters
+the three shipped faces lack (symbols, kana, Cyrillic, Hanzi, Thai, Arabic,
+emoji) and six hold a `^`. Five causes, all the mod's:
+
+- each font slot and the console had ONE face, so a missing glyph was the
+  engine's hex box, or for Cyrillic its KOI8 transliteration ("PRIWET");
+- QC strings are bytes here (`utf8_enable` 0), so `substring(name, 0, 18)` cut
+  inside a character and left a stray red letter;
+- a `^` in a name was read as a colour code;
+- three display readers took `argv(1)` for a recording's `owner`, its first
+  word, where the grammar says "may contain spaces; read to end of line": 560
+  of the 6077 recordings on the desktop have a space in it;
+- the name on a line was drawn in whatever face was current, at the nearest of
+  at most 256 samples, about 300 u apart on a 50 s run at speed.
+
+**Change.** FTESurf only; the engine already does what is needed. `loadfont`'s
+face argument is a comma-separated list and a glyph comes from the first face
+that has it (`Font_LoadFont`, gl_font.c); a face is looked for in the game and
+then in the OS font directory. So every slot and `con_textfont` now name the
+system's own fonts after the shipped one (`FONT_FB_WIN`, `FONT_FB_LINUX` in
+`sh_font.qc`): nothing is added to the download or redistributed. A saved
+`con_textfont` that is exactly the old default is moved to the list; any other
+value is the player's and is left. `UI_CharBytes` is where a string's first n
+characters end (a fourth continuation byte in a row counts as one, so a damaged
+file cannot outrun four bytes a character); `UI_NameShow` cuts there and
+doubles a `^`. `UI_OwnerLine` reads the owner to the end of the line; a name
+wrapped in quotes still reads as what is inside, as the tokenizer gave it.
+`LineGraph_WorldLabels` sets the UI face and puts the name at the nearest POINT
+of the line where text can be read: in front of the eye and inside 2..98% by
+6..86% of the screen, less the text's width. For a line being ridden along that
+is where the line comes onto the screen. `hud_watch_path_far 0` ("never fade")
+no longer hides every name. `linegraph status` prints the eye and each label's
+point, screen position and text. `ENGINE.txt`'s `patch` moves to 620; `commit`
+and `tag` stay.
+
+**Verified.** FTESurf `16b94fe`, on the stamped Patch 614 binaries.
+`tools/p620names.py`: four authored runs with one made-up name of each kind
+(no real player's). Five eyes looking across the lines, between samples: 20
+labels, all on the true closest point (0.001 u), whole text, the 22-character
+name cut after 18. Three eyes on a line looking along it: all four labels on
+screen, the ridden line's at (960, 928.8) of 1920x1080, each the same distance
+ahead of the eye at all three (spread 0.02 u). A console face of the player's
+own that begins with the shipped one is still theirs after the next
+`Font_Init`. Controls, each of which fails: the refinement compiled out (labels
+up to 26.2 u off); the first cut, which had no on-screen rule (the along view's
+labels at (957, 3681) and the like, and the player's console face replaced);
+the cut without its close-crossing pass (an eye 10 u from a line gets no name).
+Shots looked at beside main's: boxes and "PRIWET" before, letters after.
+`p610ui.py` graphs 0 failures. `test_ui_theme.py` against main: 0 of 30 checks
+failed, its 13 menu and board shots identical to the pixel.
+
+One independent review, of the first cut. It found the off-screen label (by a
+model of the two loops, which the arm then measured), the hover card's byte
+cut, a console-face migration that also moved a player's own list, and a cut
+that bounded characters but not bytes. All four are fixed in what was
+published. The look gate failed the first cut's board for drawing a quoted
+fixture name with its quotes, which is where the quoted-name rule came from.
+
+**Limits.** The fallback faces were seen on one Windows machine, which has all
+seven; the Linux list was never loaded. No shaping and no bidi: Arabic and Thai
+are their letters in file order, and emoji are one colour. A glyph no face has
+is still the hex box. Text still drawn in the engine's bitmap font shows boxes
+as before (the replay's title bar and info rows), and the native scoreboard's
+table has a Latin-only face. The hover card's cut and the byte bound are fixed
+by reading, not by an arm. A ridden line's name sits on the 86% line at mid
+screen whatever the player has put there. BACKLOG, "Patch 620, left open".
+Human acceptance is lextest.md, "names you can read".
+
+**DEPLOYED 2026-10-10 (Patch 620).** A build of FTESurf `16b94fe` in a clean
+worktree: `csprogs.dat` `3c7c15d5` and `menu.dat` `e5604321`, byte for byte the
+files every measurement above was taken on; `qwprogs.dat` (`092f9880`) is what
+both Windows installs and the Pi already held. The only commit between the
+build that was live and this one is this patch. No game was running.
+Windows, 17:47:52Z: `csprogs.dat`, `menu.dat` and their line tables into
+`C:\FTESurf\ftesurf` and `C:\FTEQuake\ftesurf`, by a copy that refuses unless
+the installed files are the build of the previous main (they were Patch 616's,
+`ebc342f0` and `19874c5a`, kept beside each as `.prev`). Read back afterwards.
+The Pi: `build.ps1 -Pi` from that worktree, 17:48Z. 12 lobby rows, 0 players.
+Both uploads hash-verified on the Pi and swapped, the previous pair kept as
+`.prev`. Read back from the host in one call: `csprogs.dat` `3c7c15d5`,
+`qwprogs.dat` `092f9880`, `csprogs.dat.prev` `ebc342f0`, and all 12 lobby
+units active, started 17:48:39Z to 17:48:48Z. `tools/pi_lobby_smoke.py`
+against lobby 1: a client with no csprogs of its own was served `3c7c15d5`,
+drew the board (screenshot looked at) and logged no QC error. That smoke draws
+no ticked line and no name with a glyph the shipped faces lack: those were
+measured in rigs on this file, and one lobby of twelve was connected to.
+`menu.dat` is not served and is not on the Pi. No config, engine or surfd
+change. Roll back: copy each `.prev` over its file.
+
+## Patch 621 — the strafe trainer keeps its last eight jumps, and a ramp ends a jump *(MOD ONLY, csprogs + cfg)*
+
+**Problem.** The owner, of the strafe trainer: "after you've made a jump, the
+info is gone and you can't read it! maybe a rolling buffer?" Two things did
+that. The panel held one jump, and the next jump's first strafe replaced it.
+And a jump was take-off to landing by the ground flag alone, which on a surf
+map is the whole flight: over the 106 recordings in the desktop's `data/runs`
+(their `fl` bits 1 and 16; a few are arm fixtures) one a run at the median, the
+longest 163 s, 56 of them past the ring's 16 strafes, so the panel was a window
+sliding over it. A landed jump went on changing as well: its timeline's span
+was `trn_clock - t0` and grew on the ground, and its "+N u/s" followed the
+ground speed.
+
+**Change.** FTESurf `cl_trainer.qc`. Every strafe and trace array is nine
+blocks: block 0 is the open jump, indexed as the sampler always did, and a jump
+that ends is copied to one of eight (`Trn_Keep`). The panel draws any block
+through one range (`Trn_View`): the open jump once it is 0.15 s old and has a
+strafe, else the newest kept, else one the player stepped to with
+`trainer older` / `trainer newer` (LEFTARROW and RIGHTARROW in
+`cfg/default.cfg` and `cfg/defaultuser.cfg`); the next jump kept takes the panel
+back. A strip under the panel has a cell a jump, its grade and the speed it
+added (`hud_trainer_jumps`). A jump is free air: ramp contact ends it as the
+ground does (`hud_trainer_split`, on; 0 is the old rule). By that rule the same
+recordings are five jumps a run, median 0.90 s and three strafes, none past 14.
+A jump under 0.15 s is not kept: the ramp flag drops out for one to four ticks
+in the middle of a ride (185 times there), and what follows a dropout is not a
+jump. A strafe's sync is timed from the clock its key went down at, which is
+read on the ground and the ramp too: a key held into a jump gets no number.
+Placed low, the taller panel rises to keep its bottom edge on screen.
+`trainer status` prints what an arm grades and `trainer feed` authors the
+body's state for one. `ENGINE.txt`'s `patch` moves to 621; `commit` and `tag`
+stay.
+
+**Verified.** FTESurf `e50eaac`, csprogs `87bd5e43`, on the stamped Patch 614
+binaries. `tools/p621trn.py`, fed arm: the rig's map has no floor, so its real
+flags say air for ever; `trainer feed` authors ground, ramp and air and
+`+right` each strafe's rate, so every kept jump is known without the subject.
+Three jumps of 2, 3 and 2 strafes at 300, 400 and 500 deg/s kept with what
+ended them; a 30 ms gap in a ride and a strafe-less jump counted and not kept;
+paging and its two stops; release by the next jump; a kept jump unchanged by
+hard strafing on the ground afterwards; the open jump on show; ten jumps
+leaving 3..10; `hud_trainer_split 0`; the strip's cells counted in pixels (8
+kept, then 3) and gone with the switch; a key held 400 ms into a jump with no
+sync, and one pressed with its flick just before the jump timed from the press.
+0 failures. `--real`, nothing fed, on surf_kitsune: a hop from the spawn ended
+by the server's ground flag (735 ms of air, 755 authored) and a drop onto a
+real ramp ended by its ramp flag. Seven one-line mutants: all seven fail the
+fed arm. `p610ui.py`'s graphs arm, which grades this sampler's rates and its
+late flick: 0 failures. The first cut also passed `p620names.py` and
+`test_ui_theme.py` against main (0 of 30); the changes since are inside
+`cl_trainer.qc`.
+
+One independent review, of the first cut. It found a sync number given to a key
+that was merely held off a ramp or the ground (its emulation over the same
+recordings: 123 of the 408 first strafes after a ride), a dead stretch when a
+clamped panel is dragged in hud_edit, and `trainer feed` outliving the panel;
+and that the counts first quoted came from a census rule that did not ship.
+All are fixed in what was published. The sync fix is measured: the reviewed cut
+gives the held key -15 ms and times the pressed one +45 ms from the take-off.
+The other two are by reading.
+
+**Limits.** Eight jumps, each 16 strafes and 256 trace ticks: on a bhop map,
+eight hops. A ramp touched for one to three ticks splits a jump in two (12 in
+those recordings, against 1530 jumps). A teleport inside a jump is in its
+numbers, as it was in the old panel's header (the review's emulation: 116 of
+1453 kept jumps); now each is a kept cell. At 1920x1080 with hud_scale 2 the
+default place overlaps the Segments column as soon as a jump has a row. The
+cells cannot be clicked. The strip's cost was not measured. `p462trn.cfg`, the
+original sync arm, runs on an install and was not rerun. BACKLOG, "Patch 621,
+left open". Human acceptance is lextest.md, "the trainer keeps your last
+jumps".
+
+**DEPLOYED 2026-10-10 (Patch 621).** A build of FTESurf `e50eaac` in a clean
+worktree: `csprogs.dat` `87bd5e43`, byte for byte the file the gate ran on;
+`menu.dat` (`e5604321`) and `qwprogs.dat` (`092f9880`) are what both Windows
+installs and the Pi already held. The only commits between the build that was
+live and this one are this patch and Patch 620's deployment record. Another
+session's rig ran the installed server binary for under a minute just before
+(it takes its progs from its own directory, and said so); the copy waited for
+it to end.
+Windows, 18:20:34Z: `csprogs.dat` and its line table into `C:\FTESurf\ftesurf`
+and `C:\FTEQuake\ftesurf`, by a copy that refuses unless the installed file is
+the build of the previous main (Patch 620's `3c7c15d5`, kept beside each as
+`.prev`); and `cfg/default.cfg` `591c3236` over its predecessor `e971b8cb`,
+kept beside each as `default.cfg.pre621-20261010T182034Z`. Read back
+afterwards. `cfg/defaultuser.cfg` changed in the repo only: nothing executes or
+ships it, and the second install has no copy.
+The Pi: `cfg/default.cfg` by hand at 18:20:50Z, swapped only because the live
+file was the predecessor (kept as `default.cfg.pre621-20261010-182050`); two
+cvars and two binds a server never reads, for parity with the repo. Then
+`build.ps1 -Pi` from that worktree: 12 lobby rows, 0 players, both uploads
+hash-verified and swapped, the previous pair kept as `.prev`. Read back from
+the host in one call: `csprogs.dat` `87bd5e43`, `qwprogs.dat` `092f9880`,
+`csprogs.dat.prev` `3c7c15d5`, `cfg/default.cfg` `591c3236`, and all 12 lobby
+units active, started 18:21:31Z to 18:21:40Z. `tools/pi_lobby_smoke.py`
+against lobby 1: a client with no csprogs of its own was served `87bd5e43`,
+drew the board and logged no QC error. That smoke does not switch the trainer
+on: the panel was measured in rigs on this file, and one lobby of twelve was
+connected to. No engine or surfd change. Roll back: copy each `.prev` and
+`.pre621` file over its file.
+
+## Patch 619 — the Steam link starts in the game: a prompt, a copied address, four digits *(MOD ONLY, qwprogs + csprogs + surfd; schema 14)*
+
+**Problem.** Patch 617 made linking safe and left it a chore: find the site,
+sign in, read a ten-character code, open the console, type `link`, close the
+console, type the code, Enter, Enter. Nothing told a new player any of it
+except a line that scrolls away at connect. The owner asked for the least
+friction that can be had: a popup on first launch, the address copied, a site
+nobody can get wrong, "or maybe ... auto magically linked".
+
+**Change.** No engine source. An install that is not linked gets a small
+prompt on its first lobby of a game (`acct_is`, sent with the connect proof's
+answer). It takes Enter and Esc and leaves every other key to the game. Enter
+STARTS a link: the client makes a secret of its own (the opener), the lobby
+issues a nonce, and the client's key signs the two together (`rec_sign`,
+ticks -5, a fourth kind no run produces). surfd's new `/api/link/start` keeps
+that signature and issues a code. The client copies its own constant address
+with the code and the opener after it (`clipboard_set`; game code cannot open
+a browser) and shows it. The page the player signs in on shows a four-digit
+number. The lobby asks `/api/link/wait`; when somebody has signed in, the box
+asks "link this game to X?" and for the number, and Enter signs the lobby's
+own number (ticks -4, as in 617) and sends the page's beside it. surfd
+compares: one try, and a wrong number spends the start. A ten-character code
+typed into the box, for a sign-in that did not start in the game, is 617's
+flow unchanged.
+
+The code in the address is public and links nothing; the number is what ties
+the browser to the game, and both consents stay (the account's owner signed in
+and carried a number to a game; the install's owner typed it under the
+account's name). The number crosses the game's wire in the clear, so it has to
+be worth nothing to anyone but the key that started: that is what the opener
+is for. The start's signature is over the lobby's nonce AND the opener, which
+nobody but that client has seen, so surfd cannot check it when the start
+arrives; it checks it when a sign-in brings the opener, and it verifies only
+for the key whose client made the address. A code swapped on a rewritten
+connection, or a start registered by somebody who watched, opens nothing. The
+sign-in pages are one centred card each, light or dark with the browser, no
+script (`web/link.css`). surfd schema 14 adds `linkcodes.shown` and `seal`.
+
+**Review, and what it changed.** One round, three lenses, on the first cut,
+which typed nothing at all: the site attached the signed-in account to the
+start if the browser was at the address the game had started from. "What does
+an attacker gain" answered that an address is a household, a campus or a
+carrier's NAT, and that at rollout every account is one with no install: a
+start sent to somebody at the same address took their account for the
+sender's install with a sign-in and nothing more, and the reverse (an account
+of the attacker's choosing, named like the victim's, under the victim's
+question) needed only sight of the code. Rather than patch the address rule,
+the binding was replaced: nothing depends on addresses now, the page's number
+does the tying, a second account signing in for one start ends it for both,
+and a sign-in that came with a start's code never yields a typed code. The
+other two lenses found no wrong link and a list of smaller things, fixed with
+it: Esc between the Enter and surfd's reply left the start out, and its reply
+armed ten minutes of waits for a closed box; the same account reloading the
+page spent its own start; the lobby's number died after 90 s while the player
+was still in the browser; starts could fill the cap that closes sign-in to
+everybody, and waits spent the link steps' fleet-wide allowance; `link` was a
+no-op while the unasked prompt was up; and the first cut's Tab ("I have a
+code") is half of Alt+Tab. A second reviewer then read the number binding
+alone and found its hole: the number goes to the lobby in the clear, and game
+code, which does not know its own key, took whatever code the connection
+handed it, so a rewritten connection could sign a player in for somebody
+else's start and read the number off the wire. Its advice was that the client
+has to know the code is its own. A digest of a client secret sent with the
+start, the first answer, can be copied into another key's start; the opener
+under the start's own signature, checked when the browser brings it, cannot.
+A third read was of that alone.
+
+**Verification.** `surfd/test_accounts.py`, 353 checks. `tools/accounts_mutants.py`,
+194 mutants (it learned to pin a mutant to a function: thirteen older ones
+matched twice once the new endpoint repeated `/api/link`'s limits, which became
+one `link_call`); the last full sweep was of 191 and left five to move or
+strengthen, and those and the three added since were re-run on their own: all
+killed, or surviving alone where a second check covers the same hole.
+`tools/p615link.py` on the installed engine binaries, 34 checks and its three
+other modes (5, 5, 3): the prompt comes up by itself and leaves the game a
+bound key; an Enter fed from the console and a stuffed code start nothing; the
+code with an opener that is not this client's opens nothing; a "browser" at
+another address signs in with the address the box showed and is shown a
+number, and the game asks for it by itself; Enter and Y without the number
+link nothing; the number links; Esc on the wait cancels it; a wrong number
+says so and spends the start. An earlier cut with the `acct_go` gate and the
+`cl_input_real` checks removed failed the controls. The box's states and the
+pages were looked at as pixels. FTESurf `66a4225`.
+
+**Deployed 10 Oct 2026, 18:40-18:45 UTC** (FTESurf `66a4225`, record `4740401`),
+over Patch 621's pair, which was read back on the Pi and both installs first.
+surfd first: accounts.py, surfd.py and the new web/link.css, twelve staged
+suites passing on the Pi, files hash-matched, `surfd ready` 18:42:47, /health
+12 lobbies; schema 14, `linkkeys` still its one row. Lobbies: `build.ps1 -Pi`
+from the clean worktree, 0 players, `qwprogs.dat` `2e41110e` and `csprogs.dat`
+`8a5ccca3` hash-verified on the Pi, the 621 pair kept as `.prev`, all 12
+restarted by 18:44:09. Windows: the same two progs and their `.lno` into both
+installs at 18:44:36, no game running; `menu.dat`, every binary and
+default.cfg untouched. Read back live once: a rig client with a new key joined
+lobby 1 through `play.proto.bar`, got the prompt unasked, and a real Enter
+started a link (surfd logged the start and kept its seal; the lobby's waits
+came two seconds apart and stopped at Esc). Nobody has signed in for a start
+on a real lobby yet: that needs the owner's Steam account. Rollback order is
+in FTESurf AGENT_NOTES, "Steam accounts".
+
+## Patch 623 — the Windows release ships the ui_imgui plugin, with its notices *(MOD ONLY, release tooling)*
+
+**Problem.** The owner asked whether the ImPlot run graphs ship in the next
+release. They did not: `fteplug_ui_imgui_x64.dll` reached the two development
+installs through `build.ps1 -Engine` and was in no ship list, so a release
+player got the QC plots and, since Patch 618 loads the plugin at boot, one
+"Couldn't load plugin ui_imgui" line.
+
+**Change.** FTESurf `src/release/release.ps1`. The DLL is in the ship list;
+gate 3 compares it with `engine\release` beside the exe and the hl2 plugin (no
+built copy at all is "cannot check", one missing beside the others is skew),
+and the three are hashed again once staged. `VERSION.txt` and the receipt carry
+its hash. `THIRD-PARTY.txt` is generated into the stage and is about that DLL:
+the notices of Dear ImGui, ImPlot (read from the head of `implot.h`: the
+vendored `LICENSE-implot.txt` names one of the two holders), the stb headers
+inside Dear ImGui, ProggyClean, the Roboto subset (`plugins/ui_imgui/fonts/OFL.txt`)
+and winpthreads. A text missing or not the one expected stops the release.
+`SOURCE.txt` named this fork's branch as `engine-patches`, which stops at
+Patch 500 and has no `plugins/ui_imgui`; it says `main`. The `qcbuild` drift
+check read `ENGINE.txt`'s first 40 lines and the pin is at line 179; it reads
+the file. Two tools: `tools/release_tree.py` and `tools/release_dryrun.ps1`,
+which runs the script's dry run with rclone, ssh, scp and curl replaced by
+counted stubs, because that dry run otherwise writes a probe object to the
+production bucket.
+
+**For this tree.** `plugins/Makefile` links the plugin `-static-libstdc++
+-static`, and libstdc++ brings winpthreads with it: 134 `pthread_*` names in
+the DLL, none in `fteqw64.exe` or the hl2 plugin. Its licence (MIT and a BSD
+part) asks for its notice with binary copies; FTESurf's `src/release/notices`
+holds a copy of the compiler's own `COPYING`. `vendor/LICENSE-implot.txt`
+(pinned in `SHA256.json`) says "2020 Evan Pezent"; `implot.h`, `implot.cpp` and
+`implot_internal.h` say 2020-2024 and add a second holder for 2025-2026.
+
+**Verified.** FTESurf `ea83c9f`. No release was cut. In a scratch worktree with
+a QC build, the stamped Patch 614 binaries and the install's untracked ship
+files: gates 1 to 4 pass, 805 files staged, the archive's 805 entries identical
+to the stage, three rclone calls swallowed; the staged DLL is the installed one
+(`69929fe5`). Controls, each stopping the script with its own message: the DLL
+absent from the tree, a byte appended to it, its built copy absent beside the
+other two, `implot.h` moved aside, a byte appended to the staged copy while the
+rest was being copied. One independent review of the first cut found the gate
+asking for all three built copies or nothing (it passed a tree holding only a
+different exe and hl2 plugin), ImPlot's second holder, stb, winpthreads, a
+Roboto pointer onto a blank OFL template and the branch; all fixed before
+publishing.
+
+**Not done.** The release carries no notices for what the exe and the hl2
+plugin are built with; the Linux archive has no such plugin.
+
+## Patch 622 — the player's own run on the run graphs, as it happens *(MOD ONLY, csprogs)*
+
+**Problem.** The owner: "the graphs would be great if you could see your own
+line competing with it as you race!" The run graphs drew the open replay and the
+ticked board runs and left the live trail out on purpose (Patch 545): a slot's
+bins are rebuilt whole when its line changes, the live one changes every tick,
+and a ticked run's time starts at a run or at a stage where the live clock has
+only the run's.
+
+**Change.** FTESurf `cl_linegraph.qc`, with two per-slot floats in
+`cl_lines.qc` and two lines in `cl_watch.qc`. The live trail's slot is a graph
+slot. Its zero is the one the ticked runs have: the stage in progress, from the
+server's stage base, where a ticked run shows that stage; else the run's start
+beside a whole run; else it is not drawn. A changed answer waits 0.25 s of the
+line's own growth, because the timer's stats are the server's present and the
+line is its past. New samples are folded into the drawn bins as they arrive and
+only that curve is cut again; a rebuild that only the live run asked for keeps
+the ticked runs on screen. It is drawn last, white and wider, with a dot and a
+hairline at its head, and stays after the run until the next one starts.
+`hud_linegraph_live` switches it. The plugin's plots (Patch 614) take its rows
+as one more series, republished as they grow. Published after Patch 623, so
+`ENGINE.txt`'s `patch` stays 623; `commit` and `tag` stay.
+
+**Verified.** FTESurf `6448f72`, csprogs `47444c35` (the clean build is the
+gated one, byte for byte), on the stamped Patch 614 binaries, in the gallery
+rig, where the timer really runs. `tools/p622live.py`, three arms: the head a
+tick behind the timer's clock with every sample folded; the span growing by
+quarters past the ticked runs' end; white ink in the plot from its left edge to
+the head's column and none with the switch off; a stage 2 line drawn from the
+server's base on the way out of the box; the plugin drawing three series and
+refusing nothing. One independent review of the first cut found a real defect
+in the arm's own passing log: a teleport into the next stage's box gave the
+line that was ending the next stage's zero (one dot, energy 52.6). With a
+stage 1 run ticked the arm now reads the line in that box: still stage 1's,
+all its samples, not growing; the first cut fails it. Also from the review, and
+measured: a live rebuild blanked the whole graph (eight ticked runs: blank
+frames 0 to 7 as they are ticked, 7 after three live rebuilds); a stale axis
+cut every curve again a frame (3 cuts in 1.7 s, 108 with the test taken out);
+the plugin's `fit` chip stayed up past the longest run. Ten one-line mutants,
+each caught at its own step.
+
+**Not done.** Nothing with a save state in it was driven (the rig cannot load
+one), nor a real staged map, nor a ping; FTESurf's BACKLOG lists what the review
+read there.
+
+**DEPLOYED 2026-10-10 (Patch 622).** A build of FTESurf `6448f72` in a clean
+worktree: `csprogs.dat` `47444c35`, byte for byte the file the gate ran on
+(the gate's build was of the same QC one commit earlier in the branch; the two
+files were compared whole). `qwprogs.dat` (`2e41110e`) and `menu.dat`
+(`e5604321`) are what both Windows installs and the Pi already held from
+Patch 619. The only commits between the build that was live and this one are
+Patch 619's deployment record, Patch 623 (release tooling, no QC) and this
+patch. The process list held no game a minute before the copy; another
+session's rigs, which take their progs from their own directories, were
+starting about then.
+Windows, 20:12:41Z: `csprogs.dat` and its line table into `C:\FTESurf\ftesurf`
+and `C:\FTEQuake\ftesurf`, by a copy that refuses unless the installed file is
+the build of the previous main (Patch 619's `8a5ccca3`, kept beside each as
+`.prev`). Read back afterwards.
+The Pi, `build.ps1 -Pi` from that worktree: 12 lobby rows, 0 players, both
+uploads hash-verified and swapped at 20:13:28Z, the previous pair kept as
+`.prev`, all twelve lobbies restarted. Read back from the host in one call:
+`csprogs.dat` `47444c35`, `qwprogs.dat` `2e41110e`, `csprogs.dat.prev`
+`8a5ccca3`, twelve lobby units active. `tools/pi_lobby_smoke.py` against
+lobby 1: a client with no csprogs of its own was served `47444c35`, drew the
+board and logged no QC error. That smoke ticks no run and starts none: the live
+line was measured in rigs on this file, and one lobby of twelve was connected
+to. No engine, cfg or surfd change. Roll back: copy each `csprogs.dat.prev`
+over its file.
+
+## Patch 625 — account proofs leave the console: `acct_sign` for game code, signed only under a device's key press *(ENGINE client + qwprogs + csprogs + surfd; schema 15)*
+
+**Problem.** The Steam link (Patches 615-619) was signed by `rec_sign`, a
+console command. It refuses a server's stufftext, but game code's `localcmd`
+runs one level below that, so it obeyed game code, and game code builds console
+lines out of text in some fifty places; Patch 617's review found two that
+pasted a typed argument in whole, and nobody has read the rest. So whoever can
+write to a player's connection might find a line that makes their key sign a
+link with no key pressed, and FTESurf's ROADMAP 14.3 is about to rank on links.
+Game code also had no random source and could not open a browser, which is why
+Patch 619's link start took two round trips and a pasted address.
+
+**Change.** `engine/client/cl_receipt.c`, `pr_csqc.c`, `in_generic.c`, `cl_main.c`,
+`cl_parse.c`, `keys.c`, `common/plugin.c`. No header is touched, so no plugin interface moves.
+
+- `CL_Receipt_AcctSign` signs a statement of the account's own,
+  `FTESURF-ACCT 1 / server / nonce / kind / key / code`, which no older engine
+  can produce. `key` says whether a device's key press was being delivered to
+  game code when it was signed. Kinds -3, -4 and -5 (ask, confirm, start a
+  link) are REFUSED without one; -2 (the connect's "which account am I") is
+  not. `code` is the SHA-256 of the csprogs the VM was made from, hashed as
+  the VM was handed it (`CSQC_PRLoadFile`); a VM that loaded any second file
+  of code has no one name and signs nothing. `server` is refused unless it is
+  still the address that VM's serverdata came from (`CL_Receipt_VM`).
+- "A device's key press" is the engine's own knowledge. Every input event
+  passes `in_newevent`; the two things that make events with no device,
+  `in_journal_synth` and a plugin's input shims, raise `IN_SynthOrigin` round
+  their calls and the slot remembers. `CSQC_KeyPress` holds a flag while
+  CSQC_InputEvent runs for a key-down whose slot was a device's. Default is
+  not-real: a key that reaches `Key_Event` by any other road signs nothing.
+- Three builtins for game code, by name: `acct_sign(nonce, kind)` returns
+  `<pub> <key> <sig> "<server>" <code>` for game code to send, or ""; `acct_random(n)`
+  is n bytes from `Sys_RandomBytes` as hex; `acct_browse(opener)` opens ONE
+  page, the sign-in page with a 24-hex opener after it, and only under a
+  device's key press. `-nobrowse` on the command line prints the address
+  instead, for harnesses on a shared desktop.
+- The console's `rec_sign` signs a run's receipt as before and refuses
+  anything below -1, in words a harness can read.
+
+FTESurf's half: `cl_account.qc` asks through the builtins (and says the game
+needs an update when they are absent); a link start is ONE key press that makes
+the opener from `acct_random` and its own pool, names the start from it, signs,
+sends and opens the browser, so nothing comes back from the lobby before the
+question; `sv_account.qc` takes `acct_proof` in place of a `rec_rcpt` with a
+negative tick count; surfd verifies the new statement, refuses the old one,
+requires `key 1` for a link's kinds, takes only a proof that names the csprogs
+its lobbies serve, and keeps links in a table older code never wrote (schema
+15; the one link made before, the owner's test link, is dropped).
+
+**Review.** Two lenses on the committed trees. The engine's found the flag
+could outlive its press: a QC error inside CSQC_InputEvent longjmps out of
+Host_Frame past the line that takes it down, and the next csprogs to load
+would have signed with no key delivered. The flags now come down at
+Host_Frame's landing, at the top of every IN_Commands and with the VM, and a
+builtin wants both `csqc_realkey` and `IN_RealKeyDown`. It also looped both
+builtins inside one handler call (one link signature and one browser a press
+now; a held key's repeats are not presses; one browser a second) and walked a
+recorded csprogs, in demo playback, to a signature naming a server the client
+was not talking to (the account builtins refuse during playback; `rec_sign`
+does not yet, and that is in FTESurf's BACKLOG). The protocol lens found
+nothing in the new start and two older weaknesses it would not let ranking
+rest on, both fixed in FTESurf's half: a typed code's bare digest could be
+searched if its one claiming packet was dropped (twelve characters under a
+per-ask salt now), and the sign-in page's number crossed the game's wire in
+the clear (the game sends a digest of it with its own opener now). It asked
+what a rollback does to "old links were dropped".
+
+A second round on the fixes, and each finding was reproduced against the
+build the reviewer had read before anything was changed. Engine: the address
+in the statement was the netchan's, which one handshake packet can re-point
+under loaded game code, so the address is noted when the VM is made and
+compared when it asks; and an injected key-up cleared the repeat latch, which
+now lives in in_generic.c and moves on device events alone (key 0, the
+character-only event beside a composed key, is never a press). Protocol: THE
+CLIENT CHOOSES ITS CSPROGS FROM A DOWNLOAD CACHE BY A 32-BIT CHECKSUM, so the
+code that draws the box on a lobby was never known to be that lobby's, and a
+key press is consent to whatever drew the box. Hence the `code` line: the
+statement says which game code asked and surfd, which can read what its
+lobbies serve, takes no other. The cache itself is untouched and is FTESurf's
+BACKLOG. It also re-linked a stamped row with the previous surfd, so links
+moved to a table of their own.
+
+A third round found no way to a wrong link. Engine changes from it: the
+address a VM may sign for is noted when its serverdata arrives
+(`CL_Receipt_ServerData`, both protocols' parsers), with whether that was a
+live connection, so a VM made in playback or unconnected never signs however
+long it outlives that; `Key_ClearStates` clears the press latch, because the
+X11 and D3D11 backends release keys on a focus change without the input
+queue and the Enter that opens the browser loses its release to it; and "one
+file of code" is read from the VM's own `numprogs` at signing instead of
+inferred from the names the file hook was asked for.
+
+**What it does not do.** A player's own modified client signs what it likes
+with its own key; that is their consent to give. A server that ships its own
+game code still draws its own box, and so can whatever is in the download
+cache on a lobby of ours, though neither can now make an account proof surfd
+takes. A person can still be talked into signing in for somebody else. Whoever can rewrite a whole connection can
+relay its proofs as their own: that wants an encrypted transport, not another
+signature. `acct_browse` on Linux (`xdg-open`, fork and exec) is written and
+has not been compiled.
+
+**Deployed 10 Oct 2026, 22:07-22:10 UTC** (FTESurf `e31cce8`; this entry's
+commit `c543d688a`, tag `patch-625`), over Patch 622's progs and surfd's 619
+files, read back first. surfd first, ready 22:07:19: schema 15, `keylinks`
+made, `linkkeys` emptied (one row, the owner's test link), accounts kept.
+Lobbies 22:08:34: `build.ps1 -Pi`, 0 players, `qwprogs.dat` `bc25c080` and
+`csprogs.dat` `f1126df3` hash-verified, all 12 active; surfd picked up the new
+csprogs' hash by itself. Windows 22:09:52, nothing installed running: the same
+progs, and a clean build of this commit stamped
+`git-7182-patch-625-0-gc543d688a` (read out of the binaries: one stamp each):
+client `183faf44` as `ftesurf64.exe` and `fteqw64.exe`, server `e9cfd598`,
+plugins hl2 `66042d85`, ui_imgui `ab7b0512`, cod `a6c00b64`, box3d
+`f19f9814`, ode `59508a3d`; every replaced file kept as `.prev`. The Pi's
+server binary is unchanged (no server C in this patch). Read back live: the
+installed client, in a rig with its own key, joined a lobby through
+`play.proto.bar` and its connect proof was answered, which is the address,
+the game code's hash and the signature passing on the live service. No key
+was pressed there; a person linking end to end is FTESurf's lextest.
+
+## Patch 624 — ticked board lines are drawn in run order from where the viewer is *(MOD ONLY, csprogs)*
+
+**Problem.** The owner: "maybe it's possible to display only segments of the
+line which are in order, and not based on distance? sometimes you will see a
+demo line though the wall which is from a later part of the run". A ticked
+board line was drawn wherever it came within `hud_watch_path_far` (6000 u) of
+the eye, so on a route that doubles back the later pass showed beside the one
+being run. The replay's own line has had a run-time window round its playhead
+since Patch 449; a board line had no playhead, and the board loop switched the
+window off.
+
+**Change.** FTESurf `cl_lines.qc`, `cl_scores.qc`, `cl_linegraph.qc`. A board
+line gets a cursor: its sample nearest the eye, kept in run order
+(`Line_Follow`). It is followed 48 samples either side a frame, the last of
+equals. Four times a second the whole line is looked over: every stretch within
+1.5 times the nearest distance (or 128 u) is a candidate; the one being
+followed stays if it is one, else the one nearest in time to it wins, or the
+earliest when no cursor is believed (a new line, or for half a second after a
+restart: the clock stepped back or the timer armed). The look compares 512
+samples and then reads sample by sample beside any of them that could hide a
+nearer one. `Scores_LinesDraw` sets `Line_Window` from the cursor before each
+slot's draw: `hud_lines_order` seconds ahead (8) and a quarter of that behind;
+0 is the old draw. The teleport-join pass fades with the window as the line and
+the marks already did. The name on a line searches the window that frame's
+draw used, less a twelfth at each end. Published after Patch 625, so
+`ENGINE.txt`'s `patch`, `commit` and `tag` stay 625's.
+
+**Verified.** FTESurf `673e4d0`, csprogs `1c098884`, on the Patch 625 binaries, in
+the gallery rig. `tools/p624order.py`: on an authored run that passes one place
+twice 20 s apart, the cursor is the pass under the eye, follows along it
+without a look moving it, is the later pass where only that is, and the first
+again after a restart; the draw's own trace (`replay marktrace`) has the window
+and the samples inside it; where the later pass crosses the view there are 0 px
+of line with the order on and 1094 with it off; a name is on the drawn pass
+with the eye standing on the other. One independent review ported the first
+cut's follow to Python, flew real recordings through it and found four
+defects: a stop in the recording held the cursor at its first sample; another
+part of the route within 768 u was never taken; the look's 512 samples alone
+took the later pass a quarter of the time at 2000 u/s; a restart's forget was
+spent on the frame the stats changed, with the view still at the old place.
+And the open replay lost its name until a board line had been ticked. Each has
+a step in the arm on a second authored run (2000 u/s, 162 s), the reviewed
+build fails every one, and thirteen one-line mutants are each caught at their
+own step. One profiled run with eight long lines ticked: the board loop is
+cheaper with the order on than off, because it draws a third of the points.
+
+**Not done.** No real map was flown with a line ticked. A recording with a
+failed attempt in it shows that attempt first; a rewind into the later of two
+close passes takes the earlier. FTESurf's BACKLOG has the list.
+
+**DEPLOYED 2026-10-10 (Patch 624).** A build of FTESurf `673e4d0` in a clean
+worktree: `csprogs.dat` `1c098884`, byte for byte the file the gate ran on (the
+gate's build was of the same QC before the commit's notes were finished; the
+files were compared whole). `qwprogs.dat` (`bc25c080`) and `menu.dat`
+(`e5604321`) are what both Windows installs and the Pi already held from
+Patch 625, and a clean build of main as it stood (`8216c0c`) is byte for byte
+what was installed. The only commit between the build that was live and this
+one is this patch. The process list held no game just before the copy.
+Windows, 22:25:43Z: `csprogs.dat` and its line table into `C:\FTESurf\ftesurf`
+and `C:\FTEQuake\ftesurf`, by a copy that refuses unless the installed file is
+the build of the previous main (Patch 625's `f1126df3`, kept beside each as
+`.prev`). Read back afterwards.
+The Pi, `build.ps1 -Pi` from that worktree: 12 lobby rows, 0 players, both
+uploads hash-verified and swapped at 22:26:22Z, the previous pair kept as
+`.prev`, all twelve lobbies restarted. Read back from the host in one call:
+`csprogs.dat` `1c098884`, `qwprogs.dat` `bc25c080`, `csprogs.dat.prev`
+`f1126df3`, twelve lobby units active. surfd (Patch 625) takes an account proof
+only if it names the csprogs the lobbies serve or the one before it: those are
+now this build and 625's. `tools/pi_lobby_smoke.py` against lobby 1, with the
+Patch 625 client: a client with no csprogs of its own was served `1c098884`,
+drew the board and logged no QC error. That smoke ticks no line: the run order
+was measured in rigs on this file, on the Patch 625 binaries, and one lobby of
+twelve was connected to. No engine, cfg or surfd change. Roll back: copy each
+`csprogs.dat.prev` over its file.
+
+## Patch 626 — an imported Momentum run's line has ramp marks: contact inferred from the samples, and said to be *(MOD ONLY, csprogs)*
+
+**Problem.** The owner, asked what was left of the demo line labels: "yea do
+these 3". The first: a Momentum demo records no ramp contact (`.mtv` has no
+such field; tools/momreimport.py: "Never 16"), so an imported run's line had no
+on-ramp or off-ramp marks, its Segments column no ramp rows, and the strafe bar
+graded every ride against the free-air target. Readers took a clear bit 16 in a
+17-column file as "measured, not riding". 5,281 imported runs.
+
+**Change.** FTESurf `cl_infer.qc` (new), `cl_watch.qc`, `cl_lines.qc`, one
+`#define` in `sh_defs.qc`. The viewer infers the contact from the file's own
+samples and marks it as inferred; no file is rewritten and the bit
+(`WT_F_RAMPI`, 32) exists in memory only -- a file that carries it has it
+cleared on the way in.
+
+*The rule.* Free flight changes vertical velocity by one exact step a tick --
+the mover's gravity in two half steps -- and air strafing is horizontal. A ramp
+pushes up. Between two consecutive samples one mover tick apart, neither on
+ground, not a teleport (`Interp_Fit`):
+
+    r = (vz1 - vz0) + step
+    contact = r > 0.045  and not  (r > 2.5 * step and the sideways change < 0.5)
+
+`step` is read off the file: the commonest fall among such pairs, to 0.01. It
+is not assumed to be 800 times the tick; one imported map runs gravity 750, and
+read as 800 every airborne tick of it is a "push" of 0.4. The second half
+leaves out a hard push with no sideways change at all: a floor touched for a
+tick without a ground flag.
+
+*Three answers.* Inferred; measured (a native file keeps its own bit and
+behaves as before); and UNAVAILABLE, which is not "no contact": an import with
+no `momdemo` key (21 files still hold a velocity differenced from positions
+and no ground flag at all, so a floor would read as a ramp -- and their fall is
+sharp enough, shares 0.27 to 0.50, that only the header tells them apart),
+under 30 judgeable pairs, no fall holding a tenth of them, or a run over
+200,000 samples (the review, below).
+
+*One result for every view.* The replay computes a bit per buffer line once at
+load (`Watch_InferScan`) and its three passes read it through `Watch_Flags`:
+the line's scan, the Segments build, the playhead. The board-line job is a
+stream, so it reads an import's file twice, a first pass for the step; both
+readers go through the one `Infer_Step`.
+
+*Said.* A ramp edge's label starts with `~`; `replay status` and
+`hud_watch_info` say `inferred` (or why not); the strafe bar says `ramp: no
+plane` and draws no target on an inferred ride, which is the state it already
+had for a ride without a plane; the air-control colour gives no answer on an
+inferred tick. The plane is not inferred.
+
+**Verified.** Three ways, none of them the QC grading itself.
+
+*The rule against truth* (`tools/rampinfer.py`, written from the measurement
+and not from the QC). `--score`, native bit 16, one file a run, the owner's
+recordings: 16 with a tick-counted clock on 8 maps -- all 14,640 contact
+ticks, all 155 rides, 152 starting and 155 ending on the recording's own
+tick, 1 extra ride (a noclip hover in a cheat file). 145 frame-sampled ones
+on 29 maps, re-clocked -- 52,386 of 52,433 ticks, 810 of 816 rides, 791
+starts and 797 ends exact, 115 extra rides of which 108 are in cheat,
+practice and save files (noclip) and 7 in clean runs holding 351 true rides.
+`--twin`, ONE REAL DEMO: `cfg/test/p492voy.rec` turned out to be the owner's
+surf_voyager Momentum run flown again by this engine from the demo's inputs
+(bodies a median 0.3 u apart over the timed run, velocities 0.02 u/s), so its
+bit 16 is the contact the import lacks. 33 of 38 rides found, 31 starting and
+32 ending on the exact tick. The 5 missed are one to eleven ticks on a face
+pointing DOWN (an overhang); 1 extra ride is a lift (46 ticks of one constant
+push); two rides start 84 and 11 ticks early.
+`--shape`, all 5,281 imports: 5,257 inferred, 24 unavailable (21 without
+`momdemo`, 2 with under 30 airborne pairs, 1 over 200,000 samples); the
+commonest fall is exactly 800 times the tick in all but one; the lowest share
+of airborne pairs falling by the step is 0.279.
+
+*The client against the rule.* Arm `runlines_infer.cfg` +
+`tools/test_runlines_infer.py` on surf_voyager, ten checks: `replay status`
+reports the reference's step, pairs and contact ticks (12.00, 4,470, 2,264);
+every mark is the one `tools/p449mark.py` derives with the reference's bits
+(73 marks, 62 on a ramp edge); the Segments column has ramp rows (24 of 51);
+every ramp edge's label has the `~` and no other mark's does (62 and 11); the
+playhead's contact at three clocks is the reference's; no inferred tick is
+graded (1,135 of them) while 1,122 others are; a board line of the same file
+feeds the same contact ticks and makes the same marks from its seed; the
+native twin is `measured` with no `~`; `cfg/test/momflag.rec` (no `momdemo`)
+is `unavailable` and marks no ramp, replayed and as a board line. The control
+is main: no `ramp contact` line, 0 ramp marks, 0 ramp rows. Six one-edit
+mutants (the flat-floor test, the grade refusal, the `~` on every mark, the
+job not reading the file first, the playhead and the Segments build reading
+the file's own flags) are each caught by the check that names them; they were
+run on the build before the review's fixes.
+
+*Pixels.* The screenshot of the import at 0:20 shows `~2741 u/s 17.62 s` in
+the landing's colour beside its chevron, Ramp rows in the column and `ramp:
+no plane` on the bar.
+
+**What the review found** (one independent reader, given the diff and not the
+argument). No wrong bit, mark or fault on any file a writer here produces --
+and A BUDGET NO ARM COULD SEE. A replay opens in one QC call, and the engine
+ends a call at 100,000,000 branches, calls and returns (`execloop.h`
+RUNAWAYCHECK; the session ends with "runaway loop error"). The reviewer ran
+the BUILT csprogs in a small QuakeC interpreter and counted: the longest
+import (238,434 samples, an hour of surf_666) opened at 76.2% of that on
+main and 94.7% with this patch, the scan alone 19.5M. With Patches 627 and
+628 stacked on it, 97.4%. Shipped instead:
+
+- the scan tokenizes a line once and keeps each judgeable pair's two numbers
+  for the second walk (48 budget events a sample, was 82);
+- over 200,000 samples neither reader infers, and the line says
+  `unavailable: too long a run`. One import, the owner's own.
+
+Counted again on the shipped build: that file opens at 77.9%, the longest
+that is still inferred (197,512 samples) at 73.1%, and the bits of the
+surf_voyager import are the reference's on all 4,516 samples.
+
+It also found that a FILE carrying bit 32 got to set it. `p492voy.rec` with 32
+added to thirty airborne samples drew other marks while its line still said
+`measured`; the three readers of the flags column clear the bit now, and the
+same file gives the same marks as the plain one (the build before does not).
+No writer here emits the bit.
+
+The review also showed which unit cases could not fail. My 19 mutants of the
+rule were all caught and said little: of the reviewer's 46 one-edit mutants
+of the rule and the mark model, the 17 cases caught 17. With 25 cases, 42
+(the four left: the hold's length in the scoring helper, twice, and two
+details of the mark model's seed). And it showed that the ARM's one
+recording never lands on the rule's edges --
+breaking the teleport refusal, the one-tick window, any threshold, the tie or
+the rounding in the reference changes none of its 4,516 bits. The client is
+held to the reference there only offline: 96,000 generated samples through
+the built `Infer_*`, 0 differences, the reviewer's script rerun on the
+shipped build. The interpreter is not the engine.
+
+**What the measuring corrected on the way.** The first cut divided by the
+clock step and read half of free flight as a push: a format under 5 samples
+by frame (steps of 0.0088 and 0.0152 on a 0.01 tick) while vz still moves by
+whole steps. Leaving out "vz did not move at all" (noclip, a ladder) was
+wrong: a body wedged still on a ramp does that too, which is how a surf run
+waits at its start, and native files set the bit there (2,770 ticks).
+Requiring a ramp's own sideways push (1.02 times the push up, less what air
+strafing can add) was wrong too: a body landing in the crease between two
+facets of a curved ramp is pushed up while the sideways parts cancel, and
+that test refused the first tick of 10 rides in 33 on the demo.
+
+**Not done.** The plane (on the demo the sideways-to-upward ratio of a contact
+tick equalled the recorded plane's on 1,958 ticks, so it looks recoverable). A
+lift, a booster, a gravity zone and a ladder read as a ramp. A face pointing
+down is not looked for. The practice-save prefix of an imported replay and the
+web run page do not infer. THE OPEN IS STILL ONE CALL: about 327 budget events
+a sample, so a recording of some 300,000 samples, imported or native, would
+end the session when opened; none exists, and the fix (an open spread over
+frames, as the board-line job is) lifts the cap as well. Three reader
+mismatches on files nothing writes. FTESurf's BACKLOG has the list.
+
+## Patch 627 — a line marks the top of each arc and the bottom of each ride, and shows them by default *(MOD ONLY, csprogs + cfg/default.cfg)*
+
+**Problem.** The second of the owner's three: speed and energy at the high
+point of an air time and at the bottom of a ramp. The line already had
+"apex" and "trough" marks, but a turn was looked for only between two samples
+that were both in the AIR, and only once |vz| had reached 40 since the last
+one -- so the bottom of a ride on a ramp, which is where a surf run's bottoms
+are, was never marked at all; the marks were stamped on the sample after the
+turn; and their numbers were off unless `hud_lines_nums` was set to 2.
+
+**Change.** FTESurf `cl_lines.qc` (`Line_Peak`), `default.cfg`,
+`defaultuser.cfg` and `registercvar` (`hud_lines_nums 2`).
+
+*A turn* is where vz crossed zero between the sample before and this one, in
+the air, on a ramp, or across the change between them. It is stamped AT the
+crossing: time, place and sideways speed read off the straight line vz draws
+between the two samples, which in the air is exact (the mover's gravity is
+two half steps).
+
+*It is marked when it stands 8 units of height clear on both sides* -- of the
+turn before it, or of where the count began; and of where the body goes next.
+So tops and bottoms alternate, a wobble marks nothing however fast vz flips,
+a slow turn is kept, and a mark is appended once the body has moved on and
+stamped back at its turn: `Line_EvAt` now keeps the mark table in time
+order, which `Line_EvFind` searches by.
+
+*The count starts again* on a slot's first sample, after a teleport or a
+loaded save, and on or beside ground: a takeoff is not a bottom. A landing on
+ground is itself a far side: a top that only the landing puts 8 u behind is
+marked. A turn on a sample that carries its own contact mark, or on the one
+after it, counts for the alternation and is not drawn twice (a landing on an
+upslope is the bottom).
+
+`tools/p449mark.py` mirrors the rule.
+
+**The first cut was a gate, and it was worse.** "|vz| reached 40, or 8 u
+moved, since the last mark" passed its own arm. On real runs it marked the
+same bottom twice where a ride wobbles (surf_voyager at 18.67 and 18.71 s):
+52 pairs of marks under 0.1 s apart in 400 imports and 29 in 186 native runs,
+against none and 4 for the rule shipped.
+
+**What the review found** (one independent reader, given the diff and the
+requirements, not the argument; it transcribed the rule to Python and ran it
+over 88 native runs and 1,200 imports). No requirement broken as written, and:
+
+- *Half the upslope landings drew a second mark.* In real files the landing's
+  own sample often still falls and the next one turns up (13 of 24 native,
+  119 of 244 imported): the bottom was stamped between the two, 17 u along
+  from the landing's mark. Fixed: the sample after a contact mark is covered
+  as well.
+- *A top whose first clear sample is the landing was dropped* (a hop onto a
+  ledge 8 to 12 u under its top, marked or not by where the last air sample
+  fell: 35 tops in 68 bhop imports). Fixed: a ground landing is a far side.
+- *A board line and the replay of one file can differ by the run's first
+  top*: the board line's count starts at its one seed sample, the replay's at
+  the file's first. 14 of 75 native whole-run files and 53 of 700 imports (8
+  and 30 under the rule before this patch). NOT fixed; the fixture's first
+  top is built to be that case so a change to it is seen. BACKLOG.
+- *The first fixture did not pin what it named*: `LN_EVDZ` anywhere from 3 to
+  10.5 passed, a turn's x and y were not looked at, and the board-line check
+  could not see the seed. It pins them now.
+- The older ramp-leave grader took "the mark before a leave" as the ride's
+  landing; a bottom sits between the two on 6 of 32 rides. It looks for the
+  landing now.
+
+**Verified.** `tools/test_runlines_peaks.py` builds its fixture tick by tick,
+so every expected mark is known by construction and not from the classifier:
+one motion written twice, as a native file and as an import whose contact has
+to be inferred (Patch 626); 423 samples, 9 tops and 3 bottoms among 31 marks.
+The model agrees with the construction without a game (six checks). In the
+game (`runlines_peaks.cfg`, five more): the client's marks for both files are
+the constructed ones in time, sample, place and speed; the native and the import
+mark identically (the `~` aside); a board line of each marks the same from
+its seed, less the first top; `hud_lines_nums` reads 2 with nothing set; tops
+and bottoms are issued with their numbers. The control (the build before)
+has no bottom at all. Fourteen one-edit mutants are each caught -- the eight
+of the rule, and six for what the review found (a bottom a tick after a
+landing drawn, a ground landing not a far side, `LN_EVDZ` 7.3 and 8.7, a
+board line counting from height 0, a turn at the later sample's x and y).
+They are built and graded OFFLINE, the built csprogs in the review's
+interpreter against the test's own expectations; nine of them were also
+caught in the game on an earlier cut of the fixture, with the label default's.
+The two older arms that grade a real run's marks (`runlines_labels`,
+`runlines_rampleave`) pass on the final build.
+By the mark model over 400 imports (326 minutes), before the review's two
+fixes: 8,627 tops and bottoms where the old rule marked 5,157 -- a median 13
+a run against 7.
+*Pixels.* surf_voyager at 0:03.9: a dot on the ramp where the line is lowest,
+`2001 u/s  E -562  4.59 s`, and another at the top of the arc after it
+(looked at on the build before the review's fixes).
+
+**Not done.** NO TOP OR BOTTOM HAS BEEN SEEN ON THE PLAYER'S OWN LIVE LINE by
+an arm: `runlines_livelag` passes on the final build with its land and leave
+where they were, but its ride has no turn, and three scripted jumps did not
+land one inside a running run. A mark there appears once the body is 8 u past
+it. On a ramp, and above all across a landing, the straight line in vz is a
+reading and not the mover's own path. A top and a bottom look alike (one pale
+dot); nobody has judged whether that reads. The open of a replay costs 3
+more budget events a sample (Patch 626). FTESurf's BACKLOG has the list.
+
+## Patch 628 — a recording's off-ramp mark sits at the ramp's own edge, found on the loaded map *(MOD ONLY, csprogs + cfg/default.cfg)*
+
+**Problem.** The third of the owner's three, what Patches 608 and 611 left
+open: the off-ramp mark could sit up to a tick from the lip, a ride whose
+contact flickered before its end was marked a gap early, and nothing had been
+measured off the two maps of those patches. Patch 608 stamps a leave on the
+ride's last sample carrying the ramp bit. But the bit says the mover clipped
+a ramp DURING a tick, and the sample is where that tick ended.
+
+**Change.** FTESurf `cl_lines.qc` (`Line_Edge`, `Line_OnRamp`), a few lines in
+`cl_watch.qc`, `default.cfg` (`hud_lines_edge 1`).
+
+With the map loaded the viewer asks it. `Line_OnRamp` traces the player's hull
+from a quarter unit off the plane the recording wrote to half a unit into it,
+and wants a face of the ramp band. For a leave, the last sample whose hull is
+still against the ramp is the ride's last contact sample, else the one before
+it, else a sample in the hold's 0.08 s that the bit missed; the tick from
+there to the next sample is halved six times along the straight line between
+the two, and the mark is the last point found against the ramp.
+
+*Three answers.* The probe says 1 (against a ramp face), 0 (clear), or -1:
+the hull starts inside something and the map cannot say. A leave is placed
+only on definite answers -- the near sample 1, the far sample 0, every
+halving 1 or 0. Otherwise the mark stays on the last contact sample, Patch
+608's rule, which is also what `hud_lines_edge 0` gives, what a file with no
+plane gets (an import; then no record is kept and a sample costs nothing),
+and what the live line always does: only a recording's two scanners hand in
+the plane.
+
+*What the trace is made as*, twice wrong before it was right. A CSQC trace
+takes its content mask from the entity it is made for, and for `world` that
+leaves out player clip: the first cut read a map whose ramps are clip brushes
+as having no ramps at all. And an ordinary move also hits what is not the
+map -- the glare pass's walk-through copies of brush entities, the server's
+brush entities of the moment. It is made as a probe entity with the player's
+mask, against the world model only.
+
+**Verified.**
+
+*The premise, against the mover's own bit.* `replay rampprobe` asks, for every
+contact tick of the open recording, whether the hull is against a ramp face of
+the loaded map. One native recording on each of 17 maps, in the game: 21,892
+of 22,461 contact ticks. 16 maps at 98% or more; surf_boreas 65% (388 of its
+1,130 ticks find no ramp face in reach; not explained). On the WRONG map: 0
+of 2,888. The two earlier cuts, same recordings: as `world`, surf_axiom 0 of
+382 and surf_boreas 1 of 1,130; as an ordinary move, surf_medley 71% and
+surf_tensor2 61%, which are 99.0 and 98.9 now.
+
+*What it does.* Of 290 ramp leaves in those recordings 283 are placed: 68 with
+the lip in the tick after the last contact, 176 in the last contact tick
+itself -- the sample Patch 608 stamps is past the lip there -- and 39 after a
+sample the bit missed. 7 stay as stamped. On the arm's two maps the placed
+marks moved a median 11.6 u (surf_kitsune, 38 leaves, most 39.7) and 15.3 u
+(surf_voyager, 28 of 32, most 157.4 for a ride whose contact outlived its bit
+by four ticks).
+
+*The arm* (`runlines_edge.cfg` + `tools/test_runlines_edge.py`, seven checks):
+with the switch off the marks are the model's, mark for mark; with it on the
+table is in time order, every mark that is not a ramp leave is unchanged, and
+every placed leave has its `lnx` row -- its two samples are the file's own,
+next to each other and the right ones for its case, and the mark is on the
+line between them in time, place, sideways speed, vz and v.v. A board line
+places its leaves where the replay does. On the wrong map nothing moves. A
+map of clip ramps is seen (378 of 382). The control (the build before)
+places nothing. Eight one-edit mutants are each caught in the game by the
+check that names them: the tick halved the wrong way, the sample before the
+last contact never tried, the hold's gap never asked of the map, the trace
+made as the world, the mark keeping its first sample's clock, or its
+velocity, the switch ignored, a board line not handed the plane.
+
+*What the review found* (one independent reader; it ran the built csprogs in
+an interpreter with a small brush tracer standing in for the map):
+
+- A CLEARED RECORD'S PLANE WAS STILL READ, so one file could mark differently
+  in a slot another recording had used (6 of 762 native ramp leaves are rides
+  of that shape).
+- "INSIDE SOMETHING" READ AS "OFF THE RAMP": a pillar 0.03 u beside the path
+  moved a leave to before its last contact sample.
+- THE FAR SAMPLE WAS NEVER ASKED when it was the sample the leave was seen on:
+  a body that never left the face was "placed" 63/64 into its last tick.
+- 8 budget events a sample at a replay's open, on files that could never be
+  placed, with `hud_lines_edge 0` or without it (Patch 626's budget): 2 now.
+- The trace hits client entities (above).
+- The grader passed with a leave out of table order, with a far sample three
+  on, and with a placed mark's vz and v.v set to nonsense. It checks all
+  three now.
+
+Its own scenarios, run on the build before the fixes and on the shipped one,
+show the first three changed: all abstain. Its parity check (the mark table
+bit-identical to the build before with no plane, with the switch off, with
+every trace missing, with every trace starting solid) and its ordering fuzz
+(110 streams, 5,826 leaves, no violation) pass on the shipped build. None of
+that is the engine.
+
+*Pixels.* surf_voyager at 0:05.2, on and off: the chevron at the first ramp's
+lip moves about a body width and its speed reads 1637 for 1635 (looked at on
+the build before the review's fixes; the arm's numbers for that map are the
+same on both).
+
+**Not done.** Nothing independent of the trace says where a lip is. The mark
+is on a straight line between two samples; the body's path in that tick is
+the ramp and then a fall. NO GATE BY MAP: on surf_boreas the client places 15
+of 19 leaves while its probe answers for 65% of the contact. The live line is
+not placed. A ramp that is a brush entity or a prop abstains. A ducked body
+was not looked for. One ride in the 17 recordings ends on ground; not looked
+at. FTESurf's BACKLOG has the list.
+
+**DEPLOYED 2026-10-10 (Patches 626, 627, 628).** One build for the three, of
+FTESurf `0b3e887` in a clean worktree: `csprogs.dat` `848c654e`, byte for byte
+the file every final check of the three ran on (the in-game arms, the 17-map
+run, the long-run open, the offline counts; the notes were committed after it
+and the rebuild matched). `qwprogs.dat` (`bc25c080`) and `menu.dat`
+(`e5604321`) are what both Windows installs and the Pi already held from Patch
+625, and a clean build of main as it stood (`aecb6d9`) gave the installed
+`csprogs.dat`, Patch 624's `1c098884`. The only commits between the build that
+was live and this one are these three. The process list held no game just
+before the copy.
+Windows, 23:15:31Z: `csprogs.dat` and its line table into `C:\FTESurf\ftesurf`
+and `C:\FTEQuake\ftesurf`, by a copy that refuses unless the installed file is
+the build of the previous main (kept beside each as `.prev`); and
+`cfg/default.cfg` (`hud_lines_nums 2`, `hud_lines_edge 1` and a reworded
+comment: +6 -4 lines, read before the copy), by the same script, which refuses
+unless the installed one is byte for byte the previous main's (kept beside
+each as `default.cfg.pre628-20261010T231531Z`). Read back afterwards with a
+second tool. The owner's own saved settings hold neither cvar, so both new
+defaults are what he gets; that file was read for the two names and not
+touched.
+The Pi, `build.ps1 -Pi` from that worktree, 23:15:54Z to 23:16:38Z: its own
+recompile gave the same two hashes; 12 lobby rows, 0 players; both uploads
+hash-verified and swapped, the previous pair kept as `.prev`; all twelve
+lobbies restarted. Read back from the host in one call: `csprogs.dat`
+`848c654e`, `qwprogs.dat` `bc25c080`, `csprogs.dat.prev` `1c098884`, twelve
+lobby units active since 23:16:31Z to 23:16:40Z. surfd (Patch 625) takes an
+account proof only if it names the csprogs the lobbies serve or the one before
+it: those are now this build and Patch 624's.
+`tools/pi_lobby_smoke.py` against lobby 1, with the Patch 625 client: a client
+with no csprogs of its own was served `848c654e`, drew the board (screenshot
+looked at) and logged no QC error. THAT SMOKE OPENS NO REPLAY AND TICKS NO
+LINE: the three changes were measured in rigs on this file and one lobby of
+twelve was connected to. Not done on the fleet: an imported run opened through
+the online board (the files were replayed from disk; surfd's copy of one was
+read and carries `foreign` and `momdemo`). No engine or surfd change. Roll
+back: copy each `csprogs.dat.prev` over its file and the `.pre628` copy over
+`default.cfg`.
+
+**The board path, after that deploy (Patches 626-628).** The paragraph above
+says an imported run was not opened through the online board. Done since,
+short of the mouse click: a rig on the deployed `csprogs.dat` (`848c654e`),
+its `lobby_dir` the Pi's LAN address as `cfg/test/b66rep.cfg` uses, took
+imported run r6238 of surf_voyager from surfd with `board_replay` (what a
+click on a board row hands on), opened it with `replay online`, and reported
+`ramp contact inferred`, step 12.00, 2,553 airborne pairs, 594 contact ticks
+-- the numbers `tools/rampinfer.py` gives for the file it downloaded. 28 of
+its 44 mark labels are ramp edges and start with `~`; the screenshot shows
+them, a top's dot and `ramp: no plane` on the bar. One run of one map; the
+click, the hover and the Imported tab's own list are still read, not run.
+
+## Patch 629 — a ranked row belongs to a linked Steam account: built, and shipped switched OFF *(MOD ONLY: qwprogs + csprogs + surfd; schema 16)*
+
+ROADMAP 14.3 (a). Since Patch 625 an install can prove its key and be linked
+to a Steam account, but a run was still stored under the install's guid, which
+the client chooses. With `SURFD_RANKED_LINKED` on (the code's default; the
+Pi's `surfd.env` holds `SURFD_RANKED_LINKED=0` until the owner switches it):
+
+- **Whose row.** The lobby keeps the key each connection proved and sends it
+  with the run (`pub`), from a trusted lobby only. surfd stores the run under
+  the SteamID that key is linked to, on the ranked tier. No key, or a key that
+  is not linked: the community tier, under the guid, with `why: unproven` or
+  `unlinked`. A banned account: nothing stored. Every answer carries `why`,
+  and the lobby says each reason once a connection; the finish card and the
+  banner read "unranked: no Steam account linked (type link)".
+- **One identity a run.** The first post of a run id pins who it is
+  (`runpins`), with the key that earned it. Later posts of that run get the
+  pin; an account's pin answers only to its own key, and a post without it is
+  not stored (`why: held`, "not submitted"). A link made mid-run ranks the
+  next run. The run's key is latched where its id is minted
+  (`sv_timer.qc`), travels in a paused run's `ms.txt` (`key`), and a paused
+  run parked under a key is picked up or dropped only by a connection that
+  has proved that key. A run begun before the proof landed takes the key when
+  it does, if this connection minted it.
+- **The move.** At every start with the setting on, ranked rows whose player
+  is not an account move to community with their recordings; where the same
+  install already has a row there the faster is kept. It takes the write lock
+  before it reads its list and reads `runs_live`, a partial index of the rows
+  that are no imported tier's, made at schema 16 (one scan of `runs`, once).
+  One way: turning the setting off puts nothing back.
+- **Names.** With the setting on an install's name must be the engine's 32
+  hex (or that with a seat suffix), so it can never be read as a SteamID. The
+  board's "your row" mark is the account's digest (`who`) once linked, and no
+  mark before that on a lobby with a directory.
+
+**Review.** Three rounds, the reviewers given the code and a lens each, never
+the reasoning: whose row a run is; what a modified game gains; stored rows and
+the migration. What they found and this patch fixed, as conditions: a pin
+handed an account to any later post on the same guid; the move read its list
+before it held the lock, so two starts at once deleted what one had moved (6
+of 6 with two real processes); a marker for "moved" could be set by a cron
+tool's import before the service restarted; a run begun in the seconds before
+the proof landed never ranked; a paused run could be consumed by a connection
+whose posts were then refused; a file an earlier cut had started on answered
+500. The last check found nothing that stores a run under an account its
+connection did not prove, and nothing that loses a stored row.
+
+**Measured.** `surfd/test_ranked.py` (63 checks, new) and
+`test_accounts.py` (399); `tools/accounts_mutants.py`: 274 mutants, the full
+sweep run on the round-two code (271: 260 killed, 11 surviving alone as
+declared pairs, none unexpected) and the last round's four run by name.
+`tools/p615link.py` on the Patch 625 binaries: main mode 41 of 41 (its R
+checks read the form the lobby posted: the key carried, each reason line said
+once, the mark; its P checks park a run, are refused it under another key
+with the slot kept, and resume it under its own), and the four other modes.
+With the key latch compiled out of `sv_timer.qc` the R check for a run with
+an id fails with the id and no key.
+
+**Not measured, or not in this patch** (ROADMAP 14.3 a and BACKLOG carry
+them, as gates before the switch goes on): save slots, recording names and
+paused-run slots are still filed under the guid; the paused-run gate before
+surfd has been heard on a map is traced, not driven; nobody but the two
+development installs has the Patch 625 engine, so until a release every other
+player would be unranked with the switch on. No engine change: `ENGINE.txt`'s
+commit and tag stay Patch 625's.
+
+**DEPLOYED 11 Oct 2026, 01:31-01:38 UTC (FTESurf `061fa8d`, record `713c39a`),
+SWITCHED OFF.** In this order. 01:31:52Z: `SURFD_RANKED_LINKED=0` appended
+to the Pi's `surfd.env`, before any of this patch's code was on the host (the
+code's default is on, and every cron tool imports surfd; the service's process
+holds no `SURFD_*` of its own, so both read that file). surfd, `-Ref 061fa8d`,
+its fourteen changed python files: the staged suites pass on the Pi with
+`test_ranked` among them; database backup
+`surfd.db.bak-061fa8d-20261011-123213`; `surfd ready` 01:34:53Z. Read back
+from the host: the commit's blobs, schema 16, `runs_live`, the log line
+`ranked rows need a linked Steam account: NO (SURFD_RANKED_LINKED=0)`, and
+the board as it was (21 ranked rows of one install, 1 link, 0 pins), also
+after a cron sweep had imported the new module. The index build held the
+write lock for seven seconds and one lobby heartbeat was refused in it; 0
+players. Lobbies, `build.ps1 -Pi` at 12 rows and 0 players: `qwprogs.dat`
+`e9c95065`, `csprogs.dat` `6ddb3e37` (the bytes the rig arm ran on), the
+previous pair kept as `.prev` (`bc25c080` / `848c654e`), twelve units active
+since 01:36:22Z to 01:36:30Z; `menu.dat` unchanged. Live check 01:37:23Z: the
+installed Patch 625 client in a private rig, its own key and no key pressed,
+joined a lobby by its public name and had its connect proof answered; surfd's
+game-code line reads `6ddb3e37` with `848c654e` before it. That check posts no
+run: with the switch off the run path is the old one by construction, and the
+owner's next finish is its first live use. Windows, 01:38:33Z: both installs'
+`qwprogs.dat` and `csprogs.dat`, by a copy that refuses unless the installed
+file is the previous main's build and no installed game is running; previous
+files kept as `.prev`; read back with a second tool. The last round's three
+fixes (a missing column on a file an earlier cut started, the paused-run gate
+decided by the slot's key, `why: held`) were tested and mutated but had no
+review round of their own; none is reachable with the switch off. Roll back:
+`.prev` over each progs file and a lobby restart, the `.pre061fa8d-*` copies
+over surfd's files and a reload.
+
+## Patch 630 — hud_edit: second sizes as boxes, speed / both / energy, a size for the keys and the mouse pad *(MOD ONLY, csprogs + cfg/default.cfg)*
+
+**Problem.** The first part of the owner's list of HUD edits (11 Oct). The
+speedometer's energy size and the timer's subtext size were cycle chips where
+every other text size is a row of boxes; the speedometer could not show the
+energy without the speed; the run graph and the strafe trainer offered 8 and
+12 px; the key block and the mouse pad had one size.
+
+**Change.** FTESurf `2570367`: `cl_hudedit.qc`, `cl_hud.qc`, `cl_mouse.qc`,
+`default.cfg`. Two option kinds in `HE_OptDef`: `s`, a second text size drawn
+as the element's own size row (0 is auto: the lit box clicked again), and
+`b`, a plain row of boxes. Speed: `Energy` 40 48 64 80 (the speedometer's own
+four), `Shows` speed / both / energy (`hud_speed_show`), `Energy as` units /
+u/s. A config saved with `hud_energy 0`, the old "off", is moved at load to
+`hud_speed_show 0`. Timer: `Subtext` 12 16 20 24. Run graph and Strafe
+trainer: 16 20 24 28. Mouse: `Size` S M L XL (`hud_keys_size` 1 1.25 1.5 2)
+for the pad and the key block together; at the automatic position the block
+keeps its floor and right gaps and grows up and left.
+
+**Verified.** `tools/test_p630hud.py` over `cfg/test/p630hud.cfg` in a private
+rig, 1600x900: 41 of 41, every click through the panel's own hit rects and
+read back from the cvar. The build before failed 21 of the 34 checks the
+cfg's first cut reached. At the default settings the play view is
+pixel-identical to the build before, and the key block and pad print the
+same boxes at S.
+
+One review. The pane contradicted the HUD for a config saved with the energy
+off (`Shows: both` over a speed alone); XL grew off the bottom where S has no
+floor gap (hud_scale 3 in a 900-line window); sizes were not multiples of S
+off hud_scale 2 (a row unit snapped to the font ladder per size). Fixed, and
+the commit before those fixes fails the four checks added for them. Its
+fourth find was in my evidence: a screenshot filed as the Mouse pane was the
+pane before it, a wait eaten by a console dump. The cfg waits four frames
+after each wait now.
+
+**Known.** A dragged key block or a detached pad grows right and down and can
+leave the screen at L or XL. In a 720-line window the editor panel halves
+when Speed is open (five rows where there were four). Not run: the energy
+alone while spectating or rewinding; any window but 1600x900. FTESurf
+BACKLOG, "hud_edit sizes and modes".
+
+**Deployed** 2026-10-11 from FTESurf `2570367`: csprogs `9ab0442f` (qwprogs and
+menu.dat unchanged) to both Windows installs at 01:43Z, with
+`cfg/default.cfg`, and to the Pi at 01:44Z with nobody on. Twelve lobbies
+restarted, read back from the host; a fresh client on lobby 1 was served this
+csprogs and drew the board. `.prev` is Patch 629's csprogs in all three places.
+
+## Patch 631 — the Boarding window's energies are levels; a board noticed before its clip *(MOD ONLY, csprogs)*
+
+**Problem.** From the owner's list of HUD edits (11 Oct): under each speed the
+Boarding window printed a change, what the touchdown cost and what the ride
+gained, where it was meant to print the energy held at the enter and at the
+leave. The one review of the first cut then found the level itself wrong
+where the server is near, and the fault older than the patch: the board
+counter and its latched pair are the newest packet's, the drawn body can be a
+net frame behind, and build 39's "e + cost" for the Segments column counted
+the cost twice on a frame that still held the arrival's velocity. On a listen
+server one ride read Jump 139e (+97e), Board 42e, Ramp -54e (-96e) for a fall
+held at 42e. The first cut's checks compared the window with that column,
+which made the same mistake, and passed.
+
+**Change.** FTESurf `d43a0c2`: `cl_board.qc`, `cl_boarding.qc`, `cl_watch.qc`,
+`cl_hud.qc`. `Board_Frame` stamps the energy arrived with and the energy on
+the frame the ride ends, each with the speedometer's zero taken then; the
+window prints level less its own zero, as a Segments row does. `Board_ClipSeen`
+is the part f of the into-plane speed the frame's velocity has already lost:
+the arrival is `e + cost*f*(2-f)` and the ramp opens at `e - cost*(1-f)^2`, so
+the Board row is the cost whatever f is. It puts back the half tick of gravity
+between the latch (after StartGravity) and the drawn state, and takes a body
+up to two ticks earlier in its fall for the arrival. A recording's sample is
+the board's own tick, f is 1 there, and a replay's rows are unchanged. A
+replay never runs `Board_Frame` at the cursor, so the build pass keeps each
+board's level in a table and the window reads it against the viewer's zero
+now. A reset adopts the board counter (a listen server keeps it across maps)
+and closing a replay clears the contact state; both had drawn a board nobody
+rode. `boarding` prints the window, the column's last rows, f and f before
+the allowance.
+
+**Verified.** `tools/test_p631boarding.py` over `cfg/test/p631boarding.cfg` on
+a listen server, a dedicated one and a dedicated one behind `sv_minping 120`,
+private rigs: 35 of 35. One fall held at 42.3e in flight, cost 96.7: enter
+42.3, 43.0 and 43.1 with f 0.000 (0.033 before the allowance), 0.494 and
+0.990; twelve rides with this rule read 42.1 to 43.2. The enter is graded
+against the speedometer's own e printed in flight before the board, and in a
+replay against the recording's sample before each board record (five places,
+within 3). A build with f fixed at 1, no resync and a stamped replay zero
+fails 5 of 11. The replay's 73 Segments rows are identical to the build
+before. Screenshots looked at.
+
+One review, of the first cut: the doubled cost above; the board drawn after a
+map change and after a closed replay; a replayed level that depended on where
+the seek came from. All three fixed and each has a check the first cut fails.
+
+**Known.** The two-tick allowance rests on one run 1.7 ticks behind; a body
+further behind reads high again, and a true blend under f 0.039 reads up to
+7.4e low on that ramp. A replay has no leave row. After a seek a replay's
+Segments rows keep a zero from where the seek came from (older than this
+patch; the window no longer shares it). Not run: frame rates other than 100,
+a save-lock load, a board under the grading thresholds. FTESurf BACKLOG, "The
+Boarding window".
+
+**Deployed** 2026-10-11 from FTESurf `d43a0c2`: csprogs `1a27aa8f` (qwprogs and
+menu.dat unchanged) to both Windows installs at 02:36Z and to the Pi at 02:37Z
+with nobody on. Twelve lobbies restarted, read back from the host; a fresh
+client on a lobby was served this csprogs and drew the board. `.prev` is
+Patch 630's csprogs in all three places.
+
+## Patch 634 — the site's maps list answers inside the proxy's five seconds *(MOD ONLY: surfd)*
+
+The owner saw "Could not load the board (HTTP 504)" on the site's front page.
+Timed on the Pi route by route, `/board/api/maps` took 12.06 s when its 60 s
+cache had lapsed, and nginx gives surfd 5 s: the first visitor after each
+minute got the error and a reload worked. Query by query, 7.9 s of it was the
+count of imported rows per map with the count of their recordings beside it:
+`replay_id` is in no index that also orders by map, so sqlite walked
+`runs_run` in map order with a table lookup for each of 3.2 million rows. The
+same plan is on the backup from before Patch 629 (28 s cold), so it is as old
+as the imports, not today's schema change.
+
+It is two queries now, each off an index that answers it: the counts 0.67 s
+off `runs_board` (covering), the recordings 0.026 s off `runs_replay`. The
+second needs `GROUP BY +map`; without it sqlite picks the map-ordered walk
+again (6.3 s). Same answer on the live file: 849 maps, 12,611 recordings.
+
+`test_web.py` pins the recordings count, which nothing did: two Momentum
+demos, not the KSF row and not our own ranked rows; with the tier filter
+dropped it fails with 4. No review round: a read-only route and six lines.
+
+**DEPLOYED 11 Oct 2026, 02:46:48 UTC (FTESurf `234a488`), surfd only**, 0
+players, the staged suites passing on the Pi. Timed on the host afterwards:
+5.94 s for the first build after the reload (cold; one visitor after a surfd
+restart can still see a 504), 0.005 s from the cache, 1.95 s for a rebuild,
+the body the same 73,898 bytes. Left (BACKLOG): the list is still built
+inside a request; a player page asks a rank for every row its player has
+before showing a hundred, 2 to 4 s for an account with two thousand imported
+rows.
+
+**Patch 629, switched ON: 11 Oct 2026, 02:14:18 UTC**, on the owner's word. No
+code moved: the Pi's `surfd.env` line went from 0 to 1 and surfd was reloaded,
+with 0 players, after a database backup and after his own 21 board rows and 7
+recording rows were moved by hand from his install's id to his account (one
+IMMEDIATE transaction, refused unless the only owner of non-imported rows was
+the one linked install). Read back: the log line `ranked rows need a linked
+Steam account: yes`, 21 ranked rows of one account, nothing moved by the
+start, no error after the reload. His account also holds 2,008 imported
+Momentum rows under the same SteamID, and his page lists both under one
+handle. Not measured at the switch: a finished run stored under an account on
+the live fleet. Save slots, paused-run slots and recording names are still
+filed under the guid (ROADMAP 14.3 a): open, and accepted for now because
+every ranked row is the owner's.
+
+## Patch 633 — a ban is a Steam account's: its rows are set aside, and come back *(MOD ONLY: surfd)*
+
+ROADMAP 14.3 (c). The admin panel gains an Accounts page: everybody who has
+signed in through Steam, with installs and rows, and a ban or unban by
+SteamID with a note (a ban needs one; a SteamID nobody has signed in with can
+be banned in advance, and the reply says that is what happened).
+
+- **A tier, not a filter.** A banned account's rows in `runs` and its run
+  recordings in `replays` move from `<tier>` to `banned:<tier>`, set-aside
+  copies included, and back on an unban (the faster kept where a row is in
+  the way, in the board's own order). Every reader names its tiers, so
+  nothing lists them, ranks against them or counts them, with no filter
+  anywhere. Imported rows under the same SteamID are other boards' records
+  and stay.
+- **Review goes on inside.** Re-standing keys on a replay's own tier; stage
+  parking asks which family the player's rows are in. A reject or a clear
+  made while banned is what the unban brings back.
+- **Recordings** answer the public by owner: a banned account's `run` and
+  `evidence` recordings are "no such replay". The admin reads the file at a
+  route of the panel's own, and the run page's download link is that.
+- **A run in flight.** A run's identity is read in one transaction and its
+  row written in another; a ban committed between them is caught after the
+  run's own commit and the row set aside with the rest.
+- Its installs are told at connect (Patch 617) and its runs are not stored
+  (Patch 629).
+
+**Review.** Two lenses on the first cut, given the code: stored rows and the
+state machine; who can do what and what leaks. Found and fixed, as
+conditions: stage parking named the two plain tiers, so a reject made while
+banned came back public at the unban and a clear made while banned stayed
+hidden; the recording behind stage rows has no tier and was still served; a
+ban committed while a run was being filed left that run live; the page's
+list re-sorted under a second click, which then acted on another account;
+the admin's own download link went through the public route; a no-op unban
+rewrote the note; `tools/mapwr.py` read every tier. A narrow check of the
+fixes followed and found three low corners in the new path for a run filed
+across a ban, none produced unforced: the late pass acted on a ban read
+before it held the lock (it reads again under it now); a pass that never ran
+left the row live (every start sets such rows aside now); and an exact-tie
+re-file across the ban loses the row's link to its recording (BACKLOG). Its
+fuzz of ban, unban, review and sweep orders against a no-ban control found
+no difference in 200 sequences, and 49 with the family rule put back.
+
+**Measured.** `surfd/test_ranked.py` section 8 and 8b (the suite is 95
+checks): the public routes are graded by their own words (with no file on
+disk a public recording answers "no recording on this node" and a banned one
+"no such run"), and 8b writes a real recording so a reject binds to the run.
+`tools/accounts_mutants.py`: 303 mutants, the full sweep on the final code.
+The map-record tool's check fails with `banned:ranked` as a map's best when
+its tier filter is removed by hand. The page was rendered from the real
+route's data in a headless browser and looked at. `test_admin.py` fails the
+same two rcon packet-count checks on main.
+
+**Not in this patch** (BACKLOG): no ban history beyond the newest note and
+the log; the rows of a banned account's installs under their own ids stay; a
+banned run's in-game watch commands get the public 404; set-aside rows count
+toward the caps.
+
+**DEPLOYED 11 Oct 2026, 03:16:10 UTC (FTESurf `04a6ea0`, record after it),
+surfd only**: `accounts.py`, `admin.py`, `surfd.py`, the four admin templates
+and two tests; the staged suites pass on the Pi; a database backup; a reload
+with 0 players. Read back from the host: the commit's blobs, no error after
+the reload by position in the log, `/admin/accounts` redirecting to the login
+and the three new API routes answering 401 without a session, the boards as
+they were (21 ranked rows of one account, nobody banned). Not done on the
+fleet: a ban itself, which needs the owner's panel password; `lextest.md` has
+the try. The full mutant sweep ran on the final code: 303 mutants, 292
+killed, 11 surviving alone as declared pairs, none unexpected.
+
+## Patch 632 — Run lines: your line blue, the others by time; labels at the peaks alone *(MOD ONLY, csprogs + cfg/default.cfg)*
+
+**Problem.** From the owner's list of HUD edits (11 Oct). Every run line took
+one colouring, so your own line could not be told from the lines you had
+ticked, nor those from each other. Labels were off, contacts, or contacts and
+peaks, never the peaks alone. The Run lines pane held three rows about fading
+nearby players.
+
+**Change.** FTESurf `6f936bc`: `cl_lines.qc`, `cl_hudedit.qc`, `cl_watch.qc`,
+`cl_linegraph.qc`, the two default configs. `hud_lines_color_own` colours the
+live trail and `hud_lines_color_others` the open demo and the board's lines:
+one of the five readings, or 5, the plain colour and the default: blue, or the
+line's place by time among the shown lines of its own leg, green to red, equal
+times sharing a place. `hud_watch_path_color` is no longer read (a saved value
+would have pinned the old look for anyone who had clicked its chip); a config
+that had chosen gain, contact, energy or air control keeps it for both, once.
+An imported line's blue tint applies over a reading only. `hud_lines_nums 3`
+labels the tops and bottoms alone, a landing that is itself the bottom
+included. The pane loses the nearby-player rows (console only); "reset all"
+writes those and the two new rows as literals. Your own line gets a speed
+range (it had none, so "speed" over it alone was one flat red, before this
+patch too), and the speed ramp spans the lines coloured by speed.
+
+**Verified.** `tools/test_p632lines.py` over `cfg/test/p632lines.cfg` in a
+private rig: 38 of 38, a place's colour worked out in the grader from the
+place. The five readings are point for point what they were (574 points of one
+recording in each, the old name on the build before against the new names).
+Screenshots looked at.
+
+One review, two readers, thirteen findings: a run both watched and ticked
+ranked against itself (red over green); lines of different legs in one list;
+the demo ranked while no drawer drew it; your line's flat red; "peaks" giving
+no number to a bottom that is a landing (1 of 11 in one recording, 2 of 5 in
+another); a saved colouring dropped; "reset all" restoring the saved value on
+an install with an older default.cfg; a name beside a line in the graph's
+colour; and the arm's "a reading when asked", which sampled the line where
+the speed is constant and passed the flat red. Fixed, and a build with the
+fixes taken out fails the 8 checks for them.
+
+**Known.** A line is ranked by its last sample, so an import whose samples
+stop short of its finish ranks by its length. The Run graph's curves keep the
+graph's palette. `reset all` has the older-default.cfg fault for every other
+row that only the game code registers. The nine older arms that set the
+colouring were read, not rerun. FTESurf BACKLOG, "Run lines by time".
+
+**Deployed** 2026-10-11 from FTESurf `6f936bc`: csprogs `6dc6e7b3` (qwprogs and
+menu.dat unchanged) and `cfg/default.cfg` to both Windows installs at 03:51Z,
+and the progs to the Pi at 03:52Z with nobody on. Twelve lobbies restarted,
+read back from the host; a fresh client on a lobby was served this csprogs and
+drew the board. `.prev` is Patch 631's csprogs in all three places.
+
+## Patch 636 — the site shows one person across every game: one board per map with a filter per game, and whole-player pages *(MOD ONLY: surfd and its website)*
+
+The owner's list of 11 Oct, once his own imported Momentum times had joined
+his FTESurf rows on one player page by themselves (an imported row's `player`
+is the SteamID64 its board publishes, and since Patch 629 a linked account's
+ranked rows are under the same id).
+
+- **A map's board is every game's.** `/board/api/map` takes `tier=momentum`
+  and `tier=ksf` beside `ranked`, `imported` and `combined`. The page's
+  filter is All games / FTESurf / Momentum Mod / KSF, each with its count,
+  and a link with no `tier` opens All games (it opened ours alone). The
+  API's own default is unchanged.
+- **A player's page.** Links to the Steam, Momentum Mod and KSF profiles.
+  Steam's is published for a linked, unbanned account as well as for an
+  imported player, and the sign-in page now says so; an install's own id is
+  still never published. Momentum addresses a profile by its own user
+  number (read in its website's source, not guessed), which the importer now
+  keeps from each board it refetches (`momusers`), so that link fills in
+  over a day or two.
+- **Which maps.** `/board/api/player/<handle>/maps` lists every map with a
+  main board by difficulty tier: finished or not, the fastest time and the
+  games it was finished in, by the profile bars' own rule and denominator.
+  Each tier on the page opens its list, and `&ct=<tier>` in the address
+  links to it.
+- **Cost.** A player page read `runs` by player with no index: 0.6 s warm
+  and 4.66 s cold on the Pi for an account with 2,029 rows, of nginx's 5.
+  `runs_player` is that index (built in 4.8 s, +79 MiB), and a player's
+  ranked rows are held two minutes, dropped by that player's own next run.
+  Rewriting the rank count as two index ranges was tried and measured no
+  faster on the live file (1.29 s against 1.27 s, the same answers), so
+  `rank_of` is unchanged.
+
+**The index, and a mistake.** `runs_player` was first built on the live file
+ahead of the patch's review, on the belief that an index only adds a faster
+path. With no statistics table, sqlite then answered the two statements that
+GROUP BY player by walking the new index in order with a table lookup a row:
+the site's directory build took 34.2 s for 8.0 s and the admin's account
+counts 14.4 s for 0.00 s, for 27 minutes, until the reviewer's report said to
+measure the host and the index was dropped. Both statements say `GROUP BY
++player` now and a test holds their plans. `tools/plan_audit.py` is new: it
+traces every statement the suites run on a table and prints those whose plan
+a given CREATE INDEX would move (34 here; 5 walked the new index, 2 of them
+the service's own).
+
+**Review.** One round, four heads (leak, wrong, break, script). Beside the
+index: a held page was dropped by the player's own run alone, so a banned
+account's times stayed on its page for the two minutes, and a run landing
+while ranks were being counted could be overwritten by the list from before
+it (an entry now carries a mark of the player's own rows, read on every
+hit); the pages held were bounded by players, not rows; a rank that could
+not be counted was held; under one game's filter the style tabs counted both
+imported games. Nothing found under script injection.
+
+**Measured.** `surfd/test_web.py`, 202 checks, with 17 hand mutants of the
+new code all killed. The pages were served from a fixture and looked at in a
+headless browser: the board, one game's filter, a profile with a tier open.
+
+**DEPLOYED 11 Oct 2026, 04:16:58 UTC (FTESurf `32c3b3b`), surfd and its
+website**, 0 players, the staged suites passing on the Pi, a database backup;
+`tools/momfetch.py` copied by hand to where the Pi's importer loads it from
+(refused unless the copy there was the previous one). The start built
+`runs_player`. Read back on the host: the commit's files, no error since the
+reload, and the two statements the index had moved on their old plans (the
+directory build a table scan, 11.2 s on that read; the admin's account counts
+off the small index in 0.00 s). The owner's player page took 1.61 s the first
+time and 0.03 s the second; its maps list gives the same ten tiers as its
+bars; one map shows 7,859 rows on All games and 1 / 7,652 / 206 by game.
+Momentum profile links are empty until the importer refetches a board. The
+first maps-list build after the reload took 4.95 s against the proxy's 5.
+
+## Patch 635 — The TAB board: every game in one list, a filter switch and slider, the LINE heading *(MOD ONLY, csprogs)*
+
+**Problem.** From the owner's list of HUD edits (11 Oct). The other games'
+times (Momentum, KSF) sat on a fourth tab, Imported, apart from ours; the
+owner asked for them in the Online list with a filter beside it, and on the
+first cut: "show all combined, and then the filter on the right, to be like a
+slider, with a filter toggle switch." Ticking the lines of a list was one box
+at a time.
+
+**Change.** FTESurf `8286948`: `cl_scores.qc`, `cl_online.qc`, `cl_players.qc`,
+`cl_scores_native.qc`. The Online list asks surfd for the `combined` tier by
+default (a tier surfd already served; no surfd change). Right of the tabs a
+`filter` switch and a slider with three stops, FTESurf, Momentum and KSF,
+narrow it to one game: `sb_filter`, `sb_filter_src`, both saved; `scores
+source all|ftesurf|momentum|ksf` on the console. The Imported tab is gone and
+Segmented stays ours. An imported row says its source in the WHY column, or
+in front of its name where a narrow window drops that column; the name and
+the footer's count are cut to their room. A click on the LINE heading ticks
+the lines of the list on screen from the top, up to the eight slots, or
+unticks them, and the footer says what it did. The room list asks for its own
+ranked board, since the Online store now usually holds the merged list. One
+account's ranked row is the player's own before its imported row, and where a
+merged list does not hold it the row pinned under the list reads the name and
+`FTESurf #<rank>`. A board that is only held hands no mouse press to its
+controls. Twenty older arms pin the filter to ours.
+
+**Verified.** `tools/p635board.py` starts the checkout's own surfd over
+seeded rows and grades the client's prints (the tier asked, the footer's
+sentence, the names as drawn, the controls' rectangles, each click): 52 of 52
+on csprogs `b2b6de57`. A build with seven faults planted (no source tag, no cut,
+the footer's wording, ticking from the bottom, a click on a held board, no
+room-list request, the console's list outliving its tab) fails the ten checks
+for them and no other. The player's own row and the pinned row were measured
+through a server-side seam in a scratch tree. Frames looked at: 1600x900 and
+1024x576, hud_scale 1 to 4.
+
+One review of the first cut, two readers. Folded in: a tagged name over the
+time column (1:06.990 read as 2:06.990), the room list without times while
+the merged list was up, the footer under the key hints, the same account's
+imported row taken for the player's, a held board firing the last control,
+the arm passing a build with four behaviours broken, and the test tool's file
+drop reaching outside its overlay. The redesign after the review was
+measured, not reviewed again.
+
+**Known.** Under about 760 px of window the board is clipped sooner than
+before (the header is wider; by arithmetic, not run). A drag of the knob, the
+native table and a finish under a one-game filter were not run. The LINE
+heading unticks before it completes. FTESurf BACKLOG, "The TAB board's filter
+and LINE heading".
+
+**Deployed** 2026-10-11 from FTESurf `8286948`: csprogs `b2b6de57` (qwprogs
+and menu.dat unchanged, no cfg) to both Windows installs at 04:41Z with no
+game running, and to the Pi at 04:42Z with nobody on. Twelve lobbies
+restarted, read back from the host; a fresh client on a lobby was served this
+csprogs and drew the board. The live surfd answered the merged list for three
+maps in 25 to 63 ms, one request each. `.prev` is Patch 632's csprogs in all
+three places.
+
+## Patch 638 — a linked player's in-game name is their Steam name *(MOD ONLY: qwprogs + surfd)*
+
+From the owner's list of 11 Oct ("for their in game name to follow their steam
+name"). ROADMAP 14.4, the name half.
+
+- **The lobby.** Once surfd has answered a connection's proof with a linked,
+  unbanned account that has a name, `Account_NameNow` forces the player's
+  userinfo name to it (`forceinfokey`: no rename line, this server only, the
+  player's saved name untouched). The engine may alter what it is given (a
+  "(1)" before a name somebody here already has, a cut at 31 bytes), so the
+  lobby latches what the engine made and forces again only when the name has
+  moved off that; a "(1)" is tried without every fifteen seconds; a link
+  moved to another account mid-connection renames. If the engine answers
+  "unnamed" the player's own name goes back and the hold is let go.
+- **The hold.** A held player's rename is dropped in `SV_ParseClientCommand`
+  before the engine sees it, with one line saying why. The test is on the
+  engine's own tokens (`tokenize_console`) and covers the three spellings the
+  engine renames on: `setinfo name`, its own `name` command, and a `setinfo`
+  whose key is hidden from QuakeC's `tokenize()` or sent encoded.
+- **surfd.** `/api/account` answers `named`; an account's rows and recordings
+  are filed under the account's name whatever the lobby sent; the site lists
+  an account under it. A name the engine would refuse (it reads leet, drops
+  spaces and looks for "console" anywhere: "Falcon Soleil") is not one the
+  lobby is told to hold. `steamsync.py` (cron, half-hourly) asks Steam for
+  current names, fifty accounts a request, and then makes every row of a
+  named account follow the account, so a row filed before this patch is
+  renamed by the first pass.
+
+**Review.** One reviewer, three heads (recorded evidence and ranking; abuse;
+breakage), given the code and the engine source. Nothing found that loses a
+recording, fails a check, misattributes a run or moves a rank: a recording's
+file name is built once at close, its `owner` line is unbound, and nothing
+compares a name with one stored earlier. Found and fixed: the drop tested one
+spelling of a rename where the engine takes three; `steamsync` renamed rows
+only on a change it saw itself; a name with no game-safe form relabelled a
+history "player"; surfd's reserved-word test was narrower than the engine's;
+a "(1)" stayed after the other player had left; a Steam reply with no picture
+blanked the stored one and an unreadable reply stopped every pass at the same
+accounts.
+
+**Measured.** In the rig (`tools/p615link.py`, the installed Patch 625
+binaries): 43 of 43, the lobby's own line naming each account in turn, and no
+"Imposter" in the server's log by any of the three routes; the four other
+modes pass. TWO CONTROLS, each a build with one thing taken out: with the
+drop compiled out the cvar route's check fails (41 of 42); with the first
+cut's test the engine's `name` command and the hidden `setinfo` both rename
+(42 of 43), which is the review's finding reproduced. `test_ranked.py` 108
+checks, `test_accounts.py` 399; `tools/accounts_mutants.py` 319 mutants, the
+full sweep on the final code: 308 killed, 11 surviving alone as declared
+pairs, none unexpected. That sweep's first run caught `rank-ext`, orphaned by
+Patch 636's second rule for a linked account's Steam id; its check is added.
+
+**Left** (BACKLOG): the first seconds of a connection are under the game's
+own name; the customizer's name field does not say the name is held; whoever
+is on a lobby first under a linked player's name keeps it; the terms screen
+still says "under the name you are playing as".
+
+**DEPLOYED 11 Oct 2026, 05:31-05:33 UTC (FTESurf `36bd989`): surfd, the Pi's
+twelve lobbies, both Windows installs' qwprogs.** surfd first, the staged
+suites passing on the Pi, a database backup, `surfd ready` 05:31:17Z, the
+commit's files read back and no error since the reload; a crontab line for
+`steamsync.py` at minutes 7 and 37, whose first pass asked Steam for the one
+account and renamed nothing (the owner's rows were already under his Steam
+name). Lobbies, `build.ps1 -Pi` at 12 rows and 0 players: `qwprogs.dat`
+`76e00522`, the bytes the rig arm ran on; `csprogs.dat` `b2b6de57`, byte for
+byte Patch 635's; twelve units active since 05:32:48Z to 05:32:57Z. Windows,
+05:33:20Z: `qwprogs.dat` into both installs with no game running, the
+previous file kept as `.prev`, read back with a second tool. Live check
+05:33:47Z: the installed client in a private rig, a key of its own and no key
+pressed, joined a lobby by its public name and had its proof answered. Not
+measured on the fleet: a name being forced, which needs a linked game; the
+owner's next connect is the first. Read in the same hour, 05:09:39Z: a stage
+time of the owner's stored `ranked` under his account, the first live run
+through Patch 629's path.
+
+## Patch 637 — The HUD's defaults are the owner's own layout *(MOD ONLY, csprogs + cfg/default.cfg)*
+
+**Problem.** The last item of the owner's list of HUD edits (11 Oct): "make my
+current hud settings, the default hud settings for the game... this is just the
+default template." The defaults were each element's first placing, with every
+optional row switched on.
+
+**Change.** FTESurf `423c081`: thirteen client files, `cl_hudedit.qc`'s reset
+literals and the two default configs. 42 of the settings `hud_edit` owns start
+on the value the owner's saved config held: where the elements sit; Boarding
+off; run-line labels off; the Segments column without its absolute, percent
+and unit columns, the Board readout without its segment, ramp and word rows,
+the strafe bar without rates, why and best; the Run graph on both plots; the
+mouse pad over 360 degrees with a one second trail; the live numbers updated
+every frame. Each was changed wherever it is stated (the `registercvar`, the
+`set` line in both default configs, the editor's literal list), so
+`hud_edit`'s "reset" and "reset all" return to it. The speed, its energy and
+the strafe trainer draw at his sizes (64, 48 and 20 px at `hud_scale 2`) by
+moving the drawers' own sizes, so they still follow `hud_scale` and reach a
+config that had saved the old automatic. Not taken: the editor's own window.
+A saved config keeps what it holds.
+
+**Verified.** `tools/test_p637defaults.py` over `cfg/test/p637defaults.cfg` in
+a fresh overlay, 11 of 11 on csprogs `154fe49e`: the 42 boot on the owner's
+values and the other 99 as before; setting his whole saved layout by hand (80
+settings) moves none of the editor's 20 rectangles; with the 42 put back on
+their old defaults the rectangles move, and "reset all" returns all 141. The
+build before fails the four checks that rest on the defaults. The speed and
+its energy are the same pixels as his explicit sizes at `hud_scale 2`.
+
+One review, one reader. Folded in: the three sizes had first been made
+absolute pixels, which no longer followed `hud_scale`; "reset all" would hand
+back two old defaults on a config saved before; an older arm graded the label
+default; a dozen comments stated defaults that had moved.
+
+**Known.** A player who has saved a config keeps 16 of the old defaults: the
+engine saves every setting the game code alone registers, at its default too.
+Not migrated; the owner is asked. Board and Boarding are placed where they
+were stacked under the strafe bar, and the stacked state is console only. In
+a 1280x720 window two pairs of his panels overlap that do not at 1600x900.
+Arms that read a HUD default without setting it were not swept. FTESurf
+BACKLOG, "The owner's layout as the defaults".
+
+**Deployed** 2026-10-11 from FTESurf `423c081`: csprogs `154fe49e` (qwprogs
+and menu.dat unchanged) and `cfg/default.cfg` to both Windows installs at
+05:44Z with no game running, and the progs to the Pi at 05:45Z with nobody
+on. Twelve lobbies restarted, read back from the host; a fresh client on a
+lobby was served this csprogs and drew the board. `.prev` is Patch 635's
+csprogs in all three places.
+
+## Patch 639 — Steam profile pictures, the service and website half *(MOD ONLY: surfd + its site)*
+
+From the owner's list of 11 Oct ("use players Display Pictures next to their
+name on the leaderboard"). ROADMAP 14.4, the picture, first half: the site
+draws them; the game's copy is made and served, and the game draws it next.
+
+- **The fetch.** `steamsync.py` (cron, half-hourly) fetches each unbanned
+  account's picture once, by Steam's own hash of it, from Steam's picture host
+  into `data/avatars`: `<hash>.jpg` as served at 64 px, and `<hash>.txt`, a
+  header line and 32 lines of 32 RGBA pixels in hex. Text, because `uri_get`
+  hands QuakeC a string and a binary body stops at its first NUL; this fork
+  cannot use a URL as a pic name.
+- **What is kept.** Only a body Pillow has opened: one cut short on the way
+  has a JPEG's first bytes. A picture that could not be had leaves
+  `<hash>.bad` and is asked for again after a day. The host throttling or not
+  answering ends the pass and marks nothing. Files of a hash no unbanned
+  account names are removed at the end of a pass.
+- **surfd.** `avatars()` is one table of who has a picture on disk, swapped
+  whole each minute and at once when the admin's page bans or unbans.
+  `/board/avatar/<handle>` serves the JPEG from the site's own origin (its
+  CSP is `img-src 'self'`), in a rate bucket of its own.
+  `/api/board?avatar=<mark>` serves the game's copy: a parameter of the board
+  route because the game-facing vhost forwards a fixed list of paths; only
+  while ranking is by account; never for a mark two accounts share.
+- **Rows.** `/api/board`, `/board/api/map`, the players list and a player's
+  page say `av: 1` where the player has a picture and carry no key where they
+  do not, so a board with no pictured account on it is byte for byte what it
+  was (the review compared 32 bodies against the commit before: 16
+  identical, 16 differing only by that key).
+- **The site.** `board.js` draws the picture beside the name on board rows, on
+  a player's page and in the players list; one that will not load removes
+  itself.
+
+**Review.** One reviewer, four heads (files and requests; Pillow; who sees
+what; breakage), given the code. Nothing found that reads or writes outside
+the pictures directory, asks another host, or serves a file under a type a
+browser would run. Found and fixed, each with a check and a mutant: every
+`steam.Unavailable` was read as the host being down, and that exception is
+also a refusal of one object, so one refused hash ended every pass at itself;
+a picture was kept on its first three bytes and never asked for again; the
+game was told `av` where only the site's file existed; a shared mark was
+dropped only when both accounts were pictured; a ban took up to a minute to
+stop a picture; the site's route resolved a handle through the player
+directory, five minutes behind a new player; any file error left the pass by
+exception; pictures spent the map screenshots' rate budget; nothing was ever
+deleted.
+
+**Measured.** `test_ranked.py` section 10: 22 checks (130 in the suite), with
+a fake Steam that cuts one picture short, refuses one, sends a PNG for one
+and throttles; `test_accounts.py` 399, `test_web.py` 202, `test_board.py`
+351. The 35 picture mutants: 35 killed. `tools/accounts_mutants.py`, the full
+sweep on this code: 354 mutants, 343 killed, 11 surviving alone as declared pairs, none unexpected. LOOKED AT: the board, a player's page and
+the players list from a fixture with two drawn pictures, in a headless
+browser (the list's picture sat high in its row; its style is corrected).
+`test_admin.py`: 259 of 261 on this box today, and the same two fail on the
+commit before this patch, loaded or quiet (a lobby probe's wording and its
+packet count, first seen after the machine's restart): not this patch's, not
+explained. The 32-body comparison above is the reviewer's, on the first cut;
+the final code is held to the no-key rule by its own check.
+
+**Left** (BACKLOG): the game does not draw them yet; a changed picture is no
+picture until the next sync; a browser keeps a picture an hour, a banned
+account's included; the game's copy spends the board's rate budget.
+
+## Patch 641 — A config still on the HUD's old defaults is moved to the new ones, once *(MOD ONLY, csprogs)*
+
+**Problem.** Patch 637 made the owner's layout the HUD's defaults, but a
+default is beaten by any config that already holds the name: the engine saves
+every archived setting only the game code registers, `hud_edit`'s reset wrote
+the others with `seta`, and an older release's default.cfg sets them. Players
+with a saved config kept the old layout or a mix of the two. The owner, asked
+whether to move them: "do it".
+
+**Change.** FTESurf `475d313`: `cl_hudedit.qc` (`HE_MigrateDefaults`), one call
+at the end of the HUD's registrations in `cl_main.qc`. Once a config (a new
+archived mark, `hud_layout_rev`), each of Patch 637's 42 settings that is still
+exactly its old default becomes the new one; an element's place only when both
+its axes are the old ones. What a player changed is left, and so is a value
+typed back afterwards. One console line says how many moved; a fresh install
+says nothing. Two 256-float history rings in `cl_hud.qc` moved to allocated
+memory: csprogs was 12 global definitions from the compiler's 131,072.
+
+**Verified.** `tools/test_p641migrate.py` over `cfg/test/p641migrate.cfg`,
+three starts of the game code in one process, 9 of 9 on csprogs `05b3a6ff`:
+all 42 move and the game says 31 (14 elements, 17 settings); the config it
+then saves holds them and the mark; an element moved on one axis, a setting
+off its old default and a value a hair off are left; a value put back after
+the mark is left. The build before fails 7 of the 9. A fresh overlay says
+nothing and passes Patch 637's arm.
+
+One review of the first cut, which moved the 16 settings the engine pins; it
+showed two more ways the old default is pinned, and the patch was widened to
+all 42 and measured again.
+
+**Known.** It cannot tell a setting deliberately put back on the old default
+from one never touched. A config pinned on a default older than the last is
+not moved. No real config from an older release was run. FTESurf BACKLOG,
+"The owner's layout as the defaults".
+
+**Deployed** 2026-10-11 from FTESurf `475d313`: csprogs `05b3a6ff` (qwprogs
+and menu.dat unchanged, no cfg) to both Windows installs at 09:04Z with no
+game running, and to the Pi at 09:05Z with nobody on. Twelve lobbies
+restarted, read back from the host; a fresh client on a lobby was served this
+csprogs, drew the board and printed no move line. `.prev` is Patch 637's
+csprogs in all three places.
+
+## Patch 642 — Rounded corners are drawn from masks made at their own size *(MOD ONLY, csprogs and menu.dat)*
+
+**Problem.** Every rounded box in the game and the menu was drawn from one
+32x32 mask whose corner is 8 texels, stretched to the wanted radius. From
+about 20 px the edge was smeared over several pixels and looked low
+resolution. The owner: small corners look good, bigger ones blurry, "the play
+button rounded corner is most obvious".
+
+**Change.** FTESurf `6713cd3`: `_sui_round_draw` in `src/shared/sh_ui.qc`
+(both VMs). A disc of the corner's pixel radius is rasterised in QC once a
+radius (by 1 to 32 px, by 2 to 64, by 8 to 128, by 16 to 256, rounded up),
+uploaded with `r_uploadimage` and given a shader of its own; the box is its
+four quadrants and its opaque middle, on whole pixels. Each VM forgets its
+masks in its renderer-restart hook and makes them again under the next
+number. Where the builtins are missing or a mask will not make, the .png
+draws as before. Test hooks: `hud_edit ui round <px|png|mask>`,
+`ui_strip_test masks`.
+
+**Verified.** `tools/test_p642corners.py` over `cfg/test/p642corners.cfg`,
+6 of 6 on csprogs `30f816bb`: nine radii from 6 to 176 px, each drawn the old
+way and the new. Along the corner's edge the mean difference from the exact
+shape is 0.000 at the seven radii the ladder holds and 0.030 and 0.040 at the
+two between steps; the stretched mask reads 0.025 at 6 px, 0.18 at 20 and
+0.37 at 176, with 3.6 to 33 times the exact count of half-lit pixels. After a
+video restart the masks are made again. The menu VM made 2 masks and 4 after
+a restart (its own count line), and its buttons were looked at.
+
+One review of the first cut. Fixed from it: names polled after a restart
+could be defined wrongly for good (now the engine's restart hooks), a
+one-pixel shift at half-pixel edges, small radii rounded up, and a grader
+whose mean thinned as the radius grew.
+
+**Known.** The Play pill itself was not reached in a rig. Pixels were graded
+in the game VM at one unit to a pixel; cost was not measured. FTESurf BACKLOG,
+"Rounded corners".
+
+**Deployed** 2026-10-11 from FTESurf `6713cd3`: csprogs `30f816bb` and
+menu.dat `6db94852` (qwprogs unchanged, no cfg) to both Windows installs at
+10:08Z with no game running, csprogs to the Pi at 10:09Z with nobody on.
+Twelve lobbies restarted, read back from the host; a fresh client on a lobby
+was served this csprogs and drew the board. `.prev` is Patch 641's pair.
+
+## Patch 640 — Steam profile pictures in the game *(MOD ONLY: csprogs)*
+
+From the owner's list of 11 Oct ("use players Display Pictures next to their
+name on the leaderboard, and or on the line or where else their name is
+displayed"). ROADMAP 14.4, the picture, second half; Patch 639 made the
+service's side.
+
+- **The cache** (`cl_steampic.qc`, new). 32 pictures by the 8-hex mark: a
+  lobby's `*phash` for a player, `FS_GuidId` of a board row's `player` for a
+  row. A mark something drew in the last 3 s is asked for at
+  `/api/board?avatar=<mark>`, one request at a time, 1.5 s apart, under the
+  board's own consent and `lobby_dir` rules; a mark with no picture is not
+  asked again for 15 minutes; a slot still on screen is never given away.
+  The reply is text (`uri_get` hands QuakeC a string): its hex becomes 32 x 32
+  RGBA in memalloc'd memory, the corners rounded in the alpha, and
+  `r_uploadimage` takes it under the slot's name.
+- **Drawing it.** A shader of the cache's own, registered after the upload:
+  drawpic's default shader loads its picture premultiplied, which is another
+  texture than the uploaded one, and drew the engine's missing-texture
+  checker. `sui_pic`, so a list row's position is its frame's.
+- **Where.** Before the name on the TAB board's Online rows, where surfd's row
+  says `av` (one picture on a board and every name moves over, so the names
+  stay a column; a board with none is drawn as before). In the room list,
+  where the colour square was, the colour kept as a bar under it. Before the
+  name on a ticked run line in the world.
+- **Room in the compiler.** csprogs was 33 definitions from fteqcc's table of
+  131,072 (one per array element and per local; `numglobaldefs` in the
+  .dat's header) and this patch's 61 did not fit. The local board's four
+  256-float row tables are memalloc'd pointers now, allocated in
+  `Scores_RegisterCvars`: 129,663 after this patch, 641 and 642.
+
+**Measured.** `tools/p640pics.py`: p615link's rig, surfd in the driver's
+process seeded with one account that has a picture (four flat quadrants, so a
+swapped channel or a flipped row order shows) and two KSF rows; one client on
+a listen server opens the TAB board. Graded on surfd's row (`av` on the
+account's row and no other), the cache's own line (one ask, one picture,
+under the account's mark) and THE SCREENSHOT (the four quadrants in their
+places): 10 of 10, 127 quadrant matches at the owner column. `--no-picture`,
+the control: no `av`, no ask, no quadrants, names at the column's start, 8 of
+8. THREE CUTS HAD THE SAME COUNTER: the cache said "asked 1 got 1, state 3"
+while the first drew at a frame-local position (nothing on screen) and the
+second drew the missing-texture checker; only the screenshot's reading told
+them from the third (0, 0 and 117 matches then). Build: 0 warnings; qwprogs and
+menu.dat are the installed bytes.
+
+**Review.** One reviewer, four heads (VM safety; the network side; what the
+player sees; breakage elsewhere), given the code and the engine source, with
+an offline VM of its own; then a narrower pass over the fixes. Nothing found
+that can raise a VM error: the four moved tables are allocated before any
+frame, command or callback and every index keeps its bound; the pixel loop
+is exact against the validated length (a synthetic picture, 0 of 1,024 pixels
+wrong). Found and fixed:
+- a renderer restart (F11, `vid_restart`) took the textures and shaders
+  while the cache still said "held": every picture became the missing-texture
+  checker, and stayed one, because a name drawn before its re-upload keeps
+  drawpic's default shader. `CSQC_RendererRestarted` now sends the held ones
+  back to be fetched. REPRODUCED in the rig on the build before the fix
+  (cache "1 of 1", 0 quadrant matches after `vid_restart`) and passing after
+  (2 of 2, 127 matches);
+- an unanswered request was given up on after 20 s and the next mark asked:
+  against a directory that never answers, 6 requests in 100 s, and the
+  engine's HTTP client has four threads and no timeout, so the fourth
+  stopped the board, replays, zones and the menu's lobby list. Now nothing
+  is asked while one is out;
+- a 429, a 5xx and a timeout were each a 15-minute "no picture" for that
+  mark, and the next mark was asked 1.5 s on: one rate-limited minute blanked
+  every picture. Now the mark stays wanted and the asking waits a minute;
+- request ids restarted at 1 with every map and a reply names no mark, so
+  the last map's late answer could be kept as another player's picture;
+- the slot took a third of the name at the owner column's narrowest; the
+  pinned row was out of line with the names above it; a body of the right
+  length with nothing opaque in it was "held"; `scores pics` ran on into
+  the status dump.
+From the second pass, fixed as well: a late answer is taken (a slow
+directory, or a 24 s stall of the client, had ended pictures for the map,
+and F11 after that lost the held ones for good); a slow request's hold
+outlives the map; three non-answers in a row end the asking instead of one
+a minute for ever; the pinned row's word is fitted.
+RIG, on the final build (csprogs `b01acd53`): picture 10 of 10 with the
+restart step, `--no-picture` 8 of 8, `--slow 25` 10 of 10 (one request, the
+answer taken 25 s on and drawn), `--busy 1` 10 of 10 (the second request 60 s
+after the 429, drawn). The second pass's own fixes are measured by those two
+runs and not again in the reviewer's VM.
+
+**Not measured in a rig:** the room list and the run-line name (each needs a
+linked player on a lobby; one call each to the function the board's row
+measures). The owner is asked to look (lextest).
+
+**Left** (BACKLOG): no picture yet in the opt-in native table, chat,
+the results screen or the spectate bar; each ask spends the
+board's rate budget on surfd; a picture changed on Steam shows at the next
+map.
+
+## Patch 646 — The board's lists take the mouse wheel *(MOD ONLY, csprogs)*
+
+**Problem.** From the owner, 11 Oct ("the ability to load more then 1 page of
+KSF records"). The board in the game asks for its next 100 rows when its list
+is scrolled near the end of what it holds (Patch 474), and the wheel never
+reached the list: `Scores_InputEvent` handed sui the cursor and two buttons
+only, so a notch fell through to its bind (`+jump`) and the one way to a
+second page was dragging the thumb.
+
+**Change** (ftesurf `088bb6a`, cl_scores.qc).
+
+- **`Scores_InputEvent`**: while the board is PINNED and the cursor is over
+  one of its lists (`sb_online`, `sb_runs`, `sb_legs`), a notch moves that
+  list's offset one row and is taken. Held with no cursor, off the lists, or
+  closed, it is the player's as before: both notches are bound to `+jump`.
+- The offset is moved directly, not through sui's input buffer: with a replay
+  under the board that buffer is emptied by the replay's own `sui_end` before
+  the board reads it (the review's finding, on the first cut).
+- The hover is re-tested at the notch and at a MOUSE1 press. sui re-tests it
+  only on motion, so after a wheel scroll with the mouse still a click went to
+  the row that HAD been under the cursor.
+- `scores status` prints the online list's top row (`scroll N`); a click
+  dprints the row it landed on. Both are what the arm grades.
+
+**Verified.** `tools/p646wheel.py` over `cfg/test/p646wheel.cfg`, on
+p635board.py's surfd and rows (surf_voyager bonus 2: 130 rows, a page of 100
+and a second). csprogs `e9371ed5`, built from the commit alone: 9 of 9 --
+off the lists `took 0` and nothing moves; five notches move five rows; a
+click there, the mouse not moved, lands five rows on (row 10, then 15); two
+up move two back; seventy more bring the second page (rows 100 to 130, scroll
+73); held and closed `took 0`. The same arm on four other builds of the same
+source: the hunk out (`1d6c9109`) fails four checks, `took 0` throughout; no
+hover test (`6202b1ed`) takes a notch off the lists; no pin test (`9e8dd2fd`)
+takes one from a held board; no re-test at the click (`6278cfa3`) lands on
+row 10 twice. LOOKED AT: `p646_paged.png`, rows 74 to 94 on screen, the thumb
+two thirds down, the footer "130 clean time(s)". qwprogs `76e00522` and
+menu.dat `6db94852` are byte for byte the installed ones.
+
+**Known.** One review, read and not run. Not measured: the Local list and
+the track list (the same lines; the fixture's track list is three rows), a
+replay under the board, a real wheel. On a narrow window a notch over the
+docked room list scrolls the Online list under it; a board pinned by accident
+during a TAB peek takes the wheel until TAB is let go. All in BACKLOG.md.
+
+## Patch 647 — the first-boot screens *(MOD ONLY: menu.dat + one sentence of surfd)*
+
+From the owner's list of 11 Oct ("make the sign in process happen when you
+first boot the game, like the screen that tells you, you will be recorded,
+make it follow the current design flow, and also clean up that screen").
+ROADMAP 14.4, the last of that list.
+
+- **"Before you play".** `screen_terms` was 35 hand-broken lines in a flat
+  box with three equal buttons. It is one rounded panel with two cards, "On
+  this machine" and "Public lobbies", whose text is wrapped to the cards at
+  draw time (`ui_para`) and measured first, so the panel is sized from it:
+  16 px text, or 12 where 16 does not fit the window. The offline answer is
+  still the first element and the keyboard's default; the online one is
+  drawn as the way forward. In a window too short even at 12 px the buttons
+  and the footnote sit on a strip of their own along the bottom edge.
+- **Its wording**, under the rule the old text's essay set (disclose only
+  what the shipped code does today): a tick is 66 or 100 a second, where it
+  said "about 66"; a ranked time is filed under a linked Steam account, by
+  its Steam name and with its picture, where it said "under the name you
+  are playing as"; what a link stores; that the game asks play.proto.bar for
+  leaderboards and pictures as well as the map picker. `FS_TERMS_ONLINE` is
+  not bumped: nothing new leaves the machine of a player who does not link,
+  and linking is its own act on its own page.
+- **"Sign in with Steam".** Taking the online answer goes on to
+  `screen_steam`, an offer with a "not now" (ESC too). The menu cannot make a
+  link: the engine signs one only in the game, on a lobby, under a real key
+  press (Patch 625). So the offer says what a link is, joins the directory's
+  first lobby with room through `ui_connect`'s own gates (the name gate
+  waved through once: the Steam name becomes the name, Patch 638), and the
+  box the game raises there by itself asks for Enter. Declining an offer
+  that could be taken also tells the game not to raise that box this
+  session.
+- **surfd's sign-in page** says, before the sign-in, that the Steam name and
+  avatar are shown with the times, in the game too, and that the Steam name
+  is the name on lobbies (Patches 638 to 640 made those true).
+
+**Measured.** `tools/p647boot.py`: p615link's rig with NO consent file, a
+lobby heartbeating to a surfd in the driver's process, and real keys on the
+client's own window (an answer to the terms is never a console line). The
+sign-in path, 8 of 8: the terms come up, D then Enter writes tier 4 and the
+menu offers the sign-in, the offer asks the directory for lobbies, D then
+Enter loads the map list and joins the rig's lobby under the factory name,
+and the game's own box comes up asking for Enter. `--later`, 6 of 6: ESC on
+the offer, no join, `_acct_prompted` 1. `--offline`, 4 of 4: Enter on the
+default button writes tier 1, no offer, and the directory is asked nothing.
+The panel against the window, by its own print: 1240 x 781 at 16 px in
+1920 x 1080; 1240 x 641 at 12 px in 1280 x 720; 992 x 656 at 12 px in
+1024 x 768. LOOKED AT: the terms at those three sizes and as a returning
+player sees them, the offer, and the game's box. `test_accounts.py` 400 with
+the page's sentence checked; the mutant set lints clean against the edited
+file (354, none stale). Build: 0 warnings; qwprogs and csprogs are the
+installed bytes.
+
+**Review.** One reviewer, four heads (consent; the text as a disclosure,
+sentence by sentence against the code; the VM and the layout; the offer's
+join), given the code and the engine source. Nothing found that writes or
+raises consent without the player's answer, leaves the terms without one, or
+contacts a server below the online tier; no disclosure the old text made is
+missing. Found and fixed:
+- the panel was 790 px tall at 1280 x 720 (15 px text, measured at one
+  window size only): the buttons' fallback strip was the normal case and hid
+  the footnote. Now 16 px or 12, a wider panel, and the three sizes above;
+- the offer said Enter "opens Steam's own page": it opens the sign-in page,
+  Steam's is a click on, and a number is typed back. The sentence says so;
+- with no lobby answering, the offer said "the game asks again" while its
+  only exits told the game not to: nothing is declined in that state now;
+- the join read an unloaded map list (PLAY loads it, and a first boot has
+  not been there), so a missing map was not fetched first;
+- the screen's "ready" and the button's pick asked different questions
+  (every lobby refused by the host list gave a live button that did
+  nothing); full lobbies were not skipped;
+- the Steam paragraph left out what else surfd keeps for a linked install
+  (its id, where and when it was linked, when and how often it sends ranked
+  runs) and the profile link beside the name;
+- two harness commands that feed the menu synthetic keys and clicks could
+  press the terms' answers: for a moment after either, the answers and the
+  offer's sign-in do nothing and say why. (Not new with this patch; its test
+  word had made the route shorter. Whether a server's text can reach those
+  commands was not traced.)
+Left as found (BACKLOG): the name gate is waved through for the offer's
+join, so a player who then declines in the game is on a lobby under the
+factory name.
+
+**Left** (BACKLOG): signing in is still a join and five steps; the offer
+is made once, after the terms, and nothing in the main menu leads back to
+it; an 800 x 600 window does not fit the terms even at 12 px.
+
+## Patch 645 — Run lines are drawn by the engine; a polygon batch of 32768 vertices no longer kills the client *(ENGINE client + csprogs)*
+
+**Problem.** The owner: eight run lines "really drains my fps", where his
+older injectable drew fifty. FTESurf draws a recorded run as a screen-space
+antialiased strip, and QC built it a segment at a time (`cl_lines.qc`
+`Line_Feed`, `Line_Q`, `Line_Emit`): some 250 instructions and 14 builtin
+calls a segment, about a microsecond. On the owner's laptop eight lines with
+their marks and the HUD graph added 3.6 ms to a 2.2 ms QC frame.
+
+Measuring it found a second thing. `PF_R_PolygonEnd` flushes a batch itself
+when it holds 32768 vertices or its flags change; `CSQC_PolyFlush` ends by
+clearing the batch's shader; and the polygon that crossed the line was then
+flushed by the next `R_BeginPolygon` with no shader, an access violation at
+the top of `GLBE_DrawMesh_List`. Eight whole lines three pixels wide are
+33,040 vertices, and the installed client died drawing them.
+
+**Change.** `engine/client/pr_csqc_lines.inc` (new, included by `pr_csqc.c`):
+six CSQC builtins, by name. No header is touched, so no plugin interface
+moves; the server is not built differently.
+
+- `lines_draw(parm, n)` is `Line_Draw`'s pass over one slot's samples in C:
+  group and chunk culling, LOD strides, the near clip, the playhead split,
+  Catmull-Rom subdivision, reveal, fade and window alpha, mitres. It writes
+  the same two fans a segment into the same 2D polygon batch
+  `R_BeginPolygon("", DRAWFLAG_TWOSIDED, TRUE)` fills. Anything out of range
+  in its parameter block and it returns 0 having drawn nothing; QC then runs
+  its own loop.
+- `lines_arrays` and `lines_lod` say where a VM keeps its samples and LOD
+  tables. They are kept as QC pointers and resolved, with their sizes, inside
+  each call; a VM's are forgotten when it shuts down.
+- `lines_segment` and `lines_width` are `Line_Emit` (marks, dashes, the mouse
+  pad's trail); `lines_strip2d` is a strip through an array of points, the
+  HUD graph's curves.
+- `PF_R_PolygonEnd` and `PF_R_PolygonEndRibbon` keep the batch's shader across
+  their forced flush.
+
+FTESurf's half: `cl_lines.qc` draws through the builtins when
+`checkbuiltin(lines_draw)` and keeps its loop for an engine without them and
+as the reference. `hud_lines_native 0` draws the QC way; `lines native`
+prints which drew, how many passes were refused and the last drawer's counts.
+
+**Verified.** On a development build of this source, FTESurf
+`tools/test_p645lines.py` over `cfg/test/p645lines.cfg`: eight views, each
+drawn the QC way, the engine's way and the QC way again. 28 of 28. In the
+seven views on a paused replay (eight board lines in a window, whole, three
+pixels wide, later in the run; the replay's own line alone with its playhead
+inside it, and stopping at it; one board slot alone) every pixel is the same,
+largest difference 0 of 255, with the same point, segment, clipped and wild
+counts and screen box and no pass refused. In the live view (the player's own
+line, whose last sample has no LOD tables yet) the line's own pixels are the
+same; the map behind it flickers by itself. The build without the flush fix
+dies in the three-pixel view drawing the QC way; with it both ways draw.
+
+Cost, QC time a frame in one process and view (1600x900, eight lines): a
+window with marks and graph 5.81 ms the QC way and 3.39 ms the engine's,
+against 2.22 ms with no board line; whole lines 8.92 against 4.48.
+
+One review. From it: two fields of the block whose product could overflow an
+int index for a hostile VM (bounded), three places C rounded in double where
+QC rounds in float (made float), the reset moved after the VM's own shutdown
+function, and the arm's last three views.
+
+**Known.** What is left of eight lines' cost is QC that is not per segment:
+marks, labels, the follow search, the names. The cap of eight lines stands.
+A line appearing (its samples' births, 0.18 s) is not compared: the picture
+has to hold still. An engine before this one still dies at 32768 vertices on
+the QC path. `CSQC_PolyFlush` rewinds the index count to the vertex origin,
+and `PF_R_PolygonEnd` copies with `memcpy` where the ranges can overlap: both
+older, both left. FTESurf BACKLOG, "Run lines drawn by the engine".
+
+**Deployed** 2026-10-11. Engine: the client and the dedicated server built
+clean from `65bf6f464` (tag `patch-645`; both carry the one stamp
+`git-7216-patch-645-0-g65bf6f464`, read back from the files), client
+`03989f66`, server `25071c74`, into `C:\FTESurf` and `C:\FTEQuake` at 12:57Z
+with no game running; the plugins were not rebuilt (no header moved). The
+Linux recipe builds the same commit with gates all PASS and the same revision
+line. Game code: FTESurf `231e276`, csprogs `f40d4069` (with Patch 643's), to
+both installs at 12:58Z and to the Pi at 12:58:48Z with nobody on; twelve
+lobbies restarted and read back. On those final binaries the arm reads 28 of
+28, and the cost table is 5.84 ms against 3.41 for eight lines in a window
+(2.49 with none), 10.16 against 4.98 whole. A fresh client on a lobby with
+the new engine was served this csprogs and drew the board. The 0.1.24 release
+of the same hour is the patch-625 engine: this is the next release's.
+
+## Patch 643 — env_fire is drawn from Source's flame sheet *(MOD ONLY, csprogs)*
+
+From the owner, 11 Oct: an earlier session "got their scrolling texture to
+work, however it doesn't display today, we got the original orbs that float
+up ... can you find if we lost this work? or if it can be enabled."
+
+**Problem.** Nothing was lost and nothing had been joined up. Patch 531 (the
+engine stepping a sprite sheet through a particle's life) has been in the
+client since; the flames the owner saw on 7 Oct were private rigs. In the game
+`cl_emit.qc` still drew every `env_fire` as generic orbs. The four resolver
+tools of that day had never been committed: their worktree was retired on
+8 Oct and they survived only in the retirement archive.
+
+**Change.** FTESurf `74e4d44`, `src/client/cl_emit.qc`.
+- **Source's own choice of system.** `floor(firesize / 36)` picks
+  `env_fire_tiny`, `_small`, `_medium` or `_large` (`c_fire_smoke.cpp:167`).
+  Each is drawn as Source's three parts: the system (sequences 3-5 of the
+  atlas), its `_b` child (sequences 0-2) and its embers, with radius, alpha,
+  tint, rise, acceleration, frame rate and particles a second out of
+  `particles/fire_01.pcf`. A life is the sequence's length at the layer's frame
+  rate, as "lifetime from sequence" makes it.
+- **Everything is text inside csprogs.** The r_part blocks go through
+  `localcmd`, a size class a frame; the shader is an inline `glslprogram`; the
+  frame table is the generated `cl_flamesheet.qc`. A lobby hands a player
+  csprogs.dat and nothing else, so a new file under `particles/` or `glsl/`
+  would have left every installed client on the orbs.
+- **The atlas is never shipped.** `fire_burning_character.vtf` is read from the
+  mounted Counter-Strike: Source or Half-Life 2. `tools/flamesheet.py` writes
+  the table from the .vtf's sheet and refuses unless every copy it is given
+  carries the same one (CS:S, HL2 and Momentum's do).
+- **The orbs remain the fallback**, and `emit_list` names the reason: no
+  mounted atlas, an engine without `FTE_PART_TEXANIM`, a renderer other than
+  OpenGL, `r_particlesystem` other than script, or `vbsp_emit_flame 0`.
+- **The blend.** SpriteCard with `$addself 1`, `$overbrightfactor 2.15` and
+  the `$startfadesize` fade, as `spritecard_ps20b.fxc` computes it. Source
+  sums that in linear light and this framebuffer blends in gamma space:
+  premultiplied in gamma space the same sprites drew a fire that was mostly
+  absent. The shader writes the linear sum's own encoding and a destination
+  factor that is exact on black and on a 0.6 grey.
+- **Room in the compiler.** The fifteen per-emitter arrays moved to memalloc:
+  csprogs went from 130,556 definitions to 119,152 with this patch's code in.
+- **Published with it:** `tools/pcf_resources.py`, `sourceassets.py`,
+  `vtfsheet.py` and `test_pcf_resources.py`, recovered byte for byte
+  (sha256-checked) from the 8 Oct archive.
+
+**Verified.** `tools/p643fire.py` over `cfg/test/p643fire.cfg`, a rig of the
+commit's own build (csprogs `dcbf42b6`), RTX 2080 SUPER at 1920x1111.
+- The subject's lines: surf_anubis size classes 10 with 26 of 26 effects
+  answering `particleeffectquery`; the same after `vid_restart` with one
+  repair; surf_dune classes 3, 26 of 26; surf_classics2, one of the two maps
+  with all four sizes, classes 15, 52 of 52.
+- The pictures, flame-bright pixels at the fire (means): the brazier 3,773,
+  after the restart 3,293, Dune's small flame 4,183, a large fire 8,043;
+  with fire off 0; the orbs 0.
+- Control, the stepping compiled out (`texanim static`): every line above
+  still passes and the same four read 214, 682, 1,435 and 1,017.
+- Control, CS:S and HL2 out of `fs_addons.txt`: the grader refuses with "no
+  mounted game carries the fire atlas", and the orbs draw.
+- Control, no `particles/` directory (as in `C:\FTEQuake`): the first cut
+  defined the flame effects 72 times in one run, emptying them each time,
+  because its repair asked the wrong effect; now 3 times.
+- Frames a second, same camera, two quiet runs: no fire 1,193 and 1,229; the
+  sheet 1,046 and 1,066; the orbs 1,122 and 1,139.
+
+One independent review (control flow, state, failure modes). Fixed from it: a
+grader whose mean passed with three shots of four empty, probes that asked one
+effect of thirteen, the atlas requested on maps with no fire, a repair that
+looped off the scripted particle system. Its command-buffer overflow did not
+reproduce (61 KB fitted with 4 KB to spare); the class-a-frame staging is kept
+as margin.
+
+**Known.** Not seen beside Source (FTESurf lextest asks the owner). Cost on
+the laptop's Intel GPU is not measured. Not drawn: the smoke Source adds to
+the 39% of fires that are not smokeless, surf_dune's 42 particle-file fires,
+`env_fire_random_puff`, the blend between frames. A fire without spawnflags 16
+is still drawn at its origin where Source drops it to the floor (4,309 fires
+on 85 maps). `ftesurf/particles/` is not in git. All in FTESurf BACKLOG.
+
+## Patch 644 — the map library keeps itself level: the Pi lists Momentum's and KSF's maps and fetches what is new; KSF's main boards first *(MOD ONLY: surfd and tools)*
+
+From the owner, 11 Oct: "do we have all KSF maps added to the nanopi ... and
+all of the momentum mod maps that are Surf/Bhop ... or future maps they add,
+so we need rescanning, and downloading of new maps", a CS:S or Momentum
+version of a map, and "more then 1 page of KSF records".
+
+**Measured first.**
+- The Pi served 767 of 1,753 catalogued surf/bhop maps: 465 of KSF's 929, 379
+  of Momentum's 1,164. The 5 Oct restore had stopped at `surf_k`, and the 463
+  maps `mapgrab.py` once fetched from Momentum's CDN were never fetched again.
+  The six-hourly scan had printed the gap into a log each time.
+- Nothing fetched a new map, and the lists were behind: KSF's site listed 952
+  maps where the Drive sheet the scan reads stops at 929 (17 April); 14 were in
+  no catalogue or disk here.
+- Two notes were wrong: Momentum's catalogue "cannot be fetched" (`/v1/maps`
+  answers anonymously for approved maps, hash, url and tier included; only
+  submissions answer 401), and zones "would need" an authenticated query (they
+  are anonymous, and hash to the published zoneHash).
+- 372 of 448 KSF Forward main boards held one 20-row page: the crawl took a
+  viewed map's every board, four styles of every stage, to its end first.
+- A CS:S install is not a source for KSF's builds: this PC's `cstrike` copy
+  matched KSF's own archive on 3 of 6 maps.
+
+**Change** (ftesurf `ed14d91`).
+- **`tools/mapsync.py`, run once**: 586 files, 20.7 GB, back onto the Pi
+  (1,349 held).
+- **`surfd/mapwatch.py`** (new; cron, six-hourly). Reads Momentum's approved
+  surf/bhop list and `ksf.surf/maps`, and a Beta list a PC sends; installs a
+  map whose name the library lacks. A Momentum file is kept on its published
+  SHA1 and a VBSP header; a KSF archive when it holds exactly one `.bsp`,
+  named for the map. Momentum's zones are written on their published hash,
+  only for a map held at the build they were published for, never over a
+  file, never while a lobby is on the map or the lobbies are unheard, and a
+  first zone file never goes under a name that already has runs (read again
+  at the write). `--variants N` keeps
+  KSF's archive of a name Momentum also lists as `<name>_css` where the bytes
+  differ. A held build that is not the published one is reported and left
+  (`--updates`, off).
+- **`surfd/ksfimport.py --watch`**: a viewed map's main board first (to 1,000
+  ranks), then its other boards (to 100) and every map's main board (to 200)
+  together by depth, then the rest. The same 10 requests per 5 minutes.
+- **`tools/mapscan.py`** reads the Pi's catalogue back, so `mapdl.txt` lists
+  what only KSF's site or the watcher knows, and sends the Beta list.
+
+**Verified.**
+- `surfd/test_mapwatch.py` against a fake of both hosts: 138 checks on
+  Windows, 141 on the Pi (file modes under surfd's umask 077 and the header
+  deadline are graded only there, and each fails with its line removed). 112
+  one-edit mutants of `mapwatch.py`, all caught. `test_ksfimport.py` 106, six
+  order mutants caught.
+- Five review rounds on frozen commits. Rounds 1 to 4 each found a way to put
+  a zone file under a run or to hurt the box (files written 0600 under
+  surfd's umask; a first zone file under history; bzip2 archive members
+  inflated whole, 313 bytes to 449 MB; a page regex at ~280 MB per megabyte;
+  a header drip no clock covered; round 4's was a regression from round 3's
+  fix). The fifth, on the zone-write path alone, found a window one history
+  read wide and a missing folder read as "no runs"; both closed, each with a
+  failing mutant. Nothing after that was reviewed.
+- On the Pi, 11 Oct: a dry run against the real hosts read 758 approved, 319
+  beta and 952 KSF names and planned 488 new maps (35 s, 54 MB). The first
+  live run installed three (bhop_2006isback, bhop_25, bhop_2hrs), mode 0644,
+  with their zones; `play.proto.bar/maps/bhop_25.bsp` answered 206 and the
+  zone URL clients use served the same bytes; a throwaway headless server
+  loaded it: `zones(sv): 4 on bhop_25 (maps/zones/online)`.
+
+**Known.** A `<name>_css` build gets no zones and loads untimed, as do KSF's
+own new maps; the create-server list shows it as its own row, not a switch.
+Players get a longer list only with a release (`data/mapdl.txt` ships).
+`--updates` is off: 49 held builds are not Momentum's current one. The Beta
+list is as fresh as the owner's Momentum install. All in BACKLOG.md.
+
+## Patch 650 — the map watcher takes turns with the KSF crawl *(MOD ONLY: surfd)*
+
+**Problem.** Two tools of ours talk to ksf.surf and neither knew of the
+other. `ksfimport.py --watch` (every five minutes) was refused at 13:31Z on
+11 Oct, "read operation timed out", while Patch 644's first fill was
+downloading archives from the same host (13:28Z to 13:36Z). A refusal parks
+that crawl for six hours, doubling. It had timed out the day before with no
+watcher running, so the overlap is shown and the cause is not; at 20
+archives every six hours it would have recurred.
+
+**Change** (ftesurf `0aa7e64`, surfd/mapwatch.py).
+- `ksf_turn()`: each request to ksf.surf, the page and every archive, is
+  made holding the crawl's own lock (`/tmp/surfd-ksfwatch.lock`, which the
+  crawl's cron line takes with `flock -n`, so a tick starting meanwhile is
+  skipped). A tick in progress is waited for up to `KSF_WAIT` (300 s), then
+  KSF is left for the run.
+- `ksf_parked()`: while the crawl's `data/ksf/.refused` says it is parked,
+  KSF is asked nothing, a park that begins mid-run included. Neither strikes
+  a map.
+
+**Verified.** `surfd/test_mapwatch.py`: 141 checks on Windows, 147 on the Pi
+(the lock cases need flock and are graded there). Six one-edit mutants run on
+the Pi, all caught. DEPLOYED 11 Oct 13:48Z with `surfd-deploy.ps1 -Only
+surfd/mapwatch.py -NoBackup -NoReload`; a dry run on the Pi a minute later
+printed `ksf: NOT READ (it refused its crawl (no answer: The read operation
+timed out): nothing asked until 2026-10-11 19:31 UTC)` and read Momentum's
+lists as before.
+
+**Known.** Nothing was run against ksf.surf itself, and whether the overlap
+caused the timeout is not known. The crawl stays parked until 19:31Z.
+
+## Patch 649 — Sixty-four run lines can be ticked where eight could *(MOD ONLY, csprogs)*
+
+**Problem.** The board's lines were eight fixed slots, and the owner's own
+injectable drew fifty and more. Three costs in `cl_lines.qc` were per line or
+per pair and did not show at eight: the rank paired every line with every
+other each frame, every finished build bumped one count so the live run's
+line (built four times a second) repainted every ticked line from its first
+sample, and the follow search read each whole line every 0.25 s. The server
+allows an address twenty recordings a minute, and its refusal ended a line.
+
+**Change.** FTESurf `512870b`. Fifty-six more board slots of 8192 samples
+(slots 11..66; a longer run is thinned to fit) beside the eleven of 65536,
+which stay where they were. The per-slot tables are allocated. The rank is
+recomputed on a change, the repaint count is one a slot, and past eight lines
+the search looks at each line every 0.25 s x lines/8 on its own phase, and at
+once when the viewer is moved away from a cursor. Only the first
+`hud_lines_marked` (8, saved) drawn board lines carry marks and numbers; names
+and the run graph are the lines in places 1..8. Line downloads spend tokens
+(three, one more every four seconds) and a refusal puts the line back, four
+times. No engine source: the patch-645 builtins draw them.
+
+**Verified.** `tools/test_p649lines.py` over `cfg/test/p649lines.cfg`, 11 of
+11 on csprogs `95f30046` with the patch-645 engine: sixty-four lines draw
+exactly eight times eight lines' segments with the same 72 marks; a viewer
+moved 25 s along the run has all sixty-four cursors half a second on, and
+they stay while it plays; a line alone in slot 5, 42 and 66 is the same
+picture, 0 pixels; a 65th is refused; a walk that builds the live line five
+times repaints none of eight ticked lines. With the one-count repaint put
+back that check fails, 48 repaints. `tools/test_p645lines.py` on the same
+build: 28 of 28. QC time a frame on a paused replay, 2.11 ms with no board
+line: eight lines 2.93, sixteen 3.03, thirty-two 3.33, sixty-four 4.02.
+
+One review. Fixed from it: the limiter, the repaint, the search's spread
+collapsing after a restart and its lag after a teleport, marks by drawn order,
+and the arm's moved, playing and live parts.
+
+**Known.** Names and the run graph stay with places 1..8 whatever is ticked.
+The download pacing is modelled from the server's settings; sixty-four
+uncached rows were not ticked against the live server. A real run at speed
+beside sixty-four lines was not measured, nor a thinned line's picture. The
+tables are 68.9 MiB, made at the first line of a map in 17 to 23 ms. FTESurf
+BACKLOG, "Sixty-four run lines".
+
+**Deployed** 2026-10-11 from FTESurf `512870b`: csprogs `95f30046` to both
+Windows installs at 14:36Z with no game running and to the Pi at 14:37Z with
+nobody on (no engine, menu.dat or cfg). Twelve lobbies restarted, read back
+from the host; a fresh client on a lobby was served this csprogs and drew the
+board. `.prev` was Patch 645's `f40d4069`.
+
+**Shipped with a fault, found at 14:49Z.** Every check above ran on the
+patch-645 engine. An engine before it has no line builtins, so the QC loop
+draws, six to ten vertices a segment into one polygon batch, and that engine
+dies when a batch reaches 32768 (the fault Patch 645 fixed). On a copy of the
+625 exe, which the 0.1.24 download has, eight lines draw and the client dies
+as the fortieth is added. Live on the lobbies that way from 14:37:27Z to
+15:13:07Z; Patch 654 keeps such an engine at eight.
+
+## Patch 648 — func_dustmotes is drawn the way Source draws it *(MOD ONLY, csprogs)*
+
+From the owner, 11 Oct: "in Source ... they spawn in as orbs, like we do it, but
+their orbs are much bolder, more like a circle and less fade out, and they spawn
+in, in a few sizes, move around and fade out. They seem also much smaller ...
+maybe you can pre-compute the sizes of the dust mote, for correct rendering at
+any size. Can you look into HL2 entity and copy the properties."
+
+**Problem.** A `func_dustmotes` volume emitted one median mote for the whole
+library (`ftesurf_dustmote_N`: six colour buckets, several world units wide, a
+soft glow). Every number that makes a mote in Source is the ENTITY'S, and
+`pointparticles` carries none of them.
+
+**Change.** FTESurf `7e37d30`, `src/client/cl_emit.qc`, from `c_func_dust.cpp`.
+- **A block per look.** Each distinct (Color, Alpha, SizeMin, SizeMax,
+  LifetimeMin, LifetimeMax, DistMax, Frozen) on a map is an `r_part` block
+  written at load (48 at most; the library's worst map has 27). The keys are
+  read as the client receives them: `func_dust.cpp:87-93` sends the lifetimes
+  in 4 bits, SpawnRate and SpeedMax in 12, DistMax in 16 (122 volumes on 39 maps
+  write a LifetimeMax that wraps).
+- **One shader draws the sprite.** What differs per particle rides the colour
+  channels (size, life, the colour as one integer, age) and what differs per
+  look rides the texture coordinates (DistMax, Alpha, Frozen). The half-side is
+  `rand(SizeMin, SizeMax) / 10000` of the depth (`:73`, `:234`): the same few
+  pixels at any distance, 1.5 to 3 across at 1080p for the library's median 10
+  and 20. Alpha is the sine through the life (`:58-59`) times `1 - depth /
+  DistMax` (`:68`). A Frozen mote stands at full strength.
+- **Correct at any size.** `particle/sparkles` is solid to a quarter of the
+  half-side and falls in a line to nothing at 1.17 (`tools/sparkleshape.py`
+  reads it off the .vtf: mean difference 0.028). The shader computes that per
+  pixel from four taps; under 0.6 px a mote is held at that and dimmed by the
+  area it lost. No texture is sampled and none is shipped.
+- **Source's pool.** `MAX_TOTAL_PARTICLES` is 2,048 for every old-style
+  particle in the world (`particle_iterators.h:20`). 173 maps hold volumes that
+  together ask for more (surf_psychedelia: 144,000); every mote volume in range
+  is scaled alike, before the emitter budget.
+- **The blend.** Linear light, as Source's, drawn as `ONE /
+  ONE_MINUS_SRC_ALPHA` with both factors computed: exact over a 0.25 grey and
+  over white.
+- **The orbs remain the fallback** (not OpenGL, `r_particlesystem` not script,
+  `vbsp_emit_motes 0`), and `emit_list` names the reason. `func_dustcloud` is
+  unchanged: Source never scales it with depth.
+
+**Found, not changed: blended particles are drawn twice a frame.**
+`GLBE_SubmitMeshes` loops `i <= stop` (`gl_backend.c:6715`) and `GLBE_DrawWorld`
+calls it with `(PORTAL, SEETHROUGH+1)` and then `(SEETHROUGH+1, NEAREST)`
+(`:7656`, `:7698`): the UNLITDECAL bucket goes through both, and that is where
+the script particle system's `blendalpha` shaders sort. The first cut's motes
+measured `1 - (1 - a)^2` (0.975 for 0.85, 0.887 for 0.67); on `sort additive`
+they read 0.851 and 0.673. Stock FTE has the same lines. Fixing it dims every
+effect tuned over the double draw, so it is in FTESurf BACKLOG for the owner.
+
+**Verified.** `tools/p648motes.py` over `cfg/test/p648motes.cfg`: rows of black
+motes at known depths over a wall photographed bare, so `1 - (shot / bare)^2.2`
+is coverage per pixel. A rig of the commit's own build (csprogs `88986a28`) on the
+patch-645 engine, RTX 2080 SUPER at 1920x1111.
+- Size: a size-100 mote's area above half its peak, 88.0 px at depth 150 and
+  87.0 at 330; Source 86.9. Sizes drawn from 50 to 150: 23 to 144 px.
+- Fade: peaks 0.851 and 0.673 (Source 0.850, 0.670). A sixth of the way through
+  a life, 0.244 of full: the sine is 0.25 there, a ramp 0.33. Lives drawn from 4
+  to 12 s differ. Frozen 0.851 in both shots. Past DistMax, and past its life,
+  0.00.
+- At any size: a size-20 mote's total coverage is 0.0393 of a size-100's
+  (0.04); the size-100's is 82.2 px, Source 82.3.
+- Upright: outside a size-300 mote's square, 6.84 px of coverage towards the
+  corners and 0.00 towards the sides.
+- Colour, against linear light over the wall pixel it is on: white at alpha
+  0.087 is 0.023 over on a 0.37 channel and 0.029 under on 0.17; `0 128 255`
+  within 0.035 on the channels judged.
+- Pool: surf_psychedelia asks for 7,200 (three volumes at the 200-a-second
+  clamp); the engine holds 2,562, which is 2,050 alive in Source's sense (it
+  carries each to LifetimeMax, 15 s for a mean of 12).
+- `vid_restart`: 3 of 3 looks answer again; 195 motes, and 860 four seconds on.
+- Controls, on the same source before FTESurf's Patch 649 went under it. The
+  depth term and the pool's scale out: 18.5 px at 330 for 88.0, and 9,009 held.
+  `rotation 0` out and the blend on black and white: 1.23 px towards the sides,
+  and the white mote 0.108 over on the 0.37 channel.
+- Frames a second, same camera, the pool full (2,561 held), two runs: no dust
+  1,438 and 1,299; the motes 1,082 and 1,160; the old orbs (2,410 held) 1,181
+  and 1,111. Two runs do not tell the motes from the orbs.
+
+One independent review (behaviour against Source, state, the shader, the
+grader). Fixed from it: the engine turns an `r_part` particle to a random angle
+unless told not to, so every mote's square was tilted; the blend, exact on black
+and white, was 0.108 too bright for a faint mote on a mid wall; a volume Source
+shows at the screen's edge (it fades by view depth, the cull was by distance)
+never emitted; the pool's cut was charged to the other classes' budget; a repair
+looped off the scripted particle system; `emit_mote` could place a row into the
+last map's block of the same name; and the arm's pool stage would have failed a
+correct build.
+
+**Known.** Not seen beside Source (FTESurf lextest asks the owner). Cost on the
+laptop's Intel GPU is not measured. A mote's drift is not graded. Not drawn:
+`env_wind`, the brush's own shape (a mote is born anywhere in its box), fog,
+Source's first quarter second of sideways dash. The blend is a straight line
+where linear light is a curve: motes are fainter than Source's against
+near-black (0.10 under on a 0.04 wall). `vbsp_emit_ratemax 200` still clamps 270
+volumes. The engine carries each mote, undrawn, to LifetimeMax. All in FTESurf
+BACKLOG.
+
+## Patch 654 — An engine before Patch 645 keeps the limit of eight run lines *(MOD ONLY, csprogs)*
+
+**Problem.** Patch 649 raised the board's lines from eight to sixty-four for
+every engine. An engine before Patch 645 has no line builtins, so
+`cl_lines.qc`'s own loop draws them, six vertices a segment (ten for a wide
+line) into one polygon batch, and that engine dies when a batch reaches 32768
+vertices (`PF_R_PolygonEnd`, Patch 645). The 0.1.24 download has such an
+engine, and a client on a lobby runs the lobby's csprogs. Every check of 649
+before its deploy ran on the 645 engine; the old one had been run with eight
+lines only.
+
+**Change.** FTESurf `884d171`, `src/client/cl_scores.qc`: `Scores_LineMax`
+is 64 where `checkbuiltin(lines_draw)` and 8 where not, and the three ways a
+line is ticked ask it (a row's box, the LINE heading, `scores lineat`). The
+refusal says a newer game draws sixty-four. No engine source.
+
+**Verified.** The 649 arm's cfg on a copy of the 625 exe (`183faf44`). With
+649's csprogs `95f30046` eight lines draw and the client dies as the fortieth
+is added, its crash record written that second. With csprogs `827dece4` the
+fifty-six asks past the eighth are refused in words, eight lines draw with
+the 920 segments they had, and the client reaches the end.
+`tools/test_p649lines.py` reads `native builtins 0` in the log and grades
+those three things: 3 of 3, and none on the control's log. On the 645 engine
+the same build is 11 of 11, sixty-four drawn. No review: three call sites
+and one message.
+
+**Known.** Eight WHOLE lines at 3 px still close an engine before 645, as
+before 649; the limit does not count vertices. Both engines were run offline,
+one map, one recording in every slot. Sixty-four lines reach players with a
+release that has the 645 engine. FTESurf BACKLOG, "Run lines on an engine
+before 645".
+
+**Deployed** 2026-10-11 from FTESurf `884d171`: csprogs `827dece4` (with
+Patches 649 and 648) to the Pi at 15:13:07Z with nobody on, twelve lobbies
+restarted and read back, and to both Windows installs at 15:13:51Z with no
+game running. A fresh client on a lobby was served this csprogs and drew the
+board. `.prev` is Patch 648's `88986a28`.
+
+## Patch 653 — the Link Steam box: the Dusk look, a cursor and a clickable address, cells for the code *(MOD ONLY: csprogs)*
+
+From the owner's list after trying release 0.1.24 ("make the 'Link Steam'
+window ... the same styling as the rest of my ui ... when press enter to link
+steam, I would hope it would lock your mouse so you can select the 'proto.bar'
+link ... make the font uni-size so it doesn't wiggle as you type. The Display
+picture in the Spectate window is quite small").
+
+- **The look.** `Account_Draw` (cl_account.qc) drew a flat box with a blue
+  title bar. It is the rounded Dusk panel the other panels are: a muted
+  title, the palette's text colours, key caps for what Enter and Esc do, and
+  the prompt's "Press Enter to link" as a button-shaped row. The box is drawn
+  in the HUD stack, outside any sui bracket, so it calls sui's rounded box at
+  absolute coordinates and its own `sui_style_hud`.
+- **The cursor.** From the Enter that starts a link the box has the mouse
+  (`UIC_ACCOUNT` in the cursor register): through the wait for the browser,
+  the page's number and the confirm. A click on the sign-in address does what
+  Enter does there, the page again and the address on the clipboard; a click
+  beside the box gives the mouse back to the game and Enter takes it again.
+  The click is hit-tested inside the input handler, because the engine opens
+  a browser only while a device's press is being delivered, and a mouse
+  button is one. It signs nothing: the consent is still Enter.
+  NOT for the prompt or a typed code's box, which a console line can raise:
+  those hold the keys already and would have frozen the view with them. While
+  the box has the cursor the mouse's other buttons and the wheel run no bind.
+- **Cells.** The code (twelve, in fours) and the page's number (four) are
+  drawn one glyph to a fixed cell, the next cell to fill in the accent. The
+  proportional face's digits are not one width, and a centred string of them
+  moved with every key.
+- **The room list's picture** (cl_players.qc) is 26 px in a 32 px row, where
+  it was 14 in 26: about the board's.
+
+**Measured.** `tools/p653box.py`, p615link's rig (a lobby, a surfd in the
+driver, a client with `-nobrowse`), keys and clicks posted to the client's
+own window: 14 of 14. The prompt that comes up by itself and a typed code's
+box take no mouse; Enter starts the link and the box says it has the mouse
+and where its address is; a click there is answered by the box at a point
+inside the address and by the ENGINE, which prints its second
+`acct_browse:` (a mouse press is a device's press to it); two more clicks
+inside the engine's one page a second, and all three of the box's lines
+still say a page opened (the engine took 3 asks of 4); the other mouse
+button runs no bind while the box has the cursor and runs it again after; a
+click beside the box gives the mouse back and Enter takes it again; a
+browser signs in, the number is typed, and between no digit and four the
+only pixels that change inside the box are a 143 x 42 band at its centre;
+Enter links it. CONTROL: the same arm on the installed progs (Patch 654's) fails at
+"the box takes the mouse". `tools/p615link.py`, the whole link flow, 43 of
+43 on the same build; `tools/p640pics.py` 9 of 9. LOOKED AT: the prompt,
+the code's cells, the wait with the address plain and under the pointer,
+the number at 2 digits, and the room list's taller row. NOT SEEN: a
+picture in that row at its new size (the rig's player has none; the arm's
+step for it is written and has not run). Build: 0 warnings, csprogs 117,515 definitions; server QC and
+menu untouched.
+
+**Review.** One reviewer, two lenses (what a hostile server gains; the
+states against the cursor), given the code and the engine source. Nothing
+that changes who can link what: the click reaches `acct_browse` and the
+clipboard only, the engine builds the address from this VM's own opener,
+and the consent is still a key. Found and fixed:
+- the first cut claimed the cursor in every state that owned the keyboard,
+  and a typed code's box is a console line and one letter away with no
+  timeout once a letter is in: the view would have frozen with the keys.
+  The claim is now only a link the player started;
+- the cursor's position is the engine's to say and it says it on the first
+  move: a click before that was tested at the last VM's point (0,0 gave the
+  mouse away). Such a click is ignored;
+- a click beside the box was taken from a panel that also had the cursor;
+- the mouse's other buttons and the wheel still ran binds under a view
+  that could not turn;
+- the engine opens one page a second, and a click (or a second Enter)
+  inside that second wrote "no page opened" over a page that had.
+Left as found (BACKLOG): the question for a typed code has no timeout
+(older than this patch).
+
+**Left**: paste into the cells and selection in the text fields are Patch
+655 (it needs an engine change for game code). A click before the cursor has
+moved since the box took it is ignored, by design: the engine says where the
+cursor is only when it moves.
+
+## Patch 651 — two builds of one map share zones and boards; the Pi writes the map list the game fetches; map updates on *(MOD ONLY: surfd and tools)*
+
+**Problem.** From the owner's reply to Patch 644's report, 11 Oct: copy
+Momentum's zones "if the map has a momentum mod version of the map"; "I still
+want to be able to see momentum times on a KSF map, and KSF times on a
+Momentum map"; follow Momentum's map updates; and the game fetching its own
+map list ("great idea"). KSF's build of a name both games list, kept as
+`<name>_css` since 644, had no start or end, a board of its own with nothing
+on it, and reached a player's list only with a release.
+
+**Change** (ftesurf `610c1b0`, `4ceeca5`).
+- **`surfd/zonefit.py`** (new): `tools/census/zonefit.py`'s verdict for
+  whether one build's zone file means the same on another -- world mins
+  within 64 units, every start/end/stage region inside the target's world,
+  every `teleDestTargetname` present -- with every read bounded, and
+  OWN-TIMER for a target that carries Momentum's timer triggers itself.
+- **`surfd/mapwatch.py`**: a second build (a `_css` that is KSF's archive, or
+  a port by suffix, never a name Momentum lists) with no zone file takes the
+  file its map is timed by here, where that map is held at the published
+  build and the pair is FIT. `given` records the bytes and the build they
+  were measured on; a file edited since is kept; a build swapped since is
+  measured again and its zones moved aside if they no longer fit. A
+  measurement that could not be made gives nothing and takes nothing back.
+  It writes `<state>/mapdl.txt`, `data/mapdl.txt`'s grammar with a tenth
+  column on a second build. `KEEP_BUILD`: bhop_eazy is never replaced.
+- **`surfd/surfd.py`**: `GET /api/board?maps=1` serves that list (on that
+  path for the reason `?avatar=` is: nginx forwards a fixed set). A map the
+  catalogue lists as a build `of` another shows its own native rows and the
+  plain name's KSF and Momentum rows; an ordinary map's SQL is unchanged.
+- **`tools/mapscan.py`** writes the tenth column too.
+- The watcher's cron line has `--updates`.
+
+**Verified.** `test_mapwatch.py` 170 checks, `test_zonefit.py` 27 (the PC
+tool's verdict equal on every pair), `test_variants.py` 17; 59 one-edit
+mutants, all caught. One review with an integrity lens (three findings: a
+400-digit number in a zone file ended every run; zones stayed after their
+build was swapped; two cases wider than documented) and a confirmation of
+the fixes (four more: a failed measurement was read as "no longer fits").
+On the Pi, 11 Oct: 31 builds and 14 zone files replaced, 23 second builds
+given zones (3 refused as SHIFTED, 1 OWN-TIMER), 985 of 1,857 maps with a
+zone file (937 before); a throwaway server printed `zones(sv): 12 on
+surf_ace_css (maps/zones/online)`; the public list answered 200 with 1,787
+rows; `surf_ace_css`'s combined board counted 7,672 Momentum and 645 KSF
+rows. Ordinary boards: 25 of 25 bodies identical before and after.
+
+**Known.** Momentum's zoneHash is not the hash of its own zones for 92 maps
+(a January re-save: the three compared differ only in `dataTimestamp` and
+`globalRegions.allowBhop`), so 17 builds and 75 zone files are not followed.
+The fit rule cannot see a world rearranged inside the same box. Native rows
+are per build. Beta maps and their second builds have no zones. BACKLOG.md.
+
+## Patch 660 — Steam pictures for everyone on the boards *(MOD ONLY: surfd and its cron tool)*
+
+From the owner's list of 12 Oct ("is it possible to scan for all the people
+in the leaderboard and save their DP to the nanopi? update it once a day").
+Patch 639 kept a picture for each LINKED account, which was two. A Momentum
+or KSF row's player is a SteamID too, and nobody's account here: 67,259 of
+them on the Pi's boards that day.
+
+- **Who.** `steamsync.people()`: once a day the imported rows are read for
+  their players' SteamIDs (table `boardpics`, made by `CREATE TABLE IF NOT
+  EXISTS` beside `momusers`: no schema bump); a player on no board any more
+  is forgotten at that read. Each half-hourly run asks Steam about `--people`
+  of them (5000), the never-asked first and then whoever was asked longest
+  ago, nobody twice in a day, and stores the picture's hash. A reply with no
+  picture keeps the one held.
+- **The pictures.** `steamsync.pictures()` fetches their hashes after the
+  accounts', `--pictures` requests a run (1500), into the same directory in
+  the same two forms (the site's JPEG, the game's 32 x 32 text). Nothing is
+  pruned while a player has never been asked about: until then their
+  picture's files would read as nobody's.
+- **Serving.** `surfd.avatars()` now holds them too, under the rules it had:
+  a SteamID that is an account is the account's, banned or not; a game mark
+  two players share, or one shares with an account, is nobody's in the game.
+  So an imported row carries `av` like a ranked one, on the site and in the
+  game's answer, with no change to either client.
+  THE IMPORTED PLAYERS' PART IS BUILT OFF THE REQUEST PATH: once in the first
+  request of a process that needs it, the others waiting for that one, and
+  after that on a thread, only when steamsync has touched its stamp
+  (`board.at`). The 60-second table copies it in.
+
+**Measured.** `surfd/test_ranked.py`: 151 checks, 21 of them this patch's
+(who is counted and asked and when, by the pass's own clock; Steam down; a
+busy database; a player gone from the boards; an empty table; the budget;
+what is pruned and when; the row's `av` on the site and in the game's answer;
+an account's SteamID, banned and not; marks shared; the table's own life,
+built once and rebuilt on its thread when the stamp moves, a failed rebuild
+keeping what was held). `tools/accounts_mutants.py`: 388 texts, none stale;
+the 69 that touch pictures all die (34 are this patch's). ON THE PI'S
+DATABASE, read-only, before the deploy: the daily read of the boards is
+11.4 s for 67,259 players along the primary key's index, and 35.1 s as first
+written (the players' index with a lookup a row); the query now says which,
+and a check holds its plan.
+
+**Review.** One reviewer, three lenses (correctness, load on the Pi,
+what goes out), given the code. MUST-FIX, and fixed: the first cut rebuilt
+the 67,000-player table inside whichever request found it old, with nothing
+to stop four requests doing it at once (measured by the reviewer on a
+laptop: 0.4 s alone, 3.9 to 5.1 s each for four; the proxy gives 5). It is
+built off the request path now. Also found and fixed: the boards' read
+planned along the wrong index; a table read that failed read as "no
+hashes", and what follows an empty set is the pruning of every file; a
+restored database beside a kept directory, the same way; a failed listing
+installing an empty table as fresh; a busy database raising out of the pass;
+the budget stopping game copies that cost no request; rows for players no
+longer on any board. Left as found (BACKLOG): a banned account's imported
+rows show no picture.
+
+**Left** (BACKLOG): the game keeps 32 pictures at once, and a Momentum board
+page can show more; a banned account's imported rows show no picture, which
+says it is banned; names are not refreshed for imported players, only
+pictures.
+
+## Patch 652 — one row per map with a MOM / CS:S switch; the menu fetches its map list *(MOD ONLY, menu.dat)*
+
+**Problem.** From the owner, 11 Oct: "please build it" (the CS:S or Momentum
+version of a map, chosen from the create-server menu) and, of the game
+fetching its own map list, "great idea". KSF's build of a map was a second
+row named `<name>_css` (Patch 644), and `data/mapdl.txt` ships, so a map the
+Pi fetched reached a player's list with the next release.
+
+**Change** (ftesurf `123c70e`; m_main.qc, m_lobby.qc).
+- **The fold.** A list row with a tenth column is a second build of the map
+  named there and goes onto that map's row (`ms_var`, `ms_varof`, `ms_pick`).
+  `ui_eff(row)` is the row whose file an action is about: Play, Download,
+  start, the leaderboard panel, the player's own time and the headcount read
+  through it; the name, tier, picture and best known time stay the plain
+  map's. The row answers the CS:S library, and a search by the build's name
+  finds it.
+- **The switch.** Two cells on the row's second line, MOM and CS:S; the
+  choice is kept in `data/mapbuild.txt`.
+- **The fetch** (`Mdl_Ask`, `Mdl_Reply`). Once a run, from the picker,
+  behind the lobby poll's consent test: `<lobby_dir>/api/board?maps=1`
+  (Patch 651). Each row is rebuilt from fields that each passed their own
+  test (a name is `[A-Za-z0-9_-]{1,64}`), read back through a file so the
+  cost is linear, and saved to `data/mapdl.net.txt`, which `ui_dl_load` reads
+  in preference to the shipped list. A list with no row that passes saves
+  nothing.
+- Test twins: `ui_build <map> [mom|css]`, `ui_mapnet [ask|sel]`, `ui_find`.
+
+**Verified.** `tools/p652builds.py` on p615link's rig (surfd in process, a
+fixture list with nine hostile rows, a real mouse click on each cell): 15 of
+15 on menu.dat `b4b46b6e`. Nine one-edit mutants of the menu each fail it (no
+fold; start ignores the switch; a choice not saved; a name taken as it came;
+the fetched list not preferred; no ask; the plain row not in the CS:S
+library; an empty list saved; a search blind to the folded name). One review,
+read not run: walking the reply with `strstrofs` and `substring` was a strlen
+of the whole body per call in the engine, minutes for a hostile two
+megabytes; fixed. `tools/p647boot.py`, default mode, on the same menu.dat: 8
+of 8. On the owner's install, once, nothing picked: 1,787 rows fetched from
+the Pi, 20 maps folded, the switch drawn on surf_rookie (LOOKED AT).
+
+**Known.** No switch was clicked and no CS:S build downloaded on the real
+install. The headcount is the chosen build's alone; `lobby_dir` decides a
+row's size and what it is a build of. BACKLOG.md.
+
+## Patch 658 — The GL renderer draws blended particles once a frame, and they look as they did *(ENGINE client)*
+
+From the owner, 12 Oct, on being told the engine drew every see-through particle
+twice: "is this the only way to make them brighter? I want them brighter, but
+only drawn 1 obviously."
+
+**Problem.** `GLBE_DrawWorld` (`engine/gl/gl_backend.c`) submitted the sort
+buckets PORTAL..SEETHROUGH+1, drew the lights, then submitted
+SEETHROUGH+1..NEAREST. `GLBE_SubmitMeshes` loops `i <= stop`: it INCLUDES its
+last bucket, where the D3D and Vulkan backends' loops stop before theirs (their
+second call ends at `SHADER_SORT_COUNT`). So in GL the bucket after SEETHROUGH,
+UNLITDECAL, was drawn twice a frame. The only shaders that sort there are the
+script particle system's defaults (`engine/client/p_script.c`: blend,
+blendcolour, invmoda, invmodc, subtract), so every alpha-blended particle
+without a shader of its own was blended twice: at alpha a it covered
+`1 - (1 - a)^2`. Found measuring FTESurf's Patch 648, whose first motes read
+0.975 where 0.85 was meant. Stock FTE has the same two lines.
+
+**Change.** Commit `7501a6cce`, tag `patch-658`.
+- **`gl_backend.c`:** the first submit stops at SEETHROUGH. UNLITDECAL is drawn
+  once, after the lights, which is what unlit means.
+- **`defaultsprite` gains two permutations** (`engine/shaders/glsl/defaultsprite.glsl`
+  and its copy in `engine/gl/r_bishaders.h`): `TWICE` writes alpha `a * (2 - a)`
+  and `TWICEC` colour `c * (2 - c)`, each clamped to 1 first as the framebuffer
+  clamped both draws, after the fog as each draw was fogged.
+- **`p_script.c`:** the default shaders ask for `defaultsprite#TWICE` (blend,
+  invmoda) or `#TWICEC` (invmodc, subtract). One blend then leaves exactly what
+  two left, so no effect written against the double draw changes. Beams and
+  fans (`PT_BEAM`, `PT_VBEAM`, `PT_SPARKFAN`) go through the render queue and
+  were drawn once all along: they get the plain program under
+  `<texture>_blend1`. `blendcolour` has no single-blend equivalent and is drawn
+  once at what it says.
+
+**Verified.** FTESurf `8aa6b7f`: `tools/p658once.py` over
+`cfg/test/p658once.cfg`, six still dots over a wall photographed bare, on the
+stamped client (`git-7229-patch-658-0-g7501a6cce`, sha256 `4faa7ff4`). The
+sprite is 0.914 opaque in the middle.
+- Drawn once: a shader with the OLD template text, alpha 0.5, leaves 0.549 of
+  the wall. One draw leaves 0.543, two 0.295.
+- No fainter: the default shader leaves 0.290 (two draws: 0.295); at alpha 0.2,
+  0.673 (0.668); a grey dot is 0.467 0.404 0.365 (0.467 0.405 0.364); alpha 1.6
+  leaves 0.000; invmodc 0.246 (0.248).
+- Control, the patch-645 client: the old-template shader leaves 0.306 and the
+  arm fails on that line alone; the other five read as above.
+- The engine-drawn run lines (Patch 645) are unchanged: the run-line session
+  ran `tools/test_p645lines.py` on this binary, 28 of 28.
+- DLL list (`objdump -p`): the installed binary's.
+
+One independent review of the engine change. Fixed from it: a value over 1
+folded back where two draws had saturated (alpha 2 became 0); beams and fans
+gained a strength they never had; and the arm compared the two dots with each
+other, which is true for any number of draws, where it now grades the plain one
+against the sprite file's own alpha.
+
+**Known.** `r_lightprepass 1` (off by default) still submits the bucket twice
+and a particle there is now too strong, (1 - a)^4. A scene with no world drew
+the bucket once all along and is stronger by the permutation. With
+`r_shadow_realtime_world 1`, or a dynamic light on the wall behind a particle,
+the two old draws were not equal and the single draw differs by that. Other
+renderers ignore the permutation and never drew twice. `alpha` in a
+default-shader effect remains "the alpha of two blends": 0.5 covers 0.75. Client
+only: no server file, plugin or header moved; the Linux client carries it from
+its next build. Not run: beams, fans, subtract, invmoda, fog.
+
+## Patch 661 — A name on every run line, and labels that stay at their marks *(MOD ONLY, csprogs and default.cfg)*
+
+**Problem.** The owner tried twenty-odd lines. Only the first eight had a
+name (the names were the run graph's eleven slots), and a name wore the
+graph's colour. A mark's numbers were moved into lanes to keep them whole,
+up to eight rows from the mark, and showed as far as the line. Energy on a
+label was the split list's unit (u/s) from the run's own start, not what the
+speedometer shows. Only one label setting had a row in the HUD editor.
+
+**Change.** FTESurf `497527d`. `LineGraph_WorldLabels` names every slot in
+the colour the line has where the name sits, and queues the names with the
+marks' numbers; `Line_LabelsPlace` gives out the room at the end of the
+frame, nearest the eye first, and a label whose place is taken fades out
+until moving nearer parts it from its neighbour (`hud_lines_declutter 0`;
+the lanes are 2). Numbers show within `hud_lines_label_far` (3000 u). Energy
+is the speedometer's by default: `hud_lines_units 1`, `hud_lines_ref 0`. The
+editor has a "Line labels" pane with a switch for each number. Past eight
+names a line looks for its place one frame in names/16. No engine source.
+
+**Verified.** `tools/test_p661labels.py` over `cfg/test/p661labels.cfg`, 12
+of 12 on csprogs `6cb9b6c2`: a twelfth line alone has its name as a fifth
+has, in the line's colour by its pixels; twenty lines of one run show 2
+labels with room and 38 without; the lanes still stack all 40; 10 labels as
+far as the line and 1 within 600 u; energy as energy, as a speed and alone;
+the pane is listed; a saved old zero is moved once. Main before the patch: 1
+of 9. On a copy of the 625 exe: 10 pass, 2 not measured (a twelfth line is
+refused there). `tools/test_p645lines.py`: 28 of 28. QC a frame on a paused
+replay, 2.13 ms with no line: eight lines 2.96, sixty-four 4.26 with their
+names (4.02 before, with eight); numbers on the first eight add 0.1 where
+they added 1.4.
+
+One review; seven findings fixed (BACKLOG and AGENT_NOTES name them). The
+cost table then caught one more: the names' frame counter had been declared
+under a name the graph already used, which fteqcc accepts silently, and the
+graph rebuilt its curves every frame (eight lines 6.1 ms) until it was
+renamed.
+
+**Known.** The arm's crowd is one run in twenty lines; a real pack of
+different runs was not put in a rig. Five of the review's fixes have no
+check of their own. The run graph is still the first eight places. FTESurf
+BACKLOG, "Labels on the run lines".
+
+**Deployed** 2026-10-11 from FTESurf `497527d`: csprogs `6cb9b6c2` to the Pi
+at 17:15:58Z with nobody on, twelve lobbies restarted and read back; csprogs
+and `cfg/default.cfg` to both Windows installs at 17:18:20Z with no game
+running. A fresh client on a lobby was served this csprogs and drew the
+board. `.prev` is Patch 653's `84eaeec6`. Run on a copy of the 625 exe before
+the deploy (10 pass, 2 not measured, 0 fail), the check Patch 649 skipped.
+
+## Patch 662 — the game's player search and breakdown, on `/api/board` *(MOD ONLY: surfd)*
+
+From the owner's list of 12 Oct ("a tab for your player breakdown like the
+website page but in game ... a search bar you can type in any player, like the
+website, but in game"). The site has both; the game could reach neither,
+because the address it talks to forwards a fixed list of paths. So they are
+two more parameters of `/api/board`, beside `avatar=` and `maps=`, spending
+the board's bucket. Patch 663 is the game's half.
+
+- **`?players=<text>`** (`game_players`): the site's directory and its
+  plain-text match (colour codes and case are seen through), twelve rows. A
+  name that IS the text first, then names that start with it, then the rest,
+  each most times first: twelve rows have no page two to find a short name
+  on. A row is `who`, `name`, `n`, `maps`, `src`, and `av` where the game can
+  have that player's picture (the board rows' own rule).
+- **`?player=<who>`** (`game_player`): the site's player page without its
+  links out: the same figures by the same code (`_profile_figures`, taken
+  out of `web_player`, whose reply is what it was), the completion table, and
+  rows best first, 50 at a time and at most 200. `<who>` is a search row's
+  12-hex handle, or the 8-hex mark the game already knows a player by, which
+  is the handle's first eight.
+- **The directory** holds two more things, built where it is installed and
+  outside its lock: each mark that one player alone has, and each handle's
+  own entry (a profile used to walk the list for its player).
+
+**Measured.** `surfd/test_web.py`: 222 checks, 26 of them this patch's.
+`tools/accounts_mutants.py`: 417 texts, none stale; the 28 that are this
+patch's all die by a check (that tool now runs `test_web.py` for them).
+`test_ranked`, `test_variants`, `test_board`, `test_surfd`, `test_accounts`:
+green. NOT MEASURED HERE: the cost on the Pi; the review's figures are a
+laptop's (about 20 ms a search over 67,000 entries, the site's own cost).
+
+**Review.** One reviewer, three lenses (control flow, load on the Pi, what
+leaves the process), given the code. No must-fix. Fixed from it: the 8-hex
+form is answered only while the board is by account, as `avatar=` is
+(otherwise a mark is the digest of a string a client chose, and a row filed
+under a chosen one would make another player's mark nobody's); a mark that
+misses may refresh the directory as a handle that misses does (a new
+player's own); the search stops at a full answer of exact names; a profile
+no longer walks the list for its entry (15 ms for a player at its end, both
+routes). Its eight unchecked behaviours each have a check and a mutant now
+(UTF-8 out, a row's values, the echoed text, `offset`, capitals refused, the
+early stop, the gate, the refresh). The fixes were not reviewed again: each
+is small and has a mutant that dies.
+
+**Left** (BACKLOG): a mark two directory players share opens neither by
+mark; marks are counted over directory players only; every search walks the
+directory; a cold wide profile is ranked once per ask in flight.
+
+## Patch 656 — env_fire: its smoke, the floor it is lit on, and how far it shows *(FTESurf csprogs; no engine source)*
+
+From the owner, 12 Oct: "can you draw the smoke? idk what that last part means
+and also look into the ent_ to see if there's other values that need to be read
+about draw distace?" (The last part was "fires Source drops to the floor".)
+
+**Problem.** Patch 643 drew Source's flame and nothing else of `env_fire`.
+- No smoke. Unless spawnflags 2 (Smokeless), `C_FireSmoke::Start` asks for
+  `env_fire_<size>_smoke`, the flame under a column of smoke
+  (`c_fire_smoke.cpp:173-186`). 39% of the library's 13,529 start-on fires.
+- A fire without spawnflags 16 (Don't drop) is lit where a line 1024 units
+  down from its entity ends (`fire.cpp:701-709`, `MASK_FIRE_SOLID`). The mod
+  drew every fire at its entity: 4,309 fires on 85 maps hung in the air.
+- Bit 16 was read as the glow switch. That is 32.
+- Fires stopped at 4,000 units, a number of the mod's. `env_fire` has no
+  draw-distance key; its particle systems say 100000, the large smoke's two
+  10000.
+
+**Change.** FTESurf `87c63c8`, `src/client/cl_emit.qc`.
+- **Smoke.** Five systems out of `particles/fire_01.pcf` (`Emit_SmokeSpec`),
+  drawn off `particle/smoke1/smoke1` (six stills, one picked a particle) and
+  `particle/vistasmokev1/vistasmokev1` (a 16-frame loop). Both sheets are read
+  from the mounted game and never shipped; `tools/smokesheet.py` writes their
+  frame rectangles to `cl_smokesheet.qc`. The shader does the system's colour
+  fade, its fade-out and SpriteCard's `$startfadesize`/`$endfadesize`
+  (`spritecard_vs20.fxc:187-202`), and blends as Patch 643's flame does: a
+  straight line that is exact for linear-light blending on a 0.25 grey and on
+  white. It sorts a bucket before the flame's so a fire is over its own smoke.
+  Smoke is set up only for the size classes that have a smoking fire.
+  `vbsp_emit_firesmoke 0` is the fire without it.
+- **The floor.** `Emit_DropFires`, once at map load: the glare test's occluder
+  copies (`cl_sprites.qc`) stand down, the brush entities Source's mask stops
+  at stand up (func_brush by its Solidity), each fire without bit 16 is traced
+  1024 down, and everything is put back. A fire with nothing under it stays at
+  its entity (Source lights it 1024 below), as does one inside a solid.
+- **Reach** is 10,000 units, and a fire past 2,000 emits `2000 / distance` of
+  its particles so the near ones keep the budget.
+- **No fog.** SpriteCard ends in `PIXEL_FOG_TYPE_NONE`
+  (`spritecard_ps20b.fxc:184`): Source's fire and smoke show through fog. The
+  first cut fogged them and the review read the shader.
+
+**Verified.** `tools/p656fire.py` over `cfg/test/p656fire.cfg`, 22 of 22 on
+csprogs `bc2b938e`, the patch-658 client, RTX 2080 SUPER, 1920x1111.
+- Smoke: the wall over a medium fire reads 84.3 of 255 with it and 93.1
+  without, a box beside it 0.00 apart; over a tiny one 36.6 and 37.6.
+  `r_partinfo` holds 136, 54 and 326 smoke particles at a medium, a large and
+  a small fire.
+- Floor: surf_lost2, "178 lit on what is under them (mean 24, most 24 units)",
+  its func_brush pedestals; surf_classics2, 233 of 233, most 565 units, and a
+  camera where that one lands counts 6,420 and 7,122 flame pixels.
+- Reach: 6,000 units over a surf_anubis brazier, 49 and 46 pixels under the
+  camera differ from the same shot with `vbsp_emit_fire 0`.
+- Control, the build before (csprogs `6cb9b6c2`): 18 of the 22 fail, with 93.1
+  against 93.1, 0 pixels at 6,000 units and 0 where the fire lands.
+- Control, this build standing up no brush entity for the drop: surf_lost2
+  alone fails, "107 lit (mean 778, most 984), 71 with nothing within 1024".
+- Cost, two runs a build, alternating: a medium fire's smoke in view 1,079 and
+  1,140 fps with it, 1,187 and 1,104 without; surf_anubis's first spawn 869
+  and 848 with 108 fires in reach, 919 and 758 with the 22 there were. The
+  runs differ by more than the builds do.
+- One independent review of the first cut: the fog, a drop that met the
+  occluder copies and missed solid brush entities, smoke over its flame by
+  luck of draw order, and a reach check that counted a map's lava as flame.
+  All fixed; the reach check now compares fire on with fire off.
+
+**Not verified.** The smoke beside Source's: no side-by-side was taken, and
+`lextest.md` asks the owner. Small and large smoke were counted, not looked at.
+Cost on the owner's Intel laptop.
+
+**Known gaps** (BACKLOG, "Source fire"): a puff grows in a straight line where
+the system's curve is a bias; vistasmokev1's second sequence is drawn as its
+mean colour, so medium and large smoke is flat grey; no `$depthblend`; the
+drop cannot meet `prop_dynamic` or a brush the map has since moved;
+`info_particle_system` fires (surf_dune's other 42) are still not drawn.
+
+**Deployed** 11 Oct 18:14 UTC: csprogs `bc2b938e` on the Pi's twelve lobbies
+and both Windows installs, `.prev` `6cb9b6c2`; lobby smoke on 27510 passed.
+
+## Patch 655 — text fields: a caret under the click, selection, copy and cut; and why none pastes *(MOD ONLY: QC)*
+
+From the owner's list of 12 Oct ("full text support, highlighting, copy,
+paste"). `sui_text_input` had a caret that a click sent to the end, no
+selection, and keys by arrows, Backspace and Delete.
+
+- **A field that says where its text is** (`sui_text_metrics`, before
+  `sui_text_input`) gets: the caret under a click, a selection by dragging,
+  by Shift with the arrows, Home and End, and by Ctrl+A; Ctrl+C and Ctrl+X
+  through the engine's `clipboard_set`; typing over a selection.
+  `sui_text_selection` draws it, `sui_text_has_focus` says the field has the
+  keyboard this frame (a field focused by TAB used to draw no ring).
+  Both of the menu's fields do. A field that says nothing is what it was.
+- **One selection**, in the field that has the keyboard, dropped when
+  another field takes it or when this one takes it anew. "Anew" is by frame
+  (the last two in which a sui bracket began), not by a clock: the first cut
+  gave it half a second and its own arm's screenshots, which stall the
+  frame, dropped a held selection. `sui_keys_forget` for an owner's open and
+  close (the menu calls it in `m_open` and `m_close`).
+- **Chords are control codes.** Windows and X11 make 1, 3 and 24 only while
+  Ctrl really is down. Where a key came with no character at all, the key
+  under a Ctrl this VM saw go down. A letter that arrives as a letter is
+  typed, so a Ctrl whose release went elsewhere cannot turn typing into
+  cuts. Modifiers are stored with each buffered key.
+- **The link box** (cl_account.qc): a code box with a letter in it never
+  closed (Patch 653's review). It closes 45 s after the last key that
+  changed it, or Enter.
+- **`ui_mouse` stamps `ui_synth_t`**, as `ui_key` and `ui_click` have since
+  Patch 647: that command's click was taken for the player's hand.
+
+**NO FIELD PASTES.** Three cuts tried. The first two gave the game VM a
+`clipboard_get` behind an engine gate (a real Ctrl+V; then a real Ctrl+V
+while the game has the cursor): the game VM's code is the server's, Ctrl and
+V are crouch and noclip in this game, and the cursor is a bit that VM sets
+itself. The third kept paste to the menu VM, whose code is the install's,
+for a key the engine delivered. Its review read the engine: the menu VM's
+registered console commands run from a server's stuffed text and from a
+server's game code (`MP_ConsoleCommand_f` tests nothing, and the exec-level
+compare passes a higher level), and those commands open the menu, choose its
+screen, place its cursor and its focus, and press its buttons. So a key the
+engine delivered proves a key, not who arranged what it lands on; and a
+field's text can leave by a button a command can press. No latch inside QC
+closed it: each needs the cursor, the focus and the screen to be the
+player's, and a command can park the cursor under the player's next real
+click. Neither `.dat` names `clipboard_get` now. BACKLOG has what the engine
+would have to do.
+
+**Measured.** `tools/p655text.py`, the menu's name box in a private rig,
+graded on the field's own text, caret and selection, on sui's modifiers, and
+on what the desktop's clipboard then holds: 17 checks pass (the caret and ring by TAB; the caret under a click, and
+under a press and release inside one frame; selection by Shift and by a
+drag; copy and cut landing on the desktop's clipboard; NOTHING PASTING by a
+keyboard's own Ctrl+V, by Shift+Insert or by a fed one, and `clipboard_get`
+named in neither `.dat`; a held Enter moving no caret; a Shift held before
+the field has the keyboard; a modifier forgotten across a closed menu). CONTROL, the same arm
+on the third cut's build: it fails N (the paste lands, and its menu.dat names
+`clipboard_get`), Q, J and Z, and A in N's wake; the other twelve pass. The link box: `tools/p653box.py
+--idle` closes at 45 s on this build and never on the code before it; its
+whole arm passes on the engine release 0.1.24 shipped; `p647boot.py` and
+`p652builds.py` pass on this menu.dat (`10cba3c146bab74f`; csprogs `a9c734555bf1b558`).
+Looked at: four screenshots, cropped at 1:1 (the ring and caret by TAB, two
+characters selected, all selected, a drag's selection), each on its glyphs.
+
+**Review.** Three rounds, one a cut. Round 1 (engine gate by key): the chord
+is this game's own. Round 2 (gate by cursor): the cursor is the VM's to set,
+and the menu's paste answers to console text. Round 3 (menu only, one
+reviewer, three lenses, the engine open beside it): the must-fix above, and
+from the same round, fixed: a confirm key held over a field dragged the
+caret (a keyboard "press" is a press to sui); a press and release inside one
+frame placed no caret; a field taking the keyboard zeroed the modifiers; a
+cut with no `clipboard_set` lost the text; the code box's clock was any
+alphabet key, W, A, S and D among them. The fourth cut removes code and
+adds those five; it was not reviewed again.
+
+**Left** (BACKLOG): paste, with the engine change it needs; colour codes in
+a field; text longer than its box; `in_builtinkeymap`.

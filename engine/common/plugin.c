@@ -454,6 +454,10 @@ static qboolean QDECL PlugBI_ExportInterface(const char *name, void *interfacept
 	//Model registration also requires this provider's copied input table.
 	if (!strcmp(name, pluguimodelservice_name))
 		return Plug_NativeUI_ModelRegister(interfaceptr, structsize);
+	if (!strcmp(name, pluguimodelservice2_name))
+		return Plug_NativeUI_ModelRegister2(interfaceptr, structsize);
+	if (!strcmp(name, pluguiplotservice_name))
+		return Plug_NativeUI_PlotRegister(interfaceptr, structsize);
 #endif
 #if defined(PLUGINS) && !defined(SERVERONLY)
 #ifdef HAVE_MEDIA_DECODER
@@ -1977,10 +1981,13 @@ plugcorefuncs_t plugcorefuncs =
   it was recorded into now says so.  Accelerometer and Gyroscope are included even
   though neither is journalled today -- the point is the mark, and leaving two of five
   entries un-marked would be a gap that is invisible until someone uses them.*/
+void IN_SynthOrigin(qboolean on);	/*Patch 625, in_generic.c*/
 static void QDECL Plug_IN_KeyEvent(unsigned int devid, int down, int keycode, int unicode)
 {
 	IN_Journal_MarkSynth("plugin");
+	IN_SynthOrigin(true);
 	IN_KeyEvent(devid, down, keycode, unicode);
+	IN_SynthOrigin(false);
 }
 static void QDECL Plug_IN_MouseMove(unsigned int devid, int abs, float x, float y, float z, float size)
 {

@@ -1236,6 +1236,7 @@ static void VK_DestroySampler(VkSampler s)
 					ref->next->link = ref->link;
 				Z_Free(ref);
 			}
+			return;	//one entry per sampler; ref may just have been freed
 		}
 	}
 }
@@ -2248,7 +2249,9 @@ void    VK_DestroyTexture			(texid_t tex)
 {
 	if (tex->vkimage)
 	{
-		VK_DestroyVkTexture(tex->vkimage);
+		//An owned UI atlas can close during action polling, after this frame's
+		//draw was recorded but before it was submitted. Match upload replacement.
+		VK_AtFrameEnd(VK_DestroyVkTexture_Delayed, tex->vkimage, sizeof(*tex->vkimage));
 		Z_Free(tex->vkimage);
 		tex->vkimage = NULL;
 	}
@@ -2278,6 +2281,16 @@ void	VK_R_DeInit					(void)
 	R2D_Shutdown();
 	Shader_Shutdown();
 	Image_Shutdown();
+	//VK_DestroyTexture defers, so Image_Shutdown queued a job per texture after the
+	//drain above. Nothing is in flight; run them now, not on the next device (Wayland
+	//never reaches VK_Shutdown).
+	while (vk.frameendjobs)
+	{
+		struct vk_frameend *job = vk.frameendjobs;
+		vk.frameendjobs = job->next;
+		job->FrameEnded(job+1);
+		Z_Free(job);
+	}
 }
 
 void VK_SetupViewPortProjection(qboolean flipy, const float eyematrix[12], const float fovoverrides[4], const float projmatrix[16])

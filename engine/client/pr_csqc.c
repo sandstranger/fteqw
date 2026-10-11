@@ -1726,8 +1726,10 @@ void QCBUILTIN PF_R_PolygonEnd(pubprogfuncs_t *prinst, struct globalvars_s *pr_g
 	if (flags != csqc_poly_flags || (cl_numstrisvert-csqc_poly_origvert) >= 32768)
 	{
 		int sv = cl_numstrisvert - nv;
+		shader_t *shader = csqc_poly_shader;	//FTESurf Patch 645: the flush clears it, and this polygon is still to draw
 		cl_numstrisvert -= nv;
 		CSQC_PolyFlush();
+		csqc_poly_shader = shader;
 
 		csqc_poly_origvert = cl_numstrisvert;
 		csqc_poly_origidx = cl_numstrisidx;
@@ -1814,8 +1816,10 @@ void QCBUILTIN PF_R_PolygonEndRibbon(pubprogfuncs_t *prinst, struct globalvars_s
 	if (flags != csqc_poly_flags || (cl_numstrisvert-csqc_poly_origvert) >= 32768)
 	{
 		int sv = cl_numstrisvert - nv;
+		shader_t *shader = csqc_poly_shader;	//FTESurf Patch 645: the flush clears it, and this polygon is still to draw
 		cl_numstrisvert -= nv;
 		CSQC_PolyFlush();
+		csqc_poly_shader = shader;
 
 		csqc_poly_origvert = cl_numstrisvert;
 		csqc_poly_origidx = cl_numstrisidx;
@@ -2154,6 +2158,8 @@ static void QCBUILTIN PF_cs_unproject (pubprogfuncs_t *prinst, struct globalvars
 		out[2] = tempv[2]/tempv[3];
 	}
 }
+
+#include "pr_csqc_lines.inc"	//FTESurf Patch 645: the run lines' strip, natively
 
 //clear scene, and set up the default stuff.
 static void QCBUILTIN PF_R_ClearScene (pubprogfuncs_t *prinst, struct globalvars_s *pr_globals)
@@ -6767,12 +6773,26 @@ static void QCBUILTIN PF_cs_clipboard_get(pubprogfuncs_t *prinst, struct globalv
 
 void QCBUILTIN PF_CL_DrawTextField (pubprogfuncs_t *prinst, struct globalvars_s *pr_globals);
 
+static void QCBUILTIN PF_ui_native_gamefocus(pubprogfuncs_t *prinst, struct globalvars_s *pr_globals)
+{
+	//The engine owns console/menu/prompt precedence; QC cannot infer it from cursor mode.
+	G_FLOAT(OFS_RETURN) = Key_Dest_Has(kdm_game) && !Key_Dest_Has_Higher(kdm_game);
+}
+
 //prefixes:
 //PF_ - common, works on any vm
 //PF_cs_ - works in csqc only (dependant upon globals or fields)
 //PF_cl_ - works in csqc and menu (if needed...)
 
 //warning: functions that depend on globals are bad, mkay?
+/*FTESurf Patch 625: defined beside CSQC_KeyPress, below.*/
+static void QCBUILTIN PF_cl_acct_sign (pubprogfuncs_t *prinst, struct globalvars_s *pr_globals);
+static void QCBUILTIN PF_cl_acct_random (pubprogfuncs_t *prinst, struct globalvars_s *pr_globals);
+static void QCBUILTIN PF_cl_acct_browse (pubprogfuncs_t *prinst, struct globalvars_s *pr_globals);
+void CL_Receipt_VM(qboolean made);
+void CL_Receipt_VMCode(const void *data, size_t len);
+static qboolean csqc_realkey;	/*and its two budgets: see CSQC_KeyPress*/
+static int csqc_realkey_signs, csqc_realkey_browses;
 static struct {
 	char *name;
 	builtin_t bifunc;
@@ -7139,6 +7159,7 @@ static struct {
 	{"drawfill",				PF_CL_drawfill,					323},		// #323 float(vector position, vector size, vector rgb, float alpha [, float flag]) drawfill (EXT_CSQC, [EXT_CSQC_???])
 	{"drawsetcliparea",			PF_CL_drawsetcliparea,			324},	// #324 void(float x, float y, float width, float height) drawsetcliparea (EXT_CSQC_???)
 	{"drawresetcliparea",		PF_CL_drawresetcliparea,		325},		// #325 void(void) drawresetcliparea (EXT_CSQC_???)
+	{"ui_native_gamefocus",	PF_ui_native_gamefocus,	0},
 	{"ui_native_status",		PF_ui_native_status,		0},
 	{"ui_native_open",		PF_ui_native_open,		0},
 	{"ui_native_draw",		PF_ui_native_draw,		0},
@@ -7147,10 +7168,23 @@ static struct {
 	{"ui_native_input",		PF_ui_native_input,		0},
 	{"ui_native_poll",		PF_ui_native_poll,		0},
 	{"ui_native_model_status",	PF_ui_native_model_status,	0},
+	{"ui_native_model_limit",	PF_ui_native_model_limit,	0},
 	{"ui_native_model_begin",	PF_ui_native_model_begin,	0},
 	{"ui_native_model_widget",	PF_ui_native_model_widget,	0},
 	{"ui_native_model_commit",	PF_ui_native_model_commit,	0},
 	{"ui_native_model_poll",	PF_ui_native_model_poll,		0},
+	{"ui_native_plot_status",	PF_ui_native_plot_status,	0},
+	{"ui_native_plot_begin",	PF_ui_native_plot_begin,	0},
+	{"ui_native_plot_series",	PF_ui_native_plot_series,	0},
+	{"ui_native_plot_rows",	PF_ui_native_plot_rows,		0},
+	{"ui_native_plot_commit",	PF_ui_native_plot_commit,	0},
+	{"ui_native_plot_view",	PF_ui_native_plot_view,		0},
+	{"lines_width",			PF_cs_lines_width,		0},	//FTESurf Patch 645, pr_csqc_lines.inc
+	{"lines_segment",		PF_cs_lines_segment,	0},
+	{"lines_strip2d",		PF_cs_lines_strip2d,	0},
+	{"lines_arrays",		PF_cs_lines_arrays,		0},
+	{"lines_lod",			PF_cs_lines_lod,		0},
+	{"lines_draw",			PF_cs_lines_draw,		0},
 
 	{"drawstring",				PF_CL_drawcolouredstring,		326},	// #326
 	{"stringwidth",				PF_CL_stringwidth,				327},	// #327 EXT_CSQC_'DARKPLACES'
@@ -7190,6 +7224,9 @@ static struct {
 
 //	{"clipboard_get",			PF_cs_clipboard_get,			0},		//don't let csqc read the clipboard right now. its too risky.
 	{"clipboard_set",			PF_cl_clipboard_set,			0},		//it can change it though, no real problem there. just kill the program if its filling it with crap.
+	{"acct_sign",				PF_cl_acct_sign,				0},		//FTESurf Patch 625: string(string nonce, float kind)
+	{"acct_random",				PF_cl_acct_random,			0},		//FTESurf Patch 625: string(float bytes)
+	{"acct_browse",				PF_cl_acct_browse,			0},		//FTESurf Patch 625: float(string opener)
 
 	{"getinputstate",			PF_cs_getinputstate,			345},	// #345 float(float framenum) getinputstate (EXT_CSQC)
 	{"setsensitivityscaler",	PF_cs_setsensitivityscaler, 	346},	// #346 void(float sens) setsensitivityscaler (EXT_CSQC)
@@ -7838,6 +7875,9 @@ static plugmaterialloaderfuncs_t csqcmaterialloader = {"csqc", CSQC_GenerateMate
 void CSQC_Shutdown(void)
 {
 	int i;
+	csqc_realkey = false;	/*Patch 625: no VM inherits a key press*/
+	csqc_realkey_signs = csqc_realkey_browses = 0;
+	CL_Receipt_VM(false);
 	if (csqcprogs)
 	{
 		if (csqcg.CSQC_Shutdown)
@@ -7859,6 +7899,7 @@ void CSQC_Shutdown(void)
 		World_Destroy(&csqc_world);
 	}
 
+	CSQC_Lines_Reset();	/*Patch 645: no later VM inherits this one's sample arrays*/
 	Cmd_RemoveCommands(CS_ConsoleCommand_f);
 
 
@@ -7998,9 +8039,22 @@ void *PDECL CSQC_PRLoadFile (const char *path, unsigned char *(PDECL *buf_get)(v
 	qbyte *file;
 
 	if (!strcmp(path, csprogs_checkname))
+	{
 		file = CSQC_FindMainProgs(sz, csprogs_checkname, csprogs_checksum, csprogs_checksize);
+		if (file)
+			CL_Receipt_VMCode(file, *sz);	/*Patch 625: the code an account proof will name*/
+	}
 	else
+	{
+		size_t l = strlen(path);
 		file = COM_LoadTempFile (path, 0, sz);
+		/*Any other file handed to the VM leaves it with no one name (line
+		  numbers are not code).  BESIDE the count at signing, not instead of
+		  it: the hash above is taken when the main file is READ, and a main
+		  file the loader then refuses leaves slot 0 to a fallback.*/
+		if (file && !(l > 4 && !Q_strcasecmp(path + l - 4, ".lno")))
+			CL_Receipt_VMCode(NULL, 0);
+	}
 
 	if (file)
 	{
@@ -8361,6 +8415,7 @@ qboolean CSQC_Init (qboolean anycsqc, const char *csprogsname, unsigned int chec
 		csqcmapentitydataloaded = true;
 		cl.mapstarttime = realtime;
 		csqcprogs = InitProgs(&csqcprogparms);
+		CL_Receipt_VM(true);	/*Patch 625: whose game code this is*/
 		csqc_world.progs = csqcprogs;
 		csqc_world.usesolidcorpse = true;
 		PR_Configure(csqcprogs, PR_ReadBytesString(pr_csqc_memsize.string), MAX_PROGS, pr_enable_profiling.ival);
@@ -9310,6 +9365,91 @@ qboolean CSQC_DrawScores(playerview_t *pv)
 	return false;
 }
 
+/*
+  FTESurf Patch 625: ACCOUNT PROOFS, FOR GAME CODE AND NOBODY ELSE.  Until now
+  the account link was signed by the console command `rec_sign`, which game
+  code reached with localcmd -- and localcmd is text, built in fifty places
+  out of pieces a server can supply.  These three are the same signature as
+  builtins: nothing a console line says can reach them, and what they sign is
+  a statement of its own (cl_receipt.c), which no older engine can produce.
+
+  csqc_realkey is TRUE only while CSQC_InputEvent is running for a key that a
+  device pressed (IN_RealKeyDown, in_generic.c).  The kinds that make a link
+  are signed only then, and the browser is opened only then.
+*/
+qboolean IN_RealKeyDown(void);
+void IN_RealKeyAbort(void);
+qboolean CL_Receipt_AcctSign(const char *nonce, int kind, qboolean keyed, char *out, size_t outlen);
+qboolean CL_Receipt_Browse(const char *opener);
+/*
+  ONE PRESS BUYS ONE LINK SIGNATURE AND ONE BROWSER, and a held key's repeats
+  buy nothing: the review looped both builtins inside one handler call.  The
+  flags come down at every way out of the handler, the longjmp included
+  (CSQC_RealKeyAbort, from Host_Frame's landing), and a VM starts with none.
+*/
+static qboolean CSQC_RealKey(void)
+{
+	return csqc_realkey && IN_RealKeyDown();	/*both, so one stale flag is not enough*/
+}
+void CSQC_RealKeyAbort(void)
+{
+	csqc_realkey = false;
+	csqc_realkey_signs = csqc_realkey_browses = 0;
+	IN_RealKeyAbort();
+}
+
+/*string(string nonce, float kind) acct_sign: `<pub> <key> <sig> "<server>"`, or "".*/
+static void QCBUILTIN PF_cl_acct_sign (pubprogfuncs_t *prinst, struct globalvars_s *pr_globals)
+{
+	char out[512];
+	float f = G_FLOAT(OFS_PARM1);
+	int kind = (f >= -5 && f <= -2) ? (int)f : 0;	/*a NaN is nobody's kind*/
+	qboolean keyed = CSQC_RealKey();
+
+	/*the statement names ONE file of code: a VM holding a second (an addon,
+	  addprogs under any name) has no one name.  The VM's own count, not a
+	  guess from what the file hook was asked for.*/
+	if (prinst->numprogs != 1)
+		CL_Receipt_VMCode(NULL, 0);
+	if (kind != -2)
+	{
+		/*a link's kind: this press's one signature, or none*/
+		if (!keyed || csqc_realkey_signs < 1)
+			keyed = false;
+		else
+			csqc_realkey_signs--;
+	}
+	if (kind && CL_Receipt_AcctSign(PR_GetStringOfs(prinst, OFS_PARM0), kind, keyed, out, sizeof(out)))
+		RETURN_TSTRING(out);
+	else
+		RETURN_TSTRING("");
+}
+/*string(float bytes) acct_random: that many bytes from the system, as hex; "" if it has none.*/
+static void QCBUILTIN PF_cl_acct_random (pubprogfuncs_t *prinst, struct globalvars_s *pr_globals)
+{
+	qbyte raw[32];
+	char hex[sizeof(raw)*2+2];
+	float f = G_FLOAT(OFS_PARM0);
+	int n = (f >= 1 && f <= sizeof(raw)) ? (int)f : 0;	/*a NaN is no count*/
+	if (n < 1 || !Sys_RandomBytes(raw, n))
+	{
+		RETURN_TSTRING("");
+		return;
+	}
+	Base16_EncodeBlock((const char*)raw, n, (qbyte*)hex, sizeof(hex));
+	hex[n*2] = 0;
+	RETURN_TSTRING(hex);
+}
+/*float(string opener) acct_browse: the sign-in page for that opener, in the player's browser.*/
+static void QCBUILTIN PF_cl_acct_browse (pubprogfuncs_t *prinst, struct globalvars_s *pr_globals)
+{
+	G_FLOAT(OFS_RETURN) = 0;
+	if (!CSQC_RealKey() || csqc_realkey_browses < 1)
+		return;
+	csqc_realkey_browses--;
+	G_FLOAT(OFS_RETURN) = CL_Receipt_Browse(PR_GetStringOfs(prinst, OFS_PARM0));
+}
+
 qboolean CSQC_KeyPress(int key, int unicode, qboolean down, unsigned int devid)
 {
 	static qbyte csqckeysdown[K_MAX];
@@ -9340,6 +9480,9 @@ qboolean CSQC_KeyPress(int key, int unicode, qboolean down, unsigned int devid)
 		qcinput_scan = G_FLOAT(OFS_PARM1);
 		qcinput_unicode = G_FLOAT(OFS_PARM2);
 
+		/*Patch 625: a press (in_generic.c says what one is), and its budget*/
+		csqc_realkey = IN_RealKeyDown();
+		csqc_realkey_signs = csqc_realkey_browses = csqc_realkey ? 1 : 0;
 		csqckeysdown[key] |= (1u<<devid);
 	}
 	else
@@ -9348,7 +9491,11 @@ qboolean CSQC_KeyPress(int key, int unicode, qboolean down, unsigned int devid)
 			return false;	//prevent up events being able to leak 
 		csqckeysdown[key] &= ~(1u<<devid);
 	}
+	if (!down)
+		csqc_realkey = false;
 	PR_ExecuteProgram (csqcprogs, csqcg.CSQC_InputEvent);
+	csqc_realkey = false;
+	csqc_realkey_signs = csqc_realkey_browses = 0;
 	qcinput_scan = 0;	//and stop replay attacks
 	qcinput_unicode = 0;
 
