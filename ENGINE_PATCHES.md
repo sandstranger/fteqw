@@ -44753,3 +44753,1672 @@ adds those five; it was not reviewed again.
 
 **Left** (BACKLOG): paste, with the engine change it needs; colour codes in
 a field; text longer than its box; `in_builtinkeymap`.
+
+## Patch 663 — `hud_player` is a profile: name, picture, the customizer, a breakdown, and a search for any player *(MOD ONLY: QC, one bind)*
+
+From the owner's list of 12 Oct ("upgrade this menu to show your steam name,
+steam picture, and allow you to customize your player ... a tab for your
+player breakdown like the website page but in game ... a search bar you can
+type in any player, like the website, but in game"). The panel was a flat
+column of controls from Patch 340 that only the console could open.
+
+- **One card, in the UI's look** (`Av_Draw`, rebuilt). A header: the
+  player's picture and name (a linked account plays under its Steam name,
+  and the lobby's mark finds its picture), what the lobby last said of this
+  install (linked, not linked with a Link Steam button, banned), and the
+  search. Two pages: **Customize**, every control the old panel had, laid
+  out again, the body standing on the card beside them; **Stats**, the
+  site's player page: five figures, a bar a difficulty tier, results best
+  first in a list that asks for more as its end is reached. The type steps
+  down until the card fits the window. `bind p hud_player`.
+- **`cl_profile.qc`** (new): surfd's two lookups (Patch 662), their answers
+  into memalloc'd tables, and the pieces a panel draws in its own bracket:
+  the search field, the list under it, the breakdown. A search rests 0.3 s
+  before it is asked; a breakdown that never came is asked for once more by
+  itself (a wide profile's first answer is seconds on the Pi, and surfd
+  keeps it). Both need the online terms, as the board does.
+- **The leaderboard** (cl_scores.qc): the same field on a pinned board's
+  title row, and "my profile". A picked player closes the board and opens
+  the card on their breakdown. Letting go of the scoreboard key while the
+  field has the keyboard leaves the board up.
+- **`sui_text_event`**: a key for a text field at the time it comes. A game
+  panel is not always its frame's only sui bracket, and every `sui_end`
+  empties the key buffer. Both fields here (the search, the name) use it,
+  with Patch 655's selection, copy and cut.
+- **A field swallows only the releases of keys it took the press of.** The
+  engine returns before a bind's release when game code takes a key-up, so a
+  strafe key held as a field took the keyboard stayed down. (The old name
+  field took every release while it was focused.)
+
+**Measured.** `tools/p663profile.py`: a private rig whose surfd holds a
+board put straight into its database, a difficulty catalogue and one
+four-colour picture; graded on the panel's own `hud_player status` line and
+its developer lines against what was put in. 25 checks pass: the two pages; a click on a trail
+colour; the search (three players named, the exact one first; no keyboard by
+a console line; the keyboard by a click; Enter's pick); a planted picture
+found by its colours in the list and at twice the size on the card; a mark
+finding its player; a wide profile paging as it is scrolled; a page that
+brings nothing asked for once, and one that fails three times, two seconds
+apart (surfd counted them); typed keys being text while a bind on one stays
+unrun; a key held before the field took the keyboard getting its release; a
+name that is no handle never asked about; the board's field, its pick, "my
+profile", and the scoreboard key let go while typing; a link, then the
+player's own page by the lobby's mark, their picture in the room list
+(Patch 653's size, seen at last) and on the card. CONTROL, a build with five
+lines as they were before the review: X, K, U, G and Y fail (G: 111 asks in
+seven seconds where the patch makes one), and what depends on them. The same
+arm passes on the engine release 0.1.24 shipped. Looked at: ten
+screenshots; the two pages, the list, a wide profile and the board's field
+at 1:1. csprogs `221cbebf62381187`, default.cfg `1029ff976654671c`.
+
+**Review.** One reviewer, three lenses (control flow, untrusted input,
+regressions), given the commit and the engine. FOUR MUST-FIX, all fixed and
+each now a check that the control build fails: the Stats page and the first
+trail swatch shared a sui id, so a press on the red trail colour turned the
+page instead of choosing it; a next page that failed, or brought nothing,
+was asked for again at once for as long as the list's tail was on screen (an
+answer could make that permanent); the console twins of typing gave the
+field the keyboard, so a console line could send what the player typed next
+to the directory; and the field took every key release, after which the
+engine skips the bind's own. Also from it: every failure but "nobody" offers
+Try again; a `who` is asked about only if it is 8 or 12 hex; an answer must
+be for the player asked, and this file's request ids have a base drawn per
+VM; names and maps are cut at parse and a map's colour codes taken out; the
+drag handle is where the card is drawn; a pick with a replay or the editor
+up leaves the board and says why; a breakdown held over a minute is asked
+for anew when the card opens. The fixes were measured, not reviewed again.
+
+**Left** (BACKLOG): a result row is not a link; the header's "linked" is a
+stuffable word; no drill-down from a tier's bar; colour codes shown raw.
+
+### Patch 663, an hour on: the link offer yields to the card
+
+A rig client on a live lobby, reading the real directory, drew the owner's
+breakdown and a search as the arm had. It also showed what the arm had
+dismissed before looking: the Link Steam offer, which comes up by itself
+for an unlinked player and stays forty seconds, drew over the card and took
+Enter from its search, so a pick started a link and opened a browser.
+`Account_Draw` does not draw that offer while the card is up, and
+`Account_InputEvent` gives it no key while the card is up or a search field
+has the keyboard. The card has its own Link Steam. `tools/p663profile.py`
+opens the card with the offer pending now (check O: the pick is the
+search's, no link starts, and the offer takes Esc again once the card is
+closed); the build that was live fails it. 27 checks, on the installed
+engine and on release 0.1.24's.
+
+### Correction to Patches 660 and 662: the reviews' timings are this desktop's
+
+Both entries say a reviewer's figures were taken "on a laptop" (660: 0.4 s
+for one request and 3.9 to 5.1 s each for four; 662: about 20 ms a search
+over 67,000 entries). They were taken on the machine the reviews ran on, an
+i9-9900K desktop (checked with `Get-CimInstance Win32_Processor`), not a
+laptop. The figures stand; the Pi's own are in each patch's deployment
+record (660: the boards' read 11.4 s; 662: a search 12 ms, the widest
+profile 1.52 s cold).
+
+## Patch 657 — Dust motes are brighter: a blend exact on black, and Source's exposure *(FTESurf csprogs; no engine source)*
+
+From the owner, 12 Oct: "I think they look not as bright as source, they
+really pop in source."
+
+**Problem.** Two things held `func_dustmotes` under Source's.
+- **The blend.** Source blends a mote over the wall in linear light,
+  `(a * colour^2.2 + (1 - a) * wall^2.2) ^ (1/2.2)`, which is a curve over the
+  wall's brightness; this framebuffer blends in gamma space, and Patch 648
+  emulates the curve with a straight line (ONE / ONE_MINUS_SRC_ALPHA, both
+  factors computed). 648 made that line exact on a 0.25 grey and on white.
+  On a black wall a white mote at alpha 0.087 then read 0.192 where linear
+  light gives 0.329, and a dark wall is where a mote is seen.
+- **The exposure.** Source multiplies every pixel by its tonemap scale,
+  UnlitGeneric included (`vertexlit_and_unlit_generic_ps20b.fxc:481`,
+  `TONEMAP_SCALE_LINEAR`); Momentum runs HDR on any map with HDR lighting.
+  This frame has no exposure at all.
+
+**Change.** FTESurf `35510e0`, `src/client/cl_emit.qc`.
+- **The line** is exact on black for any colour, exact on white for a grey
+  mote, and over linear light between. One alpha is one slope for three
+  channels (71% of the library's 5,297 mote volumes are coloured), so a
+  coloured mote's slope is midway between what its brightest and its dimmest
+  channel want.
+- **`Emit_Exposure`**: a mote's light is multiplied by the exposure Source can
+  reach on the map. That is the ceiling a logic_auto sets (`"OnMapSpawn"
+  "tonemap,SetAutoExposureMax,1.2,0,-1"`, the separators 0x1b in newer maps),
+  else Source's own 2 where HDR lighting is drawn, else 1; held to 1..2. One
+  shader an exposure (`ftesurf_mote<exposure * 100>`).
+- **`Emit_MapHDR`**: whether HDR lighting is drawn is the loader's own test,
+  lumps 53 and 8 of the map's header and `hl2_favour_ldr`. QC's `fread`,
+  `fseek` and `fsize` each load the whole file on first use
+  (`pr_bgcmd.c`, FRIK_FILE_READ_DELAY), so the size is asked of the file
+  system (`search_getfilesize`), a map over 128 MiB is not read and is lit at
+  1, and no file is read on a map without motes or with a ceiling of 1 or
+  under.
+- `vbsp_emit_exposure`: -1 the map's, 1 Source without HDR, any other number
+  everywhere. Read at map load.
+
+**Verified.** `tools/p657bright.py` over `cfg/test/p657bright.cfg`, 14 of 14 on
+csprogs `c7596c74`, the patch-658 client, RTX 2080 SUPER, 1920x1111. The
+ruler: rows of Frozen motes at a known depth over a wall of one flat colour
+(`r_clear` from the void over the map), read at each mote's middle.
+- Black: white at alpha 0.087, 0.43 and 0.85 reads 0.329, 0.678, 0.928
+  (linear light 0.329, 0.679, 0.929); `0 128 255` reads 0 0.466 0.928.
+- White: the white rows read 1.000, and the blue row beside them is there.
+- A 0.37 grey: 0.576, 0.796, 0.956, each on its line, where linear light
+  gives 0.468, 0.723, 0.937.
+- Colour: `0 128 255` at 0.85 reads 0.249 0.715 1 on white (linear light
+  0.422 0.610 1) and 0.091 0.557 1 on the grey (0.156 0.485 0.937).
+- Exposure, in `emit_list`'s line and in pixels: surf_dune 1.2 (the alpha
+  0.087 row reads 0.357 on black), surf_shade 2, surf_andromeda 1,
+  surf_tensor2 1.4, surf_dune at `hl2_favour_ldr 1` 1, surf_destruction
+  (134 MiB) 1 with no open of its file in the log.
+- Control, the build before (csprogs `9fc0940b`): black 0.192 0.596 0.908,
+  the grey 0.490, no exposure line; 11 of the 14 fail.
+- Control, the cut before the review: colour fails (red 0.140 on white) and
+  surf_destruction's file is opened.
+- Control, the exposure taken out of the shader (on the cut before the
+  review): the line still says 1.2 and the pixels read 0.329.
+- `tools/p648motes.py`, 22 of 22: size, fade, pool and restart are as they
+  were. Its ruler is now at exposure 1 and its colour check moved here.
+- One independent review of the first cut. `fsize` read the 495 MiB file it
+  was guarding; a slope taken from the mote's luminance drew `0 128 255`'s
+  red at 0.140 on white, worse than the 0.236 it replaced, with the old
+  colour check retired in the same commit; and WHITE passed on a frame with
+  no motes. All fixed, each with a check that fails on the old code.
+
+**Not verified.** Source itself: the numbers above are its shader's
+arithmetic, not a picture of it, and `lextest.md` asks the owner. A map whose
+ceiling is 1 or under. Any colour but one. Cost on the owner's Intel laptop.
+
+**Known gaps** (BACKLOG, "Source dust motes"). Source scales the wall by the
+same exposure and this frame does not, so on an HDR map a mote stands out
+from its wall more than Source's does. The ceiling is used, not what the
+exposure would settle at in the view. A coloured mote's weak channel is still
+under-shown on a pale wall (red 0.249 for 0.422). No fog term. Maps over 128
+MiB (46 with motes) are lit at 1.
+
+**Deployed** 11 Oct 19:40 UTC: csprogs `c7596c74` on the Pi's twelve lobbies
+and both Windows installs, `.prev` `9fc0940b`; lobby smoke on 27510 passed.
+
+## Patch 659 — Rain as Source draws it: thin, long, and one trace a drop *(FTESurf csprogs and tools/pcf.py; no engine source)*
+
+From the owner, 12 Oct: "Same with rain, rain in source is brighter, thinner,
+faster, and longer."
+
+**Problem.** Rain on these maps is a `render_sprite_trail` particle system on
+`particle/rain` (surf_tensor2 has thirteen). `tools/pcf.py` baked it as an
+FTE `texturedspark`, and four things were off.
+- **Width.** A trail is `radius` wide; the translator gave it the sprite
+  conversion (4 * sqrt(2) times the radius, right for a sprite, whose quad is
+  drawn from its centre to its corners). A spark's `scale` is its full width
+  (`p_script.c`, `R_AddTSparkParticle`): rain was 5.66 units wide, Source's 1.
+- **Length.** Source's streak is a tenth of a second of travel held to "max
+  length", 80 units at any rain speed. The material's shader sorts `blend`,
+  which sends a spark down the engine's immediate draw
+  (`GL_DrawTexturedSparkParticle`): from the particle to 0.05 s of travel
+  ahead, 50 to 150 units, and no fixed length.
+- **Brightness.** UnlitGeneric blends in linear light and this framebuffer in
+  gamma space: a streak at alpha 0.15 over a dark sky is a third as far above
+  it. And the translator wrote alpha as its middle and half its range where
+  the engine draws `alpha + alpharand * frandom()`: the upper half of
+  Source's range, for every baked system.
+- **How many.** Source emits 800 a second. The translator wrote
+  `min(emission_rate, max_particles / lifetime)` = 150, on the reasoning that
+  the pool fills; a drop killed by what it hits never lives its 10 s, so it
+  does not. The client then held that to 68 (the dust's per-emitter ceiling
+  and the shared budget).
+- Not speed: the bake already had Source's 1,000 to 3,000 units a second and
+  its gravity.
+
+**The cost that shaped the fix.** A first cut emitted 800 a second through
+the engine. `clipbounce` makes the engine trace every such particle every
+frame (`r_particle_tracelimit` defaults to 0x7fffffff): 1,550 drops alive
+took surf_tensor2's spawn from 650 frames a second to 133, about 4
+microseconds a drop a frame. And the engine's trace did not stop a drop at the
+sky's floor, so most drops lived their whole 10 s under the map.
+
+**Change.** FTESurf `a68e411`.
+- **`tools/pcf.py`**: a trail whose material is in `TRAIL_BLENDED`
+  (`particle/rain`) gets twenty more blocks, `<map>_<name>_t0..19`, with no
+  spawn box and no collision: `scale` four times the radius,
+  `stretchfactor -40`, lives of 0.04 * 1.25^k seconds. And a line in the
+  index: `trail <map> <name> <material> <rate> <box> <speed spread>
+  <gravity> <n> <t0> <ratio>`. The system's own block and its psys line are
+  written as before, so a client from before the patch reading the new files,
+  or this client reading old ones, draws the old rain. Alpha is a floor and a
+  range, for every system.
+- **`Emit_TrailDrop`** (`src/client/cl_emit.qc`): the client picks a drop's
+  point in the box and its speed, traces once along the fall (4,096 units),
+  works out when it lands under the block's gravity, and sends it out as the
+  block whose life is the longest not over that; the time left over it has
+  "already fallen", a start lower in the box and faster. A drop born inside
+  something is not made. Nothing is traced afterwards.
+- **`Emit_TrailShader`**: `ftesurf_trail/<material>`, the motes' linear-light
+  blend (Patch 657) over the material's .vtf. The quad is four streak widths
+  wide and the streak is drawn inside it by pixel coverage, so one a third of
+  a pixel wide is a faint line and not a row of dots. `sort additive`, which
+  is what makes the engine batch it and honour the fixed length.
+- Trail emitters keep the index's rate (not the dust's ceiling of 200) and
+  have a budget of their own, 2,400 drops a second.
+- `Emit_PsysRepair`: a renderer restart takes the shader and the map's
+  blocks; both are made again, asked of the first baked system that emits
+  and three times a map at most. Nothing brought a baked map's blocks back
+  before.
+- A drop's fall is cut short by half the streak and a frame of travel: the
+  engine draws a particle once more in the frame it dies and a spark's quad
+  is centred on it.
+
+**Verified.** `tools/p659rain.py` over `cfg/test/p659rain.cfg`, 18 of 18
+on csprogs `e04ccb61`, the patch-658 client, RTX 2080 SUPER, 1920x1111.
+The streaks are what differs between a shot of surf_tensor2's spawn and the
+same view with the systems off.
+- Shape, two shots: 57 and 71 streaks in view; the 20 longest 2.2 px wide,
+  72 and 79 long, 34 and 33 times as long as wide, 34 and 35 of 255 over
+  the sky; 1.6% and 1.5% of the rain's pixels in blobs under 8 (a streak
+  drawn as dots is those).
+- The subject's lines: `sprite trails: 11 emitters, those in range asking
+  850/sec of 2400, throttle 1.000`; a drop's mean life 0.40 s, 2 of 6,468
+  with nothing to land on; and the ENGINE's count, 150 of spawn_rain01's
+  particles where the 442 a second made at 0.40 s come to 177, none marked
+  `(+traceline)`; `reloads 0`.
+- After `vid_restart`: the shader made once, the map's blocks sent again
+  once, 232 particles falling.
+- Control, the build before (csprogs `c7596c74`) with the files as
+  installed: 7 and 6 streaks, 3.5 and 2.7 px wide, 7 and 10 times as long,
+  22 and 19 over the sky. That client with the new files, and the new
+  client with the old files, draw the same old rain (9 to 10 streaks).
+- Control, the cut before the review: `reloads 9` before any restart, and
+  10.1% and 12.5% of the rain's pixels in pieces.
+- Cost, two runs a build, alternating, surf_tensor2's spawn: 666 and 662
+  frames a second with this rain, 574 and 555 with the old, 832 with the
+  map's systems off.
+- `tools/p648motes.py`, 22 of 22 on the same bytes. `tools/p656fire.py`
+  failed one check on its first run (the wall over the medium fire 91.3
+  with smoke, 93.1 bare, under its bound of 2). Run twice more a build,
+  alternating with the build before: 85.6 and 86.5 there, 89.0 and 87.6
+  here, each 78 to 93 shot by shot, the shot after a screenshot always the
+  palest, the engine's count of smoke particles the same in every build.
+  The arm now judges the darkest of its three shots. Five runs neither
+  show nor rule out that this patch thins smoke; nothing in it touches
+  fire.
+- One independent review of the second cut. Its repair asked a handle no
+  emitter had taken (the first trail system in the index, which on
+  surf_tensor2 no entity names), so the map's config was sent again every
+  second, freeing every live particle of its 280 blocks, and the arm
+  passed; a streak under a pixel sampled the texture's empty edge and drew
+  as dots; nothing tied a drop's life to its trace; and the per-frame cap
+  held 800 a second to 720 at 30 fps. All fixed, the first three with a
+  check the old code fails.
+
+**Not verified.** Source itself: no side-by-side was taken, and `lextest.md`
+asks the owner. A streak's width in world units (a blob's depth is not
+known; the ratio is). Cost on the owner's Intel laptop.
+
+**Known gaps** (BACKLOG, "Source rain"). `func_precipitation`, Source's other
+rain and snow, is not drawn at all: 373 volumes on 72 maps. Wind is a
+constant drift. A drop lands on what CSQC's trace meets, func_illusionary
+included. No exposure, no fog. The baked files are not in git and not sent by
+a lobby: a player has this rain from a release archive baked after the patch.
+
+**Deployed** 11 Oct 21:13 UTC: csprogs `e04ccb61` on the Pi's twelve lobbies
+and both Windows installs, `.prev` `c7596c74`; lobby smoke on 27510 passed.
+`tools/pcf.py` then re-baked surf_tensor2 and surf_boreas in `C:\FTESurf`
+(`particles/*.cfg`, `data/mapparticles.txt`), byte-equal to the tested files;
+the second install has no particle files.
+
+## Patch 669 — A zone editor in the game, part one *(MOD ONLY, csprogs)*
+
+**Problem.** Nothing in the game could make or move a timing zone. Zones were
+Momentum's files or a BSP's own triggers, so the 870 or so KSF-only maps with
+neither, and the few `_css` builds offset from their Momentum twin, could not
+be timed without a file made by hand. The owner asked for Momentum's zone
+editor: a panel, then fly and place the corners with the mouse on a 16-unit
+grid or the world, floor first, then the height.
+
+**Change.** FTESurf `79425a5`, a new `src/client/cl_zoneedit.qc` and five
+hooks; qwprogs is byte-identical. `zone_edit` opens a panel of the map's
+zones by track (add, re-place, delete, a spawn point). Placing gives the
+mouse back: MOUSE1 a floor corner, MOUSE1 the opposite one, look up to pull
+the height, MOUSE1. It edits the client's own zone table and keeps it in the
+file's shape after every change, since a region's type is its position in
+the file. Save writes Momentum's zone JSON as `maps/zones/local/<map>.json`
+(under `data/`), which both VMs already read first: a hosted game times with
+it at the next map load, and a hosted game posts no times. A file is written
+or removed only when the client is the server or a device has just clicked
+in the panel, because a server can type a console command for a player.
+Publishing a file to the lobbies is part two and is not in this patch.
+
+**Verified.** `tools/test_p669zoneedit.py` over `cfg/test/p669zoneedit.cfg`,
+8 of 8 on csprogs `cbc72b32`, on the patch-658 client and on a copy of the
+625 exe: a real map's 14 zones saved and read back line for line with their
+destinations; the panel's buttons pressed by name; a start placed with three
+clicks of the aim, on the grid and not above the floor that was hit; an
+empty table refused; a two-stage course read back in course order; a stage
+deleted; the server's and the client's own lines stating the saved crc after
+a restart; the way back. Over `cfg/test/p669remote.cfg` against a dedicated
+server, five asks to write or remove a file by command are each refused and
+nothing is written. The build the reviewer read fails five of the eight.
+
+One review. Fixed from it: every checkpoint after the first stage fell into
+stage 1 once a track had two stages; a floor rounded up to the grid could
+leave a start nobody arms; a server could type a save; a height written to
+three decimals; the old file removed before the new one was read back; a
+re-place removing the wrong row after a reload; the wheel taken everywhere;
+no yield to other panels.
+
+**Known.** A rig has no mouse: the clicks themselves and the panel's hit
+test were not run. A new zone is a box; no moving one corner, no reordering,
+no map settings. The command is every player's and changes only their own
+view and their own hosted game. FTESurf BACKLOG, "The zone editor".
+
+**Deployed** 2026-10-11 from FTESurf `79425a5`: csprogs `cbc72b32` to the Pi
+at 22:45:13Z with nobody on, twelve lobbies restarted and read back, and to
+both Windows installs at 22:47:44Z with no game running. A client on the 625
+exe joined a lobby, was served this csprogs and drew the board. `.prev` is
+Patch 659's `e04ccb61`. The arm had passed on the 625 exe before the deploy.
+
+## Patch 668 — func_precipitation: Source's rain and snowfall volumes *(FTESurf csprogs and tools/pcf.py; no engine source)*
+
+From the owner, 12 Oct: "Do you think you could add func_precipitation?"
+
+**Problem.** `func_precipitation` was never read. It is Source's rain on 37
+of the library's maps (168 volumes) and its snowfall on 41 (201), and most of
+those maps have no other. Patch 659's rain is a different thing, a particle
+system in fixed boxes on a handful of maps.
+
+**Change.** FTESurf `1eca438`, `src/client/cl_emit.qc`, from `c_effects.cpp`.
+- **Type 0, rain.** Each volume emits, every frame, in the part of itself
+  within 750 units of the player in x and y, from 512 over his feet at most:
+  `renderamt / 255 * 0.001` drops a square unit a second (882 a second at
+  renderamt 100; renderamt is a byte, as in Source), falling at 425 with up
+  to 130 sideways, 0.35 units wide and a tenth of a second long, alpha 0.4
+  raised to 0.8. `Emit_StreakShader` is Patch 659's trail shader with that
+  power as a parameter.
+- **Sky or roof.** Where a drop passes the player's height Source asks
+  whether anything but `SURF_SKY` is over it. That flag does not come through
+  a VBSP trace (`trace_surfaceflags` reads 0 on a sky side); the plugin's
+  name for the side does, `sky/...`, in `trace_surfacename`, which the
+  engine fills for a progs that declares it. A side that names nothing is a
+  roof.
+- **Type 3, snowfall**, one manager a map: 500 flakes a second times
+  renderamt a hundred, 500 alive at most, in a cube of 256 (and half the
+  player's speed) round a point ahead of him while he stands in a volume,
+  within 1024 of that point while he does not. A flake falls at 37 to 52, is
+  2 units across shrinking to nothing, alpha 0.1 to 1, colour 150 175 200,
+  and fades out within 64 units of the eye.
+- **One trace each.** A drop or a flake is traced once and sent out on the
+  block whose life ends where it lands (Patch 659's ladder: 24 rain blocks,
+  32 snow blocks). The engine traces nothing per frame.
+- `vbsp_emit_precip 0` is off. A map with nothing but precipitation has no
+  emitter, and `Emit_Frame` returned before anything ran: it tests both.
+
+**Also, found by this patch's review in Patch 659's rain.**
+- A block with no `alphadelta` line fades to nothing over its life
+  (`p_script.c:2452`): a drop faded as it fell where Source holds its alpha.
+  `tools/pcf.py` writes `alphadelta 0` in a trail's drop blocks; the baked
+  `surf_tensor2.cfg` gains 260 such lines and nothing else.
+- `Emit_PsysRepair`'s cap was three repairs a map, which left a baked map's
+  blocks gone after a third `vid_restart`. It is three in a row unanswered.
+
+**Verified.** `tools/p668precip.py` over `cfg/test/p668precip.cfg`, 17 of 17
+on csprogs `ddf40c04`, the patch-658 client, i9-9900K and RTX 2080 SUPER,
+1920x1111; and 17 of 17 on the engine the 0.1.24 download ships (patch-625,
+`183faf44`). Each view is photographed bare, then with it on.
+- Rain, surf_zion (renderamt 255): `asking 2250/sec of 2400, throttle
+  1.000`; 23,598 drops made, all started under the sky, mean life 1.57 s;
+  the engine holds 2,691 where the 1,683 a second made at 1.57 s come to
+  2,642, none marked `(+traceline)`. 177 and 172 streaks in view, the 20
+  longest 2.9 and 3.0 px wide and 49 times as long.
+- surf_misc, a volume drawn up to a metal ceiling with only void over it:
+  2,697 refused under a roof, 0 started under the sky.
+- After `vid_restart` the blocks are made again (once; twice on patch-625)
+  and 3,495 drops are falling.
+- Snow, surf_voyager: 1,272 flakes made, 1,088 refused with 500 alive; the
+  engine holds 500. 71 flakes in view, adding 48 56 63 to the bare frame.
+  From 600 units outside the volume the count rises 1,378 to 1,795.
+- Control, the deployed csprogs `cbc72b32`: 0 streaks, 0 flakes, no line.
+- `tools/p659rain.py` with the re-baked `surf_tensor2.cfg`: 18 of 18, its
+  streaks 37 and 39 of 255 over the sky where the fading ones read 34 and
+  35.
+- Cost, two readings each: surf_zion's rain, the heaviest in the library,
+  1,036 and 1,033 frames a second against 1,541 and 1,554 with it off, a
+  third of a millisecond a frame; surf_voyager's snow 547 and 542 against
+  559 and 568.
+- One independent review of the first cut. That cut told sky from roof by a
+  second trace (anything over what was hit: a roof), on a note of mine that
+  "a trace names no surface", drawn from two hits. The review modelled the
+  brushes of 36 rain maps: a fifth of sky ceilings called roofs, a tenth of
+  roofs called sky, and the arm's own map had no sky over its volume at all
+  (355 starts "under the sky" there were under `metal/train_met`). It also
+  found the fading alpha, renderamt clamped where Source wraps it, and no
+  rain over anything taller than the player. All fixed and measured above;
+  the arm gained the surf_misc stage.
+
+**Not verified.** Source itself: no side-by-side was taken, and `lextest.md`
+asks the owner. A flake's size and fade over its life, and where a drop ends,
+as pictures. The sky test against the review's 36-map model (it was run on
+two maps). No second review after the fixes.
+
+**Known gaps** (BACKLOG, "Source precipitation"). A drop falls to what is
+under it, or 512 under the player; Source's ends at the height of his middle.
+Ash and the particle rains (types 2 and 5: 4 volumes on 3 maps) are counted
+and not drawn. No wind, no `func_precipitation_blocker`, no splashes. Rain is
+held to 2,400 drops a second over all volumes. Every other baked particle
+system without a fade operator still fades by the engine's default.
+
+**Deployed** 11 Oct 23:10 UTC: csprogs `ddf40c04` on the Pi's twelve lobbies
+and both Windows installs, `.prev` `cbc72b32`; lobby smoke on 27510 passed.
+`tools/pcf.py` then re-baked surf_tensor2 in `C:\FTESurf`
+(`particles/surf_tensor2.cfg`, `1b8d2e83`), byte-equal to the tested file; the
+second install has no particle files.
+
+## Patch 664 — zones Momentum publishes under a zoneHash that is not theirs; bhop_eazy follows Momentum *(MOD ONLY: surfd)*
+
+**Problem.** Patch 651 left 92 maps `--updates` could not follow: Momentum's
+`zoneHash` is not the hash of the zones it serves for them, so 75 zone files
+and 17 builds stayed as held. bhop_eazy was pinned by name because the engine
+gate compares `pm_dettest` on it between the Pi and Windows. The owner, asked
+about both: "do both".
+
+**Change** (ftesurf `b15ab86`, record `85820d3`). `surfd/mapwatch.py` only.
+- A reply that does not hash is taken only as **the zone file held, saved
+  again**: the same `tracks`, key for key. Measured on all 92: 64 are that
+  (new `globalRegions.allowBhop`, no cancel region changed).
+- The other 28 (8 with a change inside the tracks, 20 with no zone file
+  held) are `data/mapwatch/approved.json`: a key and the SHA1 of the very
+  bytes, written by a person and only read by the watcher.
+- In both cases the reply must name the list row's id, bspHash and zoneHash;
+  the zones are read the way the game reads them (`zone_regions`: a number is
+  a JSON number, since `json_get_float` runs `atof` over a string; a restart
+  position is three numbers), written as that parse and not as the reply's
+  text (`json_find_object_child` takes the first of two keys, Python the
+  last), and measured on the build they are for before anything is written.
+- A zone file about to be replaced is kept in `zones/online/.old/` first,
+  before its build is swapped. Zones taken this way are asked for again
+  weekly and rewritten only when more than the timestamp has changed.
+- `KEEP_BUILD` is empty.
+
+**Verified.** `test_mapwatch.py` 248 checks; 66 one-edit mutants, all caught.
+Three review rounds: strikes that never accumulated and a record not bound
+to its build; checks that let through bodies that break timing, and text
+numbers and repeated keys the game reads otherwise; the third found nothing
+that writes or replaces a file against the rules on any real zone file. On
+the Pi, 11 Oct 23:27Z: 17 builds replaced, 69 zone files replaced and 6
+written; of the 92, every build the published one and every zone file the
+bytes read at 22:10Z; no strike left; 76 zone files and 48 builds kept
+aside; `zones(sv)` 24 on surf_ace (12 before), 23 on surf_arcade, 64 on
+surf_fortress, the region counts read. bhop_eazy: 07320480e924 to
+4ddeea8cc0fa on the Pi at 23:41Z and in the owner's install at 23:42Z;
+`pm_dettest` on both builds, Pi and Windows, prints the same seven lines but
+`mapcrc` (676de275, now 7f53da5d).
+
+**Known.** Momentum's bhop_eazy is not the old one to an arm: 188 `func_door`
+platforms are `func_bhop`, and its three stages are three checkpoints of one
+segment; 91 of the 246 arms and tools naming it mention stages and none was
+rerun. The old pair is kept on both machines. A re-save may move a cancel
+region unreviewed; a re-save moves `zone_crc`, so a run parked on one of
+those maps no longer resumes. BACKLOG.md has the reviews' leftovers.
+
+## Patch 665 — a tier's maps and a player's times on one map, on `/api/board` *(MOD ONLY: surfd)*
+
+From the owner's reply after trying the profile (12 Oct): "some ability to
+select the tiers to see what maps you have and havent finished, with your
+times! same for others with search! ... I want to see results for the map,
+from that user, see their times." Two more forms of 662's
+`/api/board?player=<who>`; Patch 666 is the game's half.
+
+- **`&ct=<n|u>`**: one difficulty tier's maps for that player (`u` the
+  unrated), the ones finished first with the fastest main time, its game and
+  style, then the rest; paged. It is the site's `/board/api/player/<h>/maps`
+  a tier at a time, and both are one function now (`_tier_maps`).
+- **`&on=<map>`**: that player's rows on one map, the main track first, then
+  stages, then bonuses, with their `total`. A second build shows its map's
+  imported rows, as its board does.
+- No table, no schema, nothing a ranked run passes through.
+
+**Measured.** `surfd/test_web.py`: 232 checks, ten of them new. The sweep:
+428 mutants, 417 killed, 11 survive alone as expected, none unexpected; the
+eleven for this patch each die by a named check.
+
+**Review.** One reviewer, by reading: no defect in surfd.py. From it: a tier
+is a number as the catalogue writes one (no `0`, no `07`), `on` says its
+total, the sort is total, `ct` is read first where both are given.
+
+**`tools/accounts_mutants.py` HAD NOT MEASURED SINCE PATCH 662, and that was
+mine.** 662 set the tools path for every suite. `test_accounts.py`'s "a host
+with no ed25519.py" check makes its host by taking `tools/` off `sys.path`;
+with the path in the environment too the check failed on UNMUTATED code, so
+it "killed" every mutant, 173 of them by itself alone. It showed in the
+sweep's own lines: the eleven mutants that are meant to survive alone were
+all reported killed, by one check. Measured on the unmutated suite (no
+failure without the variable, that one with it). The review found a second
+way: the path was built from the tool's argument, so called as its docstring
+says it named nothing, `test_web.py` died on an import, and a crash counted
+as a kill (measured: exit 1, no check failed). Now the path is the tool's
+own directory and `test_web.py`'s alone; every suite runs once on an
+unmutated copy first and the sweep stops if one fails there; and
+`ACCOUNTS_MUTANTS_ONLY=<prefix>` sweeps part. A sweep that reports every
+mutant dead is not evidence until something shows the suite passes alone.
+
+**Deployed 12 Oct 2026, 00:15 to 00:18 UTC** (FTESurf `4519bdb`):
+`surfd.py` and `test_web.py` by `surfd-deploy.ps1`, the whole suite green on
+the Pi first, backup `data/surfd.db.bak-4519bdb-20261012-111517`, both files
+hash-matched, `surfd ready` 00:18:04Z. Asked once on the host: the maps list
+(1,370 rows, 6.0 s cold), a search (1.0 s cold), a breakdown, `ct=1` (65
+maps), `ct=u` (845, then 953 once the map watcher's new builds were
+indexed), `on=surf_beginner` (four legs), the site's own maps list; no error
+line in the log. Rollback: the two `*.pre4519bdb-20261012-111517` files and
+SIGHUP.
+
+## Patch 666 — tiers that open, and a player's times on the map being played *(MOD ONLY: csprogs)*
+
+The game's half of 665, from the same reply ("... no search for +showscores
+leaderboard? I want to see results for the map, from that user, see their
+times").
+
+- **`hud_player`, Stats.** A difficulty tier's bar is a control: its maps
+  take the results' place, the finished ones first with the fastest main
+  time, then the ones not yet; "Unrated" is a bar too. The tier stays on show
+  for the next player searched, and is asked for when their breakdown lands
+  (surfd has their rows ranked by then). The card opens on the results.
+- **The leaderboard.** He had not found the search: it was drawn on a pinned
+  board only. It is drawn on a HELD board as well now, as the look alone,
+  saying what gives it a cursor. A player picked from it is no longer handed
+  to the card: their times on THIS MAP take the table's place (every leg, the
+  time, the place, how long ago). A time opens its leg's board, "Whole
+  profile" the card, "Back to board" the table.
+- `cl_profile.qc`, `cl_avatar.qc`, `cl_scores.qc`. No engine source, server
+  QC, surfd, recorder, evidence, ranking, default or Build change.
+
+**Measured.** `tools/p663profile.py`, 38 checks, nine of them this patch's,
+on the installed patch-658 client and on release 0.1.24's (patch-625): the
+bar clicked with the desktop's pointer, the unrated a hundred at a time, the
+tier kept for the next player, the pick by Enter, a time's row clicked (the
+board goes to that leg), "Whole profile" clicked. Screenshots of each state
+were looked at. On the test map's new build (Patch 664 replaced bhop_eazy
+that day: one segment and a bonus) the arm reads the map's own legs.
+
+**Review.** One reviewer, by reading: one defect, five quirks. The defect: a
+pick did not end its frame's hand-offs, so the table's own row pick could run
+under the search's list (the native table takes a press anywhere in its
+rect). Fixed, with three quirks: the view stays when the scoreboard key is
+let go, goes when the leg or the source moves by any road (the arrows, a
+console word, the finish's follow), and a tier named on the console with no
+card up asks nothing. Those three have checks, and each fails on the build
+before the fixes (35 of 38 there). The rest are in BACKLOG.
+
+**Deployed 12 Oct 2026, 00:20 UTC** (FTESurf `0464e0f`): csprogs
+`ce9e7607db707221` to the Pi's twelve lobbies (`build.ps1 -Pi`, nobody on,
+all restarted, hashes read back on the host; qwprogs `35fda5eb` swapped for
+itself) and to both Windows installs at 00:20:12Z under the rig lock
+(`.prev` is Patch 668's `ddf40c04`). menu.dat, default.cfg and the exes
+untouched. Then, on the engine 0.1.24 shipped: the lobby smoke on 27510 was
+served that file and drew the board, and a test player on that lobby opened
+a real player's tier 2 (105 of 117 finished), the unrated (71 of 952) and
+their seven times on surf_kitsune in the board. NOT SEEN: a person doing it
+by hand.
+
+## Patch 670 — predict continuous boosters across shared cooldown gates
+
+**Problem.** surf_deoa repeatedly corrected by exactly 6 units. Its nine
+400-unit/s push brushes have duplicate OnEndTouch outputs: immediate !self
+Disable and delayed !self Enable. The client correctly refused to speculate
+that graph, but thereby predicted no push: one 15 ms server tick is 6 units.
+Ignoring the Enable is not safe; the Disable and shared cooldown are real.
+
+**Change.** Continuous server push brushes publish enabled state through a
+five-byte typed extension of the existing CSQC entity stream (type marker,
+type, brush model number, state), with full state for new clients, PVS-independent
+updates and SendFlags loss/retry. SV_IOEnable marks state dirty. The client
+uses that authoritative gate for continuous pushes with Enable/Disable writers,
+including immediate writers affected by other players. No received state means
+no prediction; removal revokes it. Cached wire entities reseed a rebuilt mirror.
+Typed gate entities never allocate a player-body ring. Graph truncation, once
+retirement, speed/name rewrites and movement outputs stay conservative.
+The teleport jump bypass and unconditional speed/push noclip bypass recognise
+both engine spectator movement modes. QC only; engine pin/tag and Build unchanged.
+
+**Verified.** Isolated clean-base worktrees, actual dedicated socket 27589,
+installed client engine patch 658, three progs built with zero warnings.
+`cfg/test/p670prediction.cfg` on surf_deoa: OFF acted with 49 repeated ~6-unit
+corrections; ON had one 6-unit entry seam and no sustained train, with matching
+server booster displacement. The same ON result at 100 ms added packet delay.
+Noclip crossed the brush without a 6-unit train. A second client saw the first
+player's *57 gate on -> off -> on, all nine gates ready, and an independent
+player-body stream (one body, 119 samples, no late/underflow in that arm).
+Reconnect restored all nine gates; new client/old server had all nine NOT ready
+and the expected server-only correction train, not speculative enablement.
+On surf_hourglass noclip+jump stayed in a real fail teleport; releasing jump
+fired the predicted teleport to (104,0,969) and agreed with server viewpos without
+a correction in that release arm. !r separately resolved to (104,0,800) and
+still corrected. Reader regression suite passed; evidence semantics untouched.
+
+**Limits.** This does not body-predict !r, zone moves, save/load, hold release or
+rewind, and does not suppress cl_prederror. ROADMAP specifies the unbuilt unified
+acknowledged warp; BACKLOG records the remaining first-command seam and the
+unmeasured loss/reordering/shared-transition cases. Legacy spectator mode was
+checked against the engine enum and compiled, not exercised as a live protocol.
+
+**Pi deployment completed by 2026-10-12 02:08:08Z.** Clean QC commit 25746cb;
+normal worktree outputs were byte-identical to the tested isolated pair:
+qwprogs `915dfa31bf20917c`, csprogs `e2f8a9c144201116`. Twelve live lobby rows
+all reported zero players; build.ps1 -Pi uploaded/verified, kept .prev,
+swapped the pair and restarted all twelve. The host hashes matched. A fresh
+isolated client on 27510 loaded CSQC on surf_kitsune, received push *64
+ready/on and ran the prediction hook; the HUD screenshot was inspected.
+Missing imported materials in that overlay are not a renderer acceptance.
+
+**Windows pending.** The guarded dual-install copy refused before opening
+its lock or touching either install because other sessions had live engines.
+Nobody's processes were stopped. The exact pair and guarded copy script are
+retained in C:\FTESurf-worktrees\prediction-20261012-0125; no Windows deployment
+or full reset/rewind prediction is claimed.
+
+## Patch 671 — editable zone outlines, window controls and local map rules
+
+**Problem.** The first zone editor only creates boxes, holds the cursor while
+its panel is open, and cannot be moved. Grid changes can leave a pulled top Z
+between grid planes. There is no list double-click teleport or map speed-cap
+editor. Ordinary QC cvar writes are not a solution: the engine's movement lock
+restores the canonical map/mode values before movement.
+
+**Change.** The jump-bound physical key toggles window/view control, including
+an in-progress outline or number field. The title drags and clamps to the
+screen; taken presses own their releases across toggles/close/bind/map changes.
+Top-Z snaps absolutely, and Snap XYZ validates/snap-rounds a selected ring and
+both Z planes. Polygon mode clicks a simple XY outline (up to 64 points),
+closes with Enter/first corner and pulls a Z cap. Crossed/collapsed outlines
+are refused before replacing a zone; a concave default spawn is inside the
+ring rather than its bounding box. Corner snap wins over edge projection;
+nearby existing zone edges are available, not BSP mesh edges. Double-click
+uses the existing server warp/rewind handling, with a matching geometry CRC
+required before accepting the client index.
+
+The menu stages six bounded numeric map settings: max velocity, gravity,
+air/ground acceleration, max ground speed and friction. A candidate is read
+back and replaces the local file with a `.prev` predecessor/rollback. Engine
+`SV_LoadEditorRuleset` validates the whole <=4096-byte allowlist and adds/updates
+canonical entries in the existing per-map load/lock window. Nothing is executed
+as cfg code. Dedicated servers and public lobbies never read these editor
+files. Existing map-clear/load machinery supplies the next map's own defaults.
+No receipt, input journal, replay verifier, ranked policy or Build change.
+
+**Verified.** Clean worktrees rebased onto QC feab052 and engine bd6cf6d91,
+not the canonical engine's dirty build57 checkout. Windows client/dedicated/
+plugins built; QC zero warnings, no new sv_phys.c compiler/LSP diagnostic.
+`cfg/test/p671zoneedit.cfg` and `tools/test_p671zoneedit.py` exercise press
+ownership/repeat/release, title drag/clamp, corner/edge/Z controls, actual
+server teleport and mismatch refusal, concave save/readback/spawn, invalid
+outline refusal, numeric field backspace/jump/Enter and repeated settings
+replacement. Actual engine values distinguish 10000/800/150 from the saved
+6000/700/125, then restore the next map's rules; a public-lobby guard retains
+its normal map values. Nine real loader arms include valid and partial,
+unknown-name, duplicate, extra-token, NaN, out-of-range, oversized and embedded
+NUL files. A real dedicated socket ignores a valid 9000 override; console and
+synthetic cursor/button attempts cannot write it. P669 hosted/remote regression
+controls still act. Fixture labels retain their initial P670 protocol; the
+patch allocation moved to 671 after the independent P670 was published.
+
+**Deployed.** Published QC `2c540555` / native tag `patch-671` (`dbcaa17a7`):
+all 12 Pi lobbies received qwprogs `7598b0da` / csprogs `6080b34d` and restarted
+at 2026-10-12 03:39:01..11 UTC (zero players, `.prev` kept); Pi native unchanged.
+Both Windows installs at 03:40:54 UTC: client `8fe38e11`, dedicated `d29b8242`,
+all five plugins and all three progs hash-verified. Installed P671 controls
+29/29 (nine retained loader arms on identical native bytes), P669 hosted 8/8;
+a fresh lobby-1 client downloaded exact csprogs and drew the board. Owner/default
+configs unchanged; no peer process stopped. No new release.
+
+**Limits.** OS mouse/key delivery remains human acceptance in lextest.md. Steam
+admin access and NanoPi zone/settings publication are NOT implemented: the
+owner must confirm Proto's exact Steam identity and the review/existing-times
+policy. No display-name grants, private credentials, upload or board mutation.
+Local map settings need the P671+ engine and a reload; older binaries ignore
+them. No Linux native engine was rebuilt/deployed for P671; only fleet progs
+changed. OS clipboard approval/delivery remains human acceptance.
+
+## Patch 673 — organized zone editing, default spawns and Surf/Bhop presets
+
+**Problem.** The editor's "surf" snap button meant surface tracing, not Surf
+movement. Map properties exposed seldom-edited ground rules but lacked a mode
+preset, manual spawns could not be reset, and construction/file actions and the
+placement hint did not read as the shared interface.
+
+**Change.** Surface snapping is named Surface. Selection/spawn actions,
+construction/snap tools and file/navigation actions have distinct groups with
+a recessed scroll list. Placement uses the shared rounded SUI chrome without
+a second input bracket. Reset spawn removes custom coordinates/name; when the
+bounds centre is outside a concave ring it writes a safe zone-derived floor
+point instead of the server's unsafe centre fallback.
+
+Properties expose speed cap, gravity and optional air acceleration. Surf/Bhop
+presets stage AA150/1000 and hosted mode 1/2, keeping the chosen cap/gravity.
+The native reader validates the whole file before selecting a mode or applying
+numerics. New files contain gamemode plus the three visible keys; complete old
+six-key files and mode-plus-six files stay readable. Unknown, duplicate,
+partial, nonfinite, out-of-range, extra-token and command-looking records apply
+nothing. The existing mode pipeline supplies 0.015/0.01 physics/server clocks,
+client command cadence, jump/mode defaults and restoration; numeric overrides
+still follow trusted per-map rules. Dedicated and public-lobby guards remain.
+No recorder, evidence, ranking, on-disk zone format or native ABI layout is
+changed by this patch. The harness can select an exact inspected dedicated executable.
+
+**Verified.** Pre-claim isolated controls on P671 native base: 27/27 P673
+controls (12 acting editor/mode/spawn checks plus 15 fresh loader arms), P671
+29/29 with exact subject dedicated executable and P669 8/8. Surf replaces forced
+Bhop and restores all three clocks; next unedited map restores its own defaults.
+Spawn setter acts before reset, ordinary save/reload preserves reset, concave
+spawn lies inside the L and empty-selection reset invents nothing. Numeric file
+replacement preserves its Bhop predecessor. Normal/smaller editor/settings/hint
+screenshots inspected. QC compiles zero warnings; native translation-unit LSP
+retains only two pre-existing warnings. Final clean build/subject provenance is
+retained in the owned task checkpoint; claim moved from 672 when the independent
+published pre-input seam claimed that number during testing.
+
+**Final build/deployment.** Full isolated client/dedicated/five-plugin build at
+clean tagged native `57bfa6bd3`, merged on published P672 headers: native compiler
+warning set unchanged after normalizing relocated diagnostic lines; QC zero
+warnings. Fresh tagged-subject controls new27/27 (15 fresh loader arms), P671
+29/29 with exact dedicated binary, P6698/8; P672 seam's ten production-slice unit
+groups pass. Committed QC `3d17ade4` rebuild is byte-identical to tested artifacts.
+All 12 idle Pi lobbies received CSQC `825c2b46` / qwprogs `7598b0da` (unchanged)
+at 2026-10-12 05:20:12..21 UTC, prior pair in `.prev`, Pi native unchanged.
+Both Windows installs' 19 destinations verified 05:23:09 UTC: client `e9bbd6f3`,
+dedicated `c6e4cede`, five plugins and three progs. Installed hosted/dedicated
+controls pass; fresh lobby client downloaded exact CSQC and drew the board.
+Owner/default configs' hashes/mtimes unchanged. Owner game closed naturally;
+none killed. No existing time/role mutation, no release or Build increment.
+
+**Limits.** Physical mouse/key/clipboard delivery remains human acceptance.
+Local presets need this native engine and a map reload; no Linux native mode
+loader or ranked-rule deployment is claimed. Steam identity/review policy is
+now confirmed, with explicit times choice (default keep); trusted reviewed
+upload/admin publication is not implemented by this UI patch. No times were
+removed or relabelled, and no role was granted by a client/display-name claim.
+
+## Patch 672 — a replayed native boundary before player input
+
+**Problem.** Command placements and hold/release transitions cannot seed the
+player mover through the existing post-move trigger callback. Camera-only
+anticipation is not body prediction. Restoring a carrier after a placement
+would also cash out the old push into the newly placed velocity.
+
+**Change.** Optional `CSQC_PredictPlayerPreMove(seat, sequence, seconds,
+offsetseconds)` runs in the local replay chain after baseline Source/command
+state initialization, before carrier consumption and `PM_PlayerMove`. Its
+independent `predinput_*` staging globals default to no edit every invocation.
+The native `PM_ApplyPreInput` validates selected BODY/MODE/DUCK/HOLD/CLEARCARRIER
+fields atomically. BODY edits origin/velocity/boolean ground; MODE writes back
+the resulting movement mode; DUCK applies the server's completed-posture policy.
+Unselected carried fields stay intact at this boundary. HOLD sets only native
+command duration to zero and skips the CSQC post-trigger callback; it is NOT a
+universal body freeze or save-style MOVETYPE_NONE timer policy.
+
+The existing trigger callback stays after movement. Split commands carry a
+**float** offset (usercmd duration is float), reset on each replay; consumers
+can select their first substep without a render-lifetime latch. A carrier clear
+precedes cash-out, retains earlier history, and prevents later substeps from
+restoring sequence-1's pre-operation carrier. Fresh post-trigger carriers still
+consume within the command. Held pieces save final carrier state even though
+they skip touches. Disabled/absent, nonlocal, listen and restricted hooks remain
+inert. No normal QC callback, wire format, recorder, timer, ranking or Build
+change; no Source movement identity bump.
+
+**Verified.** Paired isolated source at engine `d95c5a0ad` / QC `0789b73` plus
+this candidate: full Windows client/dedicated/five-plugin build, all three QC
+programs and separate fixture compile with zero QC warnings; no new compiler
+or C translation-unit LSP diagnostic (existing warnings retained). Ten acting
+unit groups compile extracted production boundary/bridge/carrier/CL recursion
+against real headers and VM/mover doubles: 0/.5/50.5/51/100.75/101/255 ms replay,
+seeded defaults, no-mask writes, mode/body ordering, carrier clear/fresh re-arm,
+held-only/mixed carrier commits, missing globals and NaN/Inf/invalid selected
+payloads with byte-identical rejection. These doubles are NOT collision physics.
+
+Real dedicated surf_dune with 100 ms server minimum ping and test-only CSQC:
+2,070 no-op probes, 117 moved-body split probes and 44 held split probes; entry
+body/mode readback proves native application, not requested-output printing.
+Disabled callback has an independent native prediction trace heartbeat and
+re-enabled controls. Missing-arm counterfactual graders reject. The same
+fixture on the installed older engine is ignored while the legacy trigger
+hook acts. Two subagent reviews; held-state commit and fractional-offset defects
+found and fixed before acceptance. Restricted-access discovery is source-reviewed,
+not a separately executed hostile-VM test. Test contract: FTESurf
+`tools/p672predinput.md`, `tools/test_predinput.py`, `tools/fixtures/predinput.qc`.
+
+**Limits.** This is the native seam, NOT instant reset/load/hold-release/rewind.
+Server-prepared complete descriptors, scoped requests, admission/application,
+ACK versus operation-bearing body-baseline coverage and frontend activation
+remain unbuilt. QC sequence arguments retain existing float precision limits.
+HOLD still allows mover housekeeping and carrier effects unless independently
+restricted/cleared. No full historical Source-state restore or network-authority
+claim. The fixture is excluded from production compilation/deployment.
+
+## Patch 667 — paste, behind the engine's own question *(ENGINE + MOD: menu.dat, csprogs)*
+
+The owner's list of 12 Oct asked for text boxes with "full text support,
+highlighting, copy, paste". Patch 655 shipped all but paste and said why: no
+gate QC could keep survived its reviews. He then said of the engine change it
+needed: "do it!". This is it. What stands is not what 655 proposed (keep
+servers off the menu's console commands, then paste in the menu): the first
+review round showed a console line's level is not a wall, so the clipboard
+got a gate of its own.
+
+**The rule.** QC is given clipboard text by the engine and by nothing else.
+A field asks under a V or an Insert going down; the engine alone judges the
+chord (its own key state, a device's press) and reads the clipboard itself.
+- **With a server connected, or a demo playing: the engine asks the player.**
+  One prompt for both VMs (`pr_clcmd.c`), on the prompt stack, where every
+  key-down but the function keys is its own, and drawn last of all. "Paste N
+  characters from your clipboard? Y: paste, any other key: no." It says how
+  many, never which: the screen may be on a stream. Yes is a device's press
+  of Y (by the letter the key types where that is a Latin one, by position
+  otherwise) after the prompt has been drawn for 0.35 s, counted in drawn
+  frames with a frame's share capped; every other press is a no. Not Enter:
+  it is the chat key, and Ctrl and V are bound to crouch and noclip, so a
+  chord can come from play. A yes arrives as `CSIE_PASTE` events, one line,
+  at most 256 characters, no control codes, for the VM that asked.
+- **With nobody about (no server, no demo) the menu pastes at once.** That is
+  the main menu: the name box, the map search.
+- **An older engine has neither builtin**, and there a field pastes nothing:
+  the new csprogs on release 0.1.24's client asks nothing and types the V.
+
+**Engine** (`17b11bc13`, tag `patch-667`):
+- `pr_clcmd.c`: `CL_PasteLine`, the prompt (`CL_PasteAsk`, `CL_PasteDrop`).
+- `pr_csqc.c`: `clipboard_get` for game code (upstream leaves it out as too
+  risky). It hands nothing over; it asks. One a press, beside Patch 625's
+  budgets.
+- `pr_menu.c`: `clipboard_paste` for the menu VM. `MP_ConsoleCommand` turns
+  away a console line from an insecure level, for the commands the VM
+  registered and for the unknown words `cmd.c` offers it (HARDENING: a
+  level is kept by a bind and, since this patch, by an alias, and nobody has
+  shown those are the only roads). `con_input` has no keys for the player's
+  own console.
+- `keys.c`: the key that answered the prompt is nobody's until it comes up
+  (its OS repeats reached game code as presses); a key QC hands a console
+  does not paste there, nor in the editor (`textedit.c`).
+- `cmd.c`: an insecure level cannot raise an alias's level; an alias it makes
+  runs at its own level and is not written to a config; an insecure caller
+  never runs an alias's body as the player.
+- `common.c`: `utf8_decode`'s six-byte form tests its sixth byte (it stepped
+  over it untested).
+
+**Mod**: `sui_sys.qc` (both VMs: `sui_paste_ask`, `sui_paste_char`, the
+field takes a paste over its selection), `m_main.qc` (`Menu_InputEvent`),
+`cl_main.qc` (`CSQC_InputEvent`: a pasted character goes to whichever box has
+the keyboard, the link box first, then a chat draft, then a panel's field,
+and runs no bind), `cl_account.qc` (the four digits and the code),
+`cl_chat.qc`, `cl_profile.qc`, `cl_avatar.qc`.
+
+**Measured**, on the stamped client's own bytes (sha256 `72feb6d5`):
+`tools/p667paste.py` 16 of 16, in a game: a chord pastes nothing by itself;
+Y gives the line and no y; that Y's repeats while held are nobody's; Enter,
+Esc and any other key are a no (and Enter's repeat does not send the chat
+draft); a Y in the prompt's first moment is a no; Shift+Insert asks the same;
+the menu over a game asks too and sees the chord's keys come up; a menu word
+stuffed by the server is not run, nor one behind an alias the server tries
+to raise. `tools/p655text.py` 17 of 17, the menu with no server: a
+keyboard's Ctrl+V and Shift+Insert paste at once, a console-fed one never.
+Regressions on the same bytes: `p663profile` 38 of 38, `p653box` 14 of 14,
+`p647boot` 8 of 8, and the run-line check (`test_p645lines.py`) 28 of 28.
+CONTROLS: on release 0.1.24's client the same QC asks nothing, the V is a
+letter, and the stuffed menu word RUNS (the hole as it was); with the
+release of a key not handed on to the menu, the menu's modifier checks fail
+(2, then 3, where the fix reads 0). The prompt was looked at in the
+screenshots, over the game and over the menu.
+NOT MEASURED: the X11 clipboard's late answer (written for, read by both
+reviewers, never run; the Linux client is not built); a layout other than
+this keyboard's; a person pasting by hand.
+ON THE WAY: two arms' pointer clicks failed twice on these bytes while the
+owner was using the mouse (the desktop's idle time said so afterwards) and
+passed with the desktop idle; the rule in CLAUDE.md about harnesses sharing
+the machine held again.
+
+**Review.** Two reviewers, given the code: what a hostile server gains, and
+control flow and lifetimes. Three rounds each, by reading; the design moved
+after the first (the prompt became the gate for both VMs), and the third
+found no defect. Fixed on the way: the arm's clock (three cuts: from the
+prompt's creation, from the key's queue stamp, then drawn frames), the
+answering key's repeats, the yes key and how it is judged, the menu's
+modifiers left held under the prompt, what draws after it, and the alias and
+console items above, which predate this patch. Left open and written down
+(BACKLOG): `con_input` on a console QC made can still click that console's
+links; `r_speeds` text draws after the prompt; the prompt does not say which
+VM asked.
+
+**Deployed 12 Oct 2026, 02:28 to 02:29 UTC** (FTESurf `3fdd401`; engine
+`17b11bc13`, merged to ftequakers main at `91465d783` because main had moved
+after the binary was stamped). csprogs `a7810a8765916a47` to the Pi's twelve
+lobbies (`build.ps1 -Pi`, nobody on, all restarted, read back; it is Patch
+670's client code with 667 on it, and qwprogs `915dfa31` was swapped for the
+same bytes Patch 670 had put there twenty minutes before). Both Windows
+installs at 02:29:26Z under the rig lock: csprogs `a7810a87` (`.prev`
+`ce9e7607`), menu.dat `a87b88ca` (`.prev` `10cba3c1`), and the client
+`72feb6d55e31eb78`, stamp `git-7249-patch-667-0-g17b11bc13`, as
+`C:\FTESurf\ftesurf64.exe` and `C:\FTEQuake\fteqw64.exe` (`.prev` is the
+patch-658 client `4faa7ff4`). The server exe, the plugins and default.cfg
+untouched; the installs' own qwprogs is NOT Patch 670's (that half is its
+author's to place). Then the lobby smoke on 27510 was served `a7810a87` and
+drew the board on release 0.1.24's client and on the new one, and the
+run-line check read 28 of 28 on the installed files.
+PLAYERS ON RELEASE 0.1.24 get this csprogs from the lobbies and no paste:
+their engine has neither builtin. Paste reaches them with the next release.
+
+## Patch 674 — scoreboard/profile navigation and independent map tiers
+
+**Problem.** Online owner names were not profile links; profile map names were
+not board links. A name search could not narrow the complete board before
+pagination. The create-server list collapsed MOM/KSF difficulty into ambiguous
+symbols and hid installed imported maps without timer metadata.
+
+**Change.** Online names queue a stable-account profile handoff after SUI ends;
+WATCH and LINE remain distinct. Profile map names publish validated browse data
+to the menu, preserving source/track/leg/style without launching a map or
+changing the connected server. `api/board?name=` filters the complete selected
+board before LIMIT/OFFSET, keeps its original ranks/counts and suppresses crawl
+top-ups on filtered pages. The client requires the active query echo for both
+initial and appended replies. Create-server rows show blue `MOM Tn` above white
+`KSF Tn`, filter either independent source, reject invalid numeric tiers and
+retain installed MOM/CS:S surf/bhop entries without timing metadata. Suggestions
+are tooltip prose; local alias inheritance is not an independent MOM tier.
+`zoneinstall --only-missing --gamedir` preserves existing files at the write
+boundary. The census found all 1,748 downloaded Momentum maps already listed;
+eleven missing variant zone files passed geometry FIT and were added.
+
+**Verified.** Isolated control and subject QC builds: zero warnings. Backend
+web/board/variants/momboards suites pass; source-bound tier predicates and their
+mutation controls pass; zoneinstall preservation tests pass. A dedicated-socket
+fallback runtime exercised whole-board filtering beyond row 100, counts and
+original ranks, clear-query restoration, rejected missing/stale echoes,
+held-TAB refusal and independent LINE/WATCH actions. The pre-change control
+rejects the corresponding new navigation/filter falsifiers. Owner/profile-map
+and stationary-wheel assertions needed harness corrections (spawn/console
+acknowledgements, eight-character account marks, replay-stop); their complete
+rerun is blocked by an active owner's/peer's client. Native actions, final tier
+pixels and clipboard/paste remain explicitly unmeasured in `lextest.md`.
+The existing 609 staged local zone files, including bhop_eazy, hash-identically;
+only eleven absent FIT donations were added. No engine code/pin/tag, server QC,
+recorder/evidence, ranking policy, schema, default or Build-number change.
+Deployment provenance is recorded separately after destination verification.
+
+**DEPLOYED, 12 Oct 2026.** FTESurf tree `61d291d` (product `79c3599`, plus
+published P673 docs): backend at 05:51 UTC, only `surfd.py` and `test_web.py`.
+All 17 staged suites pass on the host; momgrab's unavailable conversion fixture
+is explicitly skipped. Installed bytes hash-match; surfd.py `b9101630701f1ce2`,
+worker reloaded, `/health` healthy. Mode-600 DB rollback
+`data/surfd.db.bak-61d291d-20261012-164812`, source predecessors
+`*.pre61d291d-20261012-164812`; no pruning. Live known-name HTTP filter returns
+matches with original rank/account and query echo; nonmatch returns zero
+rows/counts. Last 100 app-log lines have zero ERROR/WARNING/Traceback.
+Windows 05:55:21–05:55:25 UTC: BOTH installs read back csprogs
+`444f921987a6b317`, menu `d111ec13ee2827f4`, with `.prev`; qwprogs unchanged
+`7598b0da1cd90ebd`. File-only swap while the owner's game remained running:
+no process/engine/plugin/config/default change or interruption, and no claim
+that that client has loaded the new bytes. Restart to load the local UI.
+Eleven missing-only zone donations rechecked FIT against each install's BSP;
+all 609 prior primary local zones unchanged, including bhop_eazy. Secondary had
+no prior local JSONs. **FLEET DELIVERED 06:03 UTC:** the initial one-player
+blocker cleared. All 12 live rows were zero-player; clean `61d291d` proof ran
+`build.ps1 -Jobs 8 -Pi` (zero warnings, no force). .new hashes checked before
+swap, .prev retained; live qwprogs `7598b0da1cd90ebd`, csprogs
+`444f921987a6b317` (predecessor `825c2b46d41aa8a2`). All 12 lobbies restarted,
+independent remote hash readback matches, every unit active, fresh zero-player
+heartbeats age0–5s, all 12 UDP status sockets answer. No new engine/config/default
+or zone files shipped to lobbies. Remaining UI/native/paste/pixel acceptance
+is still unmeasured. Owned clean
+proof/evidence retained at `C:/FTESurf-worktrees/ui-maps-20261012T0335Z/`.
+
+## Patch 675 — exact command identity and scoped authoritative provenance
+
+**Problem.** P672 supplies the replayed pre-input callback, but its float
+sequence argument (and SSQC's existing `input_sequence`) aliases large command
+identities. The server also executes synthetic lastcmd repeats and legacy
+server ticks, and recursively subdivides commands without exposing their
+logical duration/offset. Treating these as decoded client requests would make
+operation correlation unsound.
+
+**Change.** Native SSQC PlayerPreThink optionally receives a complete, typed
+six-float `input_cmd_*` context: exact low/high 16-bit sequence words, top-level
+executed duration, actual piece duration/offset and provenance kind. Decoded
+QW/redundancy recovery is kind 1; FTE timestamp-derived execution is kind 2;
+synthetic/legacy callers, native budget mutation and incomplete/invalid exports
+are unavailable (kind 0, all available fields zero). Context is reseeded before
+PreThink and cleared immediately afterward. P672 also reseeds optional typed
+`predinput_sequence_lo/hi` words on every callback. Legacy callback arguments
+and server/client subdivision policies are unchanged. No consumer, admission,
+operation ACK, descriptor installation or baseline retirement is activated.
+
+**Verified.** Actual-source/native-header units exercise uint32 precision/wrap,
+recursive integer/fractional server timing, synthetic repeats, budget mutation,
+full-QC bypass, null/incomplete exports, invalid timing and typed lookup; P672
+replay/carrier/rejection tests pass with exact-word reseeding. Real dedicated
+QW and FTE fixture runs observe kind 1/2 with split offsets and frame-clear
+controls; a retained P672 server observes 600 unavailable callbacks while the
+original hooks act. Negative graders reject missing/stale controls. Full
+client/dedicated/five-plugin and three-progs build succeeds with no new compiler
+warning kinds versus P672 (QC zero warnings). Recorder suite 306/306; 270-run
+read-only corpus stays at 165 pre-existing faults. Independent source review
+finds no blocker. See FTESurf `tools/p675cmdcontext.md` for bounded contracts.
+
+**Limits.** This is native identity/provenance, not safe instant hold/reset/load/
+rewind. A map/connection epoch, complete prepared descriptors, bounded request
+admission and operation-bearing authoritative baseline coverage remain needed.
+Kind 2 is not original client timing; server integer splitting still differs
+from P672 client splitting. No forced loss/reordering runtime matrix, Linux
+build, fleet deployment, release, Build bump or evidence/ranking change claimed.
+
+## Patch 676 — zone-editor hover help using the HUD-editor tooltips
+
+**Problem.** The completed zone editor's buttons and map properties did not
+explain their actions. Surface tracing could be confused with Surf mode;
+Apply, local saves and map-reload requirements were not obvious.
+
+**Change.** Client-only help text for zone tools, track tabs, zone rows,
+Box/Polygon, edge/grid/XYZ snapping, spawn actions, local-file actions,
+cursor controls and every visible map property. Numeric labels and the active
+text field share their property's explanation. Reuses hud_edit's shared SUI
+mouse-only delay, wrapping, themed chrome and screen clamping. A closed or
+mouse-released zone editor clears only its own tips, not another panel's.
+No native source/pin/tag, server QC, physics, saved-time, evidence, default
+config or Build-number change. Published P674 client/menu and P675 pin/tooling
+work is preserved.
+
+**Verified.** Isolated QC build at published P675 base ed1e2df plus this feature:
+all three programs zero warnings; bytes match the tested P674-based subject
+(P675 changed no normal QC source). Acting pre-change control reaches the same
+existing controls but never shows a zone tooltip. Subject 58/58 covers all
+button classes, zone row, three property labels, active input, initial delay,
+held mouse press, pointer departure, focus loss, Look/fly and close dismissal;
+unchanged zone CRC/count/dirty state and no zone/settings writes. Existing
+HUD-editor help still acts with the zone editor inactive. Wrapped line widths
+and tooltip bounds pass at 1600x900 and 800x600; screenshots inspected.
+P671 hosted regression 18/18 with its required malformed-settings overlay;
+P673 hosted spawn/mode/settings regression 12/12. Test fixtures retain their
+pre-claim P675 markers (that number was concurrently published for native work).
+
+**Limits.** Synthetic events are not physical mouse delivery or owner approval
+of the wording/readability. The two earlier patches' full loader/dedicated
+matrix is not repeated for this help-only change. Deployment is recorded
+separately after destination hashes/runtime checks; no deployment claimed here.
+
+**Deployed.** Product `90790c5`, clean committed QC build byte-identical to the
+subject above. Both Windows csprogs replaced at 2026-10-12 06:19:01 UTC, P674
+predecessors kept as `.prev`; identical qwprogs/menu skipped. Native binaries,
+plugins and protected owner/default/config hashes/mtimes unchanged; no owner
+process stopped. Twelve fresh zero-player fleet rows permitted `build.ps1 -Pi`:
+remote pair hashes checked, swapped with `.prev`, all twelve lobbies restarted
+by 06:20:42 UTC. CSQC `7d3954d9eb25152d6`, SSQC `7598b0da1cd90ebd` (unchanged).
+Fresh live connections with both installed clients/program pairs show Surface
+and Map properties tips, dismiss on close and complete without command/VM
+errors; synthetic focus/hover only. At 06:28 UTC, twelve fresh heartbeats,
+health OK, zero players. Owned staging/evidence retained under
+`C:/FTESurf-worktrees/zetips-01a12ea0/`; source is published, no task game/server
+process remains. Restart/reconnect for new client code; wording/physical mouse
+acceptance is still the owner's.
+
+## Patch 680 — inert canonical reset/zone movement policy preparation (2026-10-12)
+
+**APPLIED — MOD-SIDE ONLY.** FTESurf server QC and test tooling/documentation;
+no engine C/header/binary or native pin/tag change for this patch.
+
+**Problem:** save-load policy cannot stand in for reset. Restart can resolve a
+latched duplicate region or the newest eligible start-save origin/aim, yet must
+not restore its speed/duck/timer. Raw zone centres bypass authored destinations,
+standing-hull snapping and live fallback choices. Calling the movement funnels
+while preparing would mutate player/timer/recorder state.
+
+**Change:** inert `SV_MovePrepZone`/`SV_MovePrepReset` current-call descriptors.
+Share read-only canonical zone leg/destination and start-save selection halves
+with existing live handlers. Only live wrappers scan, print or cache missing
+named targets. Keep map/stage/bonus and latched/save-backed `!r` choices, active
+same-stage save bypass, explicit yaw/pitch overrides and disabled lobby saves.
+Reset zeroes speed/clears carrier but preserves immediate ground/duck and all
+12 Source history fields; held reset restores walk, noclip keeps mode. Explicit
+forceduck policy separates KEEP from its value. Stale eligible preferences do
+not rescan or invent a zone answer. Timer/recorder transitions stay live only.
+Map/zone/save identities are NOT epochs or retainable admitted requests.
+No production consumer/export, rewind preparation, cache, admission, baseline
+reconciliation, instant prediction, evidence format, ranking/default or Build
+change. Trace builtins still update trace_* scratch globals.
+
+**Verified:** normal server/client/menu and subject/mutant fixtures compile at
+zero warnings. Real dedicated subject **71/0**, plus P678 **66/0** in the same
+run: floor/solid actors; map/stage/bonus/latch/save-backed/goto operation parity;
+named zero yaw, missing-target cache separation, box/void/solid/explicit aim;
+no body/timer/recorder/list/root/table mutation, stale/owner/mode/bounds/output
+refusals. Post-snap save refusal fallback had an acting **2/71** saved-pitch/live
+mismatch; explicit fallback pitch zero fixes it. First high-slab **1/71** control
+had no eligible row and is not evidence. One-factor reset-speed mutant:
+**2/71 expected failures**, required
+acting reset-zero marker, P678 **66/0**. Independent P678 weak validation still
+**23/66 expected failures**. Grader rejects absent/partial/duplicate completion,
+count mismatch and runtime faults (13 grader falsifiers). Reader **306/0**; unchanged reader bytes,
+canonical **270 recs / 91 views / 170 existing faults**, no new corpus faults.
+Initial compiler crashes, absent mount/plugin connections and short-box **1/64**
+fixture failure retained, not passes; isolated compiler probes establish the
+struct-pointer vector-component crash. Broader save-prefix sweep hit an untouched
+directory named run.rec and is not accepted. Public contract/falsifier:
+FTESurf `tools/p680zoneprep.md`. Lifecycle generations and canonical rewind-go,
+then bounded command admission/operation-bearing body baseline remain mandatory.
+No Windows/fleet deployment for this inert slice.
+
+## Patch 679 — automatic Momentum base assets and CS:GO Legacy discovery (2026-10-12)
+
+**Problem:** surf_666 appeared to require a separate Half-Life 2 installation:
+FTESurf's base mounts and offline scanner assumed HL2, while Momentum supplies
+its own shared hl2_dir.vpk. Existing CS:GO specs also named only the CS2
+csgo_legacy beta layout, not the standalone Source 1 Legacy install. A modern
+CS2 directory without legacy content must not count as an installed Source 1 pack.
+
+**Change:** `engine/common/fs.c` automatically appends only Momentum's
+`mount/hl2_dir.vpk` after configured addons, retaining private/copy-protected
+flags. This works with existing lists, filesystem rebuilds and lazy mount calls;
+no user config or generated dependency rewrite is required. Old Momentum/mount
+specs also select only this VPK, excluding other-game placeholders. The Steam
+resolver accepts both Source 1 CS:GO folder aliases, checks pak01_dir.vpk, and
+keeps explicit Steam-library overrides ahead of auto-discovered installs. Its
+Windows primary-library file probe now returns the absolute game directory,
+not the relative probe filename. The companion QC tree treats Momentum's HL2
+pack as base content, selects either CS:GO layout offline, updates installation
+instructions, and supplies bounded hermetic/runtime tests. No physics, recorder,
+QC Build number, fleet progs or content redistribution change.
+
+**Verified:** clean origin/main-based worktree, paired native client/dedicated
+server/all-five-plugin build via pwsh 7 build.ps1 -Jobs 8 -Engine -Full -NoDeploy;
+QC 0 warnings, changed fs.c 0 warnings (untouched native warnings remain).
+DLL imports match installed Windows dependencies, without missing zlib1.dll.
+`tools/test_source_mounts.py` compiles the actual resolver: 10 passing tests,
+including beta-only, Legacy-only, both, empty stale directory, explicit-root
+precedence, modern-CS2-only rejection and unchanged unrelated probes.
+`tools/test_source_mounts_runtime.py`: acted missing-pack surf_666 control,
+automatic no-HL2 subject, fs_restart dedup/persistence, old dependency-spec arm,
+and surf_tensor2 using each real CS:GO layout all pass; logs and all five
+screenshots inspected. HL2-dependent walls/ceiling recover; three authored
+texture references still miss even with standalone HL2 and are tracked in
+BACKLOG.md. A few checker surfaces remain; this does not claim all map content
+is repaired or that CS:GO replaces every CS:S asset. Linux was not rebuilt.
+First build/harness setup failures were retained, not counted as passing arms.
+
+## Patch 678 — inert server-only movement policy preparation (2026-10-12)
+
+**APPLIED — MOD-SIDE ONLY.** FTESurf `src/server/sv_moveprep.qc`, server source
+listing and test fixture/tool; no native engine C/header/binary change.
+
+**Problem:** P672/P675 supply the pre-input seam and exact command context, not
+complete operation state. Save files do not serialize all native mover history;
+sequence equality alone does not establish unchanged movement content. Reusing
+the movement-producing load/create funnels for preparation would mutate gameplay.
+
+**Change:** side-effect-free save-load and current-hold release POLICY builders,
+caller-owned output and explicit not-ready statuses. Resolve id+seq in the fresh
+owner/map block, independently reread load movement fields, strict bounded parsing,
+rewound rwvel/demotion rules. Release has both block bounds, current aim/native
+history preservation and no new disk dependency. Enumerate KEEP/CLEAR/SET policies
+for all twelve pmsourcestate_t fields plus body/mode/ground/carrier/gravity/jump.
+READY describes this call only; no content/connection epochs or persistent cache.
+No normal caller/client callback, requests, admission, movement application,
+operation-bearing body baseline, save/rec format, timer/ranked or Build change.
+Native pin/tag and installed executables remain unchanged.
+
+**Verified:** all three normal VMs and final fixtures compile with zero warnings.
+Dedicated subject: **66 checks, 0 failed**, including independent row AND disk
+movement changes, stable identity after compaction, malformed/bounded input,
+owner/lower+upper bounds, explicit history policies and actual unchanged
+Load/Hold/Release parity. Forced-READY weak validation: **23/66 fail as expected**,
+including required acting stale-velocity marker. Reader **306/0**, unchanged reader
+bytes; corpus **270 recs / 91 views / 170 existing faults**, no source-induced
+increase. Initial compiler/fixture/path and 3/52 attribution-fixture failures are
+retained, not passes. No collision, cache-generation, prediction, ACK coverage or
+network-loss acceptance claim. No Windows/fleet deployment for this inert slice.
+Next: lifecycle/reset/rewind builders, exact bounded admission, then
+PEXT2_REPLACEMENTDELTAS authoritative body-baseline reconciliation. Public contract:
+FTESurf `tools/p678moveprep.md`.
+
+## Patch 677 — run/demo label colours, triangle peaks and single autohop marks (2026-10-12)
+
+**Problem.** Speed and energy shared the contact glyph's colour. Tops and
+bottoms were both small squares, so neither direction nor colour distinguished
+them. A one-tick autohop displayed a landing beside its jump even though the
+jump already implies ground contact.
+
+**Change.** Client-only `cl_lines.qc`: yellow speed and green energy fields via
+inline colour escapes, still one queued label/shadow pass. Rich-text width
+measurement excludes those escapes; existing diagnostic labels stay plain.
+Closed screen-space triangles, pink pointing up for arc tops and purple down
+for ride bottoms, retain the dark outline. The draw pass skips a ground-contact
+mark only when its immediate next event is a jump from ground at most one
+sample later and jump ink is enabled. Ordinary landings, ramp contacts, walks
+off, and contact ink when jump is disabled remain. No mark classifier, stored
+table, Segments, recorder, physics, engine source/pin/tag, owner/default config,
+evidence or Build-number change. Existing nums/mark switches still govern peaks.
+
+**Verified.** Pre-change control and subject compile all three QC programs
+with zero warnings; server/menu bytes unchanged. Isolated acting-pair runtime
+7/7: coloured label pixels with both fields, each alone and unnamed speed-equivalent
+energy; visibly up/down pink/purple triangle ink; one-contact autohop suppression
+in native replay, imported replay and board line; multi-sample landing+jump and
+walking-off contacts retained; jump/nums/marks switches; unchanged mark, numeric
+label and Segments tables against control. All three requested-change checks
+fail against the acting pre-change control. Screenshots inspected. Existing
+peak fixture model 6/6, with five runtime-only tests not invoked by that model run.
+
+**Limits.** Authored fixtures exercise the shared draw path, not a physical
+live autohop or owner approval of the shades. Peaks keep their existing
+height-turn meaning and nums visibility; no new energy/speed extremum detector.
+Deployment is recorded separately after destination hashes and live smoke.
+
+**Windows deployed / fleet pending.** Product `b5a704f`, clean committed build
+byte-identical to the tested subject. Both Windows csprogs replaced at
+2026-10-12 06:45:15 UTC, preceding P676 bytes retained in `.prev`; unchanged
+server/menu skipped. CSQC `d6b4d81e8c64261d`, SSQC `7598b0da1cd90ebd`. All 23
+checked native/config hashes and mtimes unchanged; no owner process stopped.
+Both installed engine/program pairs each pass the same isolated runtime 7/7.
+`build.ps1 -Pi` built clean but REFUSED at the player gate: one active player,
+12 fleet rows. No upload/swap/restart, no force override. At 06:48:53 UTC the
+fleet still had one player and its csprogs still hashed to P676 `7d3954d9eb25152d`.
+The lobby change remains pending until a safe empty-fleet deployment; a running
+remote client will still receive P676. Evidence/staging retained under
+`C:/FTESurf-worktrees/labels-677-20261012T0623/`; local restart/map reload loads
+new local QC, but reconnecting to the unchanged fleet does not.
+
+## Patch 681 — bounded world catch-up at low render FPS (2026-10-12)
+
+**APPLIED — CONFIG ONLY.** FTESurf `ftesurf/cfg/default.cfg`,
+`tools/p681ticks.py`; no native engine C/header/binary or QC behavior change.
+
+**Problem:** the native `sv_limittics 3` default permits too little server-world
+catch-up for a local 100 Hz bhop game rendering at 20 FPS. `SV_Physics` discards
+remaining world time when its bounded catch-up allowance is exhausted. Fixed
+10 ms player-mover substeps do not remove that separate world limit.
+
+**Change:** FTESurf's ruleset default is `set sv_limittics 8`. It increases the
+bounded catch-up allowance, not a minimum rate or the physics tickrate. Existing
+surf 15 ms player steps, bhop 10 ms player/world steps, client netfps matching,
+angle interpolation, engine pin/tag, QC Build and recording/evidence semantics
+are unchanged. No owner archived config edit. Extreme stalls can still exceed
+the budget; extra simulation work has a CPU cost, not a free render-FPS gain.
+
+**Verified:** clean origin/main QC worktree, pwsh 7 `build.ps1 -Jobs 8 -NoDeploy`:
+all three programs compile with zero warnings. Isolated actual installed P679
+client, clean generated programs, synthetic raw MAPs, independent MAINCONFIG
+and spawned local player in every arm. Native `sv_perfdump` counts five passing
+controls: bhop at 100 FPS/old default = 1009 ticks / 1008 frames; bhop at 20 FPS,
+old default = 603/202 (2.985 ticks/frame), new startup default = 1012/203 (4.985).
+Both surf 20 FPS arms = 203/203 world ticks/frames and retain `pm_ticrate 0.015`:
+surf's existing local world defaults are `sv_mintic 0`, `sv_maxtic 0.1`, NOT a
+fixed 66.667 Hz world clock. This patch deliberately leaves that policy alone.
+The 10-second windows prove frame limiting and active server ticks, not ranked
+surf/bhop accuracy, per-tick mouse input, screenshots or remote prediction.
+Initial compiler-path, startup-log sentinel and incorrect surf-world expectation
+failures were retained and corrected in the fixture, not counted as passes.
+All five arms were repeated successfully against clean committed product
+`e8407bb`, after rebasing onto the concurrently published inert P680 work.
+Those generated QC programs are verification-only, not a peer-work deployment.
+**Config-only deployed 2026-10-12 09:23 UTC.** Product `e8407bb`; both Windows
+default.cfg files hash `cbc2191087785c19`, all 11 inspected native/program/owner
+config hash+mtime guards unchanged. The Pi received only this committed
+three-line hunk, retaining existing platform-specific defaults; destination hash
+`9df79b3d2e388975` and a pre681 rollback copy verified. All 12 active lobbies
+changed from 3 to 8 and read back 8 over loopback RCON. No restart or player
+interruption, no native binary or generated program deployment, and no peer P680
+QC shipped. This is live cvar verification, not a remote gameplay/prediction
+claim. Complete config receipts and acted runtime logs retained beneath
+`C:/FTESurf-worktrees/ticks-01a12f46/artifacts/`; disposable source/runtime copies
+are retired on completion.
+
+## Patch 682 — inert canonical warm rewind-go body preparation (2026-10-12)
+
+**APPLIED — MOD-SIDE ONLY.** FTESurf product `0a66924dd0f250d48cb417dcb1f048e9e035f2b6`
+(two feature/fix commits). Reviewed candidate `093b390` is retained; publication
+integrates only concurrent published release tooling `196a628`. All QC/fixture
+inputs and all three program outputs are byte-identical to that reviewed/tested
+candidate. No engine C/header/binary, native pin/tag or QC Build change.
+P682 was reserved after the fetched P681/untracked-test census.
+
+**Problem:** rewind-go chooses a genuine recorder sample by bounded spatial/
+tick rules, serializes a new row at four decimals, loads it held and later
+releases its saved velocity. A raw desired-time/camera target or unrounded
+sample is not that body's policy. Running create/write/load while preparing
+would allocate/publish an ID, mutate recorder lineage and timers or move the
+player. One available token also cannot satisfy the real dispatcher's two
+rewind-go charges.
+
+**Change:** share a read-only, bounded `SV_RewindSelectRead` with the existing
+live `SV_RewindFind` wrapper. Preserve recent tick-window/spatial/fallback and
+newest-tie rules; validate finite/integer ring domains before addressing rows.
+Keep allocation/sample publication exclusively in the live wrapper. Inert
+`SV_MovePrepRewind` accepts only current-call canonical warm, same-lineage,
+non-full/no-conflict go. It normalizes body/aim/velocity through the actual
+four-decimal row representation, supplies held zero-velocity/NONE and release
+WALK/saved-velocity policies, clears ground flag/carrier and sets duck/jump/
+gravity while enumerating all twelve Source history intentions. A pre-dispatch
+read requires at least two available tokens without changing the rate bucket;
+the authoritative command gates are unchanged. Output refusal invalidates prior
+results. Cold/forked/replacement/full roots, sweep/copy locks and future external
+write/read-back success abstain; no invented row/seq/ID reservation.
+No production preparer consumer/export, cache or lifecycle epoch, admitted
+request, native callback activation, operation-bearing baseline, prediction,
+recorder/evidence format, ranking/default or Build change.
+
+**Verified:** fresh clean exact-commit pwsh7 `src/build.ps1 -Jobs 8 -NoDeploy`
+compiles all three VMs with zero warnings; all outputs are byte-identical to the
+retained tested production build. Real dedicated recorder/pin/select/legacy-go/
+write/read/load/hold/release actor: **98 checks, 0 failed**. Window-spatial winner,
+fallback/tie/wrapped/full ring, malformed bounds, decimal normalization and
+refusal/no-mutation controls ACT. One token and largest float32 below two
+prepare REFUSED and the real dispatcher remains pinned after its first charge;
+exactly two prepares without consumption and actual go consumes both/acts.
+Independent one-factor old-rate mutant: **4/98** named expected failures;
+spatial-selection mutant **7/98** and held-velocity mutant **2/98** named expected
+failures. All fixtures compile at zero warnings; **16/0** grader controls reject
+silence, obsolete/partial/duplicate completion, wrong/missing detectors and
+runtime faults even after completion. Retained unchanged P678/P680 controls
+**66/0** and **71/0**, reader **306/0**, parent/subject corpus fault count
+**173/173**, no newly faulted source file. Initial recorder-lineage/fixture-domain
+failures are retained, not passes.
+
+Independent selection/bounds/effect-free and recorder/go reviews completed;
+valid P1 one-token mismatch fixed with acting falsifiers and bounded fix
+re-review, no remaining concrete blocker. A provider failure and cross-session
+revival rejection were reported; authorized retry retained the same native
+reviewer/model protocol. Reviews inspected source/retained logs, not new test
+execution. Public contract/falsifiers: FTESurf `tools/p682rewindprep.md`.
+
+**Limits:** enumerated Source KEEP intentions are not an independently measured
+whole-native snapshot across subsequent mover commands. Genuine-ring buffered
+writer actors do not establish asynchronous stream/copy failure parity; synthetic
+fractional vectors verify decimal representation separately. READY is only the
+body policy for this call, not future persistence, admission, baseline, evidence
+or cached-authority permission.
+
+**Development deployment completed:** normal `build.ps1 -Jobs 8 -Pi` from clean
+product `0a66924` passed the fresh empty12-lobby guard, compiled at zero warnings
+and matched tested program bytes; staged/hash-checked progs swapped with `.prev`
+and all12 units restarted. Explicit program-only copies completed both Windows
+installs with captured predecessor/hash guards. At **2026-10-12T17:02:36Z**, all12
+fresh PIDs and UDP sockets ACTED, progs/.prev hashes matched, every native process
+still reported/hashes to P679 with the unchanged Source plugin, live default8
+and health12. Protected native/config hash+mtime and aggregate player run/
+evidence/resume/save/receipt observations were unchanged across swap/restarts.
+Two fresh isolated clients using both installed Windows engines/menu downloaded
+exact deployed CSQC and drew board cols8/type14 with zero smoke failures/client
+QC errors; screenshots inspected. No terms accepted/run submitted. Final
+17:06:55Z directory was all12 empty, ages0..4s. SSH journal visibility unavailable
+was not graded as a clean journal; bright known missing-map material is not map
+completeness acceptance. No native consumer activated. SSQC SHA256
+`424afeebea4f25c33ffd0d0d4c7d46b3520294cf9cb21ee5079414a8b6524205`, CSQC
+`3e33342c3296afde1bece3f581830665ebb153535b2dd68108a882365ce4e669`.
+Public full provenance/rollback/limits: FTESurf `tools/p682deployment.md`,
+documentation commit `837eb004d611cea4bd31798b889d64168ceb7375`. Owned cleanup/
+compact evidence is recorded at the task root; live `.prev` rollback remains.
+
+## Patch 683 -- Source brush visibility and material compositing
+
+**Problem:** surf_kitsune's zero-opacity rainbow brushes rendered outside their
+secret. Translucent Hades2 labels occluded their own portal backgrounds. Demise's
+animated smoke asset was cached as a frame array and then reused by a 2D emissive
+sampler, suppressing the spawn glyph; VTF frame-zero decoding also advanced over
+only one of the stored frames at each mip. Base-less reflective UnlitGeneric
+ramps acquired white diffuse albedo, and additive mist ignored vertex opacity.
+
+**Change:** SSQC separates native opacity/EF_NODRAW from brush Enable/Disable and
+reapplies Source rendermode/renderamt after each input. Shader program fixup
+preserves explicitly authored depth masks, not opaque synthetic defaults for
+alpha/additive leaders. Texture cache identity includes concrete target type;
+request-side ANY remains a wildcard, and CSQC resource status uses it. VTF walks
+all stored frames while retaining requested output frames. Base-less brush
+emissive mapping defaults to Source's 32-unit mapping unless authored/model
+mapping applies. Reflective base-less UnlitGeneric uses reflection-only albedo,
+material/entity/vertex opacity and authored vertex tint. Animated unlit materials
+select the actual UNLIT permutation; additive animated mist masks RGB by direct
+vertex alpha. The Source SDK does not support the rejected inverse-alpha probe.
+
+**Verified:** clean exact-code-commit full Windows/QC build; identically configured
+parent baseline and subject both emit 423 warning lines, zero new normalized
+warnings. Native exact-commit glyph actor passes. Extracted production cache
+lookup passes concrete type/order matrix, ANY lifecycle, identity flags and
+subpaths; old source fails. Actual VTF loops pass frame-zero and 331-frame-array
+traversal, both environment layouts; old frame-zero control fails. All five
+resolved depth-write probes pass. Real dedicated Kitsune fixture records 111
+passing brush states; same-camera hidden -> Alpha75 rainbow -> Alpha0 hidden
+pixels ACT. Native Demise loads both 2D and Array256x256x331 smoke views and renders
+the red glyph with no loose GLSL override; vertex-alpha off restores solid mist
+coverage. Hades2 native labels/backgrounds are visible. Reader suite 306/0.
+Independent reviews found and fixed ANY-preview caching and reflection-opacity
+omissions. Full reproducible commands/provenance: FTESurf tools/p683mapvisual.md.
+
+**Limits:** renderamt modes 1..5 are an alpha approximation, not every Source
+blend mode. Mist fade acts, but exact reference brightness/background seams are
+not accepted as solved. Native secret-button activation did not ACT in the
+harness; target fan-out/visibility did. Rise native screenshot/UNLIT permutation
+and Monster Jam resolved water/glass masks were inspected; water-in-view pixel
+acceptance remains pending. Exact product commits are engine 6b6c8ab68 and game
+791123cc. At 2026-10-12T18:08:20Z, all 19 Windows native/plugin/program targets and
+rollback hashes verified, protected configs unchanged. Guarded progs-only Pi
+deploy restarted twelve empty lobbies; 18:17:03Z readback proves twelve active
+PIDs/acted UDP sockets, expected progs, retained rollback, health and empty fresh
+directory. Each installed Windows native/menu pair separately downloaded exact
+served CSQC, drew cols8/type14 board, exited normally with zero QC/smoke errors;
+both screenshots inspected. Linux native/plugin were not shipped. Public final
+provenance is in FTESurf tools/p683mapvisual.md. No evidence semantics, collision
+policy, QC Build-number or release bump.
+
+## Patch 684 -- normal viewer controls and Dusk demo-player chrome
+
+**Problem:** replay chrome consumed SUI's shared release queue before a front
+leaderboard could act. The native board separately rejected the replay cursor
+claim; HUD editor/customizer/profile gates also refused playback. Spectating
+could not save the viewed position. Crosshairs disappeared in viewed runs, and
+rewind skipped the normal keys panel. Playback chrome used unrelated square
+surfaces/colours, and its first mouse click could lack a current SUI hit.
+
+**Change:** QC-only front-modal arbitration suppresses the background playback
+SUI bracket, not the camera/clock/HUD. The native board accepts a background
+watch claim. Existing modal priority and unrelated movement protections remain.
+Spectator binds/digits can save the transmitted target pose through the existing
+untimed view-snapshot path; no recorded prefix is granted. Native rewind retains
+its server-history gate. A replay pin restores an active spectator pin first in
+one server command. Configured crosshairs and rewind keys keep their normal HUD
+positions/cvars. Dusk surfaces, rounded controls and semantic colours match the
+board; UI labels use a measured face and the clock stays fixed-width. The clock
+has a clickable Play/Pause action; mouse-down refreshes the current hit list.
+
+**Verified:** clean QC build, zero warnings. Identically instrumented baseline
+and subject run two real clients on an isolated dedicated socket. The unchanged
+baseline reproduces the HUD/modal/board/spectator restrictions. Subject actual
+line-checkbox/replay-row/pause clicks ACT; editor/customizer open during playback;
+rewind/demo saves and loads ACT; spectator save matches the watched pose, differs
+from the parked body, is untimed, preserves the spectator hold until load, then
+leaves it. Server spectator/replay hold readback is exclusive after handoff.
+Screenshots of demo/board/editor/rewind/spectate inspected at 1920-wide. Reader
+suite 306/0. Reproducible gate/limits: FTESurf tools/viewer_ui.md.
+
+**Limits:** missing streamed inputs/contact planes are not fabricated from the
+parked body. Human scale/long-name/imported/third/free-camera look acceptance
+remains in lextest.md. No engine C, evidence grammar, verifier, movement policy,
+QC Build-number, native tag or release change. Deployment is a separate gate.
+
+## Patch 685 -- opt-in per-face OpenGL transparency ordering
+
+**Problem:** reversing a material batch cannot order separate window faces,
+materials, entity meshes and CSQC polygons against each other. A cached-VBO
+batch deliberately has no CPU meshes: treating it as an empty submission drops
+it. A world-wide scene-poly bounds key incorrectly treats far/near polygons as
+one depth record. Forcing scene caches off for all Source maps sidesteps these
+contracts while discarding opaque-world cache reuse.
+
+**Change:** OpenGL `r_blendsort 2` collects each supported plain blend mesh in a
+single far-to-near stream. World-space transformed vertex bounds determine its
+view-forward depth; stable emit sequence breaks ties. Weapon/depthhack records
+follow ordinary geometry. Refraction/reflection/portal-capable records retain
+the immediate, recursion-safe batch path. Cached or CPU-unavailable geometry
+retains a coarse batch record and whole-batch submission. Per-face submissions
+copy the batch descriptor: original cache pointers, mesh ranges and source data
+remain intact. Scenetris use their actual mesh vertices, not world bounds.
+Finite keys are validated bitwise under fast-math. Source scene-cache controls
+are no longer globally forced off. Modes 0/1 and default **1** remain legacy;
+this is an opt-in feature, not promotion of mode 2 as the default.
+
+**Verified:** clean sorter-only Windows engine/plugin build, separate from the
+unverified envmap-space work. `tools/test_gl_blend_faces.py` compiles production
+collector/guards/matrix code under C99 `-Wall -Wextra -Werror`, normal/HEXEN2,
+with and without fast-math. Cached-VBO-drop, whole-world-scenetris-key and NaN
+mutants each ACT and fail assertions. Native exact-executable Kitsune pixel
+oracle: two polygon emit orders and a reverse view each pass all 9,216 pixels
+within two RGB levels; legacy mode 1 ACTS and fails all 9,216 mixed-overlap
+pixels. Background is independently captured with world rendering enabled.
+Native camera/save-2 window images retained. Earlier mixed pane/model/sprite
+and Source material cache controls remain the bounded integration evidence;
+not every path below was newly photographed. See FTESurf tools/p685blendsort.md
+for commands, provenance, failed harness arms and publication/deployment state.
+
+**Limits:** whole-mesh depth is not triangle splitting/intersection resolution.
+Coarse cached records cannot establish internal face order. Recursive capture
+records are deliberately not globally sortable. Static screen correctness is
+not a broad perf/water/reflection or all-backend pass; cache/capture performance
+and further native rotated-brush/model/weapon overlaps remain acceptance gates.
+No movement/evidence semantics, QC Build-number, Linux fleet or release change.
+The envmap-space draft is explicitly excluded from this patch and native bundle.
+
+## Patch 686 -- Perfect-board sound streak and animated grade letters
+
+**Problem:** the ramp-board indicator reported its percentage/grade but had no
+optional success sound or animated Perfect word. Feedback must follow actual
+new ramp arrivals, not repeated HUD frames, ground/bhop edges or replay scans.
+
+**Change:** client-only feedback at the existing live, graded Board_Frame edge.
+Perfect raises a streak's playback speed by one semitone, capped at one octave;
+a non-perfect graded board clears it. Bhops, rejected ungraded contacts, run
+resets and replay reconstruction neither clear nor reward it. New map/VM clears
+it. Board editor exposes Off/Dong/Bong/Bell, volume, rainbow and bounce. Three
+original reproducible soft PCM cues are explicitly allowlisted for shipping.
+Only Perfect's seven letters animate; mono-space prefix preserves the exact
+percentage suffix raster position. Default: Dong at 35%, rainbow/bounce on.
+
+**Verified:** clean stock and subject QC builds, zero warnings. Identically
+instrumented pre-change control executes 26 assertions and fails 20; subject
+passes all 26, including real Board_Frame grading, same-counter/bhop/run-reset
+controls, non-perfect reset, mute/off tracking, volume bounds, octave cap and
+replay scanner arms. Real dedicated-socket CSQC screenshots ACT: rainbow 2,974
+changed glyph pixels, bounce 4,901, time-separated animation 5,750; percentage,
+non-perfect and grade-hidden controls have zero changed pixels. Native raw
+mixer capture emits exactly six cues: four dong fundamentals 391.85, 410.52,
+434.69, 391.85 Hz (rise then reset), bong 195.92, bell 784.06 Hz; no extra hop,
+failure, Off or muted sound. Software mixer quantizes speed to 1/64. Old binary
+emits no cue/effect. Board settings screenshot inspected; asset shipguard passes.
+Reproducible gates and deployment provenance: FTESurf tools/p686_board_feedback.md.
+
+**Limits:** test-only live-stat injection proves presentation event plumbing,
+not a new mover/physics validation. Subjective softness/animation feel is in
+lextest.md. No engine C, grade thresholds, evidence grammar, recorder/verifier,
+QC Build-number, engine pin/tag or release change. Deployment is a separate gate.
+
+**Deployment:** at 2026-10-13T05:19:28Z, clean product d18b5610 is built/pushed and
+both Windows program/cue sets hash-match. Personal configs unchanged. Guarded
+empty-fleet progs swap keeps .prev; all twelve final active nonzero PIDs and UDP
+ports are read back. New cues required copying before an asset-load restart.
+Each installed Windows executable then separately downloaded the exact served
+CSQC and all three exact WAVs, drew the Board settings pane and exited without
+command/VM errors. The existing HTTP mirror lacks these cues; server download
+fallback is verified, not an HTTP mirror/release deploy. No native/plugin ship.
+Public hashes and limits: FTESurf tools/p686_board_feedback.md.
+
+## Patch 687 -- complete signed FTESurf updater and protected recovery
+
+**Problem:** FTESurf had no coherent opt-in launcher/native/menu update path or
+signed content-addressed release feed. The staged implementation also followed
+unchecked download `.part` and native ledger temporary links, widened restrictive
+POSIX executable permissions, and replayed signed zones over intervening edits.
+
+**Change:** finish the complete native/menu/bootstrap/feed source across the
+engine, FTESurf and launcher repositories, not an isolated helper slice. FTESurf
+uses the pinned signed feed, scoped ship allowlist, explicit persisted consent,
+shared install ownership, offline cache and whole-journal preflight. Native/menu
+updates preserve local zones and addons, stage verified objects and recover
+interrupted content updates; binary replacements defer to the launcher. Wrappers
+use the bootstrap without silently retrying a failed invocation as a direct
+engine start. Release preparation binds the bootstrap and complete cross-platform
+object closure; publication verifies objects before switching feed/site state.
+Existing Quakers policy remains separate.
+
+Before transport, the FTESurf downloader preflights every final/partial path and
+ancestor, then validates no-follow opened regular-file handles before mutation.
+Only install preparation adds execute bits; it preserves existing read/write
+permissions. Native startup and ledger writes guard the actual `.enginetmp`
+companion. Replay shares the planner's protected-file baseline test, classifies
+all rows before replacements, and resolves edited rows without claiming signed
+hashes. Protected-only completion advances the verified release version with zero
+replacement records, preserving the rollback floor and local baseline entries.
+
+**Verified:** independent whole-feature review found four concrete blockers;
+independent post-fix review is OK with notes. Fresh Windows native build has the
+same 34 compiler-warning occurrences/28 distinct payloads as P685, none new.
+Eight acted pre-fix Windows native recovery arms reproduce overwrite/link faults;
+eight subject arms pass, including five edited-zone ordering/baseline variants,
+ordinary replacement, corrupt-ledger refusal and linked-ledger-temp refusal.
+Player-setting/recording sentinels stay unchanged. Retained signed fixtures were
+replayed unchanged: no signing key used. Locked-offline Rust suites pass 37 tests
+on Windows and 38 unique tests on Linux, zero warnings; seven new regressions
+include real loopback fresh/resumed downloads, link refusals/unchanged external
+sentinels, and 0600/0640 staging -> 0700/0750 installed execution modes. Four
+pre-fix Rust regressions fail as predicted. All three P686-base QC programs build
+with zero warnings. Feed tests pass 12 units and acted publication controls
+(three invalid-prior before/after arms, 11 PowerShell and 10 shell cases).
+A private read-only-cache/source Bullseye namespace compiles the native subject;
+clock-skew warnings make that dirty build test-only, not release gate evidence.
+P686's published board sound assets/allowlist are retained. Source and native
+inputs are hash-bound in the owned task evidence; original held source is intact.
+
+**Limits:** source commits, regression builds, release proof and deployment are
+separate states. No new public version/QC Build, production signing/feed/site
+publication or canonical/fleet deployment is claimed here. Clean pinned native
+builds, full release-preview/archive gates and deployment remain required.
+Pre-existing-link checks/final-component no-follow do not defend hostile ancestor
+swaps or hardlink aliases. Native unreadable-protected-file and mixed-pending
+retention behavior is historical and unvalidated by these arms; native Linux
+replay/addons-specific replay remain coverage limits. No mover/recorder/evidence,
+ranking, server policy or detector change. FTESurf's tools/test_update_native_recovery.py
+runs the new key-free acted cold-recovery falsifiers with retained signed fixtures.
+
+## Patch 688 -- Windows-output audio and a spatial, map-coloured visualizer sky
+
+**Problem:** sound-reactive shaders only heard the game's software mix. The
+visualizer sky lacked map-relative depth and thumbnail colours; shipped visual
+settings differed from the owner's profile. Unavailable analyser data left the
+last spectrum texture frozen. A sky thumbnail lookup in WorldLoaded can see an
+empty map name, so an otherwise valid atlas never loads.
+
+**Change:** local-only, archived `snd_vis_source` (0 game mix, 1 Windows default
+playback output) adds bounded main-thread shared WASAPI render loopback. It never
+opens a microphone, replays captured samples or writes audio. Validate and downmix
+float/PCM formats, clear history on source/discontinuity, release COM resources on
+shutdown/disable, and retry failed/default-changed endpoints. `snd_vis_status`
+reports activity without endpoint identity. Non-Windows retains game audio.
+QC exposes the selector through the menu's local-command privilege and suppresses
+automatic menu music while Windows output is selected. Upload the native blank
+spectrum/neutral wave on unavailable frames too.
+
+Three analytic enclosing layers at 3/6/12 map diagonals use the rendered eye for
+bounded, non-integrating parallax. A small current-thumbnail RT supplies distinct
+region tones rather than averaging a mixed image into one tint; neutral fallback,
+late image load and renderer reset redraw safely. Defer map-name lookup until the
+live key exists. No world geometry, mover, timer or evidence change. The sky stays
+off by default. Shipped defaults mirror the owner's visual settings, but music
+stays automatic and saved user preferences win.
+
+**Verified:** portable PCM tests and real Windows loopback external-tone control /
+subject / silence / source-switch arms pass; game-only control is zero, selected
+capture measures ~0.177 RMS, silence and switch-back are zero with capture closed.
+Production sky-fragment WGL pixels reject disabled-parallax, equal-depth and
+single-average-palette mutants: near/middle/far shift 13/6/3 pixels, distinct red
+and blue tones remain. Three QC programs compile with zero warnings. Isolated
+fresh-profile runtime reads 46 values and preserves explicit overrides; settings
+page screenshots inspected. Dedicated Source-map native screenshots exercise the
+actual shader, atlas thumbnail RT, procedural-vs-map colours, camera movement and
+vid_restart. Independent review caught the frozen image path; it was corrected.
+Verification details and final exact-build/deployment provenance live in FTESurf
+`tools/soundsky.md`; committed/built/pushed/deployed remain separate states.
+
+**Limits:** Windows default endpoint only (not per-app or microphone capture);
+protected/exclusive/unavailable playback may be silent. Device removal/default
+switch recovery is implemented but not exercised against a physical device change.
+Remote-command refusal is source-reviewed via CVAR_NOTFROMSERVER, not claimed as a
+new live network test. Linux native runtime, non-OpenGL visualizers and subjective
+scale/art direction while surfing are not certified by these controls. QC Build
+and public release version unchanged; no signed updater feed/release publication.
