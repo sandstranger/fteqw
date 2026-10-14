@@ -46422,3 +46422,404 @@ Remote-command refusal is source-reviewed via CVAR_NOTFROMSERVER, not claimed as
 new live network test. Linux native runtime, non-OpenGL visualizers and subjective
 scale/art direction while surfing are not certified by these controls. QC Build
 and public release version unchanged; no signed updater feed/release publication.
+
+## Patch 689 -- unreadable protected native recovery and bounded object retirement
+
+**Problem:** `QKU_FSPreserveFile` treated every failed protected-file hash as
+absence. An unprivileged client could replace an existing mode000 local zone or
+mounts file, or install earlier rows before an inaccessible ancestor caused late
+failure. Mixed-pending journal rewrites retained staged objects for already
+installed/preserved rows, even after the journal no longer referenced them.
+
+**Change:** one shared install/preserve/unreadable classification permits a
+failed-hash replacement only on OS-confirmed file/path absence. Native planning
+classifies before candidate compaction; cold recovery classifies every signed
+row against the unchanged ledger before any replacement. Unreadable protected
+rows refuse with an explicit diagnostic. After a successful mixed-journal
+rewrite, retire only verified resolved objects not shared by outstanding rows.
+A failed rewrite refuses and retains staged objects. Ordinary Quakers policy,
+readable local edits, missing-file installation and signed ledgers are unchanged.
+
+**Verified:** actual production-signed 0.1.25 object closure, real external Linux
+clients under uid/gid 65534 with no supplemental groups, private tmpfs/network
+namespace, and explicit mode000-open refusal. Sixteen before controls reproduce
+old overwrite/late-refusal/resolved-object-leak actors; sixteen subject controls
+pass: zones and mounts in both row orders, genuinely missing positives,
+inaccessible ancestors, corrupt and locked pending rows, shared staged hashes,
+corrupt/unreferenced-object preservation, honest partial ledger/version/journal,
+repaired retries, failed journal writes and bounded retry exhaustion. Eight
+Windows cold-recovery regressions pass on a fresh subject build. Both Windows
+control/subject builds have the same 259 compiler/Make warning occurrences, zero
+new warnings; Linux subject has no compiler warnings. Clangd standalone check
+with the configured MinGW driver/environment completes with zero errors.
+Independent read-only review found no introduced defect; expanded tests retain
+separate partial/completed phase evidence. FTESurf `tools/p689native_recovery.md`
+records commands, hashes, failed infrastructure attempts and retention.
+
+**Limits:** no new live-planner HTTP/menu, Windows unreadable-file ACL/share-mode,
+production default-HTTPS/restart, hostile concurrent ancestor-swap/hardlink,
+crash-safe remove/rename journal-replacement or deployment certification. This is
+source acceptance only: native pin/tag move, but QC Build/public version,
+release archives/feed/site and canonical/fleet binaries remain unchanged.
+
+## Patch 690 -- conservative plane refinement for opt-in blend sorting
+
+**Problem:** P685's single whole-face centre-depth key can flip two planar window
+faces incorrectly when the camera turns. Merely retaining an unsupported face's
+slot does not retain its ordering relationships with moved supported faces.
+Shader deformation and world batches without trustworthy CPU geometry cannot
+safely participate in a plane-based reorder.
+
+**Change:** refine only eligible `r_blendsort 2` static, identity-world faces in
+the blend-sort bucket, with bounded finite planar geometry, no material programs
+and the standard perspective projection. Derive plane/extent data from actual
+mesh vertices; reject dynamic entities, deformation, oversized/nonplanar/index-
+invalid geometry, capture and unsupported projection paths. Disjoint projected
+bounds remain unconstrained; strict separated-plane proofs supply ordering edges.
+Unknown overlapping admitted pairs retain centre-depth baseline edges. A stable
+bounded topological pass rejects cycles atomically; moves crossing an unsupported
+record's slot also abstain atomically. Budgets retain the original centre-depth
+collector order, not new coarse batches. Existing coarse commands, recursion-safe
+captures and weapon/depthhack handling remain unchanged. Hard admitted-face,
+vertex and pair-work bounds gate refinement; the complete collector/admission scan
+is not covered by the pair-work counter. Modes 0/1 and the default **1** are
+untouched; mode 2 remains opt-in.
+
+**Verified:** actual production-C collector gates run in normal/HEXEN2 builds,
+with and without fast-math; plane helpers run normal/fast-math. All compile under
+`-Wall -Wextra -Werror`; eight plane and three collector mutations must compile,
+ACT and fail assertions. Frozen Kitsune geometry supplies the ordering oracle.
+Dynamic-barrier and unknown overlapping admitted-world-pair collector regressions
+first fail pre-fix, then pass. Reviewed four-file hashes bind retained v3 native
+controls: all six input-locked Kitsune mode1 images exactly match baseline; mode2
+changes 12,065/8,931/12,277/12,016/16,900/15,244 pixels, not a stand-alone correctness
+proof. Authored native static/dynamic-barrier/unknown-world and top/pass-local
+program fixtures ACT. V2 Q1 cache1 evidence remains separately attributed; no
+Source-cache1 claim. Source Full/Dither/Full-return mode1/2 images match; the 1,501
+cross-binary Air-HUD pixels are explicitly masked after PNG triage, with zero
+remaining changes and 431,672 Full/Dither acted pixels. Kitsune A/B/A timerefresh
+means: mode1 0.619105/0.624758/0.628283 ms; mode2 0.674844/0.695402/0.668383 ms.
+These are bounded explicit-finish samples, not ordinary frame-time certification.
+Final commit-stamped build, exact runtime, warning comparison and dual-Windows
+delivery are separate gates recorded in FTESurf `tools/p690blendplanes.md`.
+
+**Windows delivery continuation (2026-10-13):** clean integrated P689+P690 source
+`a8e705787fad1b60661da5e8dd43c9138cc69b1b` was built with an exact full commit
+stamp and installed native-only to thirteen dual-Windows destinations at11:10 UTC.
+All predecessor `.prev`/immutable backups match. Fresh merged48-shot Kitsune
+station reproduces all six default-parity/action counts; actual-C gates and all
+11 mutants pass, as do eight signed Windows cold-recovery controls. Installed
+client/server version and OS DLL-path checks ACT against an owned guarded fixture;
+Box3D/ODE use separate phases, dedicated UI refusal is expected. All owned runtimes
+stop rc0. Complete9310 protected files remain unchanged by path/size/hash/mtime
+post-smoke. Native74/45 warnings match controls; a tar-mtime mistake rebuilt the
+shared ODE cache, adding1041 dependency warnings (full1115). Cache was not read-only
+and was not restored/deleted. No own progs/config/default2/Build/Pi/Linux/feed/
+release swap; prior water/cache/program/timing attribution and broader limits stay
+intact. Exact bundle/receipt hashes and retained setup/smoke failures are in the
+FTESurf delivery document above. This paragraph records verification, not new C.
+
+**Number reconciliation:** this sorter was initially published under P689, but
+another session independently claimed P689 for native-recovery work during the
+long clean-build/runtime gate. Keep the peer's published `patch-689` tag intact;
+this forward metadata-only commit assigns the sorter P690/`patch-690` without
+rewriting published history or including the recovery branch's code. Production
+sorter/test bytes are unchanged. Build/deploy claims must name the actual stamped
+source SHA, not infer it from either historical patch number.
+
+**Limits:** this is bounded whole-face refinement, not triangle splitting,
+intersecting/coplanar transparency, recursive-capture sorting or an all-map/all-
+backend correctness claim. Mode1 deformed-world nondeterminism also occurs in
+the same baseline executable (20,402 A/A-return changed pixels); it is recorded,
+not claimed fixed. No arbitrary native model/sprite/weapon, hardware tessellation
+or external-projection runtime certification. Source model lighting/envmap
+experiments are excluded. No mover/evidence/QC Build, Linux fleet,
+signed update feed or release-version change. Further subjective touring remains
+in lextest.md.
+
+## Patch 691 -- recover late thumbnail metadata without reloading the map
+
+**Problem:** P688 cached the map key before checking `data/mapmeta.txt`. A missing
+file/row or subsequently regenerated atlas coordinates were ignored indefinitely
+on that same map, even though late atlas image decoding itself was retried. The
+synchronous lookup also scanned an entire metadata table inside one sky frame.
+
+**Change:** CSQC reads at most 64 metadata rows per active sky view. Retry unresolved
+rows after five seconds; recheck resolved rows after 30 seconds. Retain a valid
+same-map palette during lookup, then clear absent/malformed coordinates to neutral;
+map changes clear old coordinates immediately. Strict decimal indices no longer
+interpret arbitrary text as zero. Close interrupted streams on world load,
+renderer reset or sky disable. `milk_skyinfo [refresh]` exposes map/coordinates,
+scan activity, rows and measured maximum batch, and can request an immediate scan.
+No native capture/renderer/movement/evidence or Build/release-number change; native
+pin and tag are left intact by this patch (tests use the P688 runtime).
+
+**Verified:** three QC programs compile at zero warnings. Eight production/static
+mutant contracts and 17-default consistency check pass. An isolated real dedicated
+surf_rookie/client publishes metadata only after missing-state proof: neutral to
+tan without refresh; changed cell to olive after a 1,025-row scan with maxbatch64;
+removed/non-numeric rows and file disappearance return neutral. Reappearance and
+blank lines before valid rows recover. Renderer restart, sky disable mid-scan
+(rows0/file closed), re-enable and automatic successful-row refresh all act. An
+otherwise-identical compiled no-retry control reaches the end marker but is
+rejected at late-row recovery (-1/-1 instead of 5/0). Native screenshots inspected.
+Reproducible test and feature/limits: FTESurf `tools/test_soundsky_metadata.py` and
+`tools/soundsky.md`. Exact commit and deployment receipts stay separate from this
+source/test record.
+
+**Limits:** table generation remains an offline/local operation, not a downloader.
+A changed already-cached atlas image at the same filename is not force-reloaded;
+this patch handles metadata/coordinate replacement and ordinary pending image
+loads. Large tables resolve across multiple frames. Subjective scale/performance
+and physical Windows device-change acceptance remain as documented for P688.
+
+## Patch 692 -- retain native recovery authority through journal replacement
+
+**Problem:** mixed cold recovery removed journal.json before renaming its closed
+journal.tmp. A real Windows source-sharing failure, Linux rename failure or
+process interruption before rename left no authority for the next cold start.
+The current process refused, but its successor then started with pending content
+unresolved. Existing rewrite-OPEN controls did not reach this publication gap.
+
+**Change:** a narrow QKU_CommitJournal helper publishes a closed sibling temp
+without removing the FTESurf authority: checked UTF-8 conversion and Windows
+MoveFileExW(REPLACE_EXISTING), or POSIX rename, with no copy/delete fallback.
+Both live writers and the cold pending-only rewrite use it. Initial live failure
+installs nothing; deferred live failure is consumed and leaves the prior superset
+for replay. Cold failure refuses before retiring any resolved staged objects.
+Recheck existing no-link guards at commit. Legacy Quakers policy and generic
+FS/Sys rename semantics remain unchanged. No QC Build/public-version/feed change.
+
+**Verified:** full isolated Windows/Linux control and subject builds succeed with
+zero new compiler warnings; regenerated clangd check reports zero parser errors.
+Both journal row orders ACT: Windows proves writable temp plus real source-rename
+sharing refusal; Linux exact rename interposition forces EACCES, interruption
+before commit and interruption after successful real commit. Old failure/before-
+interruption controls lose authority and start mixed. Subject retains byte-exact
+old journal/all staged objects on failed commit, refuses the next corrupt retry,
+and completes/advances honest state after staged-object repair. After-commit
+interruption retains valid pending-only authority and direct repaired retry
+completes. Owned startup/error/exit and pre-cleanup job/group census required.
+Live Windows initial-failure/same-game retry and held-destination deferred rewrite
+then cold completion ACT. Existing 16 POSIX recovery, 8 Windows cold and 16 Windows
+live/cold protected share/ACL controls pass. Independent read-only source review:
+no implementation findings. Tests/limits: FTESurf tools/p692native_journal.md.
+
+**Limits:** namespace/process-interruption evidence, NOT stable-storage/power-loss
+ordering. Windows process-interruption and failure specifically at the second
+live commit are not separately injected. After-commit interruption may strand
+previously resolved staged objects before retirement; no full-cleanup claim.
+General metadata durability, hostile ancestor swaps/hardlinks, Linux default-HTTPS
+menu/restart, release and deployment remain separate gates. Canonical/fleet
+binaries are unchanged by this source acceptance.
+
+## Patch 693 -- focused profile times, editor wheel, and posed ent_view faces
+
+**Problem:** profile-time clicks opened only the board scope, at its first row;
+compact profile picks stayed on the combined/current board rather than their own
+tier/style. The zone editor treated any +jump bind as a look/window toggle, so a
+jump-bound wheel changed mouse ownership instead of scrolling. ent_view drew
+brush hulls in model coordinates without the map entity pose; translated Source
+teleports could report faces but fill somewhere other than their visible box.
+There was no automatic world-clip overlay in ent_view. A follow-up review found
+float32 milliseconds falsely matching changed times at 2^24 and INT_MAX.
+
+**Change:** whole profile-time rows hand off scope plus rank, identity and time.
+Raw JSON integer milliseconds have separate full/compact row tables and survive
+the decimal mailbox; MenuQC name-resolves stoi/itos, validates the decimal bound
+before conversion and compares exact JSON integers, preserving display behavior.
+The menu fetches that rank's neighborhood directly, highlights only the matching
+identity/time, preserves base offsets while paging, and offers earlier/top.
+Legacy five-token browse requests and both compact/full profile handles remain
+supported. Mouse2 switches editor look/window ownership; look-mode placement
+keeps its existing back/cancel behavior. Jump keys do not switch ownership.
+CSQC publishes precomputed brush origins/angles and teleport model ids. Native
+face emission applies that pose with the renderer's angle basis and colors
+teleport faces red. Reject nonfinite poses by IEEE exponent bits under fast-math.
+ent_view_clips defaults to 1 and shows nearby PLAYERCLIP/MONSTERCLIP world hulls
+with existing ordered dither. Closing/reloading clears publications. Explicit
+r_showbrushes debug modes retain control and are never rewritten. No collision,
+movement, evidence, backend, QC Build number or release-feed change.
+
+**Verified:** three QC programs compile at zero warnings. Full native control and
+subject builds have zero new warnings (74 compiler warnings plus 349 existing
+Make notices unchanged after path/line normalization). Source/navigation and
+existing fixture suites pass. Actual native pose parser/face emitter with actual
+AngleVectors passes under -ffast-math; four acted mutants fail for missing
+translation, mirrored basis, wrong color and accepted nonfinite input. Real
+socket profile clicks focus rank1500 among duplicate names/times; next1594,
+earlier1394 and top0 act. Compact profile-time click focuses its ranked/clean
+row. Malformed focus payloads, wrong identity, eight/twelve-character handles
+and legacy browse act. Jump-bound wheel moves the editor list down/up without
+changing cursor, space leaves ownership alone, Mouse2 toggles both ways and
+placement back cancels. Original-code runtime contradicts the subject checks.
+Screenshots inspected: translated trigger_teleport *36 submits one brush/six
+faces at its published map origin and visibly fills the door; an interior crop
+has 554 red-tinted pixels against zero in the original. Clip overlay submits
+75 brushes/462 faces; on/off images change 4540 pixels in a floor crop. Closing
+clears active publication. Fresh exclusive2026-10-14 PREINTEGER control ACTS:
+profile16777217/board16777216 wrongly selects1500 at offset1494 while predecessor
+profile/editor/viewer regressions pass. Integer candidate passes all5 groups and
+all6 typed raw HTTP/rank witnesses: changed/equal full2^24+1 and INT_MAX pairs,
+changed/equal compact2^24+1 pairs; mismatches select0, matches1500/1. Leading-zero
+decimal handoff and overflow-before-HTTP act. Both outside wheel pairs decline,
+inside pairs act row0->2->0/cursor1 via atomic pointer/down/up dispatch; Mouse2,
+SPACE, placement-back and dirty0 prove unchanged ownership/save semantics. All12
+original PNGs inspected; both arms' fixed interior strip has187 red-increment
+pixels teleport/no-clips vs off,241 clips; clip-on/off upper-world delta59482.
+Read-only independent audit OK with notes/no issues. Four exact owned PIDs/eight
+junctions gone,136 protected pins/36 install hashes+metadata unchanged. All-repo
+status gate remains NONMATCH only for peer untracked694 launcher claim, not a
+progs/native/ref/index change. Test/limits: FTESurf tools/p693ui.md.
+
+**Limits:** GPU evidence is Windows OpenGL on the installed surf_tensor2 revision;
+rotated poses and nonfinite refusal have CPU-emitter tests, not a separate rotated
+map screenshot. Hull drawing needs retained Q2/Q3/VBSP brush data, not arbitrary
+nodraw surfaces or static-prop mesh collision. Dense in-view brush limits remain.
+A stale/removed time is not guessed from a display name; its nearby cached ranks
+are shown with a notice. Deployment/version-stamped receipt is separate from
+source acceptance. Fresh precision/editor gates cover retained HTTP fixtures,
+fallback UI and synthetic input, not real backend/native production-provider or
+clipboard behavior. Native code/runtime tag remain4148e7292/patch-693; this
+acceptance update is documentation-only. No Linux GPU or release claim.
+
+## Patch 694 -- animated World of Surf launcher presentation
+
+**Problem:** the signed Surf bootstrap used plain status output while the Quakers
+entry point had a graphical terminal downloader. The owner requested prominent
+World of Surf artwork, live progress and Enter interaction, then removed the
+initial tagline and requested animated logo/artwork. The full game rename is
+separate; another agent's performance workload must remain undisturbed.
+
+**Change:** launcher-only Rust presentation: large cyan/violet SURF wordmark,
+sunset/ramp scene, moving neon sheen, twinkling stars, glowing sun and flowing
+waves on the existing 160 ms terminal cadence. Animated Enter/Y confirmation
+pages, Esc/N/Q/Ctrl-C rejection and safe early-return --ui-preview / --ui-demo
+controls. Main progress counts successfully verified files; content meters count
+verified bytes and workers show staged bytes. Received traffic/ETA is separate;
+incomplete percentages floor below100 and resumed verified files count without
+new traffic. Transfer cancellation enters normal raw-input control flow, aborts
+and drains workers, restores the terminal and returns before installation or
+launch. Partials remain available for guarded rehash/resume. No new dependency,
+GPU window, art download, disk/feed/signing-key rename or Quakers UI replacement.
+Native engine and QC source, pins/tags, Build/public version/feed remain unchanged.
+
+**Verified:** locked offline single-worker Windows debug bootstrap/example builds,
+zero compiler warnings; 41 Rust library tests pass, including existing guarded
+transport/signature/disk-policy tests, 46 distinct artwork frames with invariant
+progress cells, tiny/resized layouts, all content categories and99%-not100%
+boundaries. Six explicit piped-I/O smoke controls: preview before install/network,
+help without tagline, noninteractive demo refusal, undecided permission refusal,
+offline/no-launch and --yes error without a pause. Six hidden real Windows-console
+controls ACT: sample animation with Enter/Esc/Ctrl-C, renderer normal stop/Ctrl-C,
+and an active slow loopback transfer cancelled after nonzero partial staging.
+All exit through normal control flow; main-screen readback, raw input restoration
+and final visible cursor pass. The transfer leaves an unpromoted partial object,
+never starts installation or a game. Original independent review found Ctrl-C
+cleanup and premature rounded100%; both are corrected and falsified. Fresh
+follow-up independent source review is OK with notes, no residual findings. Commands,
+source/commit provenance and limits: FTESurf tools/p694launcher.md.
+
+**Limits:** source acceptance and isolated debug artifacts, NOT official archive,
+release/feed publication or canonical/fleet deployment. No game/engine/QC process
+or performance benchmark was run. Native controls use hidden Win32 consoles;
+ConPTY setup attempts failed and are not evidence. Win32 cursor visibility during
+the private VT alternate buffer did not establish a hide-command measurement;
+only final cursor restoration is proven. Physical desktop visuals, external hard
+termination/signal delivery and Linux execution remain separate. Rendered PNG/GIF
+previews use explicitly labeled sample terminal cells, not game screenshots.
+
+## Patch 695 -- replace abstract launcher artwork with a plain ASCII wave
+
+**Problem:** the owner rejected the P694 ramp/sun illustration as unlike its
+claimed scene and requested a simpler ASCII wave. Differently sized rows were
+also centered independently, offsetting the picture's connected outline.
+
+**Change:** illustration-only Rust/README correction: a ten-line, entirely ASCII
+curling ocean wave in white/cyan replaces the ramp, sun and stars. Pad rows to
+one width before centering, preserving the outline at ordinary80-column width.
+Keep the curl steady/readable while its tilde waterline flows sideways; the logo
+sheen remains. Download meters, progress counters, confirmation/cancellation,
+transport, feeds, signatures, install/launch gates and Quakers UI are unchanged.
+No native/QC source or runtime pin/tag, Build/public version/feed change.
+
+**Verified:** isolated locked/offline jobs1 IDLE-priority Windows bootstrap/example
+builds, zero warnings;42 library tests pass. New ASCII/equal-row-width/wide80/100
+render checks and stable-curl/moving-water control ACT; existing46 distinct art
+frames retain unchanged progress cells. Six piped binary and six hidden native
+console regressions pass, including Enter/Esc/Ctrl-C and an acted partial local
+transfer cancellation. Parent inspected the rendered PNG after row alignment and
+compared the pre-alignment control. Scope is two launcher files only; no fresh
+independent review ceremony is claimed for the localized illustration amendment.
+Commands/source/preview provenance: FTESurf tools/p695wave.md.
+
+**Limits:** owner/physical-console aesthetic acceptance remains separate; previous
+cursor-hide/Linux/external-signal coverage limits are unchanged. Sample PNG/GIF
+are terminal-cell renders. Only source and an isolated safe debug preview are
+accepted; no live launcher/game replacement, engine/performance run, full rename,
+official archive/release/feed publication or canonical/fleet deployment.
+
+## Patch 696 -- remove the launcher illustration entirely
+
+**Problem:** the owner rejected the ASCII wave and explicitly requested removal,
+not another replacement illustration.
+
+**Change:** delete wave rows/helper and the split logo/scene header. Center the
+existing World of Surf logo across the full header, retaining its letter sheen
+and the download-progress/confirmation display. No supplementary picture or new
+scene. README matches logo-only presentation. All bootstrap/transport/signature/
+progress counters/key handling/install/launch behavior remains byte-exact.
+
+**Verified:** warm isolated Windows locked/offline jobs1 IDLE-priority builds,
+zero warnings;42 library tests pass. Positive logo/full-width center and negative
+wave-geometry tests replace the superseded wave test;42 total and existing46-frame
+progress-invariance controls remain. Six piped and six hidden native console
+regressions pass. Native animation proof now reads actual header color attributes
+for the logo sheen rather than wave-specific changing character positions; input,
+screen/cursor restore and acted local partial-transfer cancellation still pass.
+Parent inspected the logo-only rendered PNG. Source/commands: tools/p696logo.md.
+
+**Limits:** no new illustration/physical aesthetic approval, Linux/cursor-hide
+or broader cancellation coverage claim. No real game/engine/performance run,
+canonical/fleet deployment, official archive/release/feed or full rename. Prior
+wave previews/source preserved as history, not kept in the current renderer.
+
+## Patch 698 -- Momentum/KSF map links, zones and admin pool manifest
+
+**Problem:** real KSF port names (notably surf_aircontrol_ksf) were not linked to
+held Momentum roots. The web board did not use the game's imported-build scope.
+Approved-only zone donors missed held beta maps. There was no reversible admin
+pool manifest or per-build missing-zone warning in Create Server.
+
+**Change:** infer only known KSF port suffixes against held Momentum roots,
+including extra/beta roots; arbitrary _css names and version suffixes remain
+independent. Archive-compared _css links keep their existing provenance. Both
+board APIs share imported rows in both directions and retain build-specific
+native records; the web board exposes related-build navigation. Extra-zone
+donors must match extra.tsv's BSP hash, have complete valid timer zones fitting
+the donor world/restart targets, and still pass the existing destination
+geometry/restart-name gate; local, existing/edited and incompatible zones stay
+untouched. Admin /admin/maps adds searchable/filterable/sortable per-build
+manifest rows, independent tiers, red missing zones and reversible pool actions
+using existing session/same-origin/CSRF protection. Persist per-build policy in
+SQLite; retain explicit disabled rows in the game feed, reject disabled joins,
+hide disabled menu builds, and fall back only to an enabled alternate. Menu
+feed refresh is capped at once/minute. Missing-zone names/labels draw red.
+
+**Verified:** isolated QC build has zero warnings. Windows board/web/join/
+accounts/surfd/variants/mapwatch/zonefit and the new map-pool falsifiers pass;
+mapwatch includes an acted held-beta copy and a shifted-build refusal. Acting
+menu overlay proves parser flags, folded build fallback, disabled-side refusal,
+and positive/negative query controls. Chrome exercises search, mode, zones,
+tier, related builds, sorting, red rows, disable/unhighlight/filter and reenable;
+parent inspected browser and menu screenshots. All 19 staged backend suites,
+including test_admin, pass on the NanoPi (only declared fixture/tool skips).
+Windows test_admin's two rcon/cache timing failures reproduce unchanged at the
+e008c3b control. Source commit 37cc4b1. Engine native
+code/pins, QC Build and run-evidence semantics are unchanged.
+
+**Limits:** native times are not made equivalent by a name link. Pool controls
+do not delete files/history, interrupt current lobbies, change explicit lobby
+rotations or prohibit manual console maps; offline menus use last fetched
+policy. Incompatible zone transfers remain refused, not silently forced. Fleet
+and dual-install deployment/provenance are recorded separately after staging.
