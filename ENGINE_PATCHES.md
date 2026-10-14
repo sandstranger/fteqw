@@ -6,6 +6,159 @@ engine **source tree** at `C:\msys64\home\Lex\fteqw\engine` and must be
 fork the engine. The deployed binary is `C:\FTEQuake\fteqw64.exe` (the previous
 build is kept as `fteqw64.exe.prev` for rollback).
 
+## Patch 702 — play public KSF CSS clips through the imported viewer
+
+### Problem
+KSF board times existed in game, but the public CSS/66t v2/v3 binary replays
+were not converted into the imported viewer. Their first frame integer is
+Source buttons, not entity flags; header kind is not map/course/style identity.
+Raw Source buttons also differ from the native recorder's resolved-direction
+FSI mask. The old import presentation assumed Momentum quality metadata and
+formatted arbitrary long import hashes as native recording dates.
+
+### Change
+`tools/ksfconvert.py` converts bounded local binaries using explicit external
+map/course/style bindings and one unambiguous main/bonus bookmark interval.
+It preserves pre-roll through the finish frame, source float motion/angles and
+raw buttons; the bookmark clock and optional official time remain separate.
+Native FSI directions follow recorded v3 moves or explicitly labelled v2 unit
+button-direction proxies. Opposing v2 inputs cancel without guessing SOCD order.
+No measured v2 analog magnitude, ground, native plane/journal/nonce/warp/sidecar
+or verifier/ranking identity is fabricated. v3 ambiguous flag bit1 is not ducked
+body state or a native warp. Source SHA256 is provenance, not authentication.
+
+CSQC retains foreign source/style, shows KSF/build-unknown chrome and imported/
+not-verified info, and leaves imported recording dates unknown. `demodata` is
+an imported ground/velocity capability alongside the compatible `momdemo` key,
+not a native evidence claim. The existing console player, pause/seek/rate/path
+controls are reused; KSF-only missing/different map names are refused with full
+previous-viewer pin/cursor cleanup, preserving native/Momentum warning behavior.
+Twelve supplied public samples have safe console aliases; converted runtime files live outside player data.
+Automatic KSF leaderboard Watch/download association is explicitly not included.
+No engine code/binary/pin/tag, server evidence, native data or qcbuild change.
+
+### Verified
+- Nine independent synthetic converter tests cover v2/v3/extensibility, exact
+  fields, raw-button vs FSI namespaces, opposed inputs, bookends/bonus names,
+  malformed/nonfinite/HTML/timing/binding rejection, sanitization/no overwrite.
+  Existing binary-inspector tests pass. All twelve public clips independently
+  match source bytes/clocks/keys and pass the unchanged `.rec` reader.
+- Dedicated socket overlays on surf_null, surf_prosurf and surf_monolith compare
+  every in-run source-frame camera coordinate/pitch/yaw, plus end velocity,
+  pause/seek and actual-frame playback. v2/main/bonus, native and old momdemo
+  controls, cold wrong-map refusal and active missing/wrong-map replacement
+  cleanup (immediate closed state/cursor release and actual body movement) are
+  exercised by `tools/p702ksf_smoke.py`. Screenshots show map alignment, imported provenance
+  and v2 unavailable versus v3 inferred contact. Build: all three progs, zero
+  warnings. Engine compilation is not required by this QC/tools-only change.
+- Recorder suite: 306 checks, zero failures. Final frozen-corpus snapshot: 275
+  REC plus 91 paired VIEW, baseline and subject fault reasons identical (175
+  preexisting faulted files/views); the reader is byte-identical to the inspected base and
+  there is no new corpus fault. Existing corpus faults are not repaired here.
+- Two independent final FORMAT/VIEWER reviews ACCEPT frozen QC b992920. Acting
+  pre-fix controls fail active-mapless viewer cleanup and tiny-analog key/move
+  alignment; the final source passes both and all twelve dedicated clips.
+- Limits: source map digest and ducked body/eye state unknown; CSS100t/CSGO/stage
+  conversion and automatic board replay binding unsupported. Display aliases
+  are not verified player identity. Bookmark duration is not the official
+  sub-tick timer duration. See `tools/ksfplayback.md` and owned task receipts.
+
+## Patch 701 — admit alpha planes independently within material batches
+
+### Problem
+Patch 700's default1 batch eligibility required every mesh to pass the plane
+geometry proof. One rear/near-span face therefore excluded all otherwise valid
+foreground panes sharing its material. Kitsune's `grids/grid_red` batch contains
+such rear faces, but the initial frozen dispatcher regression used three
+separate one-face batches and missed this admission failure.
+
+### Change
+Keep static-world, callback/flags/fog, CPU-geometry, program/deform and
+single-pass material gates at batch level. Admit plane geometry per face in the
+existing bounded sorter instead. Unsupported faces retain their baseline slots;
+any proposed crossing of an intervening unsupported command still aborts the
+refinement atomically. No clipping, OIT, centroid sorting, new cvar, worker,
+mode0/2, header/ABI, scene-cache or other-backend change.
+
+### Verified
+- Extended the EXISTING `tools/test_gl_blend_faces.py`, not a new trace/tool:
+  six frozen Kitsune yaws x six pane permutations x real rear quad4029 in the
+  first/last slot =72 same-material one-batch cases. Foreground1235-first,
+  stationary rear, unchanged batch descriptors and exact full-range mode0 order
+  pass. Intervening unsupported-slot fallback remains exercised.
+- Unmodified P700 compiled and ACTED before failing the new mixed-batch order
+  assertion. Restoring its whole-batch geometry veto in corrected source also
+  compiles and fails. All seven face controls, normal/HEXEN2 and normal/fast-math
+  strict C builds pass, as do existing plane and shader-rebucket regressions.
+- Full isolated Windows m-rel candidate succeeds with zero new compiler
+  diagnostic payloads against P700;5890 shared dependency-cache files retain
+  membership/hash/size/mtime. clangd has no errors; existing unrelated alignment
+  and integer-division warnings remain. Independent source review approves the
+  captured two-file fix with explicit conservative/native-acceptance limits;
+  parent confirms the intervening HEAD fast-forward changed only board docs.
+
+Limits: source/host regressions and compilation are not fresh GPU, startup-repeat
+or performance acceptance. Unsupported intervening faces, intersections/cycles,
+program-driven/capture/dynamic and CPU-unavailable geometry remain conservative
+fallbacks. A separate pre-fix P700 bundle attempt compiled the exes but failed
+plugin metadata packaging and unexpectedly downloaded its owned ODE archive;
+no configure/cache-file mutation occurred. Failed outputs retained. No deployment,
+QC Build bump, native runtime or old paused experiment acceptance is claimed.
+
+## Patch 700 — correct default static alpha order and shader rebucketing
+
+### Problem
+Default OpenGL `r_blendsort 1` reversed faces only within a material batch;
+separate material batches still composited in linked-list order. The proven
+Kitsune plane correction in Patch 690 was reachable only in opt-in mode 2.
+Separately, `Mod_ResortShaders` prepended every visited node: even an unrelated
+shader reload reversed unchanged alpha bands, and final band order depended on
+which old bands the same BSP batches had occupied.
+
+### Change
+Default1 retains its BSP-walk baseline and world-before-dynamic boundary, then
+uses the existing conservative plane relation/topological ordering for runs of
+ordinary single-pass static-world faces. No centroid sort is introduced into
+default1. Capture/portal, program/deform, fogged, multipass, animated,
+CPU-unavailable and uncertain geometry remain whole-batch barriers at their
+original positions. Unchanged, over-budget and cyclic runs retain original-node
+submission; callback shader updates persist. Mode0, mode2, other backends,
+worker settings and the cvar default value remain unchanged.
+
+Shader rebucketing now appends instead of reversing lists. Generated BSP batches
+carry an immutable first-surface sequence; stable merge sorting reconstructs the
+initial descending creation order after band merges/splits, independent of
+reload history. Unkeyed/nonbrush producers retain stable traversal. Scene-cache
+and batch-number invalidation remain intact.
+
+### Verified
+- Extended `tools/test_gl_blend_faces.py` exercises actual default0/1/2 dispatch,
+  all36 permutations of three frozen Kitsune panes at six recorded viewpoints,
+  dynamic boundary, original callback persistence, fog/program/multipass/cache/
+  recursion barriers, unchanged whole batches and atomic oversize fallback.
+  Normal/HEXEN2, normal/fast-math strict C builds pass; six compiled controls
+  reject restored legacy dispatch and the targeted new/old regressions.
+- Existing `tools/test_gl_blend_planes.py` passes its geometry, program,
+  projection, intersection, cycle/budget and eight compiled-control regressions.
+- `tools/test_model_shader_resort.py` passes exact production C at O0/O2:
+  fixed-sort idempotence, two-history convergence, split/reunion, shared/null
+  shaders, loading/nonbrush/unkeyed producers, stable equal keys, membership and
+  invalidation, and shuffled4096-node lists. Restored prepend and removed
+  canonical sorting compile and fail their named order assertions.
+- Isolated full Windows m-rel client build succeeds:37 pre-existing compiler
+  warnings, zero new diagnostic payloads;5890 shared dependency-cache files
+  remain hash/size/mtime unchanged through the client build. clangd database
+  regenerated; affected C translation units have no errors (standalone header
+  diagnostics lack its required including context). A subsequent server/plugin `make -n`
+  inspection timed out after recursive dependency configuration changed49
+  shared-cache paths. Failure retained; cache not restored/deleted, no remaining
+  owned root process. Server/plugin bundle verification is NOT claimed.
+
+Limits: extracted production tests are not fresh default1 GPU/pixel or startup
+acceptance. The prior paused worker-registration experiment is not rerun or
+credited. Arbitrary intersecting/program-driven/dynamic/capture transparency is
+not solved by this bounded correction. No deployment or QC Build bump is claimed.
+
 ## Reading entries written before build 46 — the `fs_` names
 
 Build 46 moved every FTESurf cvar, field and global **off the `fs_` prefix**, because
@@ -46823,3 +46976,103 @@ do not delete files/history, interrupt current lobbies, change explicit lobby
 rotations or prohibit manual console maps; offline menus use last fetched
 policy. Incompatible zone transfers remain refused, not silently forced. Fleet
 and dual-install deployment/provenance are recorded separately after staging.
+
+## Patch 699 -- Explicit KSF top-up, movement-style boards and zone coverage
+
+**Problem:** Create Server treated every missing JSON as no zones, despite the
+legacy embedded timer path; the beta BSP list was mistaken for approved zone
+publication. Existing KSF style storage was not selectable in either game board.
+Paging the locally held board did not request deeper KSF coverage. Old comments
+incorrectly described KSF's public binary replays as unusable Source demos.
+
+**Change:** additive surfd schema 17 queues bounded requests by canonical map,
+track, leg and style. POST on existing board paths coalesces active requests;
+known KSF legs only, 64 active keys, 100 source rows/request, 10k/board ceiling.
+The existing watch importer gives explicit requests bounded priority (three
+boards/five pages each), retains pacing/refusal parking, and acknowledges only
+after durable row filing; interrupted requests resume from cached cursors.
+Both game boards and the website offer FW/SW/HSW/BW independently of source;
+non-forward styles are KSF-only and never merge into Forward. Fetch +100 differs
+from Show more (held-row pagination). Count valid embedded brush start+stop
+triggers as timed in the service, cached by BSP identity; menu absence is now
+'zones not listed'. No guessed/private/differently-sized zone files are copied.
+Bounded offline tools/ksfreplay_info.py decodes the public v2/v3 format but does
+not convert, associate, certify or expose game playback.
+
+**Verified:** zero-warning SSQC/CSQC/menu compile. Queue/import/HTTP controls prove
+120 -> 220 -> 247/exhausted, duplicate coalescing, restart before acknowledgement,
+GET non-action, 50ms lock refusal, active cap, remote refusal retention, style
+isolation, linked map resolution and bonus4 -> KSF zone34. Existing Windows
+board/web/join/accounts/surfd/variants/zonefit/mappool/mapwatch/ksf suites pass.
+Real dedicated socket + HTTP fixture acts all four style GETs and CSQC SW/menu
+HSW POSTs, with durable isolated keys. FTE normalizes 200 to 0 but preserves
+202; both callbacks accept that actual response. Chrome exercises style/source
+reset and selected-style POSTs. Screenshots inspected; tools/p699ksf.md records
+commands, source/deployment provenance and explicit limits.
+Twelve supplied public replays were retrieved and decoded (three v3, nine v2,
+1,715,160 bytes total), plus malformed/oversized-shape/NaN rejection controls.
+
+**Limits:** native engine/pin/tag, QC Build, player configurations and evidence
+semantics unchanged. KSF replay conversion remains BACKLOG work: timer cropping,
+map/style/leg identity and actual game line/watch comparison must act first.
+Zone discovery cannot manufacture unpublished beta JSON. Source acceptance is
+not a release or deployment.
+
+**Delivery / correction, 14 Oct:** final backend d0ed3a3 passed all twenty staged
+NanoPi suites; exact old topup_step control fails at the common worker seam,
+and eight subject controls include actual --watch filing failure/recovery.
+The first live tick found a three-cell/four-cell fetched tuple mismatch missed
+by direct helper tests; its cache/owed marker and queue survived. Corrected
+worker was deployed and live requests then filed the supplied bonus4 boards:
+prosurf7, monolith5, exhausted; null main17, exhausted. Cached exact-name public
+metadata now permits their first unfiled leg page, without HTTP-side fetching.
+Both Windows gamedirs have the new menu/client pair; the twelve empty lobbies
+were swapped with .prev and restarted. Native reader regression: 306 checks
+pass; same bytes of 273 local recordings have unchanged168 faults (delta0).
+
+The public site's root nginx config still needs OWNER sudo install/test/reload:
+only the exact map API gains POST; all other board routes stay GET-only. Actual
+unprivileged syntax/proxy controls gave selected POST202 / other POST403 and
+were stopped; public remains403. Prepared template and exact commands live in
+tools/p699ksf.md. Do not call the website fetch button active before that gate.
+
+Local census corrects the fleet-only zone assumption: 39 locally held approved
+names lacked JSON; 38 BSP hashes differ from the Pi build. Only the matching,
+zone_on_build-checked bhop_perspective JSON was seeded to both Windows installs.
+No existing map/zone or personal cache was replaced. Archived-version zones or
+an owner-approved map refresh remain BACKLOG, as does native KSF replay playback.
+No native pin/tag, QC Build, release/feed or evidence semantics changed.
+
+## Patch 703 -- Retain bounded native recovery authority through cleanup
+
+**Problem:** Reducing recovery journals loses resolved object names across an
+interruption; unlinking authority before purge can strand held/corrupt stages.
+An exhausted but content-complete transaction needs cleanup-only retry without
+resetting its content budget. Windows ReadFile failures reported as zero must
+not classify unreadable protected content as complete.
+
+**Change:** Keep every original signed transaction row until named-stage cleanup
+finishes. Revalidate signed installed closure, protected policy, shared pending
+references and each staged object's type/length/hash before retirement; remove
+the journal last and retain it after any failed cleanup. Complete-only replay
+spends no attempts, but incomplete exhaustion refuses before mutation and an
+admitted completion persists its increased count. FTESurf hashing requires the
+opened length, successful read byte count and close to agree. Check journal
+writes/close, and refuse a new native apply while recovery authority remains.
+Legacy Quakers behavior remains separate; there is no unreferenced-object sweep.
+
+**Verified:** Exact corrected source7321da29 passes the retained Windows20-case/
+35-phase cold matrix, real first-removal interruptions in both orders, held-stage/
+journal denial/release, full-row initial/cold/deferred publication controls,
+attempt3/exhaustion, retained-generation live apply and real launcher reconciliation.
+Fresh >5MiB protected byte-lock comparison proves shared open + ReadFile33: the
+blocked candidate incorrectly retires authority; corrected attempt3 refuses with
+complete seed bytes unchanged, then released cleanup ACTS preserving the edit.
+Independent product-source review finds no issues; portable native-tooling units
+pass. Exact final build/deployment hashes and readlock evidence are recorded in
+FTESurf tools/p703native_retirement.md and tools/native_retirement_readlock.md.
+
+**Limits:** Windows bounded recovery only; no power-loss/directory-flush proof,
+hostile concurrent ancestor/hardlink protection, broad orphan collection or
+all-network-silence claim. No QC Build/public version/feed, progs/configs,
+Linux/Pi or release operation is implied by this source entry.

@@ -6564,11 +6564,11 @@ static qboolean GLBE_GenerateBatchTextures(batch_t *batch, shader_t *bs)
 	shaderstate.identitylighting = oldil;
 	return true;
 }
-static void GLBE_SubmitMeshesSortList(batch_t *sortlist)
+static void GLBE_SubmitMeshesSortRange(batch_t *sortlist, batch_t *end)
 {
 	batch_t *batch;
 	shader_t *bs;
-	for (batch = sortlist; batch; batch = batch->next)
+	for (batch = sortlist; batch && batch != end; batch = batch->next)
 	{
 		if (batch->meshes == batch->firstmesh)
 			continue;
@@ -6708,6 +6708,11 @@ static void GLBE_SubmitMeshesSortList(batch_t *sortlist)
 
 		GLBE_SubmitBatch(batch);
 	}
+}
+
+static void GLBE_SubmitMeshesSortList(batch_t *sortlist)
+{
+	GLBE_SubmitMeshesSortRange(sortlist, NULL);
 }
 
 typedef struct
@@ -7160,6 +7165,78 @@ static void GLBE_SubmitBlendedFaces(batch_t *world, batch_t *dynamic)
 	BZ_Free(faces);
 }
 
+// Default ordering keeps the legacy world/dynamic boundary and recursion order.
+// Only ordinary single-pass static-world runs may be split into planar faces.
+static qboolean GLBE_BlendWorldBatchEligible(batch_t *batch)
+{
+	if (!GLBE_BlendFaceEligible(batch) || batch->ent != &r_worldentity || batch->buildmeshes || batch->fog || batch->flags ||
+		batch->meshes <= batch->firstmesh || batch->shader->numpasses != 1 || batch->shader->remapto->numpasses != 1)
+		return false;
+	// A rear/near-span face can share its material batch with visible panes.
+	// Admit geometry per face in the sorter; unsupported slots stay barriers.
+	return GLBE_BlendPlaneShaderEligible(batch->shader) && GLBE_BlendPlaneShaderEligible(batch->shader->remapto);
+}
+
+static void GLBE_SubmitBlendedWorld(batch_t *world)
+{
+	glblendface_t *faces;
+	glblendplanestats_t stats;
+	batch_t *batch = world, *first, view;
+	size_t count, f;
+	unsigned int m;
+	qboolean overflow;
+	if (!world) return;
+	if (r_refdef.recurse || !GLBE_BlendPlaneViewEligible())
+	{
+		GLBE_SubmitMeshesSortList(world);
+		return;
+	}
+	faces = BZ_Malloc(GLBLEND_PLANE_FACES * sizeof(*faces));
+	while (batch)
+	{
+		first = batch;
+		count = 0;
+		overflow = false;
+		while (batch && GLBE_BlendWorldBatchEligible(batch))
+		{
+			for (m = batch->firstmesh; m < batch->meshes; m++)
+			{
+				if (count == GLBLEND_PLANE_FACES) { overflow = true; break; }
+				faces[count].batch = batch;
+				faces[count].mesh = batch->mesh[m];
+				faces[count].depth = 0;
+				faces[count].sequence = count;
+				faces[count].foreground = false;
+				count++;
+			}
+			batch = batch->next;
+		}
+		if (batch == first)
+		{
+			// Unsupported geometry/captures are barriers, submitted at their old slot.
+			GLBE_SubmitMeshesSortRange(batch, batch->next);
+			batch = batch->next;
+			continue;
+		}
+		memset(&stats, 0, sizeof(stats));
+		if (!overflow) GLBE_BlendPlaneSort(faces, count, &stats);
+		if (stats.moved)
+			for (f = 0; f < count; f++)
+			{
+				view = *faces[f].batch;
+				view.next = NULL;
+				view.mesh = &faces[f].mesh;
+				view.firstmesh = 0;
+				view.meshes = view.maxmeshes = 1;
+				GLBE_SubmitMeshesSortList(&view);
+			}
+		else
+			// No proven change (including budgets/cycles): retain whole-batch replay.
+			GLBE_SubmitMeshesSortRange(first, batch);
+	}
+	BZ_Free(faces);
+}
+
 void GLBE_SubmitMeshes (batch_t **worldbatches, int start, int stop)
 {
 	int i;
@@ -7182,7 +7259,10 @@ void GLBE_SubmitMeshes (batch_t **worldbatches, int start, int stop)
 					return;
 			}
 
-			GLBE_SubmitMeshesSortList(worldbatches[i]);
+			if (i == SHADER_SORT_BLEND && r_blendsort.ival == 1)
+				GLBE_SubmitBlendedWorld(worldbatches[i]);
+			else
+				GLBE_SubmitMeshesSortList(worldbatches[i]);
 		}
 		GLBE_SubmitMeshesSortList(shaderstate.mbatches[i]);
 	}
