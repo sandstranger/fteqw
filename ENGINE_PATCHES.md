@@ -6,6 +6,665 @@ engine **source tree** at `C:\msys64\home\Lex\fteqw\engine` and must be
 fork the engine. The deployed binary is `C:\FTEQuake\fteqw64.exe` (the previous
 build is kept as `fteqw64.exe.prev` for rollback).
 
+
+## Patch 721 — cull-aware default world-alpha ordering
+
+### Problem
+P701 could include raster-empty world faces in its default1 plane graph. Their
+constraints could create a cycle/barrier and preserve the wrong whole run even
+when the remaining visible single-pass panes had a bounded valid order. A stale
+entity RF_XFLIP contribution could also pollute world winding classification.
+
+### Change
+In the existing default1 static-world path, prove raster emptiness using every
+indexed triangle, actual remapped FRONT/BACK/two-sided culling, view/projection
+and positive eye distance before gathering graph commands. Unknown, nonfinite,
+eye-spanning and degenerate cases stay conservative. Select the world entity
+before reading cull state, clear only the previous entity contribution, and keep
+the view flip intact. Count the existing128 raw-face budget BEFORE filtering;
+retain original whole-batch replay for refusal/overflow. Ship the required
+28-fan fixture include with the actual-dispatcher tests.
+
+No new cvar, ABI/header, centroid sort, OIT, map-name special case, worker change,
+mode0/2 alteration, default2 promotion or other-backend change. Program,
+multipass, dynamic/fog/CPU-unavailable and recursive/capture paths keep their
+conservative existing admission/fallback behavior.
+
+### Verified
+Exact accepted renderer/test/fixture bytes transferred onto inspected origin
+8a2a9d32a; four portable GCC variants pass (normal/HEXEN2/fast-math/combined),
+with17 named compiled/runtime mutant controls that ACT and reject, and no
+compiler diagnostics under -Wall -Wextra -Werror. Includes six-yaw retained
+28-fan world geometry, all-triangle/remapped/two-sided/flip/projection guards,
+raw-budget overflow and entity-state restoration.
+
+Prior source-identical renderer build: independent native104.2 candidate equals
+a separately justified28-command reference fullframe; wrong-reference7936px
+and broken-baseline16996px controls ACT. Follow-up40-frame/3-startup native
+matrix passes stationary repeats, six-yaw startup stability, mode0/2 same-mode
+baseline preservation and default returns. Mode0/default104.2 differs42052px;
+all startup/post-shot workers are4 and default1 is read before writes. These
+are nonexclusive functional gates, not quiet performance results. Other-yaw
+stability is not independent ground truth. Whole-new-upstream build, exact
+commit smoke/publication/deployment remain separately receipted steps.
+
+Quiet service/cadence/tails, new-candidate supported-cache action, native
+static-world program/multipass/capture/reflection/raw-budget and broader-map
+coverage remain explicit limits. Source cache selection alone is not cached
+branch action; host fixtures alone do not prove GPU replay. No QC Build bump,
+Linux/Pi binary shipping or release/archive/feed publication.
+
+
+## Patch 720 — single-screen homepage with both platform downloads
+
+### Problem
+The reduced overview still scrolled through lower feature/setup sections, and
+Linux downloads remained below the first screen. The owner requested one full
+page with Windows and Linux downloads.
+
+### Change
+Homepage only: one viewport-sized hero, two direct receipt archive links, short
+requirements/launcher guidance and compact project links. Remove all lower
+sections; retain archive hash/size/compatibility metadata and exact release
+token sets. Scope responsive styles to the homepage and refresh its cache key.
+Replace obsolete lower-section test assertions with direct-link checks.
+Anti-cheat content, JS, engine pin/tag, QC Build number, receipts and feeds stay
+unchanged. No native/QC build, runtime, release or service operation.
+
+### Verified
+Clean isolated QC product 642a40e1ce21306561f5303bfcfd0281753474d9, base a9dce85f:
+6 copy tests, 7 brand tests, 76 release checks pass. Predecessor fails 5 copy
+assertions and all five acting viewport controls; both actual old archive links
+exist. Local and public Chrome at 1440x900, 1280x720, 390x844, 320x568, 844x390:
+no document scrolling, both downloads fully visible, loaded wordmark, unclipped
+nav, no resource/JS errors. No-JS phone passes; simulated 200% CSS zoom retains
+accessible downloads. Missing-resource control is 404. Screenshots inspected.
+Initial inline-block-marker and short-screen overflow failures were corrected
+and the complete controls/subjects rerun. Bare Python archive HEAD was 403;
+browser-like range HEAD/GET probes are 206 with receipt-matching total sizes.
+
+Published 2026-10-15 02:00:04 UTC using the locked presentation transaction:
+sitecopy-fullpage-20261015-7f2df7; predecessor sitecopy-20261015-7f2df7 preserved.
+Protected-receipt mutation is refused. All 20 public files SHA256-match; exactly
+index.html and site.css change. No anti-cheat/feed/history bytes change or game,
+backend/account/detector verification claim. Details: FTESurf tools/p720fullpage.md.
+
+## Patch 719 — minimal website copy and factual verification overview
+
+### Problem
+The homepage and anti-cheat page repeated promotional slogans and large feature
+cards. They obscured setup information and implied every ranked run was checked
+before appearing, while the badge also represents developer approval.
+
+### Change
+Website only. Keep a short movement description, feature list, requirements and
+setup. Replace anti-cheat slogans with recording/replay, input analysis, review,
+board separation, badge semantics and limits. Use plain lists and a compact
+article; cache-bust the changed CSS. Keep receipt-driven downloads and all
+release/update bytes. No runtime, detector, evidence, engine pin/tag, native/QC
+build or QC Build-number change.
+
+### Verified
+Clean isolated QC product eaa87531941336b70b1ce017a7072a4c692777de based on
+origin/main afd6c514. Six copy tests, seven brand tests and 76 release-library
+checks pass. Final predecessor control fails 21 copy assertions; parser and
+support/download controls pass. Receipt render preserves both token sets.
+Local and public Chrome at desktop/mobile widths: no overflow, JS errors or
+failed resources; images, download anchor, details and four clipboard buttons
+act; missing-resource control is 404. Inspected screenshots. Initial guessed
+test IDs/command labels were corrected to the existing template and rerun.
+
+Published 2026-10-15 01:32:29 UTC through the locked presentation transaction:
+presentations/sitecopy-20261015-7f2df7; rollback brand-20261014T1750Z retained.
+A mutated-receipt dry-run control is refused. Exactly three files change in the
+complete 20-file tree; all 20 match public HTTP SHA256s. Predecessor history,
+version.json and both signed update feeds are byte-identical. No release,
+archive, game install, lobby service/restart or backend change. Details and
+hashes: FTESurf tools/p719sitecopy.md. Detector effectiveness is not retested
+or claimed by a wording change.
+## Patch 722 — Steam friends, player roster and overhead labels
+
+### Problem
+There was no install-independent friends list, lobby presence/join action or
+private in-server friend chat. The scoreboard's small sidebar constrained
+player actions. ESC on another profile backed through the local profile.
+Players had no viewer-local overhead names/pictures with wall occlusion.
+
+### Change
+QC/surfd-only, with additive schema20. Verified account proofs mint lobby-only
+capabilities bound to key/account/node; every social use rechecks links/bans.
+Steam friendships require acceptance and are shared across linked installs.
+Five-second full-node snapshots publish bounded/expiring presence; Join uses a
+fresh directory address. Only accepted friends can send bounded transient
+private messages, delivered solely to recipient connections and acknowledged
+on the next poll. Neither presence nor chat has a public HTTP reader; messages
+are NOT end-to-end encrypted from operators. Lists refresh by content hash and
+are paced into a separate staging buffer. Spectator accounts use the same proof
+path. Add Friends to the account profile and Players to the full-width board;
+retain separate profile, spectate, friend, chat-mute and voice-mute actions.
+Remove the sidebar and its native-input exclusion rectangle. Other-profile
+ESC closes before search/text-focus handling. Existing body poses and Steam
+picture cache supply overhead labels: a cheap view/range filter plus twice-per-
+second PVS/solid trace, name-distance fade and centered far picture. No extra
+pose traffic, engine source/binary pin/tag, run evidence or QC Build change.
+
+### Verified
+Isolated QC/surfd worktree merged published main through P721. Three-VM build:
+zero warnings. Account, board and 21 social tests pass; 19 offline deploy controls
+include social-suite failure propagation and exact-commit dependency closure.
+The dedicated QC encoder preserves 41/42/64 populated rows across >16s; old
+whole-array escape keeps41 but truncates42/64 (8192-byte builtin limit). Actual
+Account Think/nonce fixture proves live prompt/request deferral, expired state
+retirement, exhausted client budget and bounded renewal retries. The three-client
+run passes23 controls: a forced renewal HTTP503 followed by automatic proof/list
+recovery BEFORE Join; actual profile Add, private draft/literal PM to Bob but
+not present Third, picture persistence, one-ESC close, Friends wheel ownership,
+held-row snapshot cancellation, roster chat/voice mute, Spectate and Join.
+Real-body label near/far/wall/behind fixture passes; wall/fade mutant rejects.
+Independent backend/client review findings resolved; final verdicts both OK.
+Failed/racy harness arms remain failed, not passes. Existing recorder checks306
+pass; corpus remains289 run files/48 known faults. No evidence semantics change.
+Published QC ada3252; test-only schema20 KSF controls c69b845. Exact committed
+source passes all22 Linux staged suites (external MOM conversion fixture absent)
+and all19 offline deploy controls. Zero-warning clean QC is byte-identical to
+the native-tested output; both Windows installs and all12 empty Pi lobbies now
+have hash-verified progs, .prev preserved. A fresh client loads live Players and
+labels modules without command/VM errors; no other body exists in that live
+control. At 03:48:49Z live backend remains schema18 with no social.py and all
+measured backend source hashes unchanged. This is PARTIAL progs delivery, not
+live fleet Friends. Subsequently approved read-only inventory observed sweep-family
+launch churn between snapshots; old-writer exclusion/transition remains the concrete
+backend gate, owned by the separate P717 deployment workstream. None was bypassed.
+A later TEST-ONLY native rig passes30 checks at1280x720/800x600: inert one-real-row
+control,64 synthetic UI rows scrolled to visible index63, parsed Players search
+result selected through SUI, embedded on-map profile, and Back proving a fresh
+roster draw in pinned Players before comparing bottom scroll. Eleven non-native
+controls reject stale/wrong-tab/unacted results and prove fail-closed wrapper
+lifecycle reporting. Parent inspected native screenshots. No product change. This is NOT64 network clients,
+nonempty profile times, physical input or busy-lobby performance; those and human
+visual comfort remain acceptance. No generic Steam-game/E2EE/native release or QC
+Build claim. Sanitized commands/receipts/remaining gates: FTESurf tools/p722friends.md.
+
+## Patch 718 — practice labels and save-owned run tags
+
+### Problem
+Noclip/settings attempts had a separate Cheated presentation. Ordinary save
+loads restored a snapshot's flags but reapplied the attempt being abandoned's
+noclip latch, so a clean running save inherited that attempt's reason until a
+start-zone reset. Retry restoration already used the saved latch.
+
+### Change
+QC-only. Restore the ordinary load's run/stage reason from the saved `cheat`
+field plus the CURRENT noclip/settings level, not the abandoned latch. Keep
+load segmentation/shadow and recorder restoration/cancellation unchanged.
+Present the legacy reason class as Practice with the usual amber colour and
+stage glyph; completion banners, announcements and local records agree.
+The Practice chip owns both bare-practice and legacy reason rows; segmented
+rows retain their own chip. Keep the old console filter spelling as an alias.
+No recording format/filename migration, reason-bit removal, engine source/
+binary pin/tag change, or QC Build-number change.
+
+### Verified
+Clean detached QC tree based on origin/main 8edb549. Three VMs compile with
+zero warnings. Real dedicated-socket control/subject on surf_dune each pass
+39 acting checks under their own expectations; the old build fails 11 subject
+checks. Walking starts a real recording, noclip acts, a clean RUNNING save
+loaded afterward clears the abandoned reason (including stage/latch) without
+a start-zone reset, a practice save stays practice, active noclip stays
+practice, and a saved start permits a fresh clean recording. Full/stage banner
+probes and filter/legacy alias agree. Inspected HUD screenshots show Practice,
+then shadow/held rather than a poisoned label after loading the clean run.
+`tools/test_reccheck.py`: 306 checks, zero failures. Corpus before/after: 289
+run files, 189 with existing faults, unchanged. Two independent reviews: OK
+following fixes for Practice chat colour and a vacuous empty-list filter test.
+Final populated control/subject: 42 checks each pass own expectations; old
+control fails 12 subject checks. Six header-only browser rows prove Practice
+keeps bare practice and flagged/unflagged legacy reasons; segmented remains
+separate and unknown stays visible everywhere. First populated fixture used
+an unsupported filename suffix and correctly failed the six-row assertion;
+corrected to the existing shadow spelling, not a reader change. Initial invalid
+rig let the run fall/reset before sampling and used an unknown cvar; retained
+as a failed harness, not a pass. Hopped-start forgiveness, resume, finish ranking
+and engine physics are not redesigned by this patch.
+
+Pushed product d9c2e92; clean rebuild zero warnings and byte-identical to the
+final subject. Both Windows installs received all three generated VMs with
+.prev at 2026-10-15 00:41:27 UTC, destination hashes verified. Fresh installed-
+artifact dedicated rig: 42 checks, zero failures. Details/hashes and limits in
+FTESurf tools/p718_runtags.md. NanoPi SSH/directory probes timed out: no fleet
+files changed, and no lobby deployment/restart/live verification is claimed.
+No release or Build-number bump.
+
+## Patch 717 — bound retained KSF repair through protected queues
+
+### Problem
+P714 cold-intent swaps still strand retained repair257 when all256 current
+intents are protected. A global overflow cursor can repeat misses across
+SCAN32 windows; stale nonterminal metadata and valid legacy excess can defeat
+bounded admission even after the protected-queue seam is bypassed. Incoming
+null-ID profile PBs lose raw precision and let stale cached records regain
+replay authority at equal rounded milliseconds.
+
+### Change
+Add a <=2 transient local-only overflow lane sharing original read/conversion
+cap2 with queued work; retain protected queue256 and request/park/lock rules.
+Persist one board+exact-key resume position and keep scan32 moving. Preserve
+retry/strike metadata in the bounded existing ledger, reconcile obsolete/ready
+nonterminal history, and hold queued terminal work safely when capacity is full.
+Preserve oversized historical state and park locally before DB/work/save until
+normal expiry permits processing. Exact provenance/hash/PB/transaction authority
+and imported-tier isolation remain unchanged. Old integer state reads forward;
+old-reader rollback is NOT safe for new dictionaries, so opt-in needs matching
+source+state preservation. Published P716 schema18/profile/deployer changes are
+preserved; prior unpublished P716 claim was superseded before any push.
+Additive schema19 scoped ksf_unbound metadata preserves null-ID raw clock
+precision in the PB transaction; current/install/legacy backfill refuse markers,
+cache cannot bind and exact fresh identity clears them. Original18 unknown raw
+precision stays explicitly ambiguous. No fake record IDs, native promotion,
+engine source/binary pin/tag or QC Build change. Old18 writers must be excluded
+BEFORE install/import (startup migration precedes the inner cache lock); retain
+fail-closed exclusion across coherent six-file migration/acceptance/receipt,
+including failure/disconnect. Preserve source+DB+demos.json and later native data.
+Source-only downgrade or ordinary deployer flocks alone are not safe transition.
+
+### Verified
+Original queue/state controls and3 acted review regressions fail as predicted;
+actual null-ID profile step then stale filing/retained repair/fresh slower A
+adds3 integration reds. Corrected collector45/profile16/importer106/top-up8/
+codec9 pass. The64-board gate repairs two intact originals across8 naturally
+exited fresh processes with original2/scan32/queue256 and no fetch/sleep.
+Capacity/retirement,2050/2304 preservation/expiry, precise and unknown18 scope,
+native/identified isolation, malformed metadata and actual PB-update-before-
+marker abort/rollback controls act. Account19 explicit13-boundary DDL races
+and board19 guards pass. Independent reviews close all4 P1s. Synthetic10000-row
+local WSL migration is indexed/idempotent, preserves runs and takes ~0.010s;
+not owner/NanoPi live timing or power-loss proof. Prior immutable16/38 proofs
+remain pre-integration evidence; final exact current18/flattened45/backend21
+six-blob receipts are required before publication and specified in FTESurf
+p717ksfprotected.md/owned CHECKPOINT. No live Pi/crawl/cron/install/reload/game/
+GPU/corpus/old-writer transition claim. Native Node/Pillow/MTV/corpus limits remain.
+
+## Patch 716 — queue complete KSF profile walks and lift client row ceilings
+
+### Problem
+The archive crawler was not capped at1000, but CSQC stopped holding board
+rows there, and profile totals stopped at200 rows. The manual profile seed
+mistook bestrecords' starting position25 for a limit; actual pages contain5
+rows at positions1,6,11,... . Profile completion counts therefore reflected
+only the incomplete imported subset, without an explicit source-check status.
+
+### Change
+Add surfd schema18's bounded profile-demand queue, fed only after resolving a
+known public profile. The existing lock/pacer/refusal park governs up to3
+profile pages per watch tick, across FW/SW/HSW/BW. Persist source before PB
+filing and checkpoint only after durable import; resume idempotently after a
+crash. Validate pagination/shape/main-map semantics. Valid upstream rows carry
+record_id:null: preserve that absence, use map/style for completion and retain
+existing cache-only PB/demo authority rules. Disclose pending/incomplete and
+unavailable-map counts in game/site profiles, refresh completed walks daily.
+
+Correct manual seed heads to position1 with separate cache names. Increase
+board/profile memory stores to a bounded10000 rows, retaining100/50-row HTTP
+pages and existing virtualized lists. Add `scores more` to exercise the same
+guarded append used by scrolling. Deploy planner ships the schema app, paced
+worker and profile module together; Linux suite includes its new tests.
+
+### Verified
+Fourteen real-SQLite/offline-source controls pass, including1005 completions,
+all4 styles, null IDs without replay authority, correct positions, wrong-
+offset/refusal retention, queue contention/cap, refresh expiry, and crash after
+PB write before cursor. Existing importer, top-up and web regressions pass;
+JS syntax and4 offline deploy-plan controls pass. Isolated pwsh7 three-progs
+NoDeploy build has zero warnings. Real CSQC held1050 board rows and1005 profile
+rows, observed actual offset1000 requests, rendered the in-progress caption
+and produced no VM errors; its screenshot was inspected. All31 P715 picture
+regression controls also pass on the new QC. Real public KSF positions1/6
+returned five distinct maps each with offsets0/5 and null record IDs.
+
+Limits: this is a paced eventual check, not an atomic upstream snapshot. It
+does not withdraw historical PBs or fabricate unavailable maps, and has an
+explicit10000-position safety bound per style. R2 publication/CDN cutover,
+remaining Beta zones and36 incompatible Windows BSPs remain separate gaps.
+No engine source/binary pin/tag, evidence grammar or QC Build decision change.
+
+### Deployed / live-verified — 2026-10-14, by 20:40:21 UTC
+Both P715 and P716 are in the exact P716 progs (QC 2d2aa6b; later caabd99 is
+QA/staging-only). All three generated progs hash-match in BOTH Windows installs;
+client checksum 8b0e6df8 was seeded in both. Pi qwprogs SHA256 39c5c945457003fd...
+and csprogs ad2bd7e5bb055b21... match the isolated build; build.ps1 -Pi proved all
+12 lobbies empty, kept .prev, and restarted all 12. All 12 later answered UDP
+status. No menu was shipped to a lobby, and no owner's game client was stopped.
+
+Backend seven-file matched ship-set hash/mode-matches caabd99, with a mode 600
+SQLite backup and same-master graceful worker reload. The full staged Linux
+suite passed, including schema18 migration races and the new profile controls;
+its pre-existing MOMGRAB sample-conversion arm had no fixture and was skipped.
+First stage refusal (old schema test constants and missing proxy fixture) was
+not waived; source/tests/staging were corrected and the entire suite rerun.
+Live schema 18 profile view queued demand, then a real lock/pacer watch tick
+advanced position 1->6 with five source rows; normal cron reached 21/four pages.
+Public HTTPS profile JSON reports partial, and public board.js bytes match the
+commit. This is evidence of an ACTED incremental check, not archive completion.
+
+Exact-build bhop_perspective zones were restored missing-only to both installs;
+isolated SSQC read 10 local zones and walking out reported running/recording 1.
+The persistent, flock-protected R2 picture publisher has verified JPEG and RGBA
+objects by authenticated body readback and is still seeding. NanoPi remains the
+picture origin; no unproven public CDN cutover is claimed. Its retained runtime
+root/cron and remaining incompatible/Beta/public-archive candidates are recorded
+in QC's AGENT_NOTES.md and BACKLOG.md.
+
+## Patch 715 — persist validated Steam pictures in the game
+
+### Problem
+Steam pictures had a 32-slot memory cache only. Map/client/renderer restarts
+fetched the same picture again despite NanoPi's existing JPEG/RGBA disk cache.
+
+### Change
+Persist only successfully parsed/rendered RGBA pictures in 256 disk buckets
+under the client's data/cache/steampic sandbox. Full directory-origin+mark
+SHA256 and UTC-day headers reject collisions, other origins and stale copies.
+Corrupt/truncated/non-hex bodies fall through to the existing single-flight
+HTTP path. Consent, pacing, refusal hold and texture rebuilding stay intact.
+No engine source, binary pin/tag or QC Build decision changes.
+
+### Verified
+Isolated pwsh7 build -Jobs8 -NoDeploy: all three progs, zero warnings. New
+p715pics real-client controls pass across seven fresh VMs: initial HTTP/write,
+zero-HTTP warm restart and renderer restart, corrupt/truncated/expired/key-
+collision/origin/non-hex fallbacks, quadrant screenshots and no VM errors.
+The warm screenshot was inspected. Cache is daily-expiring, bounded and local;
+R2 publication is a separate tooling task, not a claimed delivery cutover.
+
+## Patch 714 — separate KSF top-up filing from fresh replay authority
+
+### Problem
+An explicit top-up discarded each actual page and labeled the entire cached
+board as fetched, even when a completed board made no request. An equal-time,
+same-date seed replacement could therefore be undone and its obsolete demo
+relinked from retained bytes. Independently, 256 current cold jobs blocked a
+later retained repair forever with zero network allowance.
+
+### Change
+Top-ups preserve actual page rows separately from whole-cache filing; both
+previously owed and newly selected cached boards use exact fresh identity
+matching. Durable owed intent precedes filing/acknowledgement even for no-page
+completion. At most two retained candidates per discovery pass may displace
+unattempted cold intents at queue saturation. Original digest/PB validation,
+256-slot cap, two-original and network budgets stay unchanged; retry/strike
+records are not displaced. No engine/QC source or replay grammar change.
+
+### Verified
+Source-only offline continuation at
+`C:/FTESurf-worktrees/ksfaccept-20261014T181832Z/artifacts/`.
+`topup-red-control.log` reproduces stale A resurrection for no-page and
+unrelated-fresh-page arms, while genuinely fresh A acts. `coldqueue-red.log`
+passes the 255-cold control and fails with 256 cold jobs. Final focused controls
+pass; `collector-accepted.log` runs 31 tests, OK, including both owed states,
+retained admission 2+1 fairness, ID reuse, no fetch/sleep and protected retries.
+Importer 106 assertions/0 failed, top-up 8 tests/OK. Independent frozen-source
+review returns OK with notes. QC candidate `eaad87288f0c37699fc8b6602ed021f477224037`
+passes all ten existing exact-commit delivery groups, including the flattened
+31-test collector. Protected-only queues remain a conditional-admission
+follow-up, not an unconditional fairness guarantee. Tooling corrections are
+separate; collector proof and limitations are recorded in tools/p714ksfaccept.md.
+No live SSH/crawl/install/reload/cron/game/GPU or native build,
+engine pin/tag, QC Build bump or fleet acceptance is claimed.
+
+## Patch 713 — close KSF cache, recovery and backend delivery gaps
+
+### Problem
+An older owed/cached board could overwrite a known equal-time/same-date seed
+record replacement and resurrect its obsolete demo. The CLI skipped opted-in
+local recovery with zero reserved network requests; a normalized publication
+failure could leave new originals without keyed intent. Oversized advertised
+numeric filename fields aborted discovery. Backend delivery also accepted an
+old worker/historical readiness, failed-open publication queries and filtered
+rather than raw destination byte equivalence.
+
+### Change
+Game/backend repository only: distinguish cache-only rows from exact identities
+fetched this tick, preventing tied cached rebinding without assuming monotonic
+record IDs. Invoke opted-in collector recovery even with zero request budget;
+publish exact provenance before bytes. Bound filename leaves before numeric
+parsing/request admission. Fail closed on publication-query errors, hash raw
+installed bytes, and verify the same master's new direct worker only after old
+workers retire and that PID logs fresh readiness and answers healthy. Handle
+log rotation and cap health/sleep to a monotonic remaining-time budget. No native
+source/binary/pin/tag, evidence semantics, QC Build, stage/CSS100 or map-ID change.
+
+### Verified
+Old-source controls reproduce all three collector reviewer findings, the numeric
+filename crash, and all three delivery findings. Repaired collector/index/API28
+and codec9 tests pass; importer106 assertions/0 failed and existing top-up, board,
+replay, web, variants and sweep regressions pass. Remaining backend suites also
+return zero. Ten offline delivery groups include raw CRLF-vs-LF refusal, missing
+publication without workspace/transport, fresh/draining workers and stale/log/
+PID/master/health/process/signal refusal actors. Independent source follow-up
+and final exact-commit checks are recorded in game tools/p713ksffinal.md.
+Game6bb63403c5a3c4f954b89605e70684ecaae1b1c7 passes all10 exact-commit
+delivery groups, including28 flattened collector tests, missing codecs and
+collector/converter failure controls. No uncommitted source is shipped.
+Source/offline only: no game/GPU, QC/native rebuild, upstream crawl, remote
+installation/reload, cron enablement or live Watch claim. Destination/fleet
+runtime acceptance remains a separate gate; no engine pin/tag or QC Build bump.
+
+## Patch 711 — recover exact-current KSF imports from retained originals
+
+### Problem
+An interrupted KSF index write or missing normalized replay re-downloaded an
+original already held locally, making recovery depend on the shared host budget
+and cooldown. The seed updater also treated equal raw seconds as an unchanged
+record, retaining an old demo after a known record ID/date replacement.
+
+### Change
+Game/backend repository only: direct exact-binding provenance lookup, bounded
+metadata and original digest validation, and at most two retained-original reads
+per tick. Reconvert/reindex through the existing exact-current transaction, even
+with zero network allowance or host cooldown. No archive scan or inferred path;
+old archives without new lookup metadata remain ordinary budgeted cache misses.
+Admission rotates durably even on a cache miss, preventing two missing originals
+from starving a later intact one during cooldown. Missing originals may use the
+existing request budget; corrupt/mismatched/deeply nested local metadata or
+originals defer only their job. Equal-time seed replacements invalidate old Watch;
+unchanged/unknown identity and older/slower/rounded-only metadata retain their
+protection. ENGINE.txt patch only; no engine source/binary/pin/tag or QC Build.
+
+### Verified
+Offline controls require zero-download recovery after interrupted index and a
+missing normalized file, bound three local repairs to two per tick, exercise
+missing-byte budget fallback, digest/provenance/link refusal, and reject stale
+sub-millisecond/file/seed identities. Pre-change recovery controls fail, as do
+all three changed-ID/date seed subcases. All 23 collector/index/API tests pass,
+including the acted no-rotation starvation and nested-JSON controls. Existing
+codec9, importer106 assertions, top-up8, board351, replay-ledger119 and web268
+checks pass. Game source d20b579fb6ace569227e700497755f876cce4489 passes all
+seven exact-commit offline delivery groups, including the flattened 23-test
+collector/API suite and acted missing-codec/shell-failure controls. Targeted
+independent blocker closure returns PASS. Commands/results/limits:
+game tools/p711ksfrecovery.md.
+Source-only: no game/GPU, QC/native rebuild, network crawl, remote deployment,
+reload, cron change or live Watch claim. Stage/CSS100/map identity limits remain.
+
+## Patch 710 — prepare compatible game and package presentation
+
+### Problem
+The staged World of Surf website/launcher still opened game menus, HUD/boards,
+lobbies and generated package prose under the old public title. A broad rename
+would also alter update/game/data/account contracts before their migration gates.
+
+### Change
+Game repository only: manifest NAME, full menu/HUD title and consent/help/error
+copy, compact WOS scoreboard/profile/native-score labels, local/server fallback
+hostnames and all 12 configured lobby hostnames. One WORLD OF SURF menu label
+feeds crisp, additive halo and feedback passes at the existing 48px font rung.
+Lob_Title accepts both old/new non-empty lobby prefixes, case-insensitively;
+unrelated/prefix-only names and empty-host address fallback remain specified.
+Current README/service and generated release/install/legal headings plus Linux
+wrapper error copy are updated. Legacy executable/scripts/archive roots, URLs,
+identity, signed formats, evidence readers, ranked tiers and saved data/settings
+are not renamed. ENGINE.txt patch only; engine C/native binaries/pin/tag, QC Build,
+release/feed/live routing/defaults/fleet remain unchanged.
+
+### Verified
+Isolated game e27f2c8 and ledger b4c9f82e4; fast-forwarded to published peer P708
+(game 594e693, ledger 30d395320) without touching peer/shared trees. Refreshed
+max+1 claim 710 after observing peer untracked p709trainer-claim.md. Final game
+base advanced to 2c2cb20 (shipping tools/docs only). All three VMs compile with zero warnings using build.ps1
+-NoDeploy; actual compiled string tables contain the new title/badges and legacy
+formats/account URL. Six frozen product-source and five package-source audit
+tests pass, also under Python -O; real old-source controls fail visible-brand
+assertions while compatibility checks remain green. Seven web-brand tests,
+12 synthetic-key signed-feed tests and actual physical release-deny controls
+pass. Shell/PowerShell syntax and whitespace pass. Independent source review,
+commands, hashes and limits are recorded in game tools/p710presentation.md.
+Source/compile/offline candidate only: no game/menu execution, layout or art
+acceptance, native icon/title rebuild, actual archive/fresh install/upgrade,
+Linux native runtime, Steam browser, live HTTP or deployment claim. Clean-tree
+shipguard fixture initialization is blocked on absent ignored generated content,
+not counted as a pass. P705 art, P710 human checks and native/package gates must
+precede delivery; old endpoints/technical identity remain authoritative.
+
+## Patch 712 — recorded-input strafe trainer during demo playback
+
+### Problem
+The trainer deliberately hid during replay and sampled only outgoing live
+commands. Simply removing the hide would misattribute the viewer's last jump
+to a native/Momentum/KSF runner. Render interpolation and playback speed must
+not change measured key/flick timing; imported physics/contact may be absent.
+
+### Change
+QC only: share the command-clock sampler, feed recorded yaw/resolved side
+movement/speed/contact from a bounded 512-record walk per rendered frame, and
+restart that walk on backwards seek or split-mode changes. No extra whole-file
+open pass. Pause/viewer input cannot feed it; close/off-on clear stale history.
+Use file pmpin/tick values for an air-rate target, never current-lobby settings.
+Without a valid pin/contact, show key timing/agreement with an explicit keys-only
+label; missing movement data abstains. KSF v2 direction proxies are usable for
+key timing but do not manufacture ground/jumps. Gaps/recorded breaks discard the
+open span. Cursor storage is allocated to stay under CSQC's global limit.
+Engine C/binaries/pin/tag, QC Build and evidence formats/checker are unchanged.
+
+### Verified
+Acting unmodified control reads the authored native/Momentum/original KSF v2/v3
+clips and has a zero trainer rectangle. Subject draws the panel, reproduces
++15/-15 ms late/early swaps, and retains identical native durations/rate grades
+through pause with viewer commands, 0.25x/4x, backwards seek and off/on.
+Unpinned imports have timing but no fabricated air grade; movementless clips
+abstain; 2,100 samples catch up across the frame budget. Logs/screenshots inspected.
+All three VMs compile with zero warnings. Existing live P621 numeric/history
+checks pass; its 365-pixel no-strip failure repeats identically in the control
+at 1280x720 Vulkan, so no full pixel-suite pass is claimed. Evidence checker
+regression passes; 289-file corpus has the same 184 pre-existing faults in exact
+fault-list comparisons. Source/control/commands/limits: FTESurf tools/p712trainer.md.
+Delivery uses a separate clean P712-only snapshot on the inspected pre-P710
+runtime base: P710 is explicitly a withheld presentation candidate, not shipped
+by this feature. Client-only delivery d643b8a hashes on both Windows installs
+and NanoPi; old SSQC/menu/configs preserved. All 12 positively empty active
+lobbies restarted with changed PIDs; no recent runtime errors. Actual old
+installed-pair hidden control and new installed-pair UI arm both act/pass.
+Clock-attributed UTC, full SHAs/hashes and limits are in tools/p712trainer.md.
+Physical key provenance, sub-sample accuracy, real-fleet demo
+acceptance and ordinary engine .dem input reconstruction are not inferred.
+
+## Patch 707 — prepare parallel World of Surf website paths
+
+### Problem
+The new website base had no production-shaped routing compatibility proof.
+The unrelated root filebrowser can return a misleading 200; slashless legacy
+redirects dropped queries. Moving signed account callbacks too early would
+invalidate in-flight sign-ins despite keeping the same host/database/cookies.
+
+### Change
+Game repository: add scoped /worldofsurf static/font/board/map-POST locations
+beside /ftesurf, sharing storage/backend/rate/method/IP policy and legacy marker.
+Keep both legacy account starts/returns and SURFD_BOARD_URL authoritative; no
+callback redirect/config switch. Preserve slash queries, remove redundant gzip
+HTML type warning. Installer backs up snippet and verifies both board JSON
+routes by marker/type/envelope. Real-nginx/isolated-surfd harness plus full mock
+account suite under either configured base. Plan clarifies origin-only realm.
+ENGINE.txt patch only; engine C/binaries/pin/tag, QC Build, release/feed defaults,
+service hosts, account application/database, signed formats and player data unchanged.
+
+### Verified
+Isolated game base 54902ea, ledger base 31b9c86d7; refreshed max+1 claim 707
+following concurrent published P706. Five real local Windows + WSL Linux nginx
+1.28.0 + surfd integration groups pass per platform, zero nginx warnings;
+legacy-only acting control fails on actual filebrowser fallback and query loss.
+268 web, 400 legacy-base and 400 future-base mock accounts, 350 board checks and
+seven brand tests pass; shell syntax/whitespace pass. Cookie attributes, exact
+upstream queries, POST boundary, static/feed fixture bytes and installer probe
+controls act. Foreground master PID/shutdown/socket checks and intentional setup/
+shutdown-failure controls pass on both platforms with no retained fixtures.
+Integrated onto published P706 (game a70aaaa, ledger 2458d94e8); all full
+regression suites and both-platform nginx matrices repeat successfully.
+Source evidence/commands/failures/limits: game tools/p707sitepaths.md.
+Source-only, not installed/reloaded: local nginx/mock tests do not establish
+live HTTP, real Steam/HTTPS browser, signed update round-trip or art approval.
+Privileged parallel-routing window, external old/new matrix and explicit account
+start-drain/callback policy remain gates before canonical-path/default cutover.
+
+## Patch 708 — Black slim launcher and continuous small-window styling
+
+**Problem.** Launcher collapsed its32-cell logo at78 columns, painted a dark-blue
+background, filled a huge confirmation panel and exposed canonical Windows path
+prose. Separate terminal takeovers/plain-text transitions broke small-window
+styling. Three real workers did not fill the desired compact download view.
+
+**Change.** Launcher-only source in ProtoAus/Quakers-Launcher uses a black,
+borderless shared layout and one alternate-screen/raw-input session through
+consent/check/download/install/play/errors. Full centered logo remains at40x20;
+compact only below34 columns or18 rows. Up/Down chooses Yes/No, Enter confirms.
+Empty installs read Download World of Surf? with service/IP consent before
+network; first Yes covers the first download and No makes no requests/files.
+Questions show size only, not canonical paths. Slim view has exact session network
+bytes, verified-file completion, package size and four live filename/thin staged
+meters; actual transport concurrency4. No categories or giant dashboard panels.
+P704 dev-source guard/detached Windows spawn and signing/recovery policy remain.
+
+**Verified.** Windows optimized release3,596,288 bytes, zero new warnings;
+42 Rust tests passed. Live owned ConPTY resize80x30/60x24/40x20, black-cell/full-logo
+snapshots, actual Up/Down/Enter, exactly one VT alternate-screen enter/leave pair,
+continuous raw input and restored exit modes. First No zero requests/files; first
+Yes one feed/verified install; four held object requests versus prior P704's three.
+Actual-byte cancellation drains/retains partials without promotion; unsigned feed
+gets styled error/exit1 without objects. Full signed updater suite and dev/direct/
+batch detached actor falsifiers pass; reader306 checks0 failures. Complete control,
+failure and delivery distinctions: FTESurf tools/p708launcher.md. No engine source,
+pin/tag, QC Build, player data, public release/feed, Linux runtime or Pi change.
+Physical-terminal appearance/new real game acceptance is not inferred from ConPTY.
+
+
+## Patch 705 — World of Surf brand kit and web presentation candidate
+
+### Problem
+The approved game rename had no reusable web/icon kit; landing, board and
+account pages still presented FTESurf/FTE. Replacing every identifier would
+break startup instructions, signed account tags and compatibility paths.
+
+### Change
+Game repository only: outlined full-name dark/light/one-color wordmarks, WOS
+compact icon, PNG/ICO/social exports and offline gallery; reproducible exporter;
+landing/Anti-Cheat/board/account display branding, OG/Twitter metadata and mobile
+header fit. Preserve native/QC binaries, wire tiers, signed formats, callbacks,
+service/storage paths, updater and player data. Track REBRANDING_PLAN.md progress.
+ENGINE.txt patch moves; engine pin/tag and qcbuild/version do not. No engine C,
+renderer, movement, native metadata or ICO resource integration in this stage.
+
+### Verified
+Isolated game base a5a04db and ledger base 28367212b; fresh max+1 allocation 705.
+Seven brand regressions, 268 web, 400 accounts and 351 board checks pass; Node
+syntax passes. Accounts AST/board-JS differ only in display literals. Original
+HTML documents fail the branding detector; subjects pass. All SVG/PNG/ICO bytes
+rebuild identically (Edge 155.0.4283.45, fontTools 4.60.1, Pillow 12.3.0,
+Playwright 1.55.0). Browser acts under both site-prefix fixtures at
+320/390/768/1440px: pages/account light-dark, all five board titles, WOS selects
+ranked and retains a sample row, resource/no-JS controls, no document/nav overflow
+or page/resource errors. Inspected screenshots and icon gallery. Source evidence
+and retained failed attempts: game tools/p705rebrand.md. Human art acceptance,
+actual canonical/account routing, game/native/launcher identity and archive/update
+bridge are pending. Source-only candidate; no build, live deploy or release.
+
 ## Patch 702 — play public KSF CSS clips through the imported viewer
 
 ### Problem
@@ -47042,6 +47701,77 @@ zone_on_build-checked bhop_perspective JSON was seeded to both Windows installs.
 No existing map/zone or personal cache was replaced. Archived-version zones or
 an owner-approved map refresh remain BACKLOG, as does native KSF replay playback.
 No native pin/tag, QC Build, release/feed or evidence semantics changed.
+
+## Patch 706 -- Original KSF playback and bounded advertised-demo imports
+
+**Problem.** P702 made twelve KSF clips playable through offline conversion, but
+original binary files were not accepted by the game and imported KSF board times
+had no automatic exact recording association. Public board rows already carry
+sparse advertised file metadata; probing every player or guessing filenames is
+unnecessary and unsafe. Rounded milliseconds alone cannot identify a PB.
+
+**Change.** Client reads original CSS/66t v2/v3 files into Watch's imported REC5
+buffer using explicit map/course/style, unambiguous bookmark clock and pre-open
+16 MiB/40,000-frame bounds. Preserve source poses, velocity, buttons, recorded
+ground/analog and normalized direction; invent no duck state, BSP identity or
+native authority. Existing board crawler's opt-in --demos reserves <=2 requests
+inside its budget under the same lock/pacing/shared host cooldown. Consume only
+advertised cache fields; retain originals/provenance and exact current-PB link
+transactionally through kind/tier ksf and a separate normalized root. Preserve
+raw seconds and upstream identity/file metadata; faster/replaced PBs clear old
+links, seeds cannot overwrite exact bindings with rounded-only metadata. Bound
+queue/scans/bytes/disk reserve, distinguish transport/body failures from local
+archive failures, recover interrupted publication, and suppress incompatible
+variant Watch rather than removing its map guard. No new replay wire protocol.
+
+**Verified.** Three QC programs: zero new warnings. Twelve real dedicated original
+clips on null main and prosurf/monolith bonus4: full independent source traces,
+endpoint velocity/keys, pause/seek/rendered advance/path and active map refusal.
+Sixteen malformed/native-boundary arms prove the valid subject first. Seventeen
+offline collector/index/API tests cover exact binding/sub-ms/withdrawal, real
+budget/lock, scan/queue limits/progress, interrupted publication, seed ordering,
+shared refusal including ConnectionResetError/IncompleteRead, local failure
+retirement, stream cap/deadline, variant/path guards and 256-warm/one-cold queue
+progress with durable removal/missing-file recovery. One actual advertised
+upstream original indexes; its retained bytes pass real isolated cold API/client
+board-row download/cache/Watch and warm no-second-fetch controls. Existing
+backend/converter/inspector/native
+reader suites pass; same-byte native corpus 289 REC/101 VIEW has identical
+184/4 preexisting faults and zero delta. Fresh review found transport-category, legacy-seed and warm-queue blockers;
+acted regressions close all three. Final gates,
+source/commands/limits and separate delivery status: FTESurf tools/p706ksf.md.
+Stage cuts/CSS100/other games/build-hash binding remain explicit limits. No native
+engine pin/tag, QC Build, public release/feed or verified evidence semantics change.
+
+## Patch 704 -- Guard dev installs and detach the Windows Surf launcher
+
+**Problem.** A deployed 13.38 MB development preview retained rejected wave
+artwork, waited for the game to quit, and treated a source checkout as an archive
+install. Running its saved-permission updater replaced the newer Windows dev
+engine/plugins/progs with public release 0.1.25.
+
+**Change.** Launcher source in ProtoAus/Quakers-Launcher retains the already
+centered logo-only header. Windows game spawn is detached with null standard
+handles and returns immediately after successful spawn; errors remain visible.
+A `.git` directory or worktree file disables release checks regardless of saved
+consent/automation flags, without changing that permission. Pending bootstrap or
+in-game recovery refuses instead of applying release files to the dev checkout.
+Build/deploy the locked optimized release profile, not the earlier debug preview.
+Restore only exact independently recorded dev binary predecessors; no player
+config/data, updater ledger, release/feed or live fleet change.
+
+**Verified.** Windows Rust library: 42 passed, zero new warnings. Complete signed
+launcher integration suite passes, including invalid signatures, locks, recovery,
+junction/refusal/corrupt/offline controls. Synthetic `.git` directory/file arms
+make zero feed requests under saved permission/--yes/--enable-updates/--verify;
+player control fetches once and rejects an unsigned feed. Actual Enter input into
+fresh hidden Windows consoles proves the old launcher waits and the new direct
+and batch launchers exit, close their own consoles, and leave a persistent actor
+alive with exact args/CWD. Invalid executable spawn rejects. Optimized binary is
+3,583,488 bytes versus 13,379,584 (73.2% smaller); TLS and signature policy remain.
+Details/restoration status: FTESurf tools/p704launcher.md. Only launcher product
+source changed: engine pin/tag, QC Build and public version remain unchanged.
+No Linux/physical-desktop/new game runtime or live Pi acceptance is claimed.
 
 ## Patch 703 -- Retain bounded native recovery authority through cleanup
 
