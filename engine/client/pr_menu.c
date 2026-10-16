@@ -1114,8 +1114,9 @@ void QCBUILTIN PF_CL_drawline (pubprogfuncs_t *prinst, struct globalvars_s *pr_g
 	r2d_be_flags = 0;
 }
 
-//vector  drawgetimagesize(string pic) = #460;
-void QCBUILTIN PF_CL_drawgetimagesize (pubprogfuncs_t *prinst, struct globalvars_s *pr_globals)
+// The legacy builtin blocks for local decode. Remote menu pictures must be
+// polled without waiting for network I/O on the rendering thread.
+static void PF_CL_ImageSize (pubprogfuncs_t *prinst, struct globalvars_s *pr_globals, qboolean block)
 {
 	const char *picname = PR_GetStringOfs(prinst, OFS_PARM0);
 	mpic_t *p = R2D_SafeCachePic(picname);
@@ -1123,7 +1124,7 @@ void QCBUILTIN PF_CL_drawgetimagesize (pubprogfuncs_t *prinst, struct globalvars
 	float *ret = G_VECTOR(OFS_RETURN);
 	int iw, ih;
 	
-	if (R_GetShaderSizes(p, &iw, &ih, true) > 0)
+	if (R_GetShaderSizes(p, &iw, &ih, block) > 0)
 	{
 		ret[0] = iw;
 		ret[1] = ih;
@@ -1135,6 +1136,16 @@ void QCBUILTIN PF_CL_drawgetimagesize (pubprogfuncs_t *prinst, struct globalvars
 		ret[1] = 0;
 		ret[2] = 0;
 	}
+}
+
+void QCBUILTIN PF_CL_drawgetimagesize (pubprogfuncs_t *prinst, struct globalvars_s *pr_globals)
+{
+	PF_CL_ImageSize(prinst, pr_globals, true);
+}
+
+static void QCBUILTIN PF_CL_drawgetimagesize_async (pubprogfuncs_t *prinst, struct globalvars_s *pr_globals)
+{
+	PF_CL_ImageSize(prinst, pr_globals, false);
 }
 
 //vector	getmousepos(void)  	= #66;
@@ -1428,6 +1439,8 @@ static progparms_t menuprogparms;
 static menuedict_t *menu_edicts;
 static int num_menu_edicts;
 world_t menu_world;
+// Survives MP_Shutdown's world reset: an old URI callback is not the next VM's.
+static unsigned int mp_vmsequence;
 static int menuentsize;
 double  menutime;
 static struct
@@ -2667,6 +2680,16 @@ static void QCBUILTIN PF_m_fs_addonstate(pubprogfuncs_t *prinst, struct globalva
 	G_FLOAT(OFS_RETURN) = (spec && strlen(spec) < MAX_OSPATH) ? FS_AddonState(spec) : -1;
 }
 
+qboolean CL_FriendsSign(const char *nonce, const char *op, const char *who, char *out, size_t outlen);
+static void QCBUILTIN PF_m_friends_sign(pubprogfuncs_t *prinst, struct globalvars_s *pr_globals)
+{
+	char out[256];
+	G_INT(OFS_RETURN) = 0;
+	if (CL_FriendsSign(PR_GetStringOfs(prinst, OFS_PARM0), PR_GetStringOfs(prinst, OFS_PARM1),
+					   PR_GetStringOfs(prinst, OFS_PARM2), out, sizeof(out)))
+		RETURN_TSTRING(out);
+}
+
 static struct {
 	char *name;
 	builtin_t bifunc;
@@ -2687,6 +2710,7 @@ static struct {
 	{"crossproduct",			PF_crossproduct,			0},
 	{"random",					PF_random,					12},
 	{"localcmd",				PF_localcmd,				13},
+	{"friends_sign",			PF_m_friends_sign,			0},
 	{"localcmd_local",			PF_M_localcmd_local,		0},
 	{"cvar",					PF_menu_cvar,				14},
 	{"cvar_set",				PF_menu_cvar_set,			15},
@@ -3009,6 +3033,7 @@ static struct {
 	{"ui_native_plot_commit",	PF_ui_native_plot_commit,	0},
 	{"ui_native_plot_view",	PF_ui_native_plot_view,		0},
 	{"drawgetimagesize",		PF_CL_drawgetimagesize,		460},
+	{"drawgetimagesize_async", PF_CL_drawgetimagesize_async, 0},
 #ifdef HAVE_MEDIA_DECODER
 	{"cin_open",				PF_cs_media_create,			461},
 	{"cin_close",				PF_cs_media_destroy,		462},
@@ -3607,6 +3632,8 @@ qboolean MP_Init (void)
 		menu_world.Get_CModel = MP_GetCModel;
 		menu_world.Get_FrameState = MP_Get_FrameState;
 
+		if (!++mp_vmsequence) ++mp_vmsequence;
+		menu_world.spawncount = mp_vmsequence;
 		menu_world.progs = InitProgs(&menuprogparms);
 		PR_Configure(menu_world.progs, PR_ReadBytesString(pr_menu_memsize.string), 16, pr_enable_profiling.ival);
 		mprogs = PR_LoadProgs(menu_world.progs, "menu.dat");

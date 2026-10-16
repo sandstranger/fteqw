@@ -1,5 +1,607 @@
 # Engine patches (fteqw `fteqw64.exe`)
 
+## Patch 742 — retain mode2 ordering across eye-spanning world panes
+
+**Problem:** P739 fixes most owner switching, but farther-right save4/5 still
+flip. The new live trace has15 world commands,4 admitted planes/status-3;
+near/behind-eye planar ramp fans remain unsupported barriers. An exact actual-C
+replay matches all15 face IDs/depths,4 admissions,6 edges and75 work.
+
+**Change:** Mode2 only: conservative whole-view bounds admit validated planar
+eye spans without dividing behind-eye vertices. Full original vertex half-space
+proofs remain authoritative. Homogeneous triangle winding can prove empty
+backfaces even when eye-spanning; no GPU mesh/clip/depth state changes. Unknown
+materials/dynamics still block crossings. Mode0/1 paths remain unchanged.
+
+**Verified:** Exact P73915-world-command replay matches the live failure,
+including every depth and4/6/75 admission/edge/work counts. The fix retains all
+four ramp contributors in proven order at save4/5 and that exact camera. An
+independent positive-w polygon-clip area reference validates every newly empty
+triangle across39 views. All4 normal/HEXEN2/fast-math collector variants and23
+acting mutants pass; removing either eye-span admission or homogeneous culling
+fails near_camera_order_ok. Direct actual plane helper controls pass after
+repairing the older fixture's P739 trace-extraction seam; two wrapper setup
+failures are excluded, not feature failures. Original default1 raster/submission
+functions are byte-unchanged. Clean featurec75d7a5ea/tag742 native build has74
+baseline compiler warnings and0 new; all5890 shared dependency hashes match.
+Both normal Windows clients hash-verified at2026-10-16T16:37:40Z, with known
+published P741 .prev rollback and all8 current DLL/server destinations untouched.
+A predecessor guard caught the P741 bundle arriving during the owner-exit wait;
+both client hashes matched its public immutable clean stage, and P742 includes
+that exact parent with unchanged plugin/header ABI. Prior guard/snapshot retained;
+no failed transaction or foreign work was bypassed/reverted. No progs/config/
+saves shipped. Owner confirms the stage3 section is fixed, but new stage1
+save5/6 still flip: all12 admitted/status-2/48 edges/546 work. This is NOT full
+acceptance; general ambiguous-pair graph constraints remain under investigation,
+not another eye-span exemption. FTESurf tools/p742eyespan.md.
+
+## Patch 741 — authenticated Friends before joining a map
+
+**Problem:** The map-picker Friends list only mirrored the connected CSQC
+snapshot, so it was unavailable until a map/lobby had loaded. Retrying an
+unanswered menu request would retain HTTP workers; MENU generations also reused
+URI callback identity after a menu reload.
+
+**Change:** Add a MENU-only, read-only signing builtin with a fixed Friends
+domain/authority and strict list/Join targets. Reuse the installation key without
+exposing its seed or granting account-link, receipt, message or lobby authority.
+Refuse connected, connecting and demo states. Give MENU VMs a persistent native
+generation so old URI callbacks cannot enter a replacement VM. Mod-side Friends
+uses the fixed HTTPS service only with online consent and its panel open, keeps
+transport ownership across app timeout/hide, stages private lists atomically,
+rechecks Join server-side, and retains existing connected CSQC snapshots.
+The service uses expiring peer/operation-bound challenges, current key links,
+relationship/ban/presence checks, bounded rates and no-store replies. Exact proxy
+locations expose only the two read-only menu routes; no schema change.
+
+**Verified:** Three QC programs: zero warnings; isolated native/plugin build
+passes with no new changed-unit compiler warnings. Thirty real backend tests,
+account and board regressions pass. Actual disconnected MENU/native proof lists
+an online friend and pending request; pointer Join reaches a dedicated socket,
+where signing refuses and the connected snapshot still works. Consent/hidden
+silence, delayed Hide refusal, a 91-second held transport with no accumulation
+and healthy unrelated URI, and same-ID old/new MENU generation controls ACTED.
+Two independent reviews and follow-up closure; recorder tests pass and unchanged
+reader/corpus retain the190 preexisting faults. Details and separate publication,
+Windows/runtime/service status: FTESurf tools/p741menufriends.md. No native HTTP
+cancellation, live genuine-account/fleet acceptance, public release, QC Build
+bump or backend migration is claimed.
+
+## Patch 740 — prompt requested Momentum demos and sparse KSF collection
+
+**Problem:** KSF's bounded demo lane was not enabled in the watch schedule.
+Momentum requests waited for cron or behind a frozen automatic download batch.
+
+**Change:** Enable KSF `--demos` inside its existing bounded importer budget.
+Add a supervised requested-only Momentum worker with one-second cheap queue
+polls and at most two jobs per pass; reconsider explicit requests between
+background transfers. Preserve the shared lock, persisted CDN pacing, cooldowns,
+validity/expiry/capacity and all existing codec/import/foreign-replay checks.
+Canonical helpers retain the existing sealed-generation pre-import fence;
+no sealed manifest/source, schema, native engine, QC or lobby change.
+
+**Verified:** Ten offline worker/priority controls and nine existing request
+controls pass; existing momgrab controls exit zero. Original source acts A,B
+and fails the mid-batch A,C,B falsifier, while fixed source passes. Canonical
+admitted KSF max-zero probe exits zero, discovers four pending demos and makes
+zero upstream requests. KSF schedule enabled 2026-10-16T15:30:35Z with its
+existing HTTP500 cooldown intact. Momentum delivery/live acceptance is pending;
+see FTESurf `tools/p740demograb.md` for deployment evidence and limits. No live
+KSF playback claim while its upstream is parked.
+
+## Patch 739 — keep wire annotations out of world-pane ordering
+
+**Problem:** The owner's actual OpenGL frame has383 raw/375 gathered blend
+commands,7 admitted planes and status-3 (unsupported-slot barrier), not the
+12-command static model. Hundreds of stock CSQC wire annotations interleave
+with the glass by centre depth. The conservative barrier then abandons the
+whole world-plane correction as the camera turns. Earlier static passes did
+not cover those live annotation commands.
+
+**Change:** In root perspective mode2, keep stock CSQC `fill_trans` wire
+annotations in the legacy post-world layer. They retain ordinary opaque depth
+testing, widths, relative depth ordering and exactly-once callback replay;
+this is not xray or a draw suppression. As in default1, annotations are drawn
+after translucent world surfaces rather than attenuated by them. Recognition
+requires the actual stock shader, identity remap, one pass, no deformation or
+pass program, ordinary line/no-shadow/no-light flags, world entity, no fog/VBO
+and the known scenetris builder. Custom/remapped/multipass/deforming geometry,
+other callbacks, models and recursive/orthographic passes retain existing
+conservative behavior. Default0/1 and the graph itself are unchanged. The
+local-only one-shot `r_blendtrace` tool reports anonymous state/order without
+names, GUIDs or pointers and does not change rendering.
+
+**Verified:** A single interleaved stock wire command ACTED and failed the
+actual collector's four-pane-order assertion before the fix, then passes with
+all panes and the one annotation retained and its callback called once.
+All4 normal/HEXEN2/fast-math variants and21 deliberate regression controls pass;
+11 unsupported annotation contexts remain excluded. Default1/dispatch source
+is byte-identical to published P738. Clean feature87df379ec/tag739 native build
+has74 baseline compiler warnings and0 new; both normal Windows client hashes
+are verified with P737 .prev rollback. Plugin/header ABI and all5890 shared
+dependency files are unchanged, permitting client-only delivery without stopping
+an owner's game to replace loaded, unchanged DLLs. Other8 native destinations,
+progs/config/saves are not shipped. Owner live angular acceptance remains
+PENDING; portable success is not its replacement. Full provenance and human
+check: FTESurf tools/p739annotations.md.
+
+## Patch 738 — signed updates include the public tier catalogue
+
+**Problem:** P723's shipped `maps/tiers.txt` was absent from all three signed
+update disk policies, so a complete release could not be signed or installed.
+
+**Change:** Permit exactly `ftesurf/maps/tiers.txt` in the native updater, Rust
+bootstrap and Python publisher. No map-directory wildcard, bootstrap self-update,
+player-data overwrite or signature relaxation. The owner explicitly approved a
+one-time new-launcher download for this alpha rollout. Publish verified standalone
+Windows/Linux launchers with immutable versioned URLs and an upgrade notice.
+
+**Verified:** Actual native path-policy C compiles under `-Wall -Wextra -Werror`:
+exact tier path and existing assets accepted,12 neighboring/player paths refused;
+removing the new entry acts and rejects the tier path. Rust library42 tests and
+Python signed-feed13 tests pass, including tier-object hash round-trip and narrow
+path refusals. The previous P708 launcher actually refuses the signed tier fixture
+before installation, as expected; existing users must replace it. Packaging/helper
+80 tests pass. Full binary/archive/publication provenance is recorded separately
+in FTESurf `tools/release026.md`; these source tests do not claim live deployment.
+
+## Patch 737 — cull-aware mode2 plane ordering
+
+**Problem:** Owner confirms P736 fixes the original Kitsune saved view, but
+saves2/3 turned right expose another flip. The actual C sorter with20 nearby
+source-map grid fans reproduces a pose3 constraint cycle and angle-dependent
+fallback. Proven GL-empty backfaces were still participating in mode2's graph;
+default1 already excluded them conservatively.
+
+**Change:** Reuse the existing static-world/single-pass raster-empty proof before
+mode2 gathers face commands. Select the real world entity first, clearing a
+preceding RF_XFLIP exactly as actual world submission does. Only proven empty
+commands disappear; uncertain/near-span, program, multipass, fog, two-sided,
+recursive, nonstandard-view, dynamic/coarse/capture paths retain prior handling.
+Modes0/1/default1, budgets, plane proofs and P736's centres are unchanged. No map
+or surface-ID renderer condition, ABI/header, shader, QC Build or evidence change.
+
+**Verified:** Actual dispatcher: all3 saved poses plus33 interpolated2-to3
+views retain independently established2073/2086/2047/2071 pane order. Four
+normal/HEXEN2/fast-math Werror variants and20 named acting mutants pass, including
+old-mode2/no-cull and stale-world selection. Seven unsupported-context guards
+retain all20 commands; mode0 retains its full original range. Existing plane
+helper controls pass. Separate indexed-triangle/ray sampling checks6456 overlap
+pairs with0 expected-order errors; P736's save3 fallback reverses2452 samples.
+An initially inconsistent synthetic XFLIP state is corrected/excluded, not
+counted as evidence. Build/delivery provenance and the simple owner save3 gate:
+FTESurf tools/p737alphacull2.md. No GPU/performance or universal transparency
+claim; owner visual acceptance remains pending.
+
+## Patch 736 — tessellation-stable mode2 transparency centres
+
+**Problem:** The owner's saved Kitsune ramp/floor view changes apparent layer
+order with small mouse movements. Collinear BSP edge splits bias the vertex-mean
+sort centre without changing the actual surface; paired ramp faces can then
+receive inverted depth keys. Mode2 improves the larger scene but retains this
+bias when its bounded plane refinement cannot establish the order.
+
+**Change:** Use triangle-area-weighted centres for mode2's eligible indexed
+meshes, followed by the existing entity transform/view projection. Retain the
+previous fallback for missing/invalid/wholly degenerate indexed geometry.
+Modes0/1, default1, plane/cull proofs, capture/coarse/cache behavior, materials,
+map geometry and gameplay are unchanged. No triangle splitting, general
+intersecting-surface solution, custom-deformation or performance claim.
+
+**Verified:** Existing actual-C collector suite gains an acting collinear-split
+invariance control and actual Kitsune faces2047/2070 with plane refinement
+unavailable. Four normal/HEXEN2/fast-math variants pass under Werror; restoring
+the old per-face key acts and fails the new order assertion. All17 prior mutant
+controls still reject. Full isolated native/QC build passes with zero NEW
+compiler warnings (74 existing, matching the prior full build); no install or
+shared dependency bytes changed. The first synthetic world had zero axes and
+its new mutant did not reject; that inert setup is excluded and retained.
+Exact stamped build/delivery provenance and the owner saved-position acceptance
+gate are recorded separately in FTESurf tools/p736alphacentre.md.
+No QC Build-number, evidence format, public release or NanoPi-native change.
+
+## Patch 735 — restore save-lock map progress names (QC only)
+
+**Problem:** Monolith B4 and bhop_futile use player targetnames as progress
+markers for filtered reset teleports. Save-locks restored position and timer
+without restoring the marker, retaining later progress or none after a restart.
+
+**Change:** Capture/restore exact, quoted player targetname, including empty.
+Preserve it through demotion, retry/resume readers and bounded warm-rewind
+snapshots. Finish only the loading player's abandoned exits before assigning
+the saved name, preserving non-name cleanup and peer-safe last-occupant events;
+retain once/cooldown and peer state. Leave map filters intact. Legacy saves and unsampled replay positions
+cannot invent missing historical progress; affected old saves need re-creation.
+No full map-world/delayed-I/O rollback, recorder format, engine pin/tag, QC Build
+number or release change.
+
+**Verified:** Zero-warning fixture builds. Acting pre-change dedicated control
+fails22/46 marker assertions; the exit correction passes46/46, including actual save/load/
+hold dispatch, both map filter predicates and wrong-name reset controls, empty/
+quoted names, original-marker demotion, ring wrap/overwrite and stale-exit/peer
+isolation and mixed name/gravity exits. Review caught silent-discard cleanup
+loss in the unshipped first candidate; that regression control fails4/46 while
+the corrected subject passes. A second callback-lifetime control catches
+emitting a removed successor's outputs (unshipped candidate1/49); the final
+subject passes49/49, including source-self-removal. Advance with nextent after
+callbacks so removed successors are skipped. Real retry queues a map restart
+and restores the marker at spawn; the same baseline loses it. Reader306/0. Production build, corpus, independent
+review and separate delivery provenance: FTESurf tools/p735savemarker.md.
+
+## Patch 732 — known-port Monolith B4 KSF launch compatibility (QC only)
+
+**Problem:** Momentum's one-shot1662/398.301 opposed-ramp launch settles near
+1643, below the supplied KSF reference. Raw original CSS entry/exit script
+values do not reproduce effective KSF behavior; a speed-only fitted control
+also mistakes its own generated ramp lift for a hopped start.
+
+**Change:** Explicit reference-tuned policy for only the known Monolith B4
+pad/authoring: grounded opposed entry, one physical-progress reapplication,
+downstream XY clamp retaining Z. Duplicate/zero-tick contacts cannot advance it.
+Finalize before another command and packet evidence sampling. Existing force
+markers attribute only the next causal ramp move; real jump input still wins,
+older taints remain. Cancel/consume a pending contact on jump input without
+erasing its rise before JumpWatch's outer gate. Actual warp/hold/spawn/invalid/
+timeout/side exit retire state; nonplacement ghost restamps preserve it.
+Zero-tick input cannot retire attribution: remove only the new unexecuted latch,
+retain older executed input, never resurrect consumed packet state.
+All packet exits clear transient latches. No global physics, generic VScript,
+native pin/tag, evidence format, backend or QC Build-number change.
+
+**Verified:** Three isolated production VMs compile with0 warnings.
+Normal66/batched20pps reproduce1668.867/1665.936/1663.005→1662;
+first two dx/dz steps match all four clips within0.001. Clean timer classification
+and real older-hop rejection both act; Prosurf remains2275/normal/recording.
+60 actual-QC predicates pass, including actual detector/ghost/zero-tick input
+paths. Earlier strengthened50 reject pre-review45/5; final60 reject the zero-tick
+regression54/6. Command-exit mutant rejects its earlier predicate.
+Three real-client normal/early/held packet exits act/clean. New run prefixes pass
+reader and32/13-packet native replays at printing floor, zero bit/physent mismatch.
+Reader306/0; paired stable run corpus faults190→190; readable save prefixes keep
+16 existing faults and one historical read-denied fixture remains untouched.
+Prediction controls retain baseline-sized seams, not a new mirror/latency claim.
+Scope, commands, failures and separate delivery provenance: tools/p732monolith.md.
+
+## Patch 734 — opt-in recurring visibility and jump-height diagnostics
+
+**Problem:** `developer 2` continuously printed Source area/300-frame leaf-walk
+statistics and a successful height correction for every predicted jump. Routine
+instrumentation crowded out useful diagnostics while playing a level.
+
+**Change:** Default-off, non-archived `hl2_visdebug` gates area reachability,
+`mark/300f` and the one-shot area-cull census. Default-off `pm_jumpzdebug` gates
+only the successful normalization print, never its trace or origin update.
+Both still require `developer`. Keep ordinary diagnostics, warnings, visibility
+and movement unchanged. No QC Build, evidence format or public release change.
+
+**Verified:** Isolated native/QC build, zero NEW compiler warnings. Original
+socket control on surf_kitsune emitted area/mark/jump messages. Subject at
+`developer 2` emitted none with switches off, all three with switches on, and
+none after disabling again; real body replies and repeated jumps acted in each
+phase. `pm_selftest` passes and the full bhop_eazy `pm_dettest` output matches
+the original control exactly. Touched C files have no LSP parser errors
+(existing warnings remain). Commands, counts and separate delivery status:
+FTESurf `tools/p734devquiet.md`.
+
+## Patch 733 — bare right-aligned status and actual F2 updater dispatch (QC only)
+
+**Problem:** The updater corner still had a panel backdrop/left alignment and
+advertised F2 even without an update. P731's ordinary menu-local bind persisted
+RESTRICT_INSECURE30, so keys.c's F-key bind route reached MP_ConsoleCommand and
+was rejected. Its synthetic ui_key test bypassed that native route.
+
+**Change:** Remove the backdrop; fit all three lines to a common16-unit right
+margin. Show [F2] only for available/restart/launcher status with a working
+standard binding. Use the existing menu-only localcmd_local for the fixed
+literal bind, repairing empty/stock/ui_updates (including saved level30), while
+preserving custom binds. No engine source, dispatch trust-boundary, remote VM,
+Friends/backend or QC Build-number changes. Engine pin/tag stay unchanged.
+
+**Verified:** All three VMs zero-warning compile. Native Windows messages to only
+the owned HWND reproduce original F2 no-op while independent F3/F4 binds act;
+the subject opens the visible Updates pane from the SAME stored insecure bind.
+Empty binding also opens; custom binding still acts. Eleven status fixtures at
+1280x720 and800x600 share the correct right edge and conditional [F2] selection.
+PNGs inspected for the bare corner and actual opened pane. Status fixtures are
+NEVER DEPLOYABLE and do not prove updater HTTP/permission/restart authority.
+Evidence, exact contract and prior-test correction: tools/p733updatestatus.md.
+
+## Patch 731 — passive updater status and roomier Play/Friends UI (QC only)
+
+**Problem:** The title menu's update button did not match its station controls;
+fixed filter rows displaced map previews. Existing private Friends presence
+had no map-picker window. The Friends/backend continuation remains independent.
+
+**Change:** Passive top-right current/latest status and F2 access to the existing
+updater. Consented background updates no longer force its pane open. Collapsible
+filters retain state and a Compact/Large preview switch offers 78x44 or 128x72
+thumbnails. Optional Friends sidebar/drawer reads an isolated, non-archived CSQC
+adapter over P722's completed private snapshots. Join reuses Friends_Action and
+its authenticated lobby response arm; no backend, schema, wire or Steam changes.
+Disconnected/stale data is unavailable, never silently classified offline.
+Release staging stamps its final version in its own default.cfg; dev menus show
+their compiled source version. No native change, engine pin/tag or QC build bump.
+
+**Verified:** All three isolated QC VMs compile with zero warnings. Native
+1280x720 and 800x600 socket controls pass F2, retained tier/results, map scrolling,
+row density, 128 friends, completed-vs-partial publication, stale/clear behavior,
+one UI-to-CSQC join request and pending/offline negatives. PNGs inspected for
+large/compact previews, the updater corner, wide sidebar and narrow drawer.
+At 720p collapsed filters recover two large rows (5 vs 3); compact shows 8.
+Synthetic presence is NOT live Steam/backend or a completed cross-lobby join.
+Commands, evidence and the adapter compatibility contract: tools/p731menu.md.
+
+## Patch 729 — preserved map photos, eager manifests and saved-zone drafts
+
+**Problem:** Surf/bhop picture coverage depended on incomplete cached prefixes;
+the selector could only stretch a small bundled thumbnail and map manifests
+waited for menu focus. Zone refresh skipped existing files, and saved local zones
+had no authenticated upload path. An uploaded file must not bypass the owner's
+review/activation and existing-times decisions.
+
+**Change:** Audit live approved native modes plus cached testing metadata,
+preserve XL originals, recover same-map deleted-thumbnail alternatives, generate
+bounded R2 backdrops/name aliases and larger offline atlas layouts. Append-only
+missing-cell generation preserves existing atlas coordinates. Boot manifest
+refresh retains consent/rate gates. Native menu image readiness is nonblocking;
+full HTTPS picture identifiers survive shader canonicalization and pending/failure
+continues to use the atlas. Online disclosure advances to version 6 (not qcbuild).
+
+Latest-zone requests before local Play/download validate and reversibly promote
+a curated layer without overwriting local edits or mutating active timer tables.
+SSQC never consumes the client-only download layer. Saved-file upload freezes the
+bytes, requests explicit native confirmation and uses a distinct existing account
+proof purpose. A separate role/challenge/draft store reads linked accounts
+read-only, denies by default and bounds geometry, lifetimes and attempts. Owner
+installation and review staging helpers do not migrate/restart the sealed main
+backend or activate drafts/change existing times.
+
+**Verified:** 1,124 known inventory maps, zero missing available images; 4,497 R2
+JPEG objects checked against complete source bytes. Testing is cached coverage,
+not a fresh authenticated upstream census. Media10, real-Ed25519 backend11 and
+installer3 unit controls pass; 512x288 offline export and append-only atlas
+preservation acted. Recorder regression and unchanged-reader corpus checks pass.
+Full native/QC build after integrating P728 has zero NEW compiler warnings.
+Native boot fetch, offline-consent refusal, 1920x1080 HTTPS readiness and valid/
+invalid refresh preservation acted; screenshot inspected. Native synthetic
+confirmation was refused, a real-key non-admin denied, and an isolated test admin
+stored the exact44,244-byte frozen file. Dedicated SSQC consumed curated geometry,
+preferred local geometry with a distinct hash, and ignored a valid client-only
+file when curated input was invalid. Those tests used isolated synthetic data;
+no live account role, public upload service, zone activation or existing-times
+change is claimed. Installation/delivery provenance and remaining owner/root
+boundaries are recorded separately in FTESurf tools/p729mapmedia.md.
+
+## Patch 728 — authored map visuals, Prosurf launch and black-safe shadows
+
+**Problem:** Leidenfrost's dithered VTFs request POINTSAMPLE but their sampling
+policy was discarded. Sidistic's automatic150-degree hue remained green rather
+than the requested light blue. Prosurf B4's concave START surrounds an authored
+allowBhop launch pit, so its necessary bhop could earn a hopped/practice tag.
+There was no black-preserving shadow control. Legacy OS/texture gamma policy
+also made scene image controls depend on the selected rendering path.
+
+**Change:** Preserve successful VTF nearest/no-mip metadata unless an explicit
+sampler controls it; do not change global filtering. Sidistic's automatic grade
+is195 degrees /0.65 saturation, with one policy feeding diagnostics, generated
+arguments and shader hash. Explicit user hue retains original semantics.
+QuakeC captures narrow Prosurf B4 region permission per grounded jump command,
+not the previous packet endpoint. Outside attempts deny the packet, arm identity
+must still match, and normal/held PostThink paths clear permission. Existing
+hopped/dirty taints are never forgiven by the exception.
+
+Archived OpenGL `shadows` / `v_shadows` (0..1, default0) lifts luminance smoothly
+while preserving the deepest toe, highlights and RGB ratios. Stable sub-LSB
+spatial dither and float scene/grade intermediates avoid expanding a quantized
+grade. User exposure follows the authored grade, before AA/bloom and HUD.
+Source OpenGL integrates gamma/brightness in that shader path rather than relying
+on OS/texture gamma. Neutral controls do not request the exposure pass. Existing
+hardware-ramp restoration remains intact. Engine and plugin shader headers are
+regenerated. No owner config, global movement settings, Build number, backend,
+lobby or deployment-control change.
+
+**Verified:** Isolated clean-base native client/server/HL2 builds and zero-warning
+QC builds; no new native warning payload versus the same-compiler clean control.
+Actual GPU shader plus native stage-order checks pass normally and under Python
+-O:12 GPU checks cover neutral identity, toe/highlights, acting lift, temporal
+stability, bounds, monotonic mean ramp, spatial quantization levels, colour/grey
+preservation and gamma/brightness. An optimized-out neutral lift is rejected in
+both modes. Real dedicated texture listings prove Leidenfrost NEAREST versus a
+filtering control; static crop/screenshot controls and unchanged global filtering
+confirm action. Final scene/graded targets are RGBA16F. Shadow/brightness crops
+change; restoring neutral returns the static crop exactly (MAE0). Sidistic's
+final pastel/original-hue controls are inspected.
+
+Two reviews rejected the first packet-scoped permission; two corrected-diff
+re-reviews found no concrete issue.13 actual helper/watcher runtime checks pass,
+plus3 real-client normal/early-return/held cleanup receipts. Natural final clean
+product Prosurf launch reaches2275 with practice0/recording1/hopped0; throttled
+outgoing input also passes. Outside bad-hop control earns practice; earlier
+hopped/dirty preservation has an acting predicate control. Reader tests306/0;
+unchanged reader/corpus yields190 existing faults on813 recordings/661 views,
+no increase. Gamma/brightness already worked in the connected control in modes0
+and1: no server lock was reproduced, and no such root-cause claim is made.
+
+**Limits:** NOT INSTALLED/LIVE at source verification. P727's owner subsequently
+published explicit release of the cutover hold; delivery needs its own guarded
+receipts, not that source note alone. OpenGL/Windows measured; no Vulkan/D3D shadow lift,
+HDR/display or subjective shade/performance acceptance claimed. A prior-bad-hop
+plus boost arm missed its booster and is not a combined-path proof. Monolith B4
+still measures about1643 versus supplied clips around1666–1669; unimplemented
+StrictMode is a lead, not established causality. No guessed +30 correction or
+physics change shipped. Matching original CSS map/authoritative trigger semantics
+remain needed. Source, controls, failures, retained evidence and delivery hold:
+FTESurf `tools/p728mapfix.md`, BACKLOG.md and lextest.md.
+
+## Patch 727 — completion honours the surf / zoned-bhop pool (backend only)
+
+**Problem:** Admin map disables affected menu/join requests, but profile
+completion totals and have/not-beaten lists independently unioned every main
+board and playable map. Disabled, unrelated-mode and unzoned bhop entries still
+counted on both the website and the in-game leaderboard.
+
+**Change:** One effective pool admits surf maps plus bhop maps with actual
+online/local JSON zone files, with explicit admin disables taking precedence.
+Both completion counters and both map-list APIs use it, as do admin/feed/join.
+Unrelated modes and unzoned bhop are automatically disabled with a reason;
+embedded timer brushes alone are not a bhop zone file. Zone-file indexing is
+separate from the existing timed flag. Admin enables cannot bypass the rule.
+No map, zone or historical time is deleted. Existing lobbies/manual console
+maps are not interrupted. The matched backend/admin/template ship-set is closed
+by the exact-commit deployment planner. No QC/native, pin/tag or Build change.
+
+**Verified:** A clean pre-change control positively reproduces both leaks and
+retains eligible controls (5 checks). Final subject34 checks pin shared web/game
+populations/counts, warm-cache admin changes, automatic file add/remove,
+embedded-only exclusion, manual override persistence, feed/join behavior and
+history preservation. Web/board/join/map-pool/variant/KSF top-up suites pass.
+The two Windows UDP timing assertions in admin also fail identically on the
+untouched control; not repaired here. All24 main-generation backend suites
+plus codec pass natively; an isolated live-generation19-compatible candidate
+also passes all23 suites plus codec, with expanded completion33 native checks
+(Node syntax separately passes on Windows). Inspected real browser/client
+fixtures show the same3/5 and five maps. The ordinary deployer correctly refused
+the sealed guarded runtime; that is not relabelled a successful deployment.
+
+**Live acceptance, 2026-10-15T15:35:36Z:** Owner-authorized, separately reviewed
+schema19 guarded cutover accepted compatible source `bf054235bc2ec73b4d9a2cd685f3bc228f5978bf`,
+old CLOSED/new OPEN, all27 tables logically identical at CLOSED acceptance.
+Only527 proven prior bulk bhop exclusions reset;4 unrelated setting rows remain
+unchanged. All12 native services/configs/runtime cvars/autosave restored, with
+12 fresh heartbeats (maximum age5.5s). Live HTTP/API and real public DOM show
+**1752 =1367 surf +385 file-zoned bhop**, zero forbidden/manual-disabled entries.
+A real dedicated-socket game client agrees on total and per-tier total/done.
+No schema20 substitution, history deletion, native/QC or Build change.
+
+The final reviewed observational boot update keeps promotion pins strict without
+permanently freezing ordinary shared progs/credential rotations. It leaves the
+existing worker/app untouched; a later normal worker roll emitted the new fields.
+Focused controls:39 serving/settings,6 real-file CAS,5 explicitly seam-mocked
+orchestration and10 real isolated worker arms. Preserve the strict worker
+UID/start/argv/executable/lifetime/listener and original-context receipt binding.
+The initial strict-census park was recovered explicitly without journal reset or
+foreign-process kill. The fleet/deployment hold is released; serving/recovery
+roots remain runtime-required, not disposable tests.
+
+**Limits:** Game unrated total1341 still hits the pre-existing1000 held-row cap;
+this is not complete unrated-row browsing. One initial public profile navigation
+rendered HTTP504, while the alternate reference passed; its failed endpoint/root
+cause is not isolated. BACKLOG.md retains these two falsifiers. Exact source,
+controls, skipped external fixtures and live evidence: tools/p727completion.md.
+
+## Patch 726 — Counter-Strike-style spectate chat aliases (QC only)
+
+**Problem:** Players naturally typed `!spec` / `!spec proto` in chat, but both
+were broadcast as ordinary text instead of opening the existing spectate camera.
+
+**Change:** Recognize `!spec` in the existing server chat parser and send the
+trimmed tail as one quoted argument to the client's existing `spectate` command.
+Bare use selects the next player, or leaves through the existing countdown.
+Names retain case-insensitive exact/unique-prefix matching, colour stripping,
+ambiguity/self/unknown refusal and normal camera/hold behavior. Both whole and
+split-token senders, including the chat draft and team chat, use the same path.
+No native engine, pin/tag, recorder/evidence, physics or qcbuild change.
+
+**Verified:** All three VMs compile with zero warnings. An isolated pre-change
+real dedicated-socket, three-client control proves both aliases broadcast while
+console spectate enters and leaves through the countdown (6 checks). The subject
+passes25 checks: entry/toggle/countdown, exact coloured multiword names, split
+sender/team chat, unique prefixes and refusal without changing an existing
+target; a semicolon-bearing tail remains one argument. Ordinary/non-alias chat
+still broadcasts, handled aliases do not, and no-target uppercase use leaves no
+pending camera request. No command/VM errors. Driver: tools/spec_chat_smoke.py;
+commands, failed-harness boundaries and delivery evidence: tools/p726spec_chat.md.
+Original product commit used P725; concurrent portal publication took that number
+before this documentation push. Renumbering changes no tested/deployed code.
+
+## Patch 725 — seamless oriented linked portals
+
+**Problem:** surf_tripportals uses real see-through linked_portal_door surfaces,
+including ceilings, oblique doors and roll. The old slab/feet crossing and
+additive Euler correction did not describe that geometry; a minimum exit speed
+and upright-only view also broke momentum and camera continuity. Static client
+portals ignored the map's runtime Open/Close state.
+
+**Change:** Source mover pin4 crosses the oriented rectangle with the hull
+centre, preserves the rigidly rotated velocity and world gravity, and carries a
+transient eye correction as the thirteenth explicit native/QC movement field.
+Derive the current posture's eye before movement. Compose view rotations from
+forward/up bases, retaining original submitted command angles for delayed snap
+matching; keep local view state separate from remote prediction scratch. The
+main eye can cross the rendered plane separately from the body. Exact aperture
+half-extents and destination origin/basis participate only in the v4 environment
+digest. Keep legacy pins1/2/3 and ordinary trigger angle semantics unchanged.
+Reliable typed named-door snapshots synchronize activation, partner and size,
+including pre-lump state; server I/O and client rendering/collision refresh
+together. Linked CSG retains swept aperture boundaries and refuses rear-side
+wall forgiveness while allowing front-side exit overlap.
+
+**Verified:** Isolated full Windows build plus final native13 incremental build,
+zero NEW warnings; production QC zero warnings. Actual production math helpers
+pass54006 checks; actual CSG/posture functions pass17 checks with separate acting
+glancing-wall and rear-approach failure controls. Native prediction-input and
+13-field movement-policy tests pass. Real dedicated-socket map arms cover wall,
+ceiling, floor, oblique, reverse and180-roll crossings; slow16u/s and2000u/s
+controls preserve rotated momentum, and actual duck47/stand64 crossings act.
+Partner-only retarget leaves the old native fingerprint unchanged; pin4 changes
+it and exact restoration restores it. Independent geometry/state/compatibility
+reviews and final front-side follow-up have no remaining blockers. Paired
+canonical corpus:289 files,189 existing faults in BOTH arms, stable input/no
+increase; unchanged reader, no all-clean corpus claim. Reproduction and delivery
+provenance: FTESurf tools/p725portals.md. Full-map human feel remains in lextest;
+no QC Build, release or updater/feed operation is implied.
+
+## Patch 724 — fit the complete MOM/KSF bonus sidebar label (QC only)
+
+**Problem:** P723's text controls passed, but the first graphical screenshot
+clipped the Strafe half of a split KSF bonus rating. Sidebar width used mono-row
+ems even when that face shrank below the UI-label font's12px minimum.
+
+**Change:** Measure all actual leg titles, compact source-aware ratings and the
+header in their drawn UI fonts/sizes inside the responsive sizing loop. Share
+one formatter for measurement/drawing; add insets before giving width to the
+normal table/column fit. Expose an acted width witness in scores status. No
+native engine, pin/tag, physics, evidence, backend or qcbuild change.
+
+**Verified:** All3 VMs compile with0 warnings. Quiet-gated1280x720 and800x600
+real dedicated-socket graphical arms pass; inspected images show BOTH Unit and
+Strafe letters in the sidebar and full bonus text in the HUD. Actual UI-chain
+clicks select the taller stage2 row. Width grades pass (e.g.128px >=113px label
++14.4px inset); an800x600 HUD-editor capture registers the complete extra bonus
+row inside the viewport. Full source/authority/stage/bonus/map-change controls
+still pass; the original clipped screenshot and first rig's failed server-cvar
+probe remain failed evidence. Physical wheel/input taste remains human-only.
+Source and delivery provenance: tools/p723tiers.md.
+
+## Patch 723 — separate MOM/KSF map and stage/bonus display (QC only)
+
+**Problem:** The top-right HUD displayed one generic tier, obscuring whether it
+was Momentum's or KSF's. The scoreboard had no per-leg ratings, and the owner's
+linked community bonus sheet was not read.
+
+**Change:** QC publishes exact-map public rating rows through short serverinfo
+keys. HUD and Track sidebar share one MOM/KSF formatter, mark suggestions and
+unknowns, and show actual current-stage/bonus ratings without copying main-map
+tiers. A public generated catalogue includes MOM main/bonus (and any supplied
+stage) ratings, numeric KSF main tiers, and separate Unit/Strafe bonus letters
+from the requested sheet. No numeric conversion or suffix aliasing. Asset is
+explicitly release-allowlisted. No native engine, pin/tag, qcbuild, evidence,
+physics or backend/schema change. Existing cstrike mounting needed no repair.
+
+**Verified:** All3 VMs compile with0 warnings;14 importer/ship-entry controls
+pass. Real dedicated/headless CSQC controls prove differing server/client data,
+MOM4/KSF6, stage suggestion, unknown stage, compact/split bonus labels, old-server
+fallbacks, stale-map refusal and map-change clearing. Actual bonus warp proves
+HUD stats and sidebar leg ratings. Predecessor formatter ACTED as `Tier 4` and
+failed the positive dual-source assertion. Initial whole-payload serverinfo
+controls failed (large/semicolon values became undelivered info blobs); short
+comma-only rows and a colon marker passed. A CSS-only surf_unrequited join plus
+flocate proved mounted cstrike/maps supplied the exact BSP without a download.
+The installed Momentum snapshot has no rated stages; synthetic stage fixtures
+prove support, not real upstream data. Existing game was not interrupted:
+visual/small-window/input acceptance remains in lextest.md. Source, commands,
+failed-control boundaries and delivery provenance: tools/p723tiers.md.
+
 Custom modifications to the FTEQW engine for the nettest mod. These live in the
 engine **source tree** at `C:\msys64\home\Lex\fteqw\engine` and must be
 **re-applied + rebuilt** whenever you pull a new upstream fteqw, because they

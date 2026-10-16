@@ -486,7 +486,7 @@ qboolean CL_Receipt_AcctSign(const char *nonce, int kind, qboolean keyed, char *
 	qbyte sig[64];
 	int i;
 
-	if (kind < -5 || kind > -2)
+	if (kind < -6 || kind > -2)
 		return false;
 	if (kind != -2 && !keyed)
 	{
@@ -523,7 +523,12 @@ qboolean CL_Receipt_AcctSign(const char *nonce, int kind, qboolean keyed, char *
 	if (!CL_Receipt_Key())	/*after the checks: a refused call does not mint the key file*/
 		return false;
 
-	NET_AdrToString(svname, sizeof(svname), &cls.netchan.remote_address);
+	// Zone drafts use the existing linked-key proof, with a distinct purpose
+	// and fixed HTTPS service instead of the local editor's listen address.
+	if (kind == -6)
+		Q_strncpyz(svname, "play.proto.bar:443", sizeof(svname));
+	else
+		NET_AdrToString(svname, sizeof(svname), &cls.netchan.remote_address);
 	/*what comes back is spliced into a console line by game code: an address
 	  is digits, dots, colons and brackets, and anything else is not sent.*/
 	for (i = 0; svname[i]; i++)
@@ -551,6 +556,45 @@ qboolean CL_Receipt_AcctSign(const char *nonce, int kind, qboolean keyed, char *
 	Q_snprintfz(out, outlen, "%s %i %s \"%s\" %s", pubhex, keyed ? 1 : 0, sighex, svname,
 				acct_vm_code);
 	Con_DPrintf("acct_sign: kind %i key %i on %s\n", kind, keyed ? 1 : 0, svname);
+	return true;
+}
+
+/* Read-only menu proofs have a separate domain, never account/link consent,
+   receipts or lobby capabilities. The builtin exists only in the MENU VM. */
+qboolean CL_FriendsSign(const char *nonce, const char *op, const char *who, char *out, size_t outlen)
+{
+	char msg[256], pubhex[65], sighex[129];
+	qbyte sig[64];
+	const char *p;
+
+	if (outlen) out[0] = 0;
+	if (cls.state != ca_disconnected || cls.demoplayback || CL_TryingToConnect())
+		return false;
+	if (!nonce || strlen(nonce) != 32 || !op || !who)
+		return false;
+	for (p = nonce; *p; p++)
+		if (!((*p >= '0' && *p <= '9') || (*p >= 'a' && *p <= 'f')))
+			return false;
+	if (!strcmp(op, "list"))
+	{
+		if (strcmp(who, "-")) return false;
+	}
+	else if (!strcmp(op, "join"))
+	{
+		if (strlen(who) != 8) return false;
+		for (p = who; *p; p++)
+			if (!((*p >= '0' && *p <= '9') || (*p >= 'a' && *p <= 'f')))
+				return false;
+	}
+	else
+		return false;
+	if (!CL_Receipt_Key())
+		return false;
+	Q_snprintfz(msg, sizeof(msg), "FTESURF-FRIENDS 1\nserver play.proto.bar:443\nnonce %s\nop %s\nwho %s\n", nonce, op, who);
+	Ed25519_Sign(sig, (const qbyte *)msg, strlen(msg), rcpt_sk);
+	CL_Receipt_Hex(pubhex, sizeof(pubhex), rcpt_pk, sizeof(rcpt_pk), true);
+	CL_Receipt_Hex(sighex, sizeof(sighex), sig, sizeof(sig), true);
+	Q_snprintfz(out, outlen, "%s %s", pubhex, sighex);
 	return true;
 }
 

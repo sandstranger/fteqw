@@ -29,6 +29,7 @@ extern cvar_t r_refract_fbo;
 extern cvar_t gl_line_width;				//nettest: CSQC debug wireframe line width (3D scene polys / R_DB_Poly)
 extern cvar_t gl_2dline_width;				//nettest: 2D drawline width (hit-marker reticle / dummybatch)
 extern void R_DB_Poly(batch_t *batch);			//nettest: gl_alias.c scenetris builder; tags CSQC debug-line batches
+extern shader_t *shader_draw_fill_trans;
 #ifndef GL_ALIASED_LINE_WIDTH_RANGE
 #define GL_ALIASED_LINE_WIDTH_RANGE 0x846E
 #endif
@@ -6724,6 +6725,21 @@ typedef struct
 	qboolean foreground;
 } glblendface_t;
 
+static qboolean gl_blendtrace_pending;
+
+void GLBE_BlendTrace_f(void)
+{
+	if (Cmd_IsInsecure())
+		return;
+	if (qrenderer != QR_OPENGL || r_blendsort.ival != 2)
+	{
+		Con_Printf("ALPHATRACE requires OpenGL and r_blendsort 2\n");
+		return;
+	}
+	gl_blendtrace_pending = true;
+	Con_Printf("ALPHATRACE armed for one main-view blend pass; close the console if needed\n");
+}
+
 // Use the same model matrix as GLBE_SelectEntity, including axis sign and scale.
 static double GLBE_BlendCenterDepth(const double *center, const float *matrix)
 {
@@ -6757,6 +6773,48 @@ static double GLBE_BlendFaceDepth(const mesh_t *mesh, const float *matrix)
 		}
 	for (j = 0; j < 3; j++)
 		center[j] /= mesh->numvertexes;
+	return GLBE_BlendCenterDepth(center, matrix);
+}
+
+// Mode2: BSP edge splits must not change a face's sorting centre.
+static double GLBE_BlendAreaDepth(const mesh_t *mesh, const float *matrix)
+{
+	double center[3] = {0, 0, 0}, total = 0;
+	unsigned int a, b, c;
+	int t, j;
+	if (!mesh->xyz_array || mesh->numvertexes <= 0 || !mesh->indexes ||
+		mesh->numindexes <= 0 || mesh->numindexes % 3)
+		return GLBE_BlendFaceDepth(mesh, matrix);
+	for (t = 0; t < mesh->numindexes; t += 3)
+	{
+		double ab[3], ac[3], cross[3], area;
+		a = mesh->indexes[t]; b = mesh->indexes[t+1]; c = mesh->indexes[t+2];
+		if (a >= (unsigned int)mesh->numvertexes || b >= (unsigned int)mesh->numvertexes ||
+			c >= (unsigned int)mesh->numvertexes)
+			return GLBE_BlendFaceDepth(mesh, matrix);
+		for (j = 0; j < 3; j++)
+		{
+			if (IS_NAN(mesh->xyz_array[a][j]) || IS_NAN(mesh->xyz_array[b][j]) ||
+				IS_NAN(mesh->xyz_array[c][j]))
+				return GLBE_BlendFaceDepth(mesh, matrix);
+			ab[j] = (double)mesh->xyz_array[b][j] - mesh->xyz_array[a][j];
+			ac[j] = (double)mesh->xyz_array[c][j] - mesh->xyz_array[a][j];
+		}
+		cross[0] = ab[1]*ac[2] - ab[2]*ac[1];
+		cross[1] = ab[2]*ac[0] - ab[0]*ac[2];
+		cross[2] = ab[0]*ac[1] - ab[1]*ac[0];
+		area = sqrt(cross[0]*cross[0] + cross[1]*cross[1] + cross[2]*cross[2]);
+		if (area <= 0)
+			continue;
+		total += area;
+		for (j = 0; j < 3; j++)
+			center[j] += area * ((double)mesh->xyz_array[a][j] +
+				mesh->xyz_array[b][j] + mesh->xyz_array[c][j]) / 3;
+	}
+	if (total <= 0)
+		return GLBE_BlendFaceDepth(mesh, matrix);
+	for (j = 0; j < 3; j++)
+		center[j] /= total;
 	return GLBE_BlendCenterDepth(center, matrix);
 }
 
@@ -6813,6 +6871,22 @@ static double GLBE_BlendBatchDepth(const batch_t *batch, const float *matrix)
 	return GLBE_BlendCenterDepth(center, matrix);
 }
 
+// Keep stock CSQC wire annotations in the legacy post-world layer. Their
+// centre depths are not glass-plane constraints; arbitrary shaders/models
+// remain conservative barriers. Opaque depth testing is unchanged.
+static qboolean GLBE_BlendForeground(const batch_t *batch)
+{
+	shader_t *sh = batch->shader;
+	if (batch->ent->flags & (RF_WEAPONMODEL | RF_DEPTHHACK))
+		return true;
+	if (r_refdef.recurse || !r_refdef.useperspective || shaderstate.mode != BEM_STANDARD ||
+		batch->ent != &r_worldentity || batch->buildmeshes != R_DB_Poly || batch->fog || batch->vbo ||
+		!(batch->flags & BEF_LINES) || (batch->flags & ~(BEF_LINES | BEF_NOSHADOWS | BEF_NODLIGHT)))
+		return false;
+	return sh && sh == shader_draw_fill_trans && sh->remapto == sh &&
+		sh->numpasses == 1 && !sh->numdeforms && !sh->passes[0].prog;
+}
+
 static int GLBE_BlendFaceCompare(const void *va, const void *vb)
 {
 	const glblendface_t *a = va, *b = vb;
@@ -6849,6 +6923,10 @@ static qboolean GLBE_BlendFaceEligible(const batch_t *batch)
 			return false;
 	return true;
 }
+
+// Mode2 shares default1's conservative static-world raster proof.
+static qboolean GLBE_BlendWorldBatchEligible(batch_t *batch);
+static qboolean GLBE_BlendWorldRasterEmpty(const batch_t *batch, const mesh_t *mesh);
 
 #define GLBLEND_PLANE_FACES 128
 #define GLBLEND_PLANE_VERTS 64
@@ -6903,6 +6981,7 @@ static qboolean GLBE_BlendPlaneGeometry(const glblendface_t *face, glblendplane_
 	mesh_t *mesh = face->mesh;
 	double best = 0, norm[3] = {0, 0, 0}, origin[3] = {0, 0, 0};
 	double p[3], a[3], b[3], cross[3], area, depth, side, xy;
+	qboolean nearspan = false, projected = false;
 	int v, t, j, k;
 	unsigned int ia, ib, ic;
 	if (!mesh || face->foreground || face->batch->ent != &r_worldentity ||
@@ -6964,21 +7043,94 @@ static qboolean GLBE_BlendPlaneGeometry(const glblendface_t *face, glblendplane_
 			side += plane->normal[j] * ((double)mesh->xyz_array[v][j] - origin[j]);
 			depth += p[j]*vpn[j];
 		}
-		// Near/behind-eye spans need clipping; keep their baseline command.
-		if (fabs(side) > GLBLEND_PLANE_EPS || depth <= GLBLEND_PLANE_EPS)
+		if (fabs(side) > GLBLEND_PLANE_EPS)
 			return false;
+		if (depth <= GLBLEND_PLANE_EPS)
+		{
+			if (r_blendsort.ival != 2) return false;
+			nearspan = true;
+			continue;
+		}
 		for (k = 0; k < 2; k++)
 		{
 			xy = 0;
 			for (j = 0; j < 3; j++)
 				xy += p[j] * (k ? vup[j] : vright[j]);
 			xy /= depth;
-			if (!v || xy < plane->mins[k]) plane->mins[k] = xy;
-			if (!v || xy > plane->maxs[k]) plane->maxs[k] = xy;
+			if (!projected || xy < plane->mins[k]) plane->mins[k] = xy;
+			if (!projected || xy > plane->maxs[k]) plane->maxs[k] = xy;
 		}
+		projected = true;
+	}
+	if (!projected) return false;
+	if (nearspan)
+	{
+		// No false disjoint proof across the eye plane. Float-input dot products
+		// fit these bounds; full original vertices still prove every plane side.
+		plane->mins[0] = plane->mins[1] = -1e300;
+		plane->maxs[0] = plane->maxs[1] = 1e300;
 	}
 	plane->mesh = mesh;
 	return true;
+}
+
+// Homogeneous winding keeps its sign through positive-w clipping, unlike a
+// divide of an original behind-eye vertex. This extension is mode2-only.
+static qboolean GLBE_BlendWorldRasterEmptyNear(batch_t *batch, const mesh_t *mesh)
+{
+	const float *view = r_refdef.m_view, *proj = r_refdef.m_projection_std;
+	double h[GLBLEND_PLANE_VERTS][3], p[3], terms[6], area, scale;
+	unsigned int cull, ia, ib, ic;
+	int v, t, j;
+	qboolean nearspan = false, nondegenerate = false;
+	if (r_blendsort.ival != 2 || !GLBE_BlendWorldBatchEligible(batch) ||
+		!mesh || !mesh->xyz_array || !mesh->indexes || mesh->xyz2_array || mesh->numbones ||
+		mesh->numvertexes < 3 || mesh->numvertexes > GLBLEND_PLANE_VERTS ||
+		mesh->numindexes < 3 || mesh->numindexes > GLBLEND_PLANE_INDEXES || mesh->numindexes % 3)
+		return false;
+	cull = batch->shader->remapto->flags & (SHADER_CULL_FRONT | SHADER_CULL_BACK);
+	if (!cull) return false;
+	cull ^= r_refdef.flipcull;
+	if (IS_NAN(proj[0]) || IS_NAN(proj[5])) return false;
+	for (j = 0; j < 16; j++)
+		if (IS_NAN(view[j])) return false;
+	for (v = 0; v < mesh->numvertexes; v++)
+	{
+		for (j = 0; j < 3; j++)
+		{
+			if (IS_NAN(mesh->xyz_array[v][j])) return false;
+			p[j] = mesh->xyz_array[v][j];
+		}
+		h[v][0] = proj[0]*(view[0]*p[0] + view[4]*p[1] + view[8]*p[2] + view[12]);
+		h[v][1] = proj[5]*(view[1]*p[0] + view[5]*p[1] + view[9]*p[2] + view[13]);
+		h[v][2] = -(view[2]*p[0] + view[6]*p[1] + view[10]*p[2] + view[14]);
+		if (h[v][2] <= GLBLEND_PLANE_EPS) nearspan = true;
+	}
+	if (!nearspan) return false;
+	for (t = 0; t < mesh->numindexes; t += 3)
+	{
+		ia = mesh->indexes[t]; ib = mesh->indexes[t+1]; ic = mesh->indexes[t+2];
+		if (ia >= (unsigned int)mesh->numvertexes || ib >= (unsigned int)mesh->numvertexes || ic >= (unsigned int)mesh->numvertexes)
+			return false;
+		if (ia == ib || ib == ic || ia == ic) continue;
+		terms[0] = h[ia][0]*h[ib][1]*h[ic][2];
+		terms[1] = h[ia][1]*h[ib][2]*h[ic][0];
+		terms[2] = h[ia][2]*h[ib][0]*h[ic][1];
+		terms[3] = -h[ia][2]*h[ib][1]*h[ic][0];
+		terms[4] = -h[ia][1]*h[ib][0]*h[ic][2];
+		terms[5] = -h[ia][0]*h[ib][2]*h[ic][1];
+		area = scale = 0;
+		for (j = 0; j < 6; j++) { area += terms[j]; scale += fabs(terms[j]); }
+		if (fabs(area) <= 1e-6*scale + 1e-12) return false;
+		nondegenerate = true;
+		if (cull & SHADER_CULL_FRONT)
+		{
+			if (area < 0) return false;
+		}
+		else if (!(cull & SHADER_CULL_BACK) || area > 0)
+			return false;
+	}
+	return nondegenerate;
 }
 
 // -1: a before b; +1: b before a; 0: no strict separation proof.
@@ -7095,8 +7247,25 @@ static void GLBE_SubmitBlendedFaces(batch_t *world, batch_t *dynamic)
 	size_t count = 0, n = 0, f;
 	unsigned int m;
 	int l;
+	qboolean cullworld, trace = gl_blendtrace_pending && !r_refdef.recurse;
+	glblendplanestats_t stats = {0};
 	float matrix[16], modelview[16];
 
+	if (trace)
+	{
+		gl_blendtrace_pending = false;
+		Con_Printf("ALPHATRACE begin mode=%d perspective=%d vieweligible=%d flip=%x worldflags=%x\n",
+			shaderstate.mode, r_refdef.useperspective, GLBE_BlendPlaneViewEligible(),
+			(unsigned int)r_refdef.flipcull, (unsigned int)r_worldentity.flags);
+		Con_Printf("ALPHATRACE eye=%.9g,%.9g,%.9g forward=%.9g,%.9g,%.9g\n",
+			r_origin[0], r_origin[1], r_origin[2], vpn[0], vpn[1], vpn[2]);
+		Con_Printf("ALPHATRACE projection0=%.9g,%.9g,%.9g,%.9g,%.9g,%.9g,%.9g,%.9g\n",
+			r_refdef.m_projection_std[0], r_refdef.m_projection_std[1], r_refdef.m_projection_std[2], r_refdef.m_projection_std[3],
+			r_refdef.m_projection_std[4], r_refdef.m_projection_std[5], r_refdef.m_projection_std[6], r_refdef.m_projection_std[7]);
+		Con_Printf("ALPHATRACE projection8=%.9g,%.9g,%.9g,%.9g,%.9g,%.9g,%.9g,%.9g\n",
+			r_refdef.m_projection_std[8], r_refdef.m_projection_std[9], r_refdef.m_projection_std[10], r_refdef.m_projection_std[11],
+			r_refdef.m_projection_std[12], r_refdef.m_projection_std[13], r_refdef.m_projection_std[14], r_refdef.m_projection_std[15]);
+	}
 	// Finish capture/portal/sky recursion before gathering root-view records.
 	// The temp-batch pool appends during recursion; root batch addresses survive.
 	for (l = 0; l < 2; l++)
@@ -7112,7 +7281,10 @@ static void GLBE_SubmitBlendedFaces(batch_t *world, batch_t *dynamic)
 			if (!GLBE_BlendBatchImmediate(batch) && batch->meshes > batch->firstmesh)
 				count += GLBE_BlendFaceEligible(batch) ? batch->meshes - batch->firstmesh : 1;
 	if (!count)
+	{
+		if (trace) Con_Printf("ALPHATRACE empty main-view blend lists\n");
 		return;
+	}
 	// Invocation-owned heap storage survives recursive views; never frame-global scratch.
 	faces = BZ_Malloc(count * sizeof(*faces));
 	for (l = 0; l < 2; l++)
@@ -7126,18 +7298,24 @@ static void GLBE_SubmitBlendedFaces(batch_t *world, batch_t *dynamic)
 					faces[n].mesh = NULL;
 					faces[n].depth = GLBE_BlendBatchDepth(batch, matrix);
 					faces[n].sequence = n;
-					faces[n].foreground = !!(batch->ent->flags & (RF_WEAPONMODEL | RF_DEPTHHACK));
+					faces[n].foreground = GLBE_BlendForeground(batch);
 					n++;
 					continue;
 				}
+				cullworld = !r_refdef.recurse && GLBE_BlendPlaneViewEligible() && GLBE_BlendWorldBatchEligible(batch);
+				if (cullworld && shaderstate.curentity != batch->ent)
+					GLBE_SelectEntity(batch->ent);
 				for (m = batch->firstmesh; m < batch->meshes; m++)
 				{
 					mesh_t *mesh = batch->mesh[m];
 					if (!mesh || !mesh->xyz_array || mesh->numvertexes <= 0 || mesh->numindexes <= 0)
 						continue;
+					// Invisible backfaces must not create cycles in the plane graph.
+					if (cullworld && (GLBE_BlendWorldRasterEmpty(batch, mesh) || GLBE_BlendWorldRasterEmptyNear(batch, mesh)))
+						continue;
 					faces[n].batch = batch;
 					faces[n].mesh = mesh;
-					faces[n].depth = GLBE_BlendFaceDepth(mesh, matrix);
+					faces[n].depth = GLBE_BlendAreaDepth(mesh, matrix);
 					faces[n].sequence = n;
 					faces[n].foreground = false;
 					n++;
@@ -7146,9 +7324,35 @@ static void GLBE_SubmitBlendedFaces(batch_t *world, batch_t *dynamic)
 	qsort(faces, n, sizeof(*faces), GLBE_BlendFaceCompare);
 	// Root static-world plane relations refine only eligible baseline slots.
 	if (!r_refdef.recurse)
-	{
-		glblendplanestats_t stats;
 		GLBE_BlendPlaneSort(faces, n, &stats);
+	if (trace)
+	{
+		Con_Printf("ALPHATRACE result raw=%u gathered=%u admitted=%u status=%d edges=%u work=%u moved=%u\n",
+			(unsigned int)count, (unsigned int)n, (unsigned int)stats.admitted, stats.status,
+			(unsigned int)stats.edges, (unsigned int)stats.work, (unsigned int)stats.moved);
+		for (f = 0; f < n && f < GLBLEND_PLANE_FACES; f++)
+		{
+			batch_t *b = faces[f].batch;
+			const shader_t *sh = b->shader, *rs = sh ? sh->remapto : NULL;
+			const mesh_t *mesh = faces[f].mesh;
+			static const float zero[3] = {0};
+			const float *v = mesh && mesh->xyz_array && mesh->numvertexes ? mesh->xyz_array[0] : zero;
+			glblendplane_t plane;
+			Con_Printf("ALPHATRACE cmd=%u seq=%u world=%d mesh=%d verts=%u idx=%u vbo=%d flags=%x fog=%d cb=%d poly=%d safe=%d geom=%d depth=%.12g xyz=%.9g,%.9g,%.9g\n",
+				(unsigned int)f, (unsigned int)faces[f].sequence, b->ent == &r_worldentity, !!mesh,
+				mesh ? (unsigned int)mesh->numvertexes : 0, mesh ? (unsigned int)mesh->numindexes : 0,
+				!!b->vbo, (unsigned int)b->flags, !!b->fog, !!b->buildmeshes, b->buildmeshes == R_DB_Poly,
+				GLBE_BlendWorldBatchEligible(b), GLBE_BlendPlaneGeometry(&faces[f], &plane), faces[f].depth, v[0], v[1], v[2]);
+			Con_Printf("ALPHATRACE shader=%u flags=%x/%x prog=%d/%d passes=%d/%d deforms=%d/%d passprog=%d/%d bits=%x/%x\n",
+				(unsigned int)f, sh ? (unsigned int)sh->flags : 0, rs ? (unsigned int)rs->flags : 0,
+				sh && sh->prog, rs && rs->prog, sh ? sh->numpasses : 0, rs ? rs->numpasses : 0,
+				sh ? sh->numdeforms : 0, rs ? rs->numdeforms : 0,
+				sh && sh->numpasses && sh->passes[0].prog, rs && rs->numpasses && rs->passes[0].prog,
+				sh && sh->numpasses ? (unsigned int)sh->passes[0].shaderbits : 0,
+				rs && rs->numpasses ? (unsigned int)rs->passes[0].shaderbits : 0);
+		}
+		if (f < n) Con_Printf("ALPHATRACE remaining commands omitted (bounded to %u)\n", GLBLEND_PLANE_FACES);
+		Con_Printf("ALPHATRACE end\n");
 	}
 	for (f = 0; f < n; f++)
 	{
