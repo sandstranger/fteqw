@@ -259,7 +259,7 @@ static void CSQC_FindGlobals(qboolean nofuncs)
 		csqcg.CSQC_PredictPlayerPreMove = 0;
 		csqcg.predinput_apply = csqcg.predinput_origin = csqcg.predinput_velocity = NULL;
 		csqcg.predinput_onground = csqcg.predinput_pmtype = csqcg.predinput_forceduck = NULL;
-		csqcg.predinput_sequence_lo = csqcg.predinput_sequence_hi = NULL;
+		csqcg.predinput_sequence_lo = csqcg.predinput_sequence_hi = csqcg.predinput_held = NULL;
 		csqcg.CSQC_PredictPlayerMove = 0;	//FTESurf P335: an untrusted module must not rewrite predicted movement
 		csqcg.predmove_org0 = csqcg.predmove_org = csqcg.predmove_vel = csqcg.predmove_basevel = NULL;
 		csqcg.predmove_bvfired = NULL;
@@ -1168,10 +1168,12 @@ static void QCBUILTIN PF_R_AddDecalStatic(pubprogfuncs_t *prinst, struct globalv
 	//express a mirrored image (s1 < s0) -- the projection frame is a fixed proper rotation, so no
 	//choice of up/side can reflect -- or a texture that repeats or shows only a sub-rectangle.
 	vec4_t texrange;
+	unsigned int clipflags = 0;
 	if (prinst->callargc > 7)
 	{
 		float *sr = G_VECTOR(OFS_PARM6), *tr = G_VECTOR(OFS_PARM7);
 		Vector4Set(texrange, sr[0], sr[1], tr[0], tr[1]);
+		clipflags = (unsigned int)sr[2];	//FTESurf Patch 772: PDC_*; older engines ignore srange's third figure
 	}
 	else
 		Vector4Set(texrange, 0, 1, 0, 1);
@@ -1179,7 +1181,7 @@ static void QCBUILTIN PF_R_AddDecalStatic(pubprogfuncs_t *prinst, struct globalv
 		Con_DPrintf("adddecal_static \"%s\": argc %i alpha %g aspect %g life %g texrange s %g..%g t %g..%g\n",
 					shadername, prinst->callargc, alpha, aspect, lifetime,
 					texrange[0], texrange[1], texrange[2], texrange[3]);
-	G_FLOAT(OFS_RETURN) = CL_AddPersistentDecal(shadername, org, up, side, rgb, alpha, aspect, lifetime, texrange);
+	G_FLOAT(OFS_RETURN) = CL_AddPersistentDecal(shadername, org, up, side, rgb, alpha, aspect, lifetime, texrange, clipflags);
 }
 static void QCBUILTIN PF_R_RemoveDecal(pubprogfuncs_t *prinst, struct globalvars_s *pr_globals)
 {	//void(float handle)
@@ -1491,6 +1493,7 @@ static void QCBUILTIN PF_R_AddEntityMask(pubprogfuncs_t *prinst, struct globalva
 
 	int oldself = *csqcg.self;
 	RSpeedMark();
+	prinst->ProfileExclude(prinst, true);	//FTESurf Patch 800: "entity setup" is World's; predraw QC still counts
 
 	if (cl.worldmodel)
 	{
@@ -1582,6 +1585,7 @@ static void QCBUILTIN PF_R_AddEntityMask(pubprogfuncs_t *prinst, struct globalva
 		}
 	}
 
+	prinst->ProfileExclude(prinst, false);
 	RSpeedEnd(RSPEED_LINKENTITIES);
 }
 
@@ -2617,6 +2621,11 @@ void QCBUILTIN PF_R_SetViewFlag(pubprogfuncs_t *prinst, struct globalvars_s *pr_
 		}
 		else
 			Vector4Set(r_refdef.skyroom_spin, 0, 0, 0, 0);
+		// FTESurf Patch 758: an optional parallax scale. R_DrawSkyroom moves the
+		// camera by (that view's eye - this eye) / scale, so a view through a
+		// portal sees the sky from its own eye.
+		VectorCopy(r_refdef.vieworg, r_refdef.skyroom_eye);
+		r_refdef.skyroom_scale = (prinst->callargc >= 5) ? G_FLOAT(OFS_PARM4) : 0;
 		break;
 
 	case VF_ORIGIN:
@@ -2851,7 +2860,9 @@ static void QCBUILTIN PF_R_RenderScene(pubprogfuncs_t *prinst, struct globalvars
 	V_ApplyRefdef();
 	V_CalcGunPositionAngle(csqc_playerview, V_CalcBob(csqc_playerview, true));
 
+	prinst->ProfileExclude(prinst, true);	//FTESurf Patch 800: the 3D view has its own r_budget groups
 	R_RenderView();
+	prinst->ProfileExclude(prinst, false);
 	R2D_PolyBlend ();
 
 	if (r_refdef.grect.x || r_refdef.grect.y || r_refdef.grect.width != vid.fbvwidth || r_refdef.grect.height != vid.fbvheight)
@@ -7220,6 +7231,7 @@ static struct {
 	{"lines_arrays",		PF_cs_lines_arrays,		0},
 	{"lines_lod",			PF_cs_lines_lod,		0},
 	{"lines_draw",			PF_cs_lines_draw,		0},
+	{"memnostrings",		PF_memnostrings,		0},	//FTESurf Patch 763
 
 	{"drawstring",				PF_CL_drawcolouredstring,		326},	// #326
 	{"stringwidth",				PF_CL_stringwidth,				327},	// #327 EXT_CSQC_'DARKPLACES'
@@ -8112,6 +8124,18 @@ qboolean CSQC_Inited(void)
 	if (csqcprogs)
 		return true;
 	return false;
+}
+//FTESurf Patch 800: r_budget_csqc's profiler. pr_enable_profiling keeps it on regardless.
+qboolean CSQC_SetProfiling(qboolean on)
+{
+	if (!csqcprogs || !csqcprogs->SetProfiling)
+		return false;
+	return csqcprogs->SetProfiling(csqcprogs, on || pr_enable_profiling.ival);
+}
+void CSQC_EnumProfile(void (*cb)(void *ctx, const char *func, const char *file, double selfus, double totalus), void *ctx)
+{
+	if (csqcprogs && csqcprogs->EnumProfile)
+		csqcprogs->EnumProfile(csqcprogs, cb, ctx, true);
 }
 
 qboolean CSQC_UnconnectedOkay(qboolean inprinciple)
@@ -10524,6 +10548,24 @@ void CSQC_PredictAngleAbsolute(int seat, vec3_t ang)
 	pred_trace_until[seat] = realtime + 1;
 	PA_Log("predangle: %.4f absolute %.3f basis %i %s seq %i -> %.3f", realtime, predsrv[seat].target[YAW], K,
 		n >= 0 ? "abs-keep-newer" : m >= 0 ? "abs-match" : "abs-server", n >= 0 ? (int)predsnaps[seat][n].seq : m >= 0 ? (int)predsnaps[seat][m].seq : -1, ang[YAW]);
+}
+
+/*FTESurf Patch 754: a module with the pre-move hook can apply a held body's
+  release at its command (FTESurf's warp ops), which needs the replay to keep
+  running while the server reports PM_NONE.  A PM_NONE replay moves nothing.
+  Opt-in per server through predinput_held: PM_NONE also means "server-side
+  physics" under sv_nqplayerphysics, where only interpolation is right.*/
+qboolean CSQC_PredictsHeld(void)
+{
+	if (!csqcprogs || !csqcg.CSQC_PredictPlayerPreMove || !csqcg.predinput_apply || !cl_predict_qchook.ival)
+		return false;
+	if (!csqcg.predinput_held || !*csqcg.predinput_held || cls.demoplayback)
+		return false;
+#ifdef HAVE_SERVER
+	if (sv.state != ss_dead)
+		return false;
+#endif
+	return true;
 }
 
 int CSQC_PredictPlayerPreMove(int seat, const usercmd_t *cmd, float offsetmsec)

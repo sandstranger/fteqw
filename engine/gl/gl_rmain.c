@@ -644,6 +644,8 @@ static void R_SetupGL (const float eyematrix[12]/*can be null*/, const vec4_t fo
 		r_refdef.m_projection_view[2+4*3] *= 0.333;
 		r_refdef.m_projection_view[14] -= 0.666;
 
+		memcpy(r_refdef.m_projection_noclip, r_refdef.m_projection_std, sizeof(r_refdef.m_projection_noclip));	//FTESurf Patch 771: portal views inherit it unclipped
+
 		GL_ViewportUpdate();
 	}
 
@@ -1211,6 +1213,14 @@ static qboolean GLR_PortalDrawableAt(batch_t *batch, int level)
 	if ((batch->shader->flags & SHADER_AGEN_PORTAL) && d > batch->shader->portaldist)
 		return false;
 	if (d < -r_refdef.mindist)
+		return false;
+	/* FTESurf Patch 752: only a door in THIS view's PVS. Every level shares the
+	   CSQC scene, which now holds doors offered for deeper eyes, and with
+	   r_ignoreentpvs 1 nothing else culls them by PVS: a hidden door could take
+	   a budget slot from one in sight. NULL areas: PVS only, as checkpvs. */
+	if (r_refdef.scenevis && batch->ent && batch->ent != &r_worldentity && cl.worldmodel &&
+		cl.worldmodel->funcs.EdictInFatPVS &&
+		!cl.worldmodel->funcs.EdictInFatPVS(cl.worldmodel, &batch->ent->pvscache, r_refdef.scenevis, NULL))
 		return false;
 	return true;
 }
@@ -3073,6 +3083,7 @@ void GLR_RenderView (void)
 		time1 = Sys_DoubleTime ();
 	}
 
+	GLBudget_Set(GPUB_OTHER);	//FTESurf Patch 782: this view's clears and setup
 	if (!(r_refdef.flags & RDF_NOWORLDMODEL) && R_RenderScene_Cubemap())
 	{
 
@@ -3086,6 +3097,7 @@ void GLR_RenderView (void)
 	//	GLR_SetupFog ();
 
 		// render normal view
+		GLBudget_Set(GPUB_WAIT);	//FTESurf Patch 782: the world walk is CPU; the first batch ends the wait
 		R_RenderScene ();
 	}
 
@@ -3114,6 +3126,7 @@ void GLR_RenderView (void)
 	{
 	RSpeedMark();
 
+	GLBudget_Set(GPUB_POSTPROC);	//FTESurf Patch 782
 	//update stuff now that we're not rendering the 3d scene
 	if (dofbo)
 		GLBE_FBO_Pop(oldfbo);
@@ -3156,6 +3169,7 @@ void GLR_RenderView (void)
 
 	if (gl_screenangle.value)
 		GL_Set2D (false);	//make sure any hud stuff is rotated properly.
+	GLBudget_Set(GPUB_2D);	//FTESurf Patch 782: after the 3D view come the HUD, menus and console
 
 	RSpeedEnd(RSPEED_POSTPROC);
 	}

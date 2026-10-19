@@ -383,6 +383,10 @@ typedef struct refdef_s
 	qboolean	fixedview;			/*if true, use a fixed camera setup for out-of-body screenshots (usually to build cubemaps)*/
 	vec3_t		fixedvieworg;
 	vec3_t		fixedviewangles;
+
+	vec3_t		skyroom_eye;		/*FTESurf Patch 758: vieworg when skyroom_pos was set*/
+	float		skyroom_scale;		/*...and its parallax divisor, 0 for none (a fixed camera)*/
+	float		m_projection_noclip[16];	/*FTESurf Patch 771: the root view's m_projection_std, which no portal's oblique near plane touches; the skyroom draws with it*/
 } refdef_t;
 
 extern	refdef_t	r_refdef;
@@ -918,10 +922,38 @@ enum {
 	RSPEED_SUBMIT,
 	RSPEED_PRESENT,
 	RSPEED_ACQUIRE,
+	//FTESurf Patch 782 (r_budget): the host frame's own work from its top to its end, the pieces of
+	//it that were in no bucket, the server frames run on the between-frames path, and the world
+	//model's PrepareFrame (for a Source map: the hl2 plugin's vis and static props).
+	RSPEED_HOSTWORK,
+	RSPEED_MAINTHREAD,
+	RSPEED_INPUT,
+	RSPEED_SERVERIDLE,
+	RSPEED_WORLDPREPARE,
 
 	RSPEED_MAX
 };
 extern int rspeeds[RSPEED_MAX];
+
+//FTESurf Patch 782: what r_budget's GPU half is split into, by GL timestamp queries.
+enum {
+	GPUB_OTHER,			//clears, view setup, uploads: anything not in a pass below
+	GPUB_WAIT,			//stretches where the CPU is busy elsewhere (QC, the world walk) and the GPU may sit idle
+	GPUB_WORLD,
+	GPUB_MODELS,
+	GPUB_SKY,
+	GPUB_SKYROOM,		//the 3D sky's own view
+	GPUB_PORTALS,		//nested views: portals, mirrors, reflections
+	GPUB_SHADOWS,
+	GPUB_LIGHTS,
+	GPUB_TRANSPARENT,
+	GPUB_POSTPROC,
+	GPUB_2D,			//the HUD, menus and console, after the 3D view's post-processing
+	GPUB_MAX
+};
+//sums of finished frames since the last call, in milliseconds; returns how many frames (0: none, or no timer queries)
+int R_BudgetGPUCollect(double ms[GPUB_MAX], double *total);
+extern int r_speeds_timing;	//Patch 782: r_speeds >= 2 or r_budget, latched once per host frame
 
 enum {
 	RQUANT_MSECS,	//old r_speeds
@@ -955,14 +987,16 @@ extern int rquant[RQUANT_MAX];
 #define RSpeedRemark()
 #define RSpeedEnd(spt)
 #else
-#define RSpeedLocals() double rsp
-#define RSpeedMark() double rsp = (r_speeds.ival>1)?Sys_DoubleTime()*1000000:0
-#define RSpeedRemark() rsp = (r_speeds.ival>1)?Sys_DoubleTime()*1000000:0
-
-#if defined(_WIN32) && defined(GLQUAKE)
-extern void (_stdcall *qglFinish) (void);
-#define RSpeedEnd(spt) do {if(r_speeds.ival > 1){if(r_speeds.ival > 2 && qglFinish)qglFinish(); rspeeds[spt] += (double)(Sys_DoubleTime()*1000000) - rsp;}}while (0)
-#else
-#define RSpeedEnd(spt) rspeeds[spt] += (r_speeds.ival>1)?Sys_DoubleTime()*1000000 - rsp:0
-#endif
+/*FTESurf Patch 782: a bracket opens at a nesting depth and, closing, hands its time to the bracket
+  it sits in, so rspeeds_self[] is each bucket's own time however the brackets happen to nest (a
+  portal view's world walk inside "opaque", lightmaps inside the hl2 plugin's PrepareFrame).
+  Gated on r_speeds_timing, latched per host frame, not the cvar.  Main thread only.*/
+double RSpeed_Begin(int *depth);
+void RSpeed_Finish(int spt, double start, int depth);
+extern double rspeeds_self[RSPEED_MAX];
+extern int rspeed_depth;
+#define RSpeedLocals() double rsp; int rspd
+#define RSpeedMark() int rspd; double rsp = RSpeed_Begin(&rspd)
+#define RSpeedRemark() rsp = RSpeed_Begin(&rspd)
+#define RSpeedEnd(spt) RSpeed_Finish(spt, rsp, rspd)
 #endif

@@ -69,9 +69,12 @@ evalc_t	evalc_basevel;		//FTESurf Patch 240
 evalc_t	evalc_mtick, evalc_mtickrate, evalc_mcarry;	//FTESurf Patch 325
 evalc_t	evalc_pmepoch, evalc_physcrc, evalc_portalx, evalc_portalorg, evalc_portalvel;	//FTESurf Patch 346
 evalc_t	evalc_pmhold;		//FTESurf Patch 380
+evalc_t	evalc_lpdob, evalc_lpdfb;	//FTESurf Patch 802: sv_ents.c's portal cameras
 
 void SV_FS_ResetFieldCaches(void)
 {
+	memset(&evalc_lpdob,     0, sizeof(evalc_lpdob));		//FTESurf Patch 802
+	memset(&evalc_lpdfb,     0, sizeof(evalc_lpdfb));
 	memset(&evalc_pmepoch,   0, sizeof(evalc_pmepoch));		//FTESurf Patch 346
 	memset(&evalc_physcrc,   0, sizeof(evalc_physcrc));
 	memset(&evalc_portalx,   0, sizeof(evalc_portalx));
@@ -133,7 +136,10 @@ int SV_PMSrcVer(const float *pin)
 	if (IS_NAN(f))
 		return 0;
 	//Patch 538: v3 includes swimming at every ramp setting; retain both old movers.
-	if (pin[0] == 3 || pin[0] == 4)
+	//Patch 756: v5 keeps linked portal landings exact. Patch 758: v6 leaves a door's carve forward.
+	//Patch 764: v7 traces static props' hulls as convex pieces.
+	//Patch 813: v8 recovers a fraction-0 retrace onto a plane already clipped since the last progress.
+	if (pin[0] == 3 || pin[0] == 4 || pin[0] == 5 || pin[0] == 6 || pin[0] == 7 || pin[0] == 8)
 		return pin[0];
 	return f >= 2 ? 2 : f < 2 ? 1 : 0;
 }
@@ -3268,6 +3274,49 @@ void SV_UploadAsk (client_t *cl)
 	{	/*SV_RecUpload_f validates both; this is the belt for a future caller*/
 		Con_DPrintf("SV_UploadAsk: %s has no run to ask about\n", cl->uploadfn);
 		return;
+	}
+	/*Old clients never offered the separate raw-upload consent control. Keep
+	  their angle sidecars, but do not request a raw journal from them.*/
+	if (!strcmp(kind, "hid") && strcmp(InfoBuf_ValueForKey(&cl->userinfo, "fshidhttp"), "1"))
+	{
+		Con_DPrintf("sv_recupload: raw journal not requested from legacy client\n");
+		Q_strncpyz(cl->uploadfn, cl->uploadnext, sizeof(cl->uploadfn));
+		*cl->uploadnext = 0;
+		if (*cl->uploadfn)
+			SV_UploadAsk(cl);
+		else
+			SV_UploadCancel(cl);
+		return;
+	}
+	/*P774: capable clients post journals to the fixed HTTPS collector. The
+	  basename still comes from SSQC's destination, not the client's path.
+	  No netchan destination remains armed and no empty .hid is published.*/
+	if (!strcmp(kind, "hid") && !*cl->uploadnext &&
+		!strcmp(InfoBuf_ValueForKey(&cl->userinfo, "fshidhttp"), "1") &&
+		!strncmp(cl->uploadfn, "data/evidence/", 14))
+	{
+		const char *map = cl->uploadfn + 14;
+		const char *slash = strchr(map, '/');
+		const char *p;
+		qboolean valid = true;
+		char mapname[65], runid[97], command[320];
+		size_t ml = slash ? (size_t)(slash - map) : 0;
+		size_t rl = slash ? strlen(slash + 1) - 4 : 0;
+		for (p = map; slash && *p; p++)
+			if (!( (*p >= 'a' && *p <= 'z') || (*p >= 'A' && *p <= 'Z') ||
+				(*p >= '0' && *p <= '9') || *p == '_' || *p == '-' || (*p == '+' && p < slash) || p == slash ||
+				(*p == '.' && (p < slash || p == cl->uploadfn + l - 4)) ))
+				valid = false;
+		if (valid && ml && ml < sizeof(mapname) && rl && rl < sizeof(runid))
+		{
+			Q_strncpyz(mapname, map, ml + 1);
+			Q_strncpyz(runid, slash + 1, rl + 1);
+			Q_snprintfz(command, sizeof(command), "rec_ul_http %s hid %s %s\n", cl->uploadnonce, mapname, runid);
+			ClientReliableWrite_Begin(cl, svc_stufftext, strlen(command) + 2);
+			ClientReliableWrite_String(cl, command);
+			SV_UploadCancel(cl);
+			return;
+		}
 	}
 	cl->uploadwant = true;
 	ClientReliableWrite_Begin (cl, svc_stufftext, 64);

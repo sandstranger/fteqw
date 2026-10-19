@@ -103,6 +103,7 @@ static struct { int ival; } ruleset_allow_larger_models={1};
 static int qrenderer=QR_OPENGL, test_insecure, test_trace_printfs;
 #define Cmd_IsInsecure() test_insecure
 static void Con_Printf(const char *fmt,...) { (void)fmt; test_trace_printfs++; }
+int host_framecount;
 typedef struct batch_s { struct batch_s *next; mesh_t **mesh; unsigned firstmesh,meshes,maxmeshes,flags; shader_t *shader; entity_t *ent; void (*buildmeshes)(struct batch_s*); int id; void *vbo, *fog; union { struct { unsigned surface; } poly; } user; } batch_t;
 typedef struct { int firstvert, numvert; } scenetris_t;
 static scenetris_t *cl_stris;
@@ -186,6 +187,12 @@ static double clipped_triangle_area(const mesh_t *m, int t) {
  for(int i=0;i<n;i++){int j=(i+1)%n;area+=out[i][0]/out[i][2]*out[j][1]/out[j][2]-out[j][0]/out[j][2]*out[i][1]/out[i][2];}
  return area;
 }
+// Fresh projection caches per call, as GLBE_BlendPlaneSort holds one per face.
+static int overlap_order(const mesh_t *a, const mesh_t *b, int hint, unsigned int *work) {
+ static glblendproject_t va[64*GLBLEND_CLIP_VERTS],vb[64*GLBLEND_CLIP_VERTS];static signed char ca[64],cb[64];
+ glblendprojface_t fa={va,ca,0},fb={vb,cb,0};return GLBE_BlendOverlapOrder(a,&fa,b,&fb,hint,work);
+}
+static double lcg(unsigned *s) { *s=*s*1103515245u+12345u; return (*s>>8)/16777216.0; }
 int main(void) {
  // Diagnostic is opt-in/local, consumes one root pass, and leaves draws intact.
  assert(!gl_blendtrace_pending);
@@ -215,7 +222,15 @@ int main(void) {
   batch_t batch={.meshes=2,.mesh=pair,.shader=&shade,.ent=&r_worldentity};
   ndraw=0;GLBE_SubmitBlendedFaces(&batch,NULL);
   assert(ndraw==2&&draws[0]==736&&draws[1]==737);
-  assert(!gl_blendtrace_pending && test_trace_printfs>2);
+  // Armed for every pass of one frame; a later frame's first pass disarms.
+  int trace_frame_ok=gl_blendtrace_pending&&test_trace_printfs>2,printed=test_trace_printfs;
+  for(int pass=0;pass<2;pass++){
+   r_refdef.recurse=pass;ndraw=0;GLBE_SubmitBlendedFaces(&batch,NULL);
+   trace_frame_ok=trace_frame_ok&&gl_blendtrace_pending&&test_trace_printfs>printed;printed=test_trace_printfs;
+  }
+  host_framecount++;ndraw=0;GLBE_SubmitBlendedFaces(&batch,NULL);r_refdef.recurse=0;
+  trace_frame_ok=trace_frame_ok&&!gl_blendtrace_pending&&test_trace_printfs==printed&&ndraw==2;
+  assert(trace_frame_ok);
   face.numvertexes=5;face.numindexes=9;face.xyz_array=split;face.indexes=si;
   assert(GLBE_BlendFaceDepth(&face,m)<GLBE_BlendFaceDepth(&marker,m));
   ndraw=0;GLBE_SubmitBlendedFaces(&batch,NULL);
@@ -599,11 +614,77 @@ int main(void) {
    if(pose<36)assert(a>=0&&b>=0&&c>=0&&d>=0&&a<b&&b<c&&c<d);
    else { int near_camera_order_ok=a>=0&&b>=0&&c>=0&&d>=0&&a<b&&b<c&&c<d;assert(near_camera_order_ok); }
    assert(r_refdef.flipcull==0&&shaderstate.curentity==&r_worldentity);
+   // A portal view of the same panes gets the same culling and order.
+   int root_n=nemit,root_ids[32];for(int i=0;i<nemit;i++)root_ids[i]=emitted[i];
+   shaderstate.curentity=&preceding_world;shaderstate.usingweaponviewmatrix=RF_XFLIP;shaderstate.flags=0;r_refdef.flipcull=SHADER_CULL_FLIP;
+   r_refdef.recurse=1;ndraw=nemit=0;GLBE_SubmitMeshes(follow_world,SHADER_SORT_BLEND,SHADER_SORT_BLEND);r_refdef.recurse=0;
+   int portal_view_order_ok=nemit==root_n;
+   for(int i=0;portal_view_order_ok&&i<nemit;i++)portal_view_order_ok=emitted[i]==root_ids[i];
+   assert(portal_view_order_ok);
    for(int m=0;m<20;m++)if(GLBE_BlendWorldRasterEmptyNear(&follow_batch,follow_all[m]))
     for(int t=0;t<follow_all[m]->numindexes;t+=3)assert(clipped_triangle_area(follow_all[m],t)>=-1e-7);
   }
-  assert(nemit==8); //12 proven empty commands; all four visible ramp contributors retained.
+  int mode2_cull_ok=(nemit==8);assert(mode2_cull_ok); //12 proven empty; all four panes retained.
   int kept[8]={1384,504,2073,2086,2047,2071,2971,490};for(int i=0;i<8;i++)assert(emitted[i]==kept[i]);
+  // Ray-disjoint bounds hold in any image frame: a screen roll or skyroom spin
+  // of GL's view alone still sorts. An eye GL does not share keeps the baseline.
+  {
+   float matrix[16],modelview[16],saved_view[16],c=cos(2*3.141592653589793/180),s=sin(2*3.141592653589793/180);
+   double depth[8];int sort_acted=0,roll_sort_ok,eye_guard_ok;
+   R_RotateForEntity(matrix,modelview,&r_worldentity,r_worldentity.model);
+   for(int i=0;i<8;i++)for(int m=0;m<20;m++)if(follow_all[m]->id==kept[i])depth[i]=GLBE_BlendAreaDepth(follow_all[m],matrix);
+   for(int i=1;i<8;i++)if(depth[i]>depth[i-1])sort_acted=1;
+   assert(sort_acted&&GLBE_BlendViewEyeAgrees());
+   memcpy(saved_view,r_refdef.m_view,sizeof(saved_view));
+   for(int j=0;j<4;j++){float r=r_refdef.m_view[j*4],u=r_refdef.m_view[j*4+1];r_refdef.m_view[j*4]=c*r+s*u;r_refdef.m_view[j*4+1]=c*u-s*r;}
+   shaderstate.curentity=NULL;r_refdef.flipcull=0;ndraw=nemit=0;GLBE_SubmitMeshes(follow_world,SHADER_SORT_BLEND,SHADER_SORT_BLEND);
+   roll_sort_ok=GLBE_BlendViewEyeAgrees()&&nemit==8;
+   for(int i=0;roll_sort_ok&&i<8;i++)roll_sort_ok=emitted[i]==kept[i];
+   assert(roll_sort_ok);
+   // A mirror (left-handed GL basis, flipcull set as GLR_DrawPortal sets it) and
+   // a 2 degree spin about world z through the eye sort as well.
+   int mirror_sort_ok,spin_sort_ok;
+   memcpy(r_refdef.m_view,saved_view,sizeof(saved_view));
+   for(int j=0;j<4;j++)r_refdef.m_view[j*4]=-r_refdef.m_view[j*4];
+   shaderstate.curentity=NULL;r_refdef.flipcull=SHADER_CULL_FLIP;ndraw=nemit=0;GLBE_SubmitMeshes(follow_world,SHADER_SORT_BLEND,SHADER_SORT_BLEND);
+   mirror_sort_ok=GLBE_BlendViewEyeAgrees()&&nemit==8;
+   for(int i=0;mirror_sort_ok&&i<8;i++)mirror_sort_ok=emitted[i]==kept[i];
+   assert(mirror_sort_ok);
+   memcpy(r_refdef.m_view,saved_view,sizeof(saved_view));
+   for(int k=0;k<3;k++){
+    double a=saved_view[k],b=saved_view[4+k];
+    r_refdef.m_view[k]=a*c-b*s;r_refdef.m_view[4+k]=a*s+b*c;
+    r_refdef.m_view[12+k]=-(r_refdef.m_view[k]*(double)r_origin[0]+r_refdef.m_view[4+k]*(double)r_origin[1]+r_refdef.m_view[8+k]*(double)r_origin[2]);
+   }
+   shaderstate.curentity=NULL;r_refdef.flipcull=0;ndraw=nemit=0;GLBE_SubmitMeshes(follow_world,SHADER_SORT_BLEND,SHADER_SORT_BLEND);
+   spin_sort_ok=GLBE_BlendViewEyeAgrees()&&nemit==8;
+   for(int i=0;spin_sort_ok&&i<8;i++)spin_sort_ok=emitted[i]==kept[i];
+   assert(spin_sort_ok);
+   // Tolerance on every axis, and a singular rotation never passes.
+   int eye_tolerance_ok=1;
+   memcpy(r_refdef.m_view,saved_view,sizeof(saved_view));
+   for(int j=0;j<3;j++){
+    float o=r_origin[j];
+    r_origin[j]=o+0.01f;eye_tolerance_ok=eye_tolerance_ok&&GLBE_BlendViewEyeAgrees();
+    r_origin[j]=o+0.0625f;eye_tolerance_ok=eye_tolerance_ok&&!GLBE_BlendViewEyeAgrees();
+    r_origin[j]=o;
+   }
+   for(int j=0;j<11;j++)if(j%4!=3)r_refdef.m_view[j]=0;
+   eye_tolerance_ok=eye_tolerance_ok&&!GLBE_BlendViewEyeAgrees();
+   assert(eye_tolerance_ok);
+   memcpy(r_refdef.m_view,saved_view,sizeof(saved_view));
+   r_refdef.m_view[12]+=1;
+   shaderstate.curentity=NULL;r_refdef.flipcull=0;ndraw=nemit=0;GLBE_SubmitMeshes(follow_world,SHADER_SORT_BLEND,SHADER_SORT_BLEND);
+   eye_guard_ok=!GLBE_BlendViewEyeAgrees()&&nemit==8;
+   for(int i=1;eye_guard_ok&&i<nemit;i++)for(int m=0;m<20;m++)for(int k=0;k<20;k++)
+    if(follow_all[m]->id==emitted[i-1]&&follow_all[k]->id==emitted[i]&&
+     GLBE_BlendAreaDepth(follow_all[k],matrix)>GLBE_BlendAreaDepth(follow_all[m],matrix))eye_guard_ok=0;
+   assert(eye_guard_ok);
+   memcpy(r_refdef.m_view,saved_view,sizeof(saved_view));
+   r_origin[0]+=1;assert(!GLBE_BlendViewEyeAgrees());r_origin[0]-=1;
+   r_refdef.m_view[14]=NAN;assert(!GLBE_BlendViewEyeAgrees());memcpy(r_refdef.m_view,saved_view,sizeof(saved_view));
+   assert(GLBE_BlendViewEyeAgrees());
+  }
   // Live failure: stock CSQC wire annotations interleave with the glass and
   // force status-3. Keep their legacy post-world layer, not a graph barrier.
   {
@@ -651,7 +732,7 @@ int main(void) {
   assert(ndraw==1&&nemit==20&&ranges[0]==20);
   for(int i=0;i<20;i++)assert(emitted[i]==follow_all[i]->id);
   r_blendsort.ival=2;
-  for(int guard=0;guard<7;guard++) {
+  for(int guard=0;guard<6;guard++) {
    follow_shader.flags=SHADER_CULL_FRONT;follow_shader.numpasses=1;follow_shader.prog=NULL;
    follow_batch.flags=0;follow_batch.fog=NULL;r_refdef.recurse=0;r_refdef.useperspective=1;
    if(guard==0)follow_shader.flags=0;
@@ -659,14 +740,195 @@ int main(void) {
    if(guard==2)follow_shader.numpasses=2;
    if(guard==3)follow_batch.fog=&follow_batch;
    if(guard==4)follow_batch.flags=BEF_FORCETWOSIDED;
-   if(guard==5)r_refdef.recurse=1;
-   if(guard==6)r_refdef.useperspective=0;
+   if(guard==5)r_refdef.useperspective=0;
    ndraw=nemit=0;GLBE_SubmitMeshes(follow_world,SHADER_SORT_BLEND,SHADER_SORT_BLEND);
-   assert(nemit==20); // uncertainty keeps every original command.
+   // Uncertainty keeps every drawable command. Two-sided guard0 still drops the
+   // two faces wholly behind the eye: no cull state can draw them.
+   int behind_drop_ok=(nemit==(guard==0?18:20));assert(behind_drop_ok);
   }
   r_refdef.recurse=0;r_refdef.useperspective=1;r_blendsort.ival=1;recordmeshes=0;
  }
- puts("PASS stock-wireframe acted regression,11 conservative layer guards,once-only callback; Kitsune mode2:3 saved poses+33-view sweep,stale-XFLIP,independent4-pane order,7 conservative guards; default0/1/2 dispatch:8 prior-entity/view-flip contribution contexts;directed marginal-area abstention;128 effective-cull contexts;17 uncertain/invalid geometry/projection controls;inert/visible crossing barriers;raw culled-face budget;12 complete28-face scenes/four-pane rank at two eyes; 36 frozen-yaw/material permutations;72 same-material mixed foreground/rear batches; stationary unsupported slots and mode0 full-range order; world-only correction; whole-batch/program/multipass/cache/recursive/budget fallbacks; capture barrier; existing mode2 lifetime/range/remap/BEM/plane regressions");
+ // General projected-overlap proof, not another map/material exception.
+ {
+  unsigned ti[3]={0,1,2};unsigned int work=0;
+  float ax[3][3]={{-2,-2,12},{2,-2,12},{0,2,10}};
+  float bx[3][3]={{-2,-2,10},{2,-2,10},{0,2,10}};
+  mesh_t a={.numvertexes=3,.numindexes=3,.xyz_array=ax,.indexes=ti};
+  mesh_t b={.numvertexes=3,.numindexes=3,.xyz_array=bx,.indexes=ti};
+  shader_t sh={.numpasses=1};sh.remapto=&sh;
+  batch_t batch={.ent=&r_worldentity,.shader=&sh};
+  glblendface_t fa={.batch=&batch,.mesh=&a},fb={.batch=&batch,.mesh=&b};glblendplane_t ap,bp;
+  float projection[16]={1,0,0,0,0,1,0,0,0,0,-1,-1,0,0,-2,0};
+  memcpy(r_refdef.m_projection_std,projection,sizeof(projection));
+  memset(r_origin,0,sizeof(r_origin));vpn[0]=vpn[1]=0;vpn[2]=1;
+  vright[0]=1;vright[1]=vright[2]=0;vup[0]=vup[2]=0;vup[1]=1;
+  memset(r_refdef.m_view,0,sizeof(r_refdef.m_view));r_refdef.m_view[15]=1;
+  for(int j=0;j<3;j++){r_refdef.m_view[j*4]=vright[j];r_refdef.m_view[j*4+1]=vup[j];r_refdef.m_view[j*4+2]=-vpn[j];}
+  r_blendsort.ival=2;r_refdef.useperspective=1;r_refdef.recurse=0;r_refdef.flipcull=0;
+  shaderstate.mode=BEM_STANDARD;shaderstate.flags=0;r_worldentity.flags=0;
+  assert(GLBE_BlendPlaneGeometry(&fa,&ap)&&GLBE_BlendPlaneGeometry(&fb,&bp));
+  assert(GLBE_BlendPlaneSide(&ap,&bp)==0&&GLBE_BlendPlaneSide(&bp,&ap)==0);
+  // Both full-face tests abstain at the shared vertex. Analytically A.z>=B.z.
+  int contact_order_ok=overlap_order(&a,&b,0,&work)==-1&&overlap_order(&b,&a,0,&work)==1;
+  assert(contact_order_ok&&work>0);
+  ax[0][2]=8;ax[1][2]=12;bx[0][2]=12;bx[1][2]=8;
+  int reversal_order_ok=overlap_order(&a,&b,0,&work)==0;assert(reversal_order_ok);
+  float disja[3][3]={{-9,-9,10},{9,-9,10},{-9,9,10}},disjb[3][3]={{9,9,10},{9,1,10},{1,9,10}};
+  a.xyz_array=disja;b.xyz_array=disjb;
+  // Overlapping AABBs, but screen x+y<=0 versus x+y>=1: a strict gap.
+  int disjoint_order_ok=overlap_order(&a,&b,-1,&work)==GLBLEND_ORDER_DISJOINT;
+  assert(disjoint_order_ok);
+  float across[3][3]={{0,0,-1},{-1,1,4},{1,1,4}};a.xyz_array=across;
+  glblendproject_t points[GLBLEND_CLIP_VERTS];int np=GLBE_BlendProjectTriangle(&a,0,points,&work),atnear=0;
+  int near_homogeneous_ok=(np>=3);
+  for(int i=0;i<np;i++){if(points[i].iw>1+1e-8)near_homogeneous_ok=0;if(fabs(points[i].iw-1)<1e-8)atnear=1;}
+  assert(near_homogeneous_ok&&atnear); // near1 ACTED; every retained w>=1.
+  // A spent overlap budget returns the hint: P742's edge, never an abandoned sort.
+  work=GLBLEND_OVERLAP_WORK;int overlap_budget_ok=overlap_order(&a,&b,0,&work)==0&&overlap_order(&a,&b,-1,&work)==-1;
+  assert(overlap_budget_ok&&work==GLBLEND_OVERLAP_WORK);
+  mesh_t cycle[3];glblendface_t cf[3];glblendplanestats_t st;unsigned qi[6]={0,1,2,0,2,3};
+  // Three screen strips meet only at three different corners. Their affine
+  // inverse depths prove B->A at bottom-right, A->C bottom-left, C->B at top.
+  float screen[3][4][2]={{{-.9f,-.7f},{.9f,-.7f},{.9f,-.5f},{-.9f,-.5f}},{{.73f,-.64f},{.87f,-.56f},{.07f,.84f},{-.07f,.76f}},{{-.87f,-.56f},{-.73f,-.64f},{.07f,.76f},{-.07f,.84f}}};
+  float truexyz[3][4][3];
+  for(int i=0;i<3;i++){
+   for(int v=0;v<4;v++){double iw=.1+(i==1?.03*screen[i][v][1]:i==2?-.03*screen[i][v][0]:0);truexyz[i][v][0]=screen[i][v][0]/iw;truexyz[i][v][1]=screen[i][v][1]/iw;truexyz[i][v][2]=1/iw;}
+   cycle[i]=(mesh_t){.numvertexes=4,.numindexes=6,.xyz_array=truexyz[i],.indexes=qi};cf[i]=(glblendface_t){.batch=&batch,.mesh=&cycle[i],.depth=3-i,.sequence=i};
+  }
+  GLBE_BlendPlaneSort(cf,3,&st);int real_painter_cycle_ok=st.admitted==3&&st.status==-2;assert(real_painter_cycle_ok);
+  // Proved overlaps C->A and B->C plus a crossing A/B (baseline A->B) cycle,
+  // while P742's all-baseline graph does not: pass2 must keep that order.
+  {
+   const float band[3][4][2]={{{-.9f,-.1f},{.9f,-.1f},{.9f,.1f},{-.9f,.1f}},{{-.9f,.05f},{.9f,.05f},{.9f,.4f},{-.9f,.4f}},{{-.9f,-.2f},{-.5f,-.2f},{-.5f,.5f},{-.9f,.5f}}};
+   const double plane[3][3]={{.12,.05,0},{.11,.11,0},{.115,.1,.1}}; // iw = c0 + cx*x + cy*y
+   float bandxyz[3][4][3];
+   for(int i=0;i<3;i++){
+    for(int v=0;v<4;v++){double iw=plane[i][0]+plane[i][1]*band[i][v][0]+plane[i][2]*band[i][v][1];bandxyz[i][v][0]=band[i][v][0]/iw;bandxyz[i][v][1]=band[i][v][1]/iw;bandxyz[i][v][2]=1/iw;}
+    cycle[i]=(mesh_t){.numvertexes=4,.numindexes=6,.xyz_array=bandxyz[i],.indexes=qi};cf[i]=(glblendface_t){.batch=&batch,.mesh=&cycle[i],.depth=3-i,.sequence=i};
+   }
+   GLBE_BlendPlaneSort(cf,3,&st);int parent_fallback_ok=st.admitted==3&&st.status==1&&st.pass==2&&st.moved==0;assert(parent_fallback_ok);
+   // C->A alone, across an unsupported slot: pass0 would cross the barrier
+   // (-3) where P742's baseline edge sorted, so it must retry to pass2.
+   glblendface_t barrier[3]={cf[0],{.batch=&batch,.mesh=NULL,.sequence=1},cf[2]};
+   GLBE_BlendPlaneSort(barrier,3,&st);int barrier_retry_ok=st.admitted==2&&st.status==1&&st.pass==2&&barrier[0].mesh==&cycle[0];
+   assert(barrier_retry_ok);
+  }
+  // A real overlap 4e-4 NDC wide (0.2 px at 1080p) but a full unit long keeps
+  // its true order: a width cut dropped such strips (review round 2).
+  {
+   float nearq[4][3],farq[4][3];const float qx[4]={-.5f,.5f,.5f,-.5f},qy[4]={-.5f,-.5f,.5f,.5f};
+   for(int v=0;v<4;v++){nearq[v][0]=qx[v]*10;nearq[v][1]=qy[v]*10;nearq[v][2]=10;farq[v][0]=(v==0||v==3?.4996f:1.f)*20;farq[v][1]=qy[v]*20;farq[v][2]=20;}
+   mesh_t nm={.numvertexes=4,.numindexes=6,.xyz_array=nearq,.indexes=qi},fm={.numvertexes=4,.numindexes=6,.xyz_array=farq,.indexes=qi};
+   work=0;int thin_overlap_ok=overlap_order(&nm,&fm,0,&work)==1&&overlap_order(&fm,&nm,0,&work)==-1;assert(thin_overlap_ok);
+  }
+  // The old triangle fixture is a COARSE graph cycle: its B/C projections are
+  // disjoint. Zoom retains visible A and removes offscreen edges, not commands.
+  r_refdef.m_projection_std[0]=r_refdef.m_projection_std[5]=100;
+  for(int i=0;i<3;i++){cycle[i]=(mesh_t){.numvertexes=3,.numindexes=3,.xyz_array=cyclexyz[i],.indexes=ti};cf[i]=(glblendface_t){.batch=&batch,.mesh=&cycle[i],.depth=3-i,.sequence=i};}
+  GLBE_BlendPlaneSort(cf,3,&st);int coverage_retry_ok=st.admitted==3&&st.status>=0&&st.work>18;assert(coverage_retry_ok);
+  work=0;assert(GLBE_BlendProjectTriangle(&cycle[0],0,points,&work)>=3);
+  // Review fixture: hinged panes, A with a float-rounded split vertex on the
+  // shared edge. They meet only at that seam, so a signed verdict is noise.
+  {
+   unsigned seed=777,ta[9]={0,1,2,0,2,3,0,3,4},tb[6]={0,1,2,0,2,3};int signedv=0,pairs=0;
+   float hx[5][3],hy[4][3];
+   mesh_t ha={.numvertexes=5,.numindexes=9,.xyz_array=hx,.indexes=ta},hb={.numvertexes=4,.numindexes=6,.xyz_array=hy,.indexes=tb};
+   float hp[16]={1,0,0,0,0,1.33333333f,0,0,0,0,-1,-1,0,0,-8,0};memcpy(r_refdef.m_projection_std,hp,sizeof(hp));
+   memset(r_origin,0,sizeof(r_origin));vpn[0]=1;vpn[1]=vpn[2]=0;vright[0]=vright[2]=0;vright[1]=-1;vup[0]=vup[1]=0;vup[2]=1;
+   memset(r_refdef.m_view,0,sizeof(r_refdef.m_view));r_refdef.m_view[15]=1;
+   for(int j=0;j<3;j++){r_refdef.m_view[j*4]=vright[j];r_refdef.m_view[j*4+1]=vup[j];r_refdef.m_view[j*4+2]=-vpn[j];}
+   for(int trial=0;trial<4000;trial++){
+    double P0[3],P1[3],n1[3],n2[3],s[4][2],c1,c2;
+    for(int j=0;j<3;j++){P0[j]=j?-400+800*lcg(&seed):100+900*lcg(&seed);P1[j]=P0[j]-200+400*lcg(&seed);n1[j]=-200+400*lcg(&seed);n2[j]=-200+400*lcg(&seed);}
+    const double *pts[4]={P0,P1,n1,n2};
+    for(int i=0;i<4;i++){double q[3];for(int j=0;j<3;j++)q[j]=i<2?pts[i][j]:P0[j]+pts[i][j];if(q[0]<10)goto hinge_skip;s[i][0]=-q[1]/q[0];s[i][1]=q[2]/q[0];}
+    c1=(s[1][0]-s[0][0])*(s[2][1]-s[0][1])-(s[1][1]-s[0][1])*(s[2][0]-s[0][0]);
+    c2=(s[1][0]-s[0][0])*(s[3][1]-s[0][1])-(s[1][1]-s[0][1])*(s[3][0]-s[0][0]);
+    if(c1*c2>=0||P1[0]+n1[0]<10||P1[0]+n2[0]<10)goto hinge_skip;
+    for(int j=0;j<3;j++){
+     double M=.37*P0[j]+.63*P1[j];
+     if(trial&1){hx[0][j]=P0[j]+n1[j];hx[1][j]=P0[j];hx[2][j]=M;hx[3][j]=P1[j];hx[4][j]=P1[j]+n1[j];}
+     else{hx[0][j]=P0[j];hx[1][j]=M;hx[2][j]=P1[j];hx[3][j]=P1[j]+n1[j];hx[4][j]=P0[j]+n1[j];}
+     hy[0][j]=P1[j];hy[1][j]=P0[j];hy[2][j]=P0[j]+n2[j];hy[3][j]=P1[j]+n2[j];
+    }
+    pairs++;work=0;int r1=overlap_order(&ha,&hb,0,&work);work=0;int r2=overlap_order(&hb,&ha,0,&work);
+    signedv+=(r1==1||r1==-1)+(r2==1||r2==-1);
+    hinge_skip:;
+   }
+   int hinge_noise_ok=pairs>1000&&signedv==0;
+   if(!hinge_noise_ok)printf("hinge pairs %d signed %d\n",pairs,signedv);
+   assert(hinge_noise_ok);
+  }
+ }
+ // Derive the actual native stage1 inputs from the existing28-face geometry.
+ // These are area keys, NOT legacy vertex means or injected depth overrides.
+ {
+  shader_t sh={.flags=SHADER_CULL_FRONT,.numpasses=1};sh.remapto=&sh;
+  batch_t batch={.ent=&r_worldentity,.shader=&sh,.mesh=hs_all,.meshes=28,.maxmeshes=28};
+  const struct{int id;double depth;} native[12]={{3628,2918.642584},{294,2912.19673983},{2800,1969.21416536},{2798,1968.86400208},{2792,1914.3975556},{1228,819.813365798},{1236,817.468071546},{1229,817.411710315},{1194,769.902117172},{1235,764.983479477},{4031,-266.865710414},{281,-273.311554587}};
+  int expected[12]={3628,294,1235,2792,2798,2800,1194,1236,1229,1228,4031,281};
+  r_origin[0]=-14959.8984f;r_origin[1]=-14834.1309f;r_origin[2]=880.09375f;
+  double yaw=atan2(.903055847,.148961976),pitch=asin(.402865261);
+  vpn[0]=cos(pitch)*cos(yaw);vpn[1]=cos(pitch)*sin(yaw);vpn[2]=-sin(pitch);
+  vright[0]=sin(yaw);vright[1]=-cos(yaw);vright[2]=0;
+  vup[0]=sin(pitch)*cos(yaw);vup[1]=sin(pitch)*sin(yaw);vup[2]=cos(pitch);
+  memset(r_refdef.m_view,0,sizeof(r_refdef.m_view));r_refdef.m_view[15]=1;
+  for(int j=0;j<3;j++){r_refdef.m_view[j*4]=vright[j];r_refdef.m_view[j*4+1]=vup[j];r_refdef.m_view[j*4+2]=-vpn[j];r_refdef.m_view[12]-=vright[j]*r_origin[j];r_refdef.m_view[13]-=vup[j]*r_origin[j];r_refdef.m_view[14]+=vpn[j]*r_origin[j];}
+  r_refdef.m_projection_std[0]=.699249685f;r_refdef.m_projection_std[5]=1.11879945f;r_refdef.m_projection_std[10]=-.999999762f;r_refdef.m_projection_std[14]=-1.99999976f;
+  float matrix[16]={1,0,0,0,0,1,0,0,0,0,1,0,0,0,0,1};
+  glblendface_t faces[12];glblendplanestats_t st;int n=0;
+  for(int i=0;i<28;i++){
+   mesh_t *m=hs_all[i];if(GLBE_BlendWorldRasterEmpty(&batch,m)||GLBE_BlendWorldRasterEmptyNear(&batch,m))continue;
+   assert(n<12);double depth=GLBE_BlendAreaDepth(m,matrix);int found=0;
+   for(int j=0;j<12;j++)if(native[j].id==m->id){assert(fabs(depth-native[j].depth)<1e-6);found=1;break;}
+   assert(found);faces[n++]=(glblendface_t){.batch=&batch,.mesh=m,.depth=depth,.sequence=i};
+  }
+  assert(n==12);qsort(faces,n,sizeof(*faces),GLBE_BlendFaceCompare);GLBE_BlendPlaneSort(faces,n,&st);
+  int stage1_overlap_graph_ok=st.admitted==12&&st.status==1&&st.edges==44&&st.moved==8&&st.work<=GLBLEND_PLANE_WORK;
+  for(int i=0;i<12;i++)if(faces[i].mesh->id!=expected[i])stage1_overlap_graph_ok=0;
+  assert(stage1_overlap_graph_ok);
+  // Sweep beyond BOTH reported views at this fixed eye, not just saved angles.
+  for(int pose=0;pose<33;pose++){
+   yaw=(40+90.0*pose/32)*3.141592653589793/180;
+   vpn[0]=cos(pitch)*cos(yaw);vpn[1]=cos(pitch)*sin(yaw);vpn[2]=-sin(pitch);
+   vright[0]=sin(yaw);vright[1]=-cos(yaw);vright[2]=0;
+   vup[0]=sin(pitch)*cos(yaw);vup[1]=sin(pitch)*sin(yaw);vup[2]=cos(pitch);
+   for(int j=0;j<3;j++){r_refdef.m_view[j*4]=vright[j];r_refdef.m_view[j*4+1]=vup[j];r_refdef.m_view[j*4+2]=-vpn[j];}
+   r_refdef.m_view[12]=r_refdef.m_view[13]=r_refdef.m_view[14]=0;
+   for(int j=0;j<3;j++){r_refdef.m_view[12]-=vright[j]*r_origin[j];r_refdef.m_view[13]-=vup[j]*r_origin[j];r_refdef.m_view[14]+=vpn[j]*r_origin[j];}
+   glblendface_t sweep[28];mesh_t *selected[28];int count=0,witness=0;unsigned int probe=0;glblendproject_t poly[GLBLEND_CLIP_VERTS];
+   for(int i=0;i<28;i++){
+    mesh_t *m=hs_all[i];if(GLBE_BlendWorldRasterEmpty(&batch,m)||GLBE_BlendWorldRasterEmptyNear(&batch,m))continue;
+    selected[count]=m;sweep[count++]=(glblendface_t){.batch=&batch,.mesh=m,.depth=GLBE_BlendAreaDepth(m,matrix),.sequence=i};
+    for(int t=0;t<m->numindexes;t+=3)if(GLBE_BlendProjectTriangle(m,t,poly,&probe)>=3)witness=1;
+   }
+   assert(count>=4&&witness);qsort(sweep,count,sizeof(*sweep),GLBE_BlendFaceCompare);GLBE_BlendPlaneSort(sweep,count,&st);
+   int stage1_sweep_ok=st.status>=0&&st.admitted==(unsigned)count&&st.work<=GLBLEND_PLANE_WORK;
+   for(int i=0;i<count;i++){int occurrences=0;for(int j=0;j<count;j++)if(sweep[j].mesh==selected[i])occurrences++;if(occurrences!=1)stage1_sweep_ok=0;}
+   assert(stage1_sweep_ok);
+  }
+  // Turned round at this eye (yaw194 pitch-5), 2800 lies wholly behind it. Kept
+  // as an unadmitted slot it forced status-3 and drew the nearer 281 over 4031.
+  yaw=194*3.141592653589793/180;pitch=-5*3.141592653589793/180;
+  vpn[0]=cos(pitch)*cos(yaw);vpn[1]=cos(pitch)*sin(yaw);vpn[2]=-sin(pitch);
+  vright[0]=sin(yaw);vright[1]=-cos(yaw);vright[2]=0;
+  vup[0]=sin(pitch)*cos(yaw);vup[1]=sin(pitch)*sin(yaw);vup[2]=cos(pitch);
+  for(int j=0;j<3;j++){r_refdef.m_view[j*4]=vright[j];r_refdef.m_view[j*4+1]=vup[j];r_refdef.m_view[j*4+2]=-vpn[j];}
+  r_refdef.m_view[12]=r_refdef.m_view[13]=r_refdef.m_view[14]=0;
+  for(int j=0;j<3;j++){r_refdef.m_view[12]-=vright[j]*r_origin[j];r_refdef.m_view[13]-=vup[j]*r_origin[j];r_refdef.m_view[14]+=vpn[j]*r_origin[j];}
+  {
+   glblendface_t turned[28];int count=0,p281=-1,p4031=-1,p2800=-1;
+   for(int i=0;i<28;i++){
+    mesh_t *m=hs_all[i];if(GLBE_BlendWorldRasterEmpty(&batch,m)||GLBE_BlendWorldRasterEmptyNear(&batch,m))continue;
+    turned[count++]=(glblendface_t){.batch=&batch,.mesh=m,.depth=GLBE_BlendAreaDepth(m,matrix),.sequence=i};
+   }
+   qsort(turned,count,sizeof(*turned),GLBE_BlendFaceCompare);GLBE_BlendPlaneSort(turned,count,&st);
+   for(int i=0;i<count;i++){if(turned[i].mesh->id==281)p281=i;if(turned[i].mesh->id==4031)p4031=i;if(turned[i].mesh->id==2800)p2800=i;}
+   int behind_eye_order_ok=st.status==1&&p2800<0&&p4031>=0&&p4031<p281;assert(behind_eye_order_ok);
+  }
+ }
+ puts("PASS general overlap: analytic contact/reversal/disjoint/nearclip/budget,real painter cycle retained,zoomed false-cycle retry ACTED,native12 area keys+graph corrected,33-view stage1 40..130yaw sweep no fallback/loss,behind-eye barrier dropped,hinge seams unsigned,thin real overlap kept,P742-graph fallback for cycles and barriers");
+ puts("PASS stock-wireframe acted regression,11 conservative layer guards,once-only callback; Kitsune mode2:3 saved poses+33-view sweep,stale-XFLIP,independent4-pane order,portal views same cull+order,any-frame roll sorts,eye guard,one-frame trace,6 conservative guards; default0/1/2 dispatch:8 prior-entity/view-flip contribution contexts;directed marginal-area abstention;128 effective-cull contexts;17 uncertain/invalid geometry/projection controls;inert/visible crossing barriers;raw culled-face budget;12 complete28-face scenes/four-pane rank at two eyes; 36 frozen-yaw/material permutations;72 same-material mixed foreground/rear batches; stationary unsupported slots and mode0 full-range order; world-only correction; whole-batch/program/multipass/cache/recursive/budget fallbacks; capture barrier; existing mode2 lifetime/range/remap/BEM/plane regressions");
 }
 '''
 
@@ -697,6 +959,40 @@ raster = actual[actual.index('static qboolean GLBE_BlendWorldRasterEmpty'):actua
 controls = {
     'lost_annotation_layer': base.replace('faces[n].foreground = GLBE_BlendForeground(batch);', 'faces[n].foreground = !!(batch->ent->flags & (RF_WEAPONMODEL | RF_DEPTHHACK));'),
     'lost_mode2_cull': base.replace('if (cullworld && (GLBE_BlendWorldRasterEmpty(batch, mesh) || GLBE_BlendWorldRasterEmptyNear(batch, mesh)))', 'if (false && (GLBE_BlendWorldRasterEmpty(batch, mesh) || GLBE_BlendWorldRasterEmptyNear(batch, mesh)))'),
+    'lost_overlap_refine': base.replace("stats->pass = r_blendsort.ival == 2 ? 0 : 2;", "stats->pass = 2;"),
+    'lost_overlap_retry': base.replace('if (stats->pass < 2) { stats->pass++; goto rebuild; }', 'if (stats->pass < 2) { stats->pass = 2; goto rebuild; }'),
+    'lost_overlap_depth': base.replace('return positive ? 1 : negative ? -1 : 0;', 'return positive ? -1 : negative ? 1 : 0;'),
+    'lost_overlap_nearclip': base.replace('for (plane = 0; plane < 6 && n; plane++)', 'for (plane = 0; plane < 4 && n; plane++)'),
+    'lost_real_cycle_abstention': base.replace('stats->status = -2; goto done;', 'stats->status = 1; goto done;'),
+    'lost_mode2_only_overlap': base.replace("stats->pass = r_blendsort.ival == 2 ? 0 : 2;", "stats->pass = 0;"),
+    'lost_depth_tie': base.replace('eps = GLBLEND_DEPTH_TIE*fabs(za*zb) + 1e-15;', 'eps = 1e-8*(fabs(za)+fabs(zb)) + 1e-12;'),
+    'sliver_skipped': base.replace('if (!area) continue;\n\t\t\tif (hint) return hint;', 'if (fabs(area) < 1e-3) continue;\n\t\t\tif (hint) return hint;'),
+    'lost_barrier_retry': base.replace('\t\t{\n\t\t\tif (stats->pass < 2) { stats->pass++; goto rebuild; }\n\t\t\tstats->status = -3; goto done;\n\t\t}', '\t\t{ stats->status = -3; goto done; }'),
+    'lost_parent_fallback': base.replace('if (stats->pass < 2) { stats->pass++; goto rebuild; }', 'if (stats->pass < 1) { stats->pass++; goto rebuild; }'),
+    'lost_behind_eye': base.replace('if (behind) return true;', 'if (behind && false) return true;'),
+    'lost_behind_eye_order': base.replace('if (behind) return true;', 'if (behind && false) return true;').replace(
+        'int behind_drop_ok=(nemit==(guard==0?18:20));', 'int behind_drop_ok=1;'),
+    'lost_portal_sort': base.replace('\tif (GLBE_BlendViewEyeAgrees())\n\t\tGLBE_BlendPlaneSort(faces, n, &stats);',
+        '\tif (!r_refdef.recurse && GLBE_BlendViewEyeAgrees())\n\t\tGLBE_BlendPlaneSort(faces, n, &stats);'),
+    'lost_portal_cull': base.replace('cullworld = GLBE_BlendPlaneViewEligible() &&', 'cullworld = !r_refdef.recurse && GLBE_BlendPlaneViewEligible() &&'),
+    'lost_eye_guard': base.replace('\tif (GLBE_BlendViewEyeAgrees())\n\t\tGLBE_BlendPlaneSort(faces, n, &stats);',
+        '\tGLBE_BlendPlaneSort(faces, n, &stats);'),
+    'axis_guard': base.replace('\tif (GLBE_BlendViewEyeAgrees())\n\t\tGLBE_BlendPlaneSort(faces, n, &stats);',
+        '\tif (GLBE_BlendViewEyeAgrees() && fabs(r_refdef.m_view[0] - vright[0]) < 1e-4 && fabs(r_refdef.m_view[1] - vup[0]) < 1e-4)\n\t\tGLBE_BlendPlaneSort(faces, n, &stats);'),
+    'eye_cofactor_untransposed': base.replace('eye[j] = -(c[0][j]*m[12] + c[1][j]*m[13] + c[2][j]*m[14]) / det;',
+        'eye[j] = -(c[j][0]*m[12] + c[j][1]*m[13] + c[j][2]*m[14]) / det;'),
+    'lost_trace_frame': base.replace('if (gl_blendtrace_pending && gl_blendtrace_started && gl_blendtrace_frame != host_framecount)\n\t\tgl_blendtrace_pending = false;', ''),
+    'recursive_pass_no_disarm': base.replace('if (gl_blendtrace_pending && gl_blendtrace_started && gl_blendtrace_frame != host_framecount)',
+        'if (gl_blendtrace_pending && gl_blendtrace_started && gl_blendtrace_frame != host_framecount && !r_refdef.recurse)'),
+    'forward_guard': base.replace('\tif (GLBE_BlendViewEyeAgrees())\n\t\tGLBE_BlendPlaneSort(faces, n, &stats);',
+        '\tif (GLBE_BlendViewEyeAgrees() && fabs(r_refdef.m_view[2] + vpn[0]) < 1e-4 && fabs(r_refdef.m_view[6] + vpn[1]) < 1e-4)\n\t\tGLBE_BlendPlaneSort(faces, n, &stats);'),
+    'handed_guard': base.replace('\tif (GLBE_BlendViewEyeAgrees())\n\t\tGLBE_BlendPlaneSort(faces, n, &stats);',
+        '\tif (GLBE_BlendViewEyeAgrees() && r_refdef.m_view[0]*vright[0] + r_refdef.m_view[4]*vright[1] + r_refdef.m_view[8]*vright[2] > 0)\n\t\tGLBE_BlendPlaneSort(faces, n, &stats);'),
+    'loose_tolerance': base.replace('if (fabs(eye[j] - r_origin[j]) > 1.0/32) return false;', 'if (fabs(eye[j] - r_origin[j]) > 0.3) return false;'),
+    'axis0_only': base.replace('\tfor (j = 0; j < 3; j++)\n\t{\n\t\teye[j] =', '\tfor (j = 0; j < 1; j++)\n\t{\n\t\teye[j] ='),
+    'lost_det': base.replace('if (fabs(det) < 1e-6) return false;', ''),
+    'root_pass_disarms': base.replace('\t\tgl_blendtrace_frame = host_framecount;\n',
+        '\t\tgl_blendtrace_frame = host_framecount;\n\t\tif (!r_refdef.recurse) gl_blendtrace_pending = false;\n'),
     'lost_near_admission': base.replace('if (r_blendsort.ival != 2) return false;', 'if (true) return false;'),
     'lost_near_cull': base.replace('|| GLBE_BlendWorldRasterEmptyNear(batch, mesh)', '|| false'),
     'stale_mode2_world': base.replace('\t\t\t\tif (cullworld && shaderstate.curentity != batch->ent)\n\t\t\t\t\tGLBE_SelectEntity(batch->ent);', ''),
@@ -746,8 +1042,33 @@ for name, control in controls.items():
     predicate = {
         'lost_annotation_layer': 'annotation_layers_ok',
         'lost_near_admission': 'near_camera_order_ok',
-        'lost_near_cull': 'near_camera_order_ok',
-        'lost_mode2_cull': 'a>=0&&b>=0&&c>=0&&d>=0&&a<b&&b<c&&c<d',
+        'lost_near_cull': 'mode2_cull_ok',
+        'lost_mode2_cull': 'mode2_cull_ok',
+        'lost_overlap_refine': 'coverage_retry_ok',
+        'lost_overlap_retry': 'coverage_retry_ok',
+        'lost_overlap_depth': 'contact_order_ok',
+        'lost_overlap_nearclip': 'near_homogeneous_ok',
+        'lost_real_cycle_abstention': 'real_painter_cycle_ok',
+        'lost_mode2_only_overlap': 'ndraw==1&&nemit==28&&ranges[0]==28',
+        'lost_depth_tie': 'hinge_noise_ok',
+        'sliver_skipped': 'thin_overlap_ok',
+        'lost_barrier_retry': 'barrier_retry_ok',
+        'lost_parent_fallback': 'parent_fallback_ok',
+        'lost_behind_eye': 'behind_drop_ok',
+        'lost_behind_eye_order': 'behind_eye_order_ok',
+        'lost_portal_sort': 'portal_view_order_ok',
+        'lost_portal_cull': 'portal_view_order_ok',
+        'lost_eye_guard': 'eye_guard_ok',
+        'axis_guard': 'roll_sort_ok',
+        'eye_cofactor_untransposed': 'a>=0&&b>=0&&c>=0&&d>=0&&a<b&&b<c&&c<d',
+        'lost_trace_frame': 'trace_frame_ok',
+        'root_pass_disarms': 'trace_frame_ok',
+        'recursive_pass_no_disarm': 'trace_frame_ok',
+        'forward_guard': 'spin_sort_ok',
+        'handed_guard': 'mirror_sort_ok',
+        'loose_tolerance': 'eye_tolerance_ok',
+        'axis0_only': 'eye_tolerance_ok',
+        'lost_det': 'eye_tolerance_ok',
         'stale_mode2_world': 'a>=0&&b>=0&&c>=0&&d>=0&&a<b&&b<c&&c<d',
         'lost_area_center': 'ndraw==2&&draws[0]==736&&draws[1]==737',
         'stale_entity_cull': 'nemit==4&&emitted[0]==700&&emitted[1]==251&&emitted[2]==600&&emitted[3]==250',

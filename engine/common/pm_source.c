@@ -209,6 +209,7 @@ static cvar_t pm_jumpzdebug = CVARD("pm_jumpzdebug", "0",
 
 extern cvar_t pm_noround;
 extern int bih_sourceclip;	//Patch 492, com_bih.c
+extern int bih_phybrushes;	//Patch 764, com_bih.c
 extern cvar_t pm_dispprobe;	//FTESurf Patch 256, temporary -- defined in common.c
 extern cvar_t pm_ladderprobe;	//FTESurf Patch 260, temporary -- defined in common.c
 
@@ -800,6 +801,28 @@ static qboolean PMSrc_IsValidMovementTrace (trace_t *tr)
 	return true;
 }
 
+/* FTESurf Patch 813, mover 8: a fraction-0 hit on a plane this move already clipped
+   against, with no progress since.  The hull was left nearer that face than a float32
+   origin resolves (1/512 past 16384), so the parallel retrace dips into it, the loop
+   files the same plane five times and clears the velocity: Lex's dead stop on
+   surf_colin_blaster_69000's curve.  0.8.7's IsValidMovementTrace refuses every
+   fraction-0 trace; Patch 492 lets them reach the crease for voyager's V troughs, and
+   voyager's flight never repeats a plane, so only the repeat is refused.  In the air
+   two equal planes can no longer be filed, so the crease's same-plane push below is
+   unreachable there, as in 0.8.7.  Brush faces only: triangle normals of one face
+   need not be bit-equal. */
+static qboolean PMSrc_SamePlaneAgain (const trace_t *tr, vec3_t planes[], int numplanes)
+{
+	int i;
+
+	if (movevars.sourceversion < 8 || movevars.fixrampbugs < 2 || fabs(tr->fraction) > FLT_EPSILON)
+		return false;
+	for (i = 0; i < numplanes; i++)
+		if (PMSrc_VecCloseEnough (planes[i], tr->plane.normal))
+			return true;
+	return false;
+}
+
 /*
 ==================
 PMSrc_FindRecoveryPlane   (cpp:2486)
@@ -1231,7 +1254,8 @@ static int PMSrc_TryPlayerMove (vec3_t firstdest, trace_t *firsttrace)
 		   legitimately have fraction 0 (emerging flush) and a plane belonging to
 		   the far side's geometry; IsValidMovementTrace would read it as a ramp
 		   failure and "recover" the player along a plane from the other room. */
-		if (bumpcount && fixramps && !pmove.onground && !tookportal && !PMSrc_IsValidMovementTrace (&pm))
+		if (bumpcount && fixramps && !pmove.onground && !tookportal &&
+		    (!PMSrc_IsValidMovementTrace (&pm) || PMSrc_SamePlaneAgain (&pm, planes, numplanes)))
 		{
 			has_valid_plane = false;
 			stuck_on_ramp = true;
@@ -1713,6 +1737,45 @@ static float PMSrc_StandHeight (void)
 static float PMSrc_DuckHeight (void)
 {
 	return movevars.duckheight > 0 ? movevars.duckheight : 45;
+}
+
+/*
+  FTESurf Patch 754: take the server's completed posture from its hull.
+
+  pmsrc is never networked, so the client replays from its OWN duck state.  When
+  the server forces one (a save load's run_forceduck, a retry) or the client
+  mispredicted one, the two simulations disagree until the player's own duck
+  input happens to reconcile them -- in mid-air every Duck/UnDuck then shifts one
+  side by PMSrc_AirDuckShift and not the other.  The acked snapshot's size is the
+  hull the server's move ended in (sv_user.c pushes it onto the edict), so a
+  Source hull (floor 0, a known height) that disagrees wins, as the server's
+  completed posture does at a load.  A transition in progress has the standing
+  hull on both sides and is left alone.
+*/
+void PMSrc_ReconcileHull (pmsourcestate_t *s, const vec3_t mins, const vec3_t maxs, float servereye)
+{
+	float h = maxs[2] - mins[2];
+	qboolean ducked;
+
+	if (movevars.physicsmode != PHYSMODE_SOURCE || mins[2] != 0)
+		return;
+	if (fabs(h - PMSrc_DuckHeight()) < 0.5f)
+		ducked = true;
+	else if (fabs(h - PMSrc_StandHeight()) < 0.5f)
+		ducked = false;
+	else
+		return;
+	if (s->ducked == ducked)
+		return;
+	/* Standing hull, ducked replay, duck held: a duck the server has not finished
+	   (ducking, so its eye is already lower) or a forced stand (the full standing
+	   eye).  The server's view height stat tells them apart. */
+	if (!ducked && (s->oldbuttons & BUTTON_DUCK))
+		if (servereye < (movevars.viewheight > 0 ? movevars.viewheight : PMSRC_VIEWHEIGHT_DEFAULT) - 0.5f)
+			return;
+	s->ducked = ducked;
+	s->ducking = false;
+	s->ducktime = 0;
 }
 
 /*
@@ -3757,6 +3820,7 @@ void PMSrc_PlayerMove (float gamespeed)
 	pms_frametime = tick;
 	pms_surfed = false;
 	bih_sourceclip = (movevars.fixrampbugs >= 2);	//Patch 492: cleared at the end
+	bih_phybrushes = (movevars.sourceversion >= 7);	//Patch 764: likewise
 
 	/* FTESurf Patch 280: once per command -- the physent set does not change
 	   inside a move.  With pm_slide 0, or on a map with no func_slide, this is
@@ -3879,6 +3943,7 @@ void PMSrc_PlayerMove (float gamespeed)
 	   state rather than written during the ticks -- see PMSrc_DuckFraction. */
 	PMSrc_SetDuckedEyeOffset (PMSrc_DuckFraction ());
 	bih_sourceclip = 0;
+	bih_phybrushes = 0;
 }
 
 /*

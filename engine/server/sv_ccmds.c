@@ -4039,10 +4039,13 @@ static int SV_DetRange (unsigned int *s, int lo, int hi)
 #define PMDET_TICRATE 0.015f
 
 extern int bih_sourceclip;	//Patch 492, com_bih.c
+extern int bih_phybrushes;	//Patch 764, com_bih.c
+extern int bih_probe_kind;	//Patch 764: which leaf decided the last trace (com_bih.h)
+extern model_t *bih_probe_model;
 
 //pm_dettest's collision-tree sweep: ntrace random box traces, every field that
 //decides a move hashed.  A function since Patch 492's review, to run it twice.
-static unsigned long long SV_DetTraceHash(model_t *world, unsigned int *seed, const int *lo, const int *hi, int ntrace, qboolean print)
+static unsigned long long SV_DetTraceHash(model_t *world, unsigned int *seed, const int *lo, const int *hi, int ntrace, qboolean print, int *propwins)
 {
 	unsigned long long htrace = SV_DETHASH_INIT;
 	vec3_t tmins = {-16,-16,-24}, tmaxs = {16,16,32};
@@ -4057,8 +4060,11 @@ static unsigned long long SV_DetTraceHash(model_t *world, unsigned int *seed, co
 			e1[k] = (float)SV_DetRange(seed, lo[k], hi[k]);
 		}
 		memset(&tr, 0, sizeof(tr));
+		bih_probe_kind = 0;
 		world->funcs.NativeTrace(world, 0, PE_FRAMESTATE, NULL, s1, e1,
 		                         tmins, tmaxs, false, MASK_PLAYERSOLID, &tr);
+		if (propwins && tr.fraction < 1 && bih_probe_kind == 2 && bih_probe_model)
+			(*propwins)++;	//Patch 764: a prop piece decided this trace
 
 		htrace = SV_DetHash(htrace, &tr.fraction,     sizeof(tr.fraction));
 		htrace = SV_DetHash(htrace, &tr.truefraction, sizeof(tr.truefraction));
@@ -4093,8 +4099,11 @@ static void SV_DetTest_f (void)
 	unsigned long long hmover = SV_DETHASH_INIT;
 	unsigned long long htick  = SV_DETHASH_INIT;	//FTESurf Patch 325
 	unsigned long long hsrctrace, hsrcmover = SV_DETHASH_INIT;	//Patch 492
+	unsigned long long hproptrace, hpropmover = SV_DETHASH_INIT;	//Patch 764
+	unsigned long long hpinmover = SV_DETHASH_INIT;	//Patch 813
+	int                propwins = 0;					//Patch 764
 	unsigned int       ticktotal = 0;				//FTESurf Patch 325
-	unsigned int seed = 20260914u, seedrerun;
+	unsigned int seed = 20260914u, seedrerun, seedprop;
 	int ntrace = atoi(Cmd_Argv(1));
 	int ntick  = atoi(Cmd_Argv(2));
 	int lo[3], hi[3], i, k, pass;
@@ -4138,22 +4147,31 @@ static void SV_DetTest_f (void)
 	}
 	/* Patch 492: `srctrace` repeats these traces under the Source clip, which only
 	   the mover turns on, so nothing else here reaches it.  Same draws, so the
-	   seed leaves both calls equal and `mover` keeps its recorded value. */
+	   seed leaves both calls equal and `mover` keeps its recorded value.
+	   Patch 764: `proptrace` adds the static props' convex pieces, mover 7's rule;
+	   `srctrace` stays the triangles every older pin replays on. */
 	seedrerun = seed;
-	htrace = SV_DetTraceHash(world, &seed, lo, hi, ntrace, true);
+	seedprop = seed;
+	htrace = SV_DetTraceHash(world, &seed, lo, hi, ntrace, true, NULL);
 	bih_sourceclip = 1;
-	hsrctrace = SV_DetTraceHash(world, &seedrerun, lo, hi, ntrace, false);
+	hsrctrace = SV_DetTraceHash(world, &seedrerun, lo, hi, ntrace, false, NULL);
+	bih_phybrushes = 1;
+	hproptrace = SV_DetTraceHash(world, &seedprop, lo, hi, ntrace, false, &propwins);
 	bih_sourceclip = 0;
+	bih_phybrushes = 0;
 
 	/* ---- 3. the mover, for real. ---------------------------------------- */
 	/* Patch 492: pass 0 is `mover`, pinned to fixrampbugs 1, the value every
-	   recorded reading ran at; pass 1 is `srcmover`, the same walk at 2. */
+	   recorded reading ran at; pass 1 is `srcmover`, the same walk at 2.
+	   Patch 764: both at mover 6, which they had run at live; pass 2 is
+	   `propmover`, the walk at 2 on mover 7.  Patch 813: pass 3 is `pinmover`,
+	   the same walk on mover 8. */
 	seedrerun = seed;
-	for (pass = 0; pass < 2; pass++)
+	for (pass = 0; pass < 4; pass++)
 	{
 		movevars_t savemv = movevars;
 		playermove_t savepm = pmove;
-		unsigned long long *hm = pass ? &hsrcmover : &hmover;
+		unsigned long long *hm = (pass == 3) ? &hpinmover : (pass == 2) ? &hpropmover : pass ? &hsrcmover : &hmover;
 
 		if (pass)
 			seed = seedrerun;
@@ -4189,6 +4207,7 @@ static void SV_DetTest_f (void)
 		movevars.maxspeed      = 320;
 		movevars.entgravity    = 1;
 		movevars.fixrampbugs   = pass ? 2 : 1;
+		movevars.sourceversion = (pass == 3) ? 8 : (pass == 2) ? 7 : 6;
 
 		/* Start in the middle of the world's box, well above the floor, so the
 		   first few ticks are a fall onto whatever is there rather than a
@@ -4325,6 +4344,11 @@ static void SV_DetTest_f (void)
 	   where the rules differ, not that the clip is idle. */
 	Con_Printf("^5pm_dettest^7 srctrace %016llx\n", hsrctrace);
 	Con_Printf("^5pm_dettest^7 srcmover %016llx\n", hsrcmover);
+	/* Patch 764.  Equal to srctrace/srcmover on a map whose sample met no prop. */
+	Con_Printf("^5pm_dettest^7 proptrace %016llx  prop pieces decided %i traces\n", hproptrace, propwins);
+	Con_Printf("^5pm_dettest^7 propmover %016llx\n", hpropmover);
+	/* Patch 813.  Equal to propmover where the walk never pinned against a face. */
+	Con_Printf("^5pm_dettest^7 pinmover %016llx\n", hpinmover);
 }
 
 /*
@@ -4881,6 +4905,32 @@ static const char *SV_VerifyZoneCmp (const char *here, const char *fsrc,
 	return NULL;
 }
 
+/* Patch 816: known exclusions change the timer clock this replay does not
+   model. Zero edges are inert; malformed/overflowing counters are not zero. */
+static const char *SV_RecSim_HoldRefusal (const char *s)
+{
+	char *end;
+	unsigned long mt, frozen;
+
+	while (*s == ' ' || *s == '\t') s++;
+	if (*s < '0' || *s > '9')
+		return "malformed `hold` accounting";
+	mt = strtoul(s, &end, 10);
+	if (end - s > 10 || mt > 0x7fffffffUL)
+		return "malformed `hold` accounting";
+	s = end;
+	while (*s == ' ' || *s == '\t') s++;
+	if (*s < '0' || *s > '9')
+		return "malformed `hold` accounting";
+	frozen = strtoul(s, &end, 10);
+	if (end - s > 10 || frozen > 0x7fffffffUL)
+		return "malformed `hold` accounting";
+	while (*end == ' ' || *end == '\t' || *end == '\r') end++;
+	if (*end)
+		return "malformed `hold` accounting";
+	return frozen ? "frozen timer accounting (`hold`) is not modeled" : NULL;
+}
+
 static void SV_RecSim_Run (const char *fname, int stopat, qboolean verify)
 {
 	model_t      *world = sv.state?sv.world.worldmodel:NULL;
@@ -4928,6 +4978,7 @@ static void SV_RecSim_Run (const char *fname, int stopat, qboolean verify)
 	const char   *ghostbad = NULL;
 	recsim_spec_t *spc = NULL;		/* Patch 380 */
 	const char   *specbad = NULL;
+	const char   *holdbad = NULL;
 	int           nspec = 0, nspinside = 0, spinside_row = -1;
 	char          spinside_kind[16] = "";
 	int           nmc = 0, mcbad = 0, mcrow = -1;	/* Patch 376: the client's mouse counts */
@@ -5143,6 +5194,11 @@ static void SV_RecSim_Run (const char *fname, int stopat, qboolean verify)
 			{
 				if (sscanf(ln+6, "%i %f", &inend_mt, &inend_carry) != 2)
 					inend_mt = -1;
+			}
+			else if (!strncmp(ln, "hold", 4) && (!ln[4] || ln[4] == ' ' || ln[4] == '\t'))
+			{
+				if (pass == 0 && !holdbad)
+					holdbad = SV_RecSim_HoldRefusal(ln + 4);
 			}
 			/* Patch 349: the timer latches the start packet left (QC build 88). */
 			else if (!strncmp(ln, "zseed ", 6) && pass == 0)
@@ -5563,6 +5619,8 @@ static void SV_RecSim_Run (const char *fname, int stopat, qboolean verify)
 			refuse = ghostbad;
 		else if (specbad)
 			refuse = specbad;
+		else if (holdbad)
+			refuse = holdbad;
 		else if (nrestart && !(svprogfuncs && (vf_restart = PR_FindFunction(svprogfuncs, "SV_VerifyRestart", PR_ANY))))
 			refuse = "a stage restart (these progs have no SV_VerifyRestart, Patch 369)";
 		else if (!havecrc || filecrc != (unsigned int)world->checksum)

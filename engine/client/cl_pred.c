@@ -620,6 +620,11 @@ void CL_CalcCrouch (playerview_t *pv)
 				{
 					pv->extracrouch = orgz - pv->oldz + host_frametime * 400 + 15;
 					pv->extracrouch = max(pv->extracrouch, -5);
+					//FTESurf Patch 805: and never above 0.  One long frame over the drop
+					//(a 0.25 s hitch on surf_null's 25 u spawn fall) made this +88, and the
+					//clamp below then pinned oldz at orgz+15+extracrouch: the camera 103 u
+					//up until a jump left the ground.
+					pv->extracrouch = min(pv->extracrouch, 0);
 				}
 				pv->crouchspeed = -160*2;
 			}
@@ -634,6 +639,8 @@ void CL_CalcCrouch (playerview_t *pv)
 				pv->extracrouch += host_frametime * 400;
 			else if (pv->extracrouch < 0)
 				pv->extracrouch = 0;
+			else if (pv->extracrouch > 0)	//FTESurf Patch 805: a step-up's, carried in
+				pv->extracrouch = max(0, pv->extracrouch - host_frametime * 400);
 		}
 		else
 		{
@@ -647,6 +654,7 @@ void CL_CalcCrouch (playerview_t *pv)
 				{
 					pv->extracrouch = orgz - pv->oldz - host_frametime * 200 - 15;
 					pv->extracrouch = min(pv->extracrouch, 5);
+					pv->extracrouch = max(pv->extracrouch, 0);	//FTESurf Patch 805: the mirror
 				}
 				pv->crouchspeed = 160;
 			}
@@ -663,6 +671,8 @@ void CL_CalcCrouch (playerview_t *pv)
 				pv->extracrouch -= host_frametime * 200;
 			else if (pv->extracrouch > 0)
 				pv->extracrouch = 0;
+			else if (pv->extracrouch < 0)	//FTESurf Patch 805: a step-down's, carried in
+				pv->extracrouch = min(0, pv->extracrouch + host_frametime * 200);
 		}
 
 		pv->crouch = pv->oldz - orgz;
@@ -1242,7 +1252,8 @@ void CL_PredictMovePNum (int seat)
 
 	//these things also force-disable prediction
 	if (cls.demoplayback==DPB_MVD ||
-		cl.intermissionmode != IM_NONE || cl.paused || pv->pmovetype == PM_NONE || pv->pmovetype == PM_FREEZE || CAM_ISLOCKED(pv))
+		cl.intermissionmode != IM_NONE || cl.paused || pv->pmovetype == PM_FREEZE || CAM_ISLOCKED(pv) ||
+		(pv->pmovetype == PM_NONE && !CSQC_PredictsHeld()))	//FTESurf Patch 754
 	{
 		nopred = true;
 	}
@@ -1508,6 +1519,10 @@ void CL_PredictMovePNum (int seat)
 				if (!(cls.fteprotocolextensions2 & PEXT2_REPLACEMENTDELTAS))
 					VectorCopy(pv->prop.gravitydir, from.state->gravitydir);
 			}
+			//FTESurf Patch 754: the posture the hull states, propagated or not (a
+			//resume after a no-prediction stretch seeds a zeroed pmsrc).  Our own
+			//predicted frames carry a matching hull, so this only acts on a snapshot.
+			PMSrc_ReconcileHull(&from.state->pmsrc, from.state->szmins, from.state->szmaxs, pv->statsf[STAT_VIEWHEIGHT]);
 			cl_pred_localchain = true;	//FTESurf Patch 335
 			CL_PredictUsercmd (seat, trackent, from.state, to.state, to.cmd);
 			cl_pred_localchain = false;
@@ -1566,6 +1581,7 @@ void CL_PredictMovePNum (int seat)
 					if (!(cls.fteprotocolextensions2 & PEXT2_REPLACEMENTDELTAS))
 						VectorCopy(pv->prop.gravitydir, from.state->gravitydir);
 				}
+				PMSrc_ReconcileHull(&from.state->pmsrc, from.state->szmins, from.state->szmaxs, pv->statsf[STAT_VIEWHEIGHT]);	//Patch 754
 //				Con_DPrintf(" extrap %i: %f-%f (%g)\n", toframe, fromtime, simtime, simtime-fromtime);
 				cl_pred_localchain = true;	//FTESurf Patch 335
 				CL_PredictUsercmd (seat, trackent, from.state, to.state, to.cmd);

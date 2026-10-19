@@ -95,6 +95,10 @@ struct bihdata_s
 			{
 				vec3_t axis[3];
 				vec3_t origin;
+				//FTESurf Patch 764: the prop's .phy hull as world-space convex brushes,
+				//traced instead of the model while bih_phybrushes is set.  0 = none.
+				q2cbrush_t *phybrushes;
+				unsigned int numphybrushes;
 			} *tr;
 		} mesh;
 	};
@@ -120,6 +124,16 @@ void BIH_Build (model_t *mod, struct bihleaf_s *items, size_t numitems);
 //com_bih.c, so this is the only way in.
 void BIH_EnumBrushes (model_t *mod, const vec3_t mins, const vec3_t maxs,
 					  void (*cb)(void *ctx, const q2cbrush_t *brush), void *ctx);
+//FTESurf Patch 776: also triangles (displacements) and static props' hull pieces, which
+//are world-space brushes; a prop without them is counted in propsnohull and skipped.
+struct bihenum_s
+{
+	void *ctx;
+	void (*brush)(void *ctx, const q2cbrush_t *brush);
+	void (*tri)(void *ctx, const vec_t *v0, const vec_t *v1, const vec_t *v2, unsigned int contents);
+	unsigned int props, propsnohull;	//out: BIH_MODEL leaves met, and those without hull pieces
+};
+void BIH_EnumCollision (model_t *mod, const vec3_t mins, const vec3_t maxs, struct bihenum_s *en);
 #endif
 void BIH_BuildAlias (model_t *mod, struct galiasinfo_s *meshes);
 

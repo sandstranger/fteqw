@@ -4062,6 +4062,521 @@ void CLQ1_AddHoverBrushes(void)
 #endif
 }
 
+/*
+==================================================
+surf_view					FTESurf Patch 776
+
+Red: every trigger_*teleport* volume (the resets).  Blue: faces you can surf, a
+clip brush's included.  Yellow: the other faces of brushes with no face drawn
+(clip, toolsinvisible).  Patch 818: a
+nodraw side of a drawn brush is nothing (P776 painted every ramp's back yellow),
+and ramps are no longer the teleports' red.  Read off COLLISION, not the drawn
+surfaces, because an invisible ramp has no surface and a drawn one can be
+non-solid.  The world and the lump's teleports are cut into windings once per
+map; solid brush entities move, so they are cut each frame from the packet
+entities the prediction collides with.  ENGINE_PATCHES.md, Patches 776 and 818.
+==================================================
+*/
+#define SURFVIEW_RAMP	0
+#define SURFVIEW_CLIP	1
+#define SURFVIEW_TELE	2
+#define SURFVIEW_WALL	0.1f	//pm_source.c's ramp band (Patch 131): below this a face is a wall
+cvar_t surf_view_dist = CVARFD("surf_view_dist", "8192", 0, "FTESurf Patch 776. surf_view draws faces within this many units of the view.");
+cvar_t surf_view_fill = CVARFD("surf_view_fill", "0.25", 0, "FTESurf Patch 776. surf_view's dither coverage, 0..1 in 1/16 steps.");
+static qboolean surfview_on;
+
+#if defined(Q2BSPS) || defined(Q3BSPS)
+typedef struct
+{
+	unsigned int firstvert;
+	unsigned short numverts;
+	unsigned char kind;
+	vec3_t mid;
+	float rad;
+} surfviewface_t;		//world space, classified once
+typedef struct
+{
+	unsigned int firstvert;
+	unsigned short numverts;
+	qboolean clip;			//its brush has no face drawn
+	vec3_t normal;
+} surfviewlocal_t;		//a brush entity's, in its model's space: posed and classified per frame
+typedef struct
+{
+	model_t *mod;
+	unsigned int firstface, numfaces;
+} surfviewmodel_t;
+static struct
+{
+	model_t *world;			//what the caches were cut from
+	int servercount;
+	surfviewface_t *faces;
+	size_t numfaces, maxfaces;
+	vecV_t *verts;
+	size_t numverts, maxverts;
+	surfviewmodel_t *models;
+	size_t nummodels, maxmodels;
+	surfviewlocal_t *local;
+	size_t numlocal, maxlocal;
+	vecV_t *lverts;
+	size_t numlverts, maxlverts;
+	unsigned int count[3], teleports, props, propsnohull;
+	unsigned int skybits;	//the texinfo flags that mean sky on this map's format
+	double buildms;
+	qboolean reported;
+} surfview;
+struct surfviewcut_s
+{
+	qboolean teleport;		//every face red, whatever its slope
+	qboolean local;			//into the brush-entity cache, unposed and unclassified
+	qboolean transform;
+	vec3_t origin, axis[3];
+};
+
+static void *SurfView_Grow (void *p, size_t *max, size_t need, size_t elem, size_t first)
+{
+	if (need <= *max)
+		return p;
+	while (*max < need)
+		*max = *max ? *max*2 : first;
+	return BZ_Realloc(p, elem * *max);
+}
+
+static float SurfView_Standable (void)
+{
+	return (movevars.standablenormal > 0) ? movevars.standablenormal : 0.7f;	//PMSrc_Standable
+}
+
+//a face you can surf, whatever brush it is on (a clip ramp is a ramp, as wrlines draws it),
+//else any other face of a clip brush, else -1
+static int SurfView_Kind (const vec3_t nrm, qboolean clip)
+{
+	if (nrm[2] >= SURFVIEW_WALL && nrm[2] < SurfView_Standable())
+		return SURFVIEW_RAMP;
+	return clip ? SURFVIEW_CLIP : -1;
+}
+
+static void SurfView_Colour (int kind, float *rgb)
+{
+	if (kind == SURFVIEW_CLIP)
+		VectorSet(rgb, 1.0, 0.85, 0.10);
+	else if (kind == SURFVIEW_TELE)
+		VectorSet(rgb, 1.0, 0.12, 0.12);	//ent_view's teleport red
+	else
+		VectorSet(rgb, 0.15, 0.45, 1.0);
+}
+
+static void SurfView_Pose (struct surfviewcut_s *c, const vec3_t origin, const vec3_t angles)
+{
+	c->transform = (origin[0] || origin[1] || origin[2] || angles[0] || angles[1] || angles[2]);
+	VectorCopy(origin, c->origin);
+	AngleVectors(angles, c->axis[0], c->axis[1], c->axis[2]);
+	VectorNegate(c->axis[1], c->axis[1]);	//as CLQ1_EntViewPose
+}
+static void SurfView_Rotate (const struct surfviewcut_s *c, const vec_t *in, vec_t *out)
+{
+	VectorScale(c->axis[0], in[0], out);
+	VectorMA(out, in[1], c->axis[1], out);
+	VectorMA(out, in[2], c->axis[2], out);
+}
+static void SurfView_Place (const struct surfviewcut_s *c, const vec_t *in, vec_t *out)
+{
+	SurfView_Rotate(c, in, out);
+	VectorAdd(out, c->origin, out);
+}
+
+static void SurfView_Cache (int kind, vecV_t *verts, int n)
+{
+	surfviewface_t *f;
+	vec3_t d;
+	float r;
+	int i;
+
+	surfview.faces = SurfView_Grow(surfview.faces, &surfview.maxfaces, surfview.numfaces+1, sizeof(*surfview.faces), 4096);
+	surfview.verts = SurfView_Grow(surfview.verts, &surfview.maxverts, surfview.numverts+n, sizeof(*surfview.verts), 16384);
+	f = &surfview.faces[surfview.numfaces++];
+	f->firstvert = surfview.numverts;
+	f->numverts = n;
+	f->kind = kind;
+	VectorClear(f->mid);
+	for (i = 0; i < n; i++)
+	{
+		VectorCopy(verts[i], surfview.verts[surfview.numverts+i]);
+		VectorAdd(f->mid, verts[i], f->mid);
+	}
+	VectorScale(f->mid, 1.0f/n, f->mid);
+	f->rad = 0;
+	for (i = 0; i < n; i++)
+	{
+		VectorSubtract(verts[i], f->mid, d);
+		r = VectorLength(d);
+		if (r > f->rad)
+			f->rad = r;
+	}
+	surfview.numverts += n;
+	surfview.count[kind]++;
+}
+
+//one face of a brush, in the brush's own space
+static void SurfView_Face (struct surfviewcut_s *c, vecV_t *verts, int n, const vec_t *normal, qboolean clip)
+{
+	surfviewlocal_t *l;
+	vec3_t nrm, p;
+	int i, kind;
+
+	if (c->local)
+	{
+		surfview.local = SurfView_Grow(surfview.local, &surfview.maxlocal, surfview.numlocal+1, sizeof(*surfview.local), 256);
+		surfview.lverts = SurfView_Grow(surfview.lverts, &surfview.maxlverts, surfview.numlverts+n, sizeof(*surfview.lverts), 2048);
+		l = &surfview.local[surfview.numlocal++];
+		l->firstvert = surfview.numlverts;
+		l->numverts = n;
+		l->clip = clip;
+		VectorCopy(normal, l->normal);
+		memcpy(&surfview.lverts[surfview.numlverts], verts, sizeof(*verts)*n);
+		surfview.numlverts += n;
+		return;
+	}
+	if (c->transform)
+	{
+		for (i = 0; i < n; i++)
+		{
+			VectorCopy(verts[i], p);
+			SurfView_Place(c, p, verts[i]);
+		}
+		SurfView_Rotate(c, normal, nrm);
+	}
+	else
+		VectorCopy(normal, nrm);
+	kind = c->teleport ? SURFVIEW_TELE : SurfView_Kind(nrm, clip);
+	if (kind >= 0)
+		SurfView_Cache(kind, verts, n);
+}
+
+static void SurfView_Brush (void *ctx, const q2cbrush_t *brush)
+{
+	struct surfviewcut_s *c = ctx;
+	vec4_t planes[512];
+	vecV_t verts[64];
+	int i;
+	size_t n;
+	unsigned int sflags;
+	qboolean clip;
+
+	if (!c->teleport && !(brush->contents & MASK_PLAYERSOLID))
+		return;
+	if (brush->numsides < 4 || brush->numsides > countof(planes))
+		return;
+	for (i = 0; i < brush->numsides; i++)
+	{
+		VectorCopy(brush->brushside[i].plane->normal, planes[i]);
+		planes[i][3] = brush->brushside[i].plane->dist;
+	}
+	//Clip is a brush with no face drawn, read off the faces: Source compiles textured
+	//grates and toolsinvisible to grate, which FTE loads as clip, so contents cannot tell a
+	//drawn grate from an invisible wall.  SURF_NODRAW is 0x80 and sky 0x4 in Q2, Q3 and
+	//Source; 0x2 is Source's 2D sky but Q2/Q3's slick.
+	clip = false;
+	if (!c->teleport)
+	{
+		for (i = 0; i < brush->numsides; i++)
+		{
+			n = Fragment_ClipPlaneToBrush(verts, countof(verts), planes, sizeof(planes[0]), brush->numsides, planes[i]);
+			if (n < 3)
+				continue;
+			sflags = brush->brushside[i].surface ? brush->brushside[i].surface->c.flags : 0;
+			if (!(sflags & 0x80) || (sflags & surfview.skybits))
+				break;
+		}
+		clip = (i == brush->numsides);
+	}
+
+	for (i = 0; i < brush->numsides; i++)
+	{
+		n = Fragment_ClipPlaneToBrush(verts, countof(verts), planes, sizeof(planes[0]), brush->numsides, planes[i]);
+		if (n < 3)
+			continue;	//a supporting bevel has no face of its own
+		SurfView_Face(c, verts, (int)n, planes[i], clip);
+	}
+}
+
+static void SurfView_Tri (void *ctx, const vec_t *a, const vec_t *b, const vec_t *t3, unsigned int contents)
+{
+	vec3_t e1, e2, nrm;
+	vecV_t verts[3];
+	float nz;
+
+	if (!(contents & MASK_PLAYERSOLID))
+		return;
+	VectorSubtract(a, b, e1);
+	VectorSubtract(t3, b, e2);
+	CrossProduct(e1, e2, nrm);	//BIH_ClipToTriangle's plane
+	if (VectorNormalize(nrm) <= 0)
+		return;
+	nz = fabs(nrm[2]);	//collided as a 4-unit slab, so either side carries you
+	if (nz < SURFVIEW_WALL || nz >= SurfView_Standable())
+		return;
+	VectorCopy(a, verts[0]);
+	VectorCopy(b, verts[1]);
+	VectorCopy(t3, verts[2]);
+	SurfView_Cache(SURFVIEW_RAMP, verts, 3);	//one winding: the shader does not cull
+}
+
+//every trigger_*teleport* in the lump, posed from its own keys as ent_view poses them
+static void SurfView_Teleports (void)
+{
+	const char *data = Mod_GetEntitiesString(cl.worldmodel);
+	char key[256], value[1024], cn[128], mdl[64];
+	vec3_t org, ang, mins, maxs;
+	struct surfviewcut_s c;
+	model_t *mod;
+
+	VectorSet(mins, -131072, -131072, -131072);
+	VectorSet(maxs,  131072,  131072,  131072);
+	while (data && (data = COM_ParseOut(data, key, sizeof(key))) && key[0] == '{')
+	{
+		*cn = *mdl = 0;
+		VectorClear(org);
+		VectorClear(ang);
+		while ((data = COM_ParseOut(data, key, sizeof(key))) && key[0] != '}')
+		{
+			if (!(data = COM_ParseOut(data, value, sizeof(value))))
+				break;
+			if (!strcmp(key, "classname"))
+				Q_strncpyz(cn, value, sizeof(cn));
+			else if (!strcmp(key, "model"))
+				Q_strncpyz(mdl, value, sizeof(mdl));
+			else if (!strcmp(key, "origin"))
+				sscanf(value, "%f %f %f", &org[0], &org[1], &org[2]);
+			else if (!strcmp(key, "angles"))
+				sscanf(value, "%f %f %f", &ang[0], &ang[1], &ang[2]);
+			else if (!strcmp(key, "angle"))
+				ang[1] = atof(value);
+		}
+		if (!data)
+			break;
+		if (strncmp(cn, "trigger_", 8) || !strstr(cn, "teleport") || mdl[0] != '*')
+			continue;
+		mod = Mod_ForName(Mod_FixName(mdl, cl.worldmodel->publicname), MLV_WARN);
+		if (!mod || mod->loadstate != MLS_LOADED || !mod->cnodes)
+			continue;
+		memset(&c, 0, sizeof(c));
+		c.teleport = true;
+		SurfView_Pose(&c, org, ang);
+		BIH_EnumBrushes(mod, mins, maxs, SurfView_Brush, &c);
+		surfview.teleports++;
+	}
+}
+
+static void SurfView_Build (void)
+{
+	struct bihenum_s en;
+	struct surfviewcut_s c;
+	vec3_t mins, maxs;
+	double t0 = Sys_DoubleTime();
+
+	surfview.world = cl.worldmodel;
+	surfview.servercount = cl.servercount;
+	surfview.numfaces = surfview.numverts = 0;
+	surfview.nummodels = surfview.numlocal = surfview.numlverts = 0;
+	memset(surfview.count, 0, sizeof(surfview.count));
+	surfview.teleports = 0;
+	surfview.reported = false;
+	surfview.skybits = (cl.worldmodel->fromgame == fg_quake2 || cl.worldmodel->fromgame == fg_quake3) ? 0x04 : 0x06;
+
+	memset(&c, 0, sizeof(c));
+	memset(&en, 0, sizeof(en));
+	en.ctx = &c;
+	en.brush = SurfView_Brush;
+	en.tri = SurfView_Tri;
+	VectorSet(mins, -131072, -131072, -131072);
+	VectorSet(maxs,  131072,  131072,  131072);
+	BIH_EnumCollision(cl.worldmodel, mins, maxs, &en);
+	surfview.props = en.props;
+	surfview.propsnohull = en.propsnohull;
+	SurfView_Teleports();
+	surfview.buildms = (Sys_DoubleTime() - t0) * 1000;
+}
+
+//a brush entity's faces, cut once per model; the caller poses them
+static const surfviewmodel_t *SurfView_Model (model_t *mod)
+{
+	struct surfviewcut_s c;
+	surfviewmodel_t *m;
+	vec3_t mins, maxs;
+	size_t i;
+
+	for (i = 0; i < surfview.nummodels; i++)
+		if (surfview.models[i].mod == mod)
+			return &surfview.models[i];
+	surfview.models = SurfView_Grow(surfview.models, &surfview.maxmodels, surfview.nummodels+1, sizeof(*surfview.models), 16);
+	m = &surfview.models[surfview.nummodels++];
+	m->mod = mod;
+	m->firstface = surfview.numlocal;
+	memset(&c, 0, sizeof(c));
+	c.local = true;
+	VectorSet(mins, -131072, -131072, -131072);
+	VectorSet(maxs,  131072,  131072,  131072);
+	BIH_EnumBrushes(mod, mins, maxs, SurfView_Brush, &c);
+	m->numfaces = surfview.numlocal - m->firstface;
+	return m;
+}
+#endif
+
+static void SurfView_f (void)
+{
+	surfview_on = (Cmd_Argc() > 1) ? !!atoi(Cmd_Argv(1)) : !surfview_on;
+#if defined(Q2BSPS) || defined(Q3BSPS)
+	surfview.reported = false;
+#endif
+	Con_Printf("surf_view %s\n", surfview_on ? "on: red = teleports, yellow = clip, blue = ramps" : "off");
+}
+
+void CLQ1_SurfViewInit (void)
+{
+	Cvar_Register (&surf_view_dist, "GL Renderer Options");	//renderer.c's GLRENDEREROPTIONS
+	Cvar_Register (&surf_view_fill, "GL Renderer Options");
+	Cmd_AddCommand ("surf_view", SurfView_f);
+}
+
+void CLQ1_AddSurfView (void)
+{
+#if defined(Q2BSPS) || defined(Q3BSPS)
+	struct surfviewcut_s c;
+	const surfviewmodel_t *m;
+	const surfviewlocal_t *l;
+	shader_t *fill;
+	surfviewface_t *f;
+	packet_entities_t *pak;
+	entity_state_t *state;
+	model_t *mod;
+	vecV_t placed[64];
+	vec_t *org, *ang;
+	vec3_t rgb, mid, fwd, right, up, rel, nrm;
+	float dist, coverage, cone, conecos, conesin, along, d, lim;
+	size_t i, j, k;
+	int kind;
+
+	if (!surfview_on || !cl.worldmodel || cl.worldmodel->loadstate != MLS_LOADED)
+		return;
+	if (surfview.world != cl.worldmodel || surfview.servercount != cl.servercount)
+		SurfView_Build();
+	if (!surfview.reported)
+	{
+		surfview.reported = true;
+		Con_Printf("surf_view: %u ramp face(s), %u clip face(s), %u teleport(s) in %u face(s), cut in %.0f ms%s\n",
+			surfview.count[SURFVIEW_RAMP], surfview.count[SURFVIEW_CLIP], surfview.teleports, surfview.count[SURFVIEW_TELE],
+			surfview.buildms, cl.worldmodel->cnodes ? "" : " -- this map keeps no collision brushes to read");
+		if (surfview.propsnohull)
+			Con_Printf("surf_view: %u of %u static prop(s) have no hull pieces and are not shown\n", surfview.propsnohull, surfview.props);
+	}
+
+	if (R2D_Flush)
+		R2D_Flush();
+	fill = R_RegisterShader("ftesurf_surfview", SUF_NONE,	//r_showbrushes' fill, two-sided
+		"{\n"
+			"polygonoffset\n"
+			"cull disable\n"
+			"{\n"
+				"program ftesurf_ditherfill\n"
+				"map $whiteimage\n"
+				"rgbgen vertex\n"
+			"}\n"
+		"}\n");
+	dist = (surf_view_dist.value > 0) ? surf_view_dist.value : 8192;
+	coverage = bound(0, surf_view_fill.value, 1);
+
+	/*The view cone through the screen's corners, not R_CullSphere: by now r_refdef.frustum
+	  is whichever view rendered last, and on a map with a 3D sky or a portal that is not this
+	  one (measured: 85992 of 86076 faces culled looking over surf_boreas).  CSQC's clearscene
+	  zeroes fov_x/fov_y until renderscene, so they are rebuilt from afov: applied to the
+	  screen's MINOR pixel axis, which bounds every scr_fov_mode from above.*/
+	AngleVectors(r_refdef.viewangles, fwd, right, up);
+	if (r_refdef.fov_x > 0 && r_refdef.fov_y > 0)
+		cone = atan(sqrt(pow(tan(r_refdef.fov_x*(M_PI/360)), 2) + pow(tan(r_refdef.fov_y*(M_PI/360)), 2)));
+	else
+	{
+		float w = max(vid.pixelwidth, 1), h = max(vid.pixelheight, 1);
+		float ratio = (w > h) ? w/h : h/w;
+		float afov = (r_refdef.afov > 0) ? r_refdef.afov : scr_fov.value;
+		cone = atan(tan(bound(1, afov, 170)*(M_PI/360)) * sqrt(1 + ratio*ratio));
+	}
+	if (!(cone > 0) || cone > 1.56)
+		cone = 1.56;	//just short of pi/2: past it the test would cull nothing anyway
+	conecos = cos(cone);
+	conesin = sin(cone);
+
+	for (i = 0; i < surfview.numfaces; i++)
+	{
+		f = &surfview.faces[i];
+		VectorSubtract(f->mid, r_refdef.vieworg, rel);
+		d = DotProduct(rel, rel);
+		lim = dist + f->rad;
+		if (d > lim*lim)
+			continue;
+		d = sqrt(d);
+		along = DotProduct(rel, fwd);
+		//the centre's distance outside the cone's surface, against the radius
+		if (sqrt((d > fabs(along)) ? d*d - along*along : 0)*conecos - along*conesin > f->rad + 32)
+			continue;
+		SurfView_Colour(f->kind, rgb);
+		CLQ1_DrawPolyFan(fill, &surfview.verts[f->firstvert], f->numverts, rgb[0], rgb[1], rgb[2], coverage);
+	}
+
+	//the brush entities CL_SetSolidEntities hands the prediction, cut once and posed here
+	pak = &cl.inframes[cl.validsequence&UPDATE_MASK].packet_entities;
+	for (i = 0; i < (size_t)pak->num_entities; i++)
+	{
+		state = &pak->entities[i];
+		if (state->solidsize != ES_SOLID_BSP || state->modelindex <= 0 || state->modelindex >= MAX_PRECACHE_MODELS)
+			continue;
+		mod = cl.model_precache[state->modelindex];
+		if (!mod || mod == cl.worldmodel || mod->type != mod_brush || mod->loadstate != MLS_LOADED || !mod->cnodes)
+			continue;
+		//the interpolated pose the renderer draws, so a moving door's fill stays on it --
+		//when this frame's lerp holds the entity (view.c's nametags make the same test)
+		if (state->number < cl.maxlerpents && cl.lerpentssequence && cl.lerpents[state->number].sequence == cl.lerpentssequence)
+		{
+			org = cl.lerpents[state->number].origin;
+			ang = cl.lerpents[state->number].angles;
+		}
+		else
+		{
+			org = state->origin;
+			ang = state->angles;
+		}
+		VectorAdd(mod->mins, mod->maxs, mid);
+		VectorMA(org, 0.5, mid, mid);
+		VectorSubtract(mid, r_refdef.vieworg, rel);
+		if (VectorLength(rel) - mod->radius > dist)
+			continue;
+		m = SurfView_Model(mod);
+		memset(&c, 0, sizeof(c));
+		SurfView_Pose(&c, org, ang);
+		for (j = 0; j < m->numfaces; j++)
+		{
+			l = &surfview.local[m->firstface + j];
+			if (c.transform)
+				SurfView_Rotate(&c, l->normal, nrm);
+			else
+				VectorCopy(l->normal, nrm);
+			kind = SurfView_Kind(nrm, l->clip);
+			if (kind < 0)
+				continue;
+			for (k = 0; k < l->numverts; k++)
+			{
+				if (c.transform)
+					SurfView_Place(&c, surfview.lverts[l->firstvert+k], placed[k]);
+				else
+					VectorCopy(surfview.lverts[l->firstvert+k], placed[k]);
+			}
+			SurfView_Colour(kind, rgb);
+			CLQ1_DrawPolyFan(fill, placed, l->numverts, rgb[0], rgb[1], rgb[2], coverage);
+		}
+	}
+#endif
+}
+
 extern cvar_t r_decal_lightmap;	//nettest
 
 typedef struct
@@ -4271,7 +4786,7 @@ static void CL_Decal_SetupCtx(cl_adddecal_ctx_t *ctx, shader_t *shader, vec3_t o
 //nettest: per-clipped-vertex decal attributes — texcoord, the edge-fade alpha FACTOR (kept separate
 //from base alpha so persistent decals can fade without re-clipping), and the atlas lightmap st. Shared
 //by CL_AddDecal_Callback (transient) and CL_AddDecalStatic_Callback (persistent) so they stay identical.
-static void CL_Decal_VertexAttribs(const cl_adddecal_ctx_t *ctx, const msurface_t *surf, int page,
+static void CL_Decal_VertexAttribs(const cl_adddecal_ctx_t *ctx, const msurface_t *surf, int page, const vec3_t lmp,
 								   const vec3_t p, vec2_t out_st, vec2_t out_lm, float *out_valpha)
 {
 	//Both of these ran 0..1 across the footprint and were used directly as the texcoord. Keep them as
@@ -4292,7 +4807,7 @@ static void CL_Decal_VertexAttribs(const cl_adddecal_ctx_t *ctx, const msurface_
 		*out_valpha = 0;
 	if (ctx->dolm && page >= 0 && surf && surf->mesh && surf->plane)
 	{
-		if (!DecalLM_Interp(surf->mesh, surf->plane->normal, p, out_lm))
+		if (!DecalLM_Interp(surf->mesh, surf->plane->normal, lmp, out_lm))
 		{	//DecalLM_Interp returns false when lmst_array[0] is NULL, so the old fallback dereferenced
 			//exactly the pointer whose NULL-ness sent it here. Harmless while the gate was Q1/HL-only.
 			if (surf->mesh->lmst_array[0])
@@ -4341,7 +4856,7 @@ static void CL_AddDecal_Callback(void *vctx, vec3_t *fte_restrict points, size_t
 		vec2_t st, lm;
 		float valpha;
 		VectorCopy(points[v], cl_strisvertv[cl_numstrisvert+v]);
-		CL_Decal_VertexAttribs(ctx, surf, page, points[v], st, lm, &valpha);
+		CL_Decal_VertexAttribs(ctx, surf, page, points[v], points[v], st, lm, &valpha);
 		cl_strisvertt[cl_numstrisvert+v][0] = st[0];
 		cl_strisvertt[cl_numstrisvert+v][1] = st[1];
 		cl_strisvertc[cl_numstrisvert+v][0] = ctx->rgbavalue[0];
@@ -4405,6 +4920,8 @@ typedef struct
 	vec4_t		rgba;			//base rgb+alpha (updatedecal rewrites this; NO re-clip)
 	qboolean	dolm;
 	float		die;			//0 = never; else cl.time to expire
+	unsigned int clipflags;		//FTESurf Patch 772: PDC_*
+	vec3_t		mins, maxs;		//FTESurf Patch 772: the clipped geometry's bounds, for the frustum cull
 } persistdecal_t;
 
 static persistdecal_t		*cl_persistdecals;
@@ -4412,6 +4929,7 @@ static int					cl_numpersistdecals, cl_maxpersistdecals;
 static int					*cl_persistdecal_free;		//free-stack of slot indices
 static int					cl_persistdecal_freecount;
 static persistdecaltri_t	*cl_persisttri_freelist;	//recycled tri nodes (pooled across maps)
+static int					cl_persistdecal_portalframe = -2;	//FTESurf Patch 772: cls.framecount a portal view last drew the world
 static qboolean				cl_persistdecals_reclip;	//set on renderer restart -> re-resolve shaders + re-clip all next emit
 
 //handle = (index+1) | (seq<<16). index 16 bits, seq 8 bits -> max 2^24-1 (exact as a QC float).
@@ -4512,6 +5030,7 @@ typedef struct
 {
 	cl_adddecal_ctx_t base;
 	persistdecal_t *rec;
+	vec3_t shift;	//FTESurf Patch 772: a brush entity's origin -- its model is clipped in its own space
 } cl_persistdecal_clipctx_t;
 static void CL_AddDecalStatic_Callback(void *vctx, vec3_t *fte_restrict points, size_t numtris, shader_t *shader)
 {
@@ -4526,8 +5045,8 @@ static void CL_AddDecalStatic_Callback(void *vctx, vec3_t *fte_restrict points, 
 		tri->lightmap = page;
 		for (k = 0; k < 3; k++)
 		{
-			VectorCopy(points[tr*3+k], tri->vertex[k]);
-			CL_Decal_VertexAttribs(ctx, surf, page, points[tr*3+k], tri->texcoord[k], tri->lmcoord[k], &tri->valpha[k]);
+			VectorAdd(points[tr*3+k], cc->shift, tri->vertex[k]);
+			CL_Decal_VertexAttribs(ctx, surf, page, points[tr*3+k], tri->vertex[k], tri->texcoord[k], tri->lmcoord[k], &tri->valpha[k]);
 		}
 		tri->next = cc->rec->tris;
 		cc->rec->tris = tri;
@@ -4552,13 +5071,55 @@ static qboolean CL_ClipPersistDecal(persistdecal_t *rec)
 		return false;
 
 	cc.rec = rec;
+	VectorClear(cc.shift);
 	CL_Decal_SetupCtx(&cc.base, rec->shader, rec->origin, rec->up, rec->side, rec->rgba, rec->rgba[3], rec->aspect, rec->texrange, cliptan1, cliptan2, &clipsize);
 	rec->dolm = cc.base.dolm;
 	Mod_ClipDecal(cl.worldmodel, rec->origin, cc.base.axis[0], cliptan1, cliptan2, clipsize, 0,0, CL_AddDecalStatic_Callback, &cc);
+	if (rec->clipflags & PDC_SOURCE)
+	{	//FTESurf Patch 772: where Source puts a decal and the world's leaves do not reach --
+		//displacements, and the brush entities in this packet. Source stores a brush entity's
+		//model about its origin, so the decal is clipped in model space and shifted back; a
+		//turned one is left out, and a mover's paint stays where it was clipped.
+		packet_entities_t *pack = cl.currentpackentities;
+		entity_state_t *es;
+		model_t *m;
+		vec3_t c;
+		int i, k;
+		float reach = 0.5f * clipsize * sqrt(DotProduct(cliptan1,cliptan1) + DotProduct(cliptan2,cliptan2) + 1);
+		Mod_ClipDecalDisplacements(cl.worldmodel, rec->origin, cc.base.axis[0], cliptan1, cliptan2, clipsize, CL_AddDecalStatic_Callback, &cc);
+		for (i = 0; pack && i < pack->num_entities; i++)
+		{
+			es = &pack->entities[i];
+			if (es->modelindex <= 0 || es->modelindex >= MAX_PRECACHE_MODELS)
+				continue;
+			m = cl.model_precache[es->modelindex];
+			if (!m || m->submodelof != cl.worldmodel || m->loadstate != MLS_LOADED)
+				continue;
+			if (es->angles[0] || es->angles[1] || es->angles[2])
+				continue;
+			VectorSubtract(rec->origin, es->origin, c);
+			for (k = 0; k < 3; k++)
+				if (c[k] + reach < m->mins[k] || c[k] - reach > m->maxs[k])
+					break;
+			if (k < 3)
+				continue;
+			VectorCopy(es->origin, cc.shift);
+			Mod_ClipDecal(m, c, cc.base.axis[0], cliptan1, cliptan2, clipsize, 0,0, CL_AddDecalStatic_Callback, &cc);
+		}
+		VectorClear(cc.shift);
+	}
+	{
+		persistdecaltri_t *tri;
+		int k;
+		ClearBounds(rec->mins, rec->maxs);
+		for (tri = rec->tris; tri; tri = tri->next)
+			for (k = 0; k < 3; k++)
+				AddPointToBounds(tri->vertex[k], rec->mins, rec->maxs);
+	}
 	return rec->tris != NULL;
 }
 
-int CL_AddPersistentDecal(const char *shadername, const vec3_t origin, const vec3_t up, const vec3_t side, const vec3_t rgb, float alpha, float aspect, float lifetime, const float *texrange)
+int CL_AddPersistentDecal(const char *shadername, const vec3_t origin, const vec3_t up, const vec3_t side, const vec3_t rgb, float alpha, float aspect, float lifetime, const float *texrange, unsigned int clipflags)
 {
 	int idx;
 	persistdecal_t *rec;
@@ -4584,6 +5145,7 @@ int CL_AddPersistentDecal(const char *shadername, const vec3_t origin, const vec
 	else
 		Vector4Set(rec->texrange, 0, 1, 0, 1);
 	rec->die = (lifetime > 0) ? cl.time + lifetime : 0;
+	rec->clipflags = clipflags;
 
 	if (!CL_ClipPersistDecal(rec))
 	{	//off-surface / no world / no shader -> caller falls back to the transient path
@@ -4642,9 +5204,18 @@ static void CL_EmitPersistDecalTris(persistdecal_t *rec)
 		t->numidx += 3;
 	}
 }
+//FTESurf Patch 772: a portal or mirror view draws the main view's scene tris (BE_GenModelBatches),
+//so a decal outside the main frustum may still be seen through one. Cull only on frames that follow
+//one with no such view; the skyroom draws no scene tris (RDF_DISABLEPARTICLES) and does not count.
+//The first frame a portal appears, the main view has already culled: a one-frame pop in it.
+void CL_PersistentDecals_PortalView(void)
+{
+	cl_persistdecal_portalframe = cls.framecount;
+}
 void CL_EmitPersistentDecals(void)
 {
 	int i;
+	qboolean cull = (unsigned int)(cls.framecount - cl_persistdecal_portalframe) > 1;
 	for (i = 0; i < cl_numpersistdecals; i++)
 	{
 		persistdecal_t *rec = &cl_persistdecals[i];
@@ -4658,6 +5229,8 @@ void CL_EmitPersistentDecals(void)
 		if (cl_persistdecals_reclip || rec->builtepoch != r_regsequence)	//renderer restart / lightmap-atlas rebuild -> re-resolve shader (stale ptr) + re-clip (stale page)
 			CL_ClipPersistDecal(rec);
 		if (!rec->shader || !rec->tris)
+			continue;
+		if (cull && R_CullBox(rec->mins, rec->maxs))
 			continue;
 		CL_EmitPersistDecalTris(rec);
 	}
@@ -6449,6 +7022,7 @@ void CL_LinkPacketEntities (void)
 	CLQ1_AddVisibleHulls();
 	CLQ1_AddVisibleBrushes();	//FTESurf Patch 319
 	CLQ1_AddHoverBrushes();	//FTESurf Patch 331
+	CLQ1_AddSurfView();	//FTESurf Patch 776
 
 #ifdef RTLIGHTS
 	R_EditLights_DrawLights();

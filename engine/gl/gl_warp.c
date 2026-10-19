@@ -102,6 +102,9 @@ were weighed against a fault the reporter can see from spawn on a map he plays,
 and 1 remains one word away.
 */
 cvar_t r_sky_forcedepth						= CVARFD ("r_sky_forcedepth", "2", CVAR_ARCHIVE, "Write correct depth for sky surfaces even when the sky is drawn by a GLSL program. Stops entities in other parts of the map showing through the skybox.\n0: never mask (the pre-Patch-126 behaviour).\n1: auto -- mask on Quake/Quake2/Half-Life, do not mask on Source/Doom3/CoD, whose renderers do not.\n2: always mask, on every game (default since Patch 296; on a Source map this is the only setting that stops the rest of the level drawing through the sky).");
+//FTESurf Patch 768: monolith B4's WindowImposter slab sits a few units in front of its sky brush,
+//and at some angles that is under one depth step, so the mask won and the real sky showed through.
+cvar_t r_sky_forcedepth_push				= CVARFD ("r_sky_forcedepth_push", "4", CVAR_ARCHIVE,"Pushes r_sky_forcedepth's sky mask this many depth steps away from the eye, so a surface just in front of a sky brush still beats it; the level far behind the sky stays masked. GL only, and only where the sky itself writes no depth (e.g. Source/Half-Life maps with a skyname). 0: the mask is written at the brush, as before Patch 768.");
 
 static shader_t *forcedsky;
 static shader_t *skyboxface;
@@ -416,8 +419,20 @@ qboolean R_DrawSkyroom(shader_t *skyshader)
 	}
 
 	/*work out where the camera should be (use the same angles)*/
-	VectorCopy(r_refdef.skyroom_pos, r_refdef.vieworg);
-	VectorCopy(r_refdef.skyroom_pos, r_refdef.pvsorigin);
+	{	/* FTESurf Patch 758: from THIS view's eye. CSQC placed skyroom_pos for the
+		   player's eye; a portal view (or a crossing eye, CSQC_PortalView) has its
+		   own, and the sky camera moves by the difference over the scale. */
+		vec3_t sky;
+		VectorCopy(r_refdef.skyroom_pos, sky);
+		if (r_refdef.skyroom_scale > 0 && !IS_NAN(r_refdef.skyroom_scale))
+		{
+			vec3_t d;
+			VectorSubtract(r_refdef.vieworg, r_refdef.skyroom_eye, d);
+			VectorMA(sky, 1 / r_refdef.skyroom_scale, d, sky);
+		}
+		VectorCopy(sky, r_refdef.vieworg);
+		VectorCopy(sky, r_refdef.pvsorigin);
+	}
 
 	/*
 	FTESurf Patch 209a: this used to run the PointContents trace and print EVERY FRAME for as long as
@@ -465,6 +480,14 @@ qboolean R_DrawSkyroom(shader_t *skyshader)
 	}
 	else
 		Matrix4x4_CM_ModelViewMatrixFromAxis(vmat, vpn, vright, vup, r_refdef.vieworg);
+	/* FTESurf Patch 771: inside a portal view m_projection_std carries the door's oblique near
+	   plane (R_ObliqueNearClip). From the sky camera that cut away everything in the sky room
+	   nearer than the eye's distance to the door: on surf_kitsune the sky through the stage 2
+	   door was gone from more than ~220 units back. The sky is behind everything, so it takes
+	   the unclipped projection; GLBE_DrawWorld reloads the backend's cached copy on entry and
+	   exit. Unset (all zero, cl_main.c's memset) keeps the old behaviour. */
+	if (oldrefdef.recurse && (r_refdef.m_projection_noclip[11] || r_refdef.m_projection_noclip[15]))
+		memcpy(r_refdef.m_projection_std, r_refdef.m_projection_noclip, sizeof(r_refdef.m_projection_std));
 	R_SetFrustum (r_refdef.m_projection_std, vmat);
 
 	//now determine the stuff the backend will use.
@@ -1084,7 +1107,7 @@ static void GL_SkyForceDepth(batch_t *batch)
 	if ((r_sky_forcedepth.ival || !cls.allow_unmaskedskyboxes) && batch->texture)	//allow a little extra fps.
 	{
 		BE_SelectMode(BEM_DEPTHONLY);
-		BE_DrawMesh_List(batch->shader, batch->meshes-batch->firstmesh, batch->mesh+batch->firstmesh, batch->vbo, NULL, batch->flags);
+		BE_DrawMesh_List(batch->shader, batch->meshes-batch->firstmesh, batch->mesh+batch->firstmesh, batch->vbo, NULL, batch->flags|BEF_SKYDEPTH);
 		BE_SelectMode(BEM_STANDARD);	/*skys only render in standard mode anyway, so this is safe*/
 	}
 }
@@ -1602,6 +1625,7 @@ void R_Sky_Register(void)
 	Cvar_Register (&r_fastskycolour,		groupname);
 	Cvar_Register (&r_skyfog,				groupname);
 	Cvar_Register (&r_sky_forcedepth,	groupname);
+	Cvar_Register (&r_sky_forcedepth_push,	groupname);	//FTESurf Patch 768
 	Cvar_Register (&r_skyboxname,			groupname);
 	Cvar_Register (&r_skybox_default,		groupname);	//FTESurf Patch 211
 	Cvar_Register (&r_skybox_orientation,	groupname);

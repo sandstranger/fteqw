@@ -73,7 +73,7 @@ are the only top-level brackets in the host frame, and summing the array would
 double-count every nested child.  If a third top-level bracket is ever added,
 add it here or this line quietly starts lying the same way.
 */
-#define RSPEED_REALFRAME(a) ((a)[RSPEED_TOTALREFRESH] + (a)[RSPEED_SERVER])
+#define RSPEED_REALFRAME(a) ((a)[RSPEED_TOTALREFRESH] + (a)[RSPEED_SERVER] + (a)[RSPEED_SERVERIDLE])	//Patch 782 split the between-frames server out
 
 static void RSpeed_Dump_f(void)
 {
@@ -83,6 +83,1055 @@ static void RSpeed_Dump_f(void)
 		return;
 	}
 	rspeed_dumpreq = 1;
+}
+
+/*
+==================================================
+r_budget					FTESurf Patch 782
+
+Where a frame goes, as bars: the CPU's work in groups, what is left of the frame interval as
+idle, and the GPU's time per pass from timestamp queries (GLBudget_*, gl_backend.c).  It reads
+the rspeeds[] buckets r_speeds 2 reads, as SELF times -- a bucket less the buckets nested in it,
+budget_parent below -- so every microsecond lands in exactly one group.  ENGINE_PATCHES.md,
+Patch 782, has the tree and what it cannot see.
+==================================================
+*/
+int r_speeds_timing;
+double rspeeds_self[RSPEED_MAX];	//us: each bucket's own time: its brackets less the brackets that closed inside them
+int rspeed_depth;			//how many brackets are open; reset at the top of each host frame
+#define RSPEED_DEPTH 32
+static double rspeed_child[RSPEED_DEPTH];	//time of the brackets that closed inside the open one at each depth
+
+static int rspeed_unclosed, rspeed_offthread;	//r_budget_dump's check on the nesting
+double RSpeed_Begin(int *depth)
+{
+	int d;
+	if (!r_speeds_timing)
+	{
+		*depth = -1;
+		return 0;
+	}
+	if (!Sys_IsMainThread())
+	{	//a worker's bracket: its time still counts for r_speeds, but it is no part of this thread's nesting
+		*depth = -2;
+		rspeed_offthread++;
+		return Sys_DoubleTime() * 1000000;
+	}
+	d = rspeed_depth++;
+	if (d < RSPEED_DEPTH)
+		rspeed_child[d] = 0;
+	*depth = d;
+	return Sys_DoubleTime() * 1000000;
+}
+void RSpeed_Finish(int spt, double start, int d)
+{
+	double elapsed;
+	if (d == -2)
+	{
+		rspeeds[spt] += Sys_DoubleTime() * 1000000 - start;
+		return;
+	}
+	if (d < 0)
+		return;	//opened while timing was off
+	if (rspeed_depth != d + 1)
+		rspeed_unclosed++;
+#ifdef GLQUAKE
+	if (r_speeds.ival > 2 && qrenderer == QR_OPENGL && qglFinish)
+		qglFinish();	//r_speeds 3: each bucket waits for its GPU work too
+#endif
+	elapsed = Sys_DoubleTime() * 1000000 - start;
+	rspeeds[spt] += elapsed;
+	if (d < RSPEED_DEPTH)
+		rspeeds_self[spt] += max(0, elapsed - rspeed_child[d]);
+	rspeed_depth = d;	//also closes whatever opened inside and never closed (an early return)
+	if (d > 0 && d-1 < RSPEED_DEPTH)
+		rspeed_child[d-1] += elapsed;
+}
+
+cvar_t r_budget = CVARFD("r_budget", "0", 0, "FTESurf Patch 782. Shows where each frame's time goes: CPU work by group, idle, and GPU time by pass (GL timer queries). 1 = compact: two bars and the three biggest items under each, 2 = a row per group, 3 = every bucket in each group. r_budget_dump prints it and copies it to the clipboard.");
+cvar_t r_budget_window = CVARFD("r_budget_window", "0.5", 0, "FTESurf Patch 782. r_budget averages over this many seconds.");
+static void R_FrameTime_AfterDump(void);	//FTESurf Patch 801
+cvar_t r_budget_csqc = CVARFD("r_budget_csqc", "0", 0, "FTESurf Patch 800. With r_budget on, also breaks CSQC down by QC source file (and at r_budget 3 its three busiest functions). Runs the QC profiler while on, which slows QC; off, it costs nothing.");
+
+typedef struct
+{
+	int b;
+	const char *name;
+} budgetmember_t;
+typedef struct
+{
+	const char *name;
+	float col[3];
+	budgetmember_t m[10];
+} budgetgroup_t;
+//every bucket in exactly one group, as its self time; the CPU's groups sum to its work
+#define BUDGET_PREP 3	//the PrepareFrame group, named by map format below
+static const budgetgroup_t budget_groups[] =
+{
+	{"Server: game logic, physics",	{0.35,0.55,1.00},	{{RSPEED_SERVER, "server frames"}, {RSPEED_SERVERIDLE, "between frames"}, {-1}}},
+	{"Game client code (CSQC)",		{0.85,0.45,0.85},	{{RSPEED_CSQC_QCVIEW, "QC UpdateView, HUD"}, {RSPEED_CSQC_PREDICT, "prediction"}, {RSPEED_CSQCPHYSICS, "QC physics"}, {RSPEED_CSQCREDRAW, "other"}, {-1}}},
+	{"World: walk, entities, lightmaps",{0.35,0.85,0.35},	{{RSPEED_WORLDNODE, "world walking"}, {RSPEED_LINKENTITIES, "entity setup"}, {RSPEED_DYNAMIC, "lightmap updates"}, {-1}}},
+	{"Map vis + props (HL2 plugin)",	{1.00,0.60,0.20},	{{RSPEED_WORLDPREPARE, "PrepareFrame"}, {-1}}},
+	{"Draw calls (CPU side)",		{0.95,0.85,0.30},	{{RSPEED_OPAQUE, "opaque"}, {RSPEED_TRANSPARENTS, "transparent"}, {RSPEED_RTLIGHTS, "rt lights"}, {RSPEED_SUBMIT, "gl_finish"}, {-1}}},
+	{"Shadows",						{0.55,0.40,0.85},	{{RSPEED_FAKESHADOWS, "generate"}, {RSPEED_SHADOW_CLASSIFY, "classify"}, {RSPEED_SHADOW_ENTDRAW, "entity draw"}, {-1}}},
+	{"Particles",					{1.00,0.40,0.40},	{{RSPEED_PARTICLES, "script particles"}, {RSPEED_PARTICLESDRAW, "classic"}, {-1}}},
+	{"Post-processing",				{0.30,0.85,0.85},	{{RSPEED_POSTPROC, "resolve, effects, bloom"}, {-1}}},
+	{"HUD, 2D, this overlay",		{0.85,0.85,0.85},	{{RSPEED_2D, "2d elements"}, {RSPEED_PALETTEFLASHES, "palette flashes"}, {RSPEED_RSPEEDSHOW, "r_budget / r_speeds"}, {-1}}},
+	{"Display: swap/vsync, pacing",	{0.55,0.55,0.60},	{{RSPEED_PRESENT, "swap/present"}, {RSPEED_SCR_PACING, "frame pacing"}, {RSPEED_SCR_SETUP, "screen setup"}, {RSPEED_SCR_COMPOSITE, "composite"}, {RSPEED_SCR_BRIGHTEN, "brighten/capture"}, {RSPEED_SCR_RESET, "reset check"}, {RSPEED_TOTALREFRESH, "other refresh"}, {RSPEED_SETUP, "acquire wait"}, {RSPEED_ACQUIRE, "acquire"}, {-1}}},
+	{"Input, network, audio",		{0.30,0.70,0.60},	{{RSPEED_INPUT, "input, console"}, {RSPEED_PROTOCOL, "network"}, {RSPEED_AUDIO, "audio"}, {-1}}},
+	{"Loading (main thread)",		{0.90,0.30,0.30},	{{RSPEED_MAINTHREAD, "COM_MainThreadWork"}, {-1}}},
+	{"Other host work",				{0.40,0.40,0.40},	{{RSPEED_HOSTWORK, "untimed"}, {-1}}},
+};
+#define BUDGET_GROUPS (sizeof(budget_groups)/sizeof(budget_groups[0]))
+//r_budget 1's legend, in budget_groups' order
+static const char *budget_groupshort[] = {"server", "csqc", "world", "hl2 props", "draws", "shadows", "particles", "post", "hud", "display", "input/net", "loading", "other"};
+static const char *budget_gpushort[GPUB_MAX] = {"other", "cpu wait", "world", "props", "sky", "3d sky", "portals", "shadows", "lights", "transparent", "post", "hud"};
+static const char *budget_gpunames[GPUB_MAX] =
+{
+	"Other: clears, setup",	"Waiting on the CPU",	"World",	"Models & props",	"Sky",	"3D sky (skyroom)",	"Portals & reflections",
+	"Shadows",	"RT lights",	"Transparent & effects",	"Post-processing",	"HUD & 2D, with waits on its QC"
+};
+static const float budget_gpucols[GPUB_MAX][3] =
+{
+	{0.40,0.40,0.40},	{0.25,0.25,0.30},	{0.35,0.85,0.35},	{1.00,0.60,0.20},	{0.50,0.75,1.00},	{0.40,0.60,0.90},	{0.75,0.60,0.95},
+	{0.55,0.40,0.85},	{1.00,1.00,0.70},	{0.95,0.85,0.30},	{0.30,0.85,0.85},	{0.85,0.85,0.85}
+};
+//the PrepareFrame group is the hl2 plugin only on a Source map; elsewhere it is the engine's own vis and world walk
+static const char *R_Budget_GroupName(int i, qboolean shortname)
+{
+	if (i == BUDGET_PREP && !(cl.worldmodel && (cl.worldmodel->engineflags & MDLF_SOURCEBSP)))
+		return shortname ? "map vis" : "Map vis + walk (PrepareFrame)";
+	return shortname ? budget_groupshort[i] : budget_groups[i].name;
+}
+
+#define BUDGET_QCFILES 16	//published, and in the dump
+#define BUDGET_QCROWS 10	//on the panel, functions under the first BUDGET_QCFUNCROWS: r_budget 3 fits 1200 px
+#define BUDGET_QCFUNCROWS 4
+#define BUDGET_QCACC 64
+typedef struct
+{
+	char file[32];
+	float ms;
+	struct {char name[40]; float ms;} top[3];
+} budgetqc_t;
+//one window's QC profile, summed per source file (us); the overflow goes to the last slot
+static struct {budgetqc_t f[BUDGET_QCACC]; int n;} budget_qcacc;
+static qboolean budget_qcprof;	//the CSQC VM is profiling for us; outside `budget`, which is wiped when r_budget comes on
+
+static struct
+{
+	qboolean on;
+	double winstart, lastframe;
+	int frames, intervals;
+	double interval;			//window sums: seconds between frames
+	double cpu[RSPEED_MAX];		//...self microseconds
+	double quant[RQUANT_MAX];
+	unsigned int prevq[RQUANT_MAX];
+	//published averages, per frame
+	qboolean valid;
+	float frame;				//ms
+	float self[RSPEED_MAX];		//us, self time
+	float gpu[GPUB_MAX], gputotal, gpubusy;	//ms; busy is the total less "Waiting on the CPU"
+	int gpuframes;				//finished frames the GPU figures came from; 0 = none
+	float quantavg[RQUANT_MAX];
+	qboolean qcfull;			//the window now open started with the profiler on
+	int nqc;					//published r_budget_csqc files, busiest first; 0 = none
+	float qctotal;				//ms
+	budgetqc_t qc[BUDGET_QCFILES];
+} budget;
+
+static void R_Budget_QCFunc(void *ctx, const char *func, const char *file, double selfus, double totalus)
+{
+	char b[sizeof(budget_qcacc.f[0].file)];
+	budgetqc_t *f;
+	int i, k;
+	Q_strncpyz(b, COM_SkipPath(file), sizeof(b));
+	COM_StripExtension(b, b, sizeof(b));
+	for (i = 0; i < budget_qcacc.n; i++)
+		if (!strcmp(budget_qcacc.f[i].file, b))
+			break;
+	if (i == budget_qcacc.n)
+	{
+		if (i == BUDGET_QCACC-1)
+			Q_strncpyz(b, "(other files)", sizeof(b));
+		if (i < BUDGET_QCACC)
+		{
+			memset(&budget_qcacc.f[i], 0, sizeof(budget_qcacc.f[i]));
+			Q_strncpyz(budget_qcacc.f[i].file, b, sizeof(budget_qcacc.f[i].file));
+			budget_qcacc.n++;
+		}
+		else
+			i = BUDGET_QCACC-1;
+	}
+	f = &budget_qcacc.f[i];
+	f->ms += selfus;
+	for (k = 0; k < 3; k++)
+		if (selfus > f->top[k].ms)
+		{
+			memmove(&f->top[k+1], &f->top[k], sizeof(f->top[0])*(2-k));
+			Q_strncpyz(f->top[k].name, func, sizeof(f->top[k].name));
+			f->top[k].ms = selfus;
+			break;
+		}
+}
+static int QDECL R_Budget_QCSort(const void *a, const void *b)
+{
+	float d = ((const budgetqc_t*)b)->ms - ((const budgetqc_t*)a)->ms;
+	return (d > 0) - (d < 0);
+}
+//the window's QC profile as per-frame ms; the first window after switching on is partial, so not shown
+static void R_Budget_QCPublish(void)
+{
+	int i, k;
+	budget.nqc = 0;
+	budget.qctotal = 0;
+	if (!budget_qcprof)
+	{
+		budget.qcfull = false;
+		return;
+	}
+	budget_qcacc.n = 0;
+#ifdef CSQC_DAT
+	CSQC_EnumProfile(R_Budget_QCFunc, NULL);
+#endif
+	if (budget.qcfull)
+	{
+		qsort(budget_qcacc.f, budget_qcacc.n, sizeof(budget_qcacc.f[0]), R_Budget_QCSort);
+		for (i = 0; i < budget_qcacc.n; i++)
+		{
+			for (k = 0; k < 3; k++)
+				budget_qcacc.f[i].top[k].ms /= budget.frames * 1000.0;
+			budget_qcacc.f[i].ms /= budget.frames * 1000.0;
+			budget.qctotal += budget_qcacc.f[i].ms;
+			if (i < BUDGET_QCFILES)
+				budget.qc[budget.nqc++] = budget_qcacc.f[i];
+		}
+	}
+	budget.qcfull = true;
+}
+//between QC calls each frame: the profiler runs only while r_budget_csqc shows it
+static void R_Budget_QCProfiler(qboolean want)
+{
+	if (want == budget_qcprof && !want)
+		return;
+#ifdef CSQC_DAT
+	if (CSQC_SetProfiling(want))
+	{
+		if (want && !budget_qcprof)
+			budget.qcfull = false;	//the window now open began unprofiled
+		budget_qcprof = want;
+	}
+	else if (!CSQC_Inited())
+		budget_qcprof = false;	//no VM to profile (a map change reloads it with the profiler off)
+#else
+	budget_qcprof = false;
+#endif
+}
+
+static qboolean R_Budget_GPUTimers(void)
+{
+#ifdef GLQUAKE
+	return qrenderer == QR_OPENGL && qglQueryCounter;
+#else
+	return false;
+#endif
+}
+
+static void R_Budget_Publish(double now)
+{
+	int i;
+	double gsum[GPUB_MAX], gtotal = 0;
+	int gn = 0;
+
+	if (budget.frames <= 0)
+		return;
+	for (i = 0; i < RSPEED_MAX; i++)
+		budget.self[i] = budget.cpu[i] / budget.frames;
+	for (i = 0; i < RQUANT_MAX; i++)
+		budget.quantavg[i] = budget.quant[i] / budget.frames;
+	budget.frame = budget.intervals ? budget.interval * 1000 / budget.intervals : 0;
+
+#ifdef GLQUAKE
+	if (qrenderer == QR_OPENGL)
+		gn = R_BudgetGPUCollect(gsum, &gtotal);
+#endif
+	budget.gpuframes = gn;
+	for (i = 0; i < GPUB_MAX; i++)
+		budget.gpu[i] = gn ? gsum[i] / gn : 0;
+	budget.gputotal = gn ? gtotal / gn : 0;
+	budget.gpubusy = max(0, budget.gputotal - budget.gpu[GPUB_WAIT]);
+	R_Budget_QCPublish();
+	budget.valid = true;
+
+	budget.winstart = now;
+	budget.frames = budget.intervals = 0;
+	budget.interval = 0;
+	memset(budget.cpu, 0, sizeof(budget.cpu));
+	memset(budget.quant, 0, sizeof(budget.quant));
+}
+
+//once a frame, from RSpeedShow: this frame's buckets into the window
+static void R_Budget_Sample(void)
+{
+	int i;
+	double now = Sys_DoubleTime();
+
+	R_Budget_QCProfiler(r_budget.ival && r_budget_csqc.ival);
+	if (!r_budget.ival)
+	{
+		budget.on = budget.valid = false;
+		return;
+	}
+	if (!budget.on)
+	{	//switched on: start clean, the counters' history is not this window's
+		double discard[GPUB_MAX], dt;
+		memset(&budget, 0, sizeof(budget));
+		budget.on = true;
+		budget.winstart = budget.lastframe = now;
+		memset(rspeeds_self, 0, sizeof(rspeeds_self));
+		for (i = 0; i < RQUANT_MAX; i++)
+			budget.prevq[i] = rquant[i];
+#ifdef GLQUAKE
+		if (qrenderer == QR_OPENGL)
+			R_BudgetGPUCollect(discard, &dt);
+#endif
+		return;
+	}
+	for (i = 0; i < RSPEED_MAX; i++)
+		budget.cpu[i] += rspeeds_self[i];
+	memset(rspeeds_self, 0, sizeof(rspeeds_self));	//ours alone: r_speeds reads the inclusive rspeeds[]
+	//unsigned deltas: r_speeds' own sampler may have zeroed rquant since, and it wraps
+	for (i = 0; i < RQUANT_MAX; i++)
+		budget.quant[i] += (unsigned int)rquant[i] >= budget.prevq[i] ? (unsigned int)rquant[i] - budget.prevq[i] : (unsigned int)rquant[i];
+	budget.interval += now - budget.lastframe;
+	budget.intervals++;
+	budget.lastframe = now;
+	budget.frames++;
+	if (now - budget.winstart >= bound(0.1, r_budget_window.value, 10))
+		R_Budget_Publish(now);
+}
+
+//after RSpeedShow is done with them: remember where rquant stands, and keep the counters from wrapping when nothing else resets them
+static void R_Budget_Rebase(void)
+{
+	int i;
+	if (!budget.on)
+		return;
+	if (!r_speeds.ival)
+	{
+		memset(rspeeds, 0, sizeof(rspeeds));
+		memset(rquant, 0, sizeof(rquant));
+	}
+	for (i = 0; i < RQUANT_MAX; i++)
+		budget.prevq[i] = rquant[i];
+}
+
+static float R_Budget_Group(const budgetgroup_t *g)
+{
+	int j;
+	float us = 0;
+	for (j = 0; j < countof(g->m) && g->m[j].b >= 0; j++)
+		us += budget.self[g->m[j].b];
+	return us / 1000;
+}
+static float R_Budget_Work(void)
+{
+	size_t i;
+	float ms = 0;
+	for (i = 0; i < BUDGET_GROUPS; i++)
+		ms += R_Budget_Group(&budget_groups[i]);
+	return ms;
+}
+//the swap and frame pacing are inside the work brackets but are waits: vsync, or the GPU catching up
+static float R_Budget_Busy(float work)
+{
+	float busy = work - (budget.self[RSPEED_PRESENT] + budget.self[RSPEED_SCR_PACING]) / 1000;
+	return (busy > 0) ? busy : 0;
+}
+static const char *R_Budget_Verdict(float work)
+{
+	float busy = R_Budget_Busy(work);
+	if (budget.frame <= 0)
+		return "";
+	if (budget.gpuframes && budget.gpubusy > busy && budget.gpubusy > budget.frame * 0.85)
+		return "GPU-bound: the GPU is busy nearly the whole frame";
+	if (busy > budget.frame * 0.85)
+		return "CPU-bound: the CPU is busy nearly the whole frame";
+	return "headroom: the frame waits (fps cap, vsync or pacing)";
+}
+
+//one row: a label, its milliseconds and share of the frame, and a bar on one scale for all rows
+#define BUDGET_SHOWN(ms) ((ms) >= 0.005f)	//rows under this are not drawn: they cost glyphs and say nothing
+
+//text untinted: the 2D colour is also the text's tint, and the last bar's would colour it
+static void R_Budget_Text(float x, float y, const char *s, float w, qboolean right)
+{
+	R2D_ImageColours(1, 1, 1, 1);
+	Draw_FunStringWidthFont(font_console, x, y, s, w, right, false);
+}
+
+//one row: a label, its milliseconds and share of the frame, and a bar on one scale for all rows
+#define BUDGET_LABEL 32		//characters: the longest group name
+#define BUDGET_COLS (BUDGET_LABEL + 12)	//label, "%6.2f %3.0f%%", a space
+static float budget_adv, budget_w;	//per draw: the console font's advance (its glyphs are narrower than con_textsize, the line height), the panel width
+static void R_Budget_Row(float x, float y, float cw, float ms, float scale, const float *col, const char *label, qboolean indent)
+{
+	float barx = x + BUDGET_COLS*budget_adv, barw = budget_w - BUDGET_COLS*budget_adv, w;
+	//one string per row, columns by padding: the console font is fixed-width, and glyph runs are this overlay's whole cost
+	R_Budget_Text(x, y, va("^7%s%-*.*s%6.2f %3.0f%%", indent ? "  " : "", indent ? BUDGET_LABEL-2 : BUDGET_LABEL, indent ? BUDGET_LABEL-2 : BUDGET_LABEL,
+		label, ms, scale > 0 ? ms*100/scale : 0), BUDGET_COLS*budget_adv, false);
+	w = scale > 0 ? barw * ms / scale : 0;
+	if (w > barw)
+		w = barw;
+	if (w > 0)
+	{
+		R2D_ImageColours(col[0], col[1], col[2], indent ? 0.6 : 0.95);
+		R2D_FillBlock(barx, y + 1, max(w, 1), cw - 2);
+	}
+}
+
+//r_budget 1: the three biggest of a bar's items, each a colour chip, its name and milliseconds
+static void R_Budget_Legend(float x, float y, float cw, const char *what, const float *val, const char **name, const float **col, int n)
+{
+	qboolean used[32];
+	float bx = x + 4*cw;
+	int k, i, best;
+
+	memset(used, 0, sizeof(used));
+	R_Budget_Text(x, y, va("^7%s", what), 4*cw, false);
+	for (k = 0; k < 3; k++)
+	{
+		best = -1;
+		for (i = 0; i < n && i < countof(used); i++)
+			if (!used[i] && BUDGET_SHOWN(val[i]) && (best < 0 || val[i] > val[best]))
+				best = i;
+		if (best < 0)
+			break;
+		used[best] = true;
+		R2D_ImageColours(col[best][0], col[best][1], col[best][2], 0.95);
+		R2D_FillBlock(bx, y + 2, cw - 4, cw - 4);
+		R_Budget_Text(bx + cw, y, va("^7%s %.2f", name[best], val[best]), 18*cw, false);
+		bx += (strlen(name[best]) + 8) * cw;
+	}
+}
+
+static const float budget_qccols[][3] =
+{
+	{0.85,0.45,0.85},	{0.55,0.75,1.00},	{0.95,0.85,0.30},	{0.35,0.85,0.35},
+	{1.00,0.60,0.20},	{0.30,0.85,0.85},	{1.00,0.40,0.40},	{0.70,0.70,0.75}
+};
+static void R_Budget_Draw(void)
+{
+	float cw, x = 8, y = 8, w, scale, work, idle, bx, seg, ms, lines;
+	int i, j;
+	const budgetgroup_t *g;
+	static const float idlecol[3] = {0.15,0.15,0.18};
+
+	if (!budget.valid)
+		return;
+	if (con_textsize.value < 0)
+		cw = (-con_textsize.value * vid.height) / vid.pixelheight;
+	else
+		cw = con_textsize.value;
+	if (!cw)
+		cw = 8;
+
+	work = R_Budget_Work();
+	idle = budget.frame - work;
+	if (idle < 0)
+		idle = 0;
+	scale = max(budget.frame, max(work, budget.gputotal));
+	{
+		int px, py;
+		Font_BeginString(font_console, 0, 0, &px, &py);
+		budget_adv = Font_CharWidth(CON_WHITEMASK, '0') * (float)vid.width / vid.rotpixelwidth;
+		Font_EndString(font_console);
+		if (budget_adv <= 0)
+			budget_adv = cw;
+	}
+	w = budget_w = max(59*cw, BUDGET_COLS*budget_adv + 16*cw);
+
+	//count what will be drawn, so the backdrop fits it
+	if (r_budget.ival == 1)
+		lines = 2.5 + 2 + 2 + (budget.nqc ? 1 : 0);	//compact: header, the two bars, a legend line for each, and qc's
+	else
+	{
+		lines = 0;
+		if (budget.nqc)
+		{	//heading, files, then the total and its gap
+			lines += 1 + 1.5;
+			for (i = 0; i < budget.nqc && i < BUDGET_QCROWS; i++)
+				if (BUDGET_SHOWN(budget.qc[i].ms))
+				{
+					lines++;
+					if (r_budget.ival >= 3 && i < BUDGET_QCFUNCROWS)
+						for (j = 0; j < 3; j++)
+							if (BUDGET_SHOWN(budget.qc[i].top[j].ms))
+								lines++;
+				}
+		}
+		lines += 2.5 + 2.5 + 1 + 1 + 1.5 + 1 + 0.5 + 1;	//header, bars, cpu heading, idle, gpu heading, footer
+		for (i = 0; i < BUDGET_GROUPS; i++)
+		{
+			g = &budget_groups[i];
+			if (!BUDGET_SHOWN(R_Budget_Group(g)))
+				continue;
+			lines++;
+			if (r_budget.ival >= 3)
+				for (j = 0; j < countof(g->m) && g->m[j].b >= 0; j++)
+					if (BUDGET_SHOWN(budget.self[g->m[j].b]/1000))
+						lines++;
+		}
+		for (i = 0; i < GPUB_MAX; i++)
+			if (budget.gpuframes && BUDGET_SHOWN(budget.gpu[i]))
+				lines++;
+	}
+	R2D_ImageColours(0, 0, 0, 0.6);
+	R2D_FillBlock(x - 4, y - 4, w + 8, lines*cw + 8);
+
+	R_Budget_Text(x, y, va("^3frame %.2f ms  %.0f fps^7   cpu busy %.2f   gpu %s   idle %.2f   ^5panel %.2f",
+		budget.frame, budget.frame > 0 ? 1000/budget.frame : 0, R_Budget_Busy(work),
+		budget.gpuframes ? va("%.2f", budget.gpubusy) : R_Budget_GPUTimers() ? "..." : "n/a", idle,
+		budget.self[RSPEED_RSPEEDSHOW]/1000), w, false);
+	y += cw;
+	R_Budget_Text(x, y, va("^7%s", R_Budget_Verdict(work)), w, false);
+	y += cw*1.5;
+
+	//the frame as two stacked bars on one scale: the CPU's groups then idle, and the GPU's passes
+	R_Budget_Text(x, y, "^7cpu", 4*cw, false);
+	bx = x + 4*cw;
+	for (i = 0; i < BUDGET_GROUPS; i++)
+	{
+		seg = (w - 4*cw) * R_Budget_Group(&budget_groups[i]) / scale;
+		if (seg <= 0)
+			continue;
+		R2D_ImageColours(budget_groups[i].col[0], budget_groups[i].col[1], budget_groups[i].col[2], 0.95);
+		R2D_FillBlock(bx, y + 1, seg, cw - 2);
+		bx += seg;
+	}
+	seg = (w - 4*cw) * idle / scale;
+	if (seg > 0)
+	{
+		R2D_ImageColours(idlecol[0]*2, idlecol[1]*2, idlecol[2]*2, 0.95);
+		R2D_FillBlock(bx, y + 1, seg, cw - 2);
+	}
+	y += cw;
+	R_Budget_Text(x, y, "^7gpu", 4*cw, false);
+	bx = x + 4*cw;
+	for (i = 0; i < GPUB_MAX && budget.gpuframes; i++)
+	{
+		seg = (w - 4*cw) * budget.gpu[i] / scale;
+		if (seg <= 0)
+			continue;
+		R2D_ImageColours(budget_gpucols[i][0], budget_gpucols[i][1], budget_gpucols[i][2], 0.95);
+		R2D_FillBlock(bx, y + 1, seg, cw - 2);
+		bx += seg;
+	}
+	if (r_budget.ival == 1)
+	{	//compact: what the colours are, the three biggest items under each bar
+		float vals[BUDGET_GROUPS];
+		const float *cols[GPUB_MAX > BUDGET_GROUPS ? GPUB_MAX : BUDGET_GROUPS];
+		const char *names[BUDGET_GROUPS];
+		y += cw;
+		for (i = 0; i < BUDGET_GROUPS; i++)
+		{
+			vals[i] = R_Budget_Group(&budget_groups[i]);
+			cols[i] = budget_groups[i].col;
+			names[i] = R_Budget_GroupName(i, true);
+		}
+		R_Budget_Legend(x, y, cw, "cpu", vals, names, cols, BUDGET_GROUPS);
+		y += cw;
+		if (budget.gpuframes)
+		{
+			for (i = 0; i < GPUB_MAX; i++)
+				cols[i] = budget_gpucols[i];
+			R_Budget_Legend(x, y, cw, "gpu", budget.gpu, budget_gpushort, cols, GPUB_MAX);
+		}
+		if (budget.nqc)
+		{
+			float qv[BUDGET_QCFILES];
+			const char *qn[BUDGET_QCFILES];
+			const float *qcol[BUDGET_QCFILES];
+			y += cw;
+			for (i = 0; i < budget.nqc; i++)
+			{
+				qv[i] = budget.qc[i].ms;
+				qn[i] = budget.qc[i].file;
+				qcol[i] = budget_qccols[i % countof(budget_qccols)];
+			}
+			R_Budget_Legend(x, y, cw, "qc", qv, qn, qcol, budget.nqc);
+		}
+		R2D_ImageColours(1, 1, 1, 1);
+		return;
+	}
+	y += cw*1.5;
+
+	R_Budget_Text(x, y, va("^3%-*s    ms frame", BUDGET_LABEL, "CPU work by group"), BUDGET_COLS*budget_adv, false);
+	y += cw;
+	for (i = 0; i < BUDGET_GROUPS; i++)
+	{
+		g = &budget_groups[i];
+		ms = R_Budget_Group(g);
+		if (!BUDGET_SHOWN(ms))
+			continue;
+		R_Budget_Row(x, y, cw, ms, scale, g->col, R_Budget_GroupName(i, false), false);
+		y += cw;
+		if (r_budget.ival >= 3)
+			for (j = 0; j < countof(g->m) && g->m[j].b >= 0; j++)
+			{
+				ms = budget.self[g->m[j].b]/1000;
+				if (!BUDGET_SHOWN(ms))
+					continue;
+				R_Budget_Row(x, y, cw, ms, scale, g->col, g->m[j].name, true);
+				y += cw;
+			}
+	}
+	R_Budget_Row(x, y, cw, idle, scale, idlecol, "Idle (waiting for next frame)", false);
+	y += cw*1.5;
+
+	if (budget.nqc)
+	{	//on the QC total's scale, so the split shows. Not CSQC's row: QC run from entity setup is under World there
+		R_Budget_Text(x, y, va("^3%-*s    ms   qc", BUDGET_LABEL, "CSQC by QC file (profiler on)"), BUDGET_COLS*budget_adv, false);
+		y += cw;
+		for (i = 0; i < budget.nqc && i < BUDGET_QCROWS; i++)
+		{
+			const float *col = budget_qccols[i % countof(budget_qccols)];
+			if (!BUDGET_SHOWN(budget.qc[i].ms))
+				continue;
+			R_Budget_Row(x, y, cw, budget.qc[i].ms, budget.qctotal, col, budget.qc[i].file, false);
+			y += cw;
+			if (r_budget.ival >= 3 && i < BUDGET_QCFUNCROWS)
+				for (j = 0; j < 3; j++)
+					if (BUDGET_SHOWN(budget.qc[i].top[j].ms))
+					{
+						R_Budget_Row(x, y, cw, budget.qc[i].top[j].ms, budget.qctotal, col, budget.qc[i].top[j].name, true);
+						y += cw;
+					}
+		}
+		R_Budget_Text(x, y, va("^7%-*s%6.2f  (profiled: QC runs slower)", BUDGET_LABEL, "all QC", budget.qctotal), w, false);
+		y += cw*1.5;
+	}
+
+	if (budget.gpuframes)
+	{
+		R_Budget_Text(x, y, va("^3%-*s    ms frame", BUDGET_LABEL, "GPU time by pass"), BUDGET_COLS*budget_adv, false);
+		y += cw;
+		for (i = 0; i < GPUB_MAX; i++)
+		{
+			if (!BUDGET_SHOWN(budget.gpu[i]))
+				continue;
+			R_Budget_Row(x, y, cw, budget.gpu[i], scale, budget_gpucols[i], budget_gpunames[i], false);
+			y += cw;
+		}
+	}
+	else
+	{
+		R_Budget_Text(x, y, R_Budget_GPUTimers() ? "^7GPU: waiting for timer results" : "^7GPU: no timer queries on this renderer (GL 3.3 needed)", w, false);
+		y += cw;
+	}
+	y += cw*0.5;
+	R_Budget_Text(x, y, va("^7draws %.0f   triangles %.2fM   batches: world %.0f, entity %.0f",
+		budget.quantavg[RQUANT_DRAWS], budget.quantavg[RQUANT_PRIMITIVEINDICIES]/3000000, budget.quantavg[RQUANT_WORLDBATCHES], budget.quantavg[RQUANT_ENTBATCHES]), w, false);
+	R2D_ImageColours(1, 1, 1, 1);
+}
+
+//the same table as text: printed, and put on the clipboard to paste into a report
+static void R_Budget_Dump_f(void)
+{
+	char out[16384], bar[33];
+	float work, idle, ms, scale;
+	int i, j, n;
+	const budgetgroup_t *g;
+
+	if (!budget.valid)
+	{
+		Con_Printf("r_budget_dump: turn r_budget on and give it %g seconds first\n", r_budget_window.value);
+		return;
+	}
+	work = R_Budget_Work();
+	idle = max(0, budget.frame - work);
+	scale = max(budget.frame, max(work, budget.gputotal));
+#define BUDGET_BAR(v) (n = scale > 0 ? (int)(32*(v)/scale + 0.5) : 0, n = bound(0, n, 32), memset(bar, '#', n), bar[n] = 0, bar)
+	*out = 0;
+	Q_strncatz(out, va("frame %.2f ms (%.0f fps)  cpu busy %.2f  gpu %s  idle %.2f  panel %.2f  -- %s\n", budget.frame, budget.frame > 0 ? 1000/budget.frame : 0,
+		R_Budget_Busy(work), budget.gpuframes ? va("%.2f", budget.gpubusy) : "n/a", idle, budget.self[RSPEED_RSPEEDSHOW]/1000, R_Budget_Verdict(work)), sizeof(out));
+	Q_strncatz(out, "CPU work by group                    ms  frame\n", sizeof(out));
+	for (i = 0; i < BUDGET_GROUPS; i++)
+	{
+		g = &budget_groups[i];
+		ms = R_Budget_Group(g);
+		Q_strncatz(out, va("  %-32s %6.2f %4.0f%% %s\n", R_Budget_GroupName(i, false), ms, scale > 0 ? ms*100/scale : 0, BUDGET_BAR(ms)), sizeof(out));
+		for (j = 0; j < countof(g->m) && g->m[j].b >= 0; j++)
+			if (budget.self[g->m[j].b] > 0)
+				Q_strncatz(out, va("      %-28s %6.2f\n", g->m[j].name, budget.self[g->m[j].b]/1000), sizeof(out));
+	}
+	Q_strncatz(out, va("  %-32s %6.2f %4.0f%% %s\n", "Idle (waiting for next frame)", idle, scale > 0 ? idle*100/scale : 0, BUDGET_BAR(idle)), sizeof(out));
+	if (budget.gpuframes)
+	{
+		Q_strncatz(out, "GPU time by pass\n", sizeof(out));
+		for (i = 0; i < GPUB_MAX; i++)
+			Q_strncatz(out, va("  %-32s %6.2f %4.0f%% %s\n", budget_gpunames[i], budget.gpu[i], scale > 0 ? budget.gpu[i]*100/scale : 0, BUDGET_BAR(budget.gpu[i])), sizeof(out));
+	}
+	else
+		Q_strncatz(out, "GPU: no timer results\n", sizeof(out));
+	if (budget.nqc)
+	{
+		Q_strncatz(out, va("CSQC by QC file (profiled, QC runs slower)   ms   qc  -- all QC %.2f ms\n", budget.qctotal), sizeof(out));
+		for (i = 0; i < budget.nqc; i++)
+		{
+			ms = budget.qc[i].ms;
+			Q_strncatz(out, va("  %-32s %6.2f %4.0f%%\n", budget.qc[i].file, ms, budget.qctotal > 0 ? ms*100/budget.qctotal : 0), sizeof(out));
+			for (j = 0; j < 3; j++)
+				if (budget.qc[i].top[j].ms > 0)
+					Q_strncatz(out, va("      %-28s %6.3f\n", budget.qc[i].top[j].name, budget.qc[i].top[j].ms), sizeof(out));
+		}
+	}
+	Q_strncatz(out, va("draws %.0f  triangles %.2fM  batches world %.0f entity %.0f  (%s, %s)\n", budget.quantavg[RQUANT_DRAWS],
+		budget.quantavg[RQUANT_PRIMITIVEINDICIES]/3000000, budget.quantavg[RQUANT_WORLDBATCHES], budget.quantavg[RQUANT_ENTBATCHES],
+		cl.worldmodel ? cl.worldmodel->name : "no map", version_string()), sizeof(out));
+	Q_strncatz(out, va("timers since the last dump: %i closed with others still open inside, %i off the main thread\n", rspeed_unclosed, rspeed_offthread), sizeof(out));
+	rspeed_unclosed = rspeed_offthread = 0;
+#undef BUDGET_BAR
+	{	//a line at a time: one Con_Printf of the whole table is cut at its print buffer
+		char *line = out, *nl;
+		while ((nl = strchr(line, '\n')))
+		{
+			Con_Printf("%.*s\n", (int)(nl - line), line);
+			line = nl + 1;
+		}
+	}
+	Sys_SaveClipboard(CBT_CLIPBOARD, out);
+	Con_Printf("r_budget_dump: copied to the clipboard\n");
+	budget.lastframe = Sys_DoubleTime();
+	R_FrameTime_AfterDump();
+}
+
+//FTESurf Patch 801: r_frametime. One sample per rendered frame, from RSpeedShow. The graph keeps the
+//slowest frame of each column's slice, so a spike is never averaged away; the lows come from a
+//histogram updated as frames arrive and expire, so computing them never costs a frame of its own.
+cvar_t r_frametime = CVARFD("r_frametime", "0", 0, "FTESurf Patch 801. A frame-time graph at the top right: the last r_frametime_seconds, each column the slowest frame in its slice, green, yellow over 1.5x the median and red over 2.5x (a stutter). Above it the average fps and the 1% and 0.1% lows (the average of the slowest 1% and 0.1% of frames) over r_frametime_window. r_frametime_dump lists the worst frames and where you were; r_frametime_reset starts the window again.");
+cvar_t r_frametime_seconds = CVARFD("r_frametime_seconds", "10", 0, "FTESurf Patch 801. Seconds the r_frametime graph spans.");
+cvar_t r_frametime_window = CVARFD("r_frametime_window", "30", 0, "FTESurf Patch 801. Seconds r_frametime's lows and stutter count cover (1 to 120).");
+
+#define FT_RING 65536		//frames the window can hold: 120 s at 546 fps; past that the oldest go early
+#define FT_BINMS 0.05f
+#define FT_BINS 4000		//0.05 ms bins to 200 ms; the last also takes every slower frame, its exact times summed
+#define FT_COLS 300
+#define FT_WORST 8			//listed by the dump
+#define FT_KEEP 64			//the window's slowest, kept exactly (with where the view was, when known)
+#define FT_STUTTER 2.5f		//times the median
+#define FT_EYE 64			//PM_VIEW_OFS standing: setpos takes the origin, the view is above it
+typedef struct {float ms, at; vec3_t org, ang; qboolean known;} ftbad_t;
+static struct
+{
+	qboolean on;
+	double base, last;			//realtime when switched on, and of the previous frame
+	float ms[FT_RING], at[FT_RING];	//each frame in the window, and when (s since base)
+	int head, count;
+	int bins[FT_BINS];
+	double sum, oversum;		//ms: the window's, and the last bin's
+	float colmax[FT_COLS];
+	int colcount[FT_COLS];
+	int col;
+	double colstart;
+	double nextstats;
+	float avg, median, low1, low01, worst;	//ms
+	int stutters;
+	ftbad_t bad[FT_KEEP];		//slowest first
+} ft;
+
+static int R_FrameTime_Bin(float ms)
+{
+	int b = ms / FT_BINMS;
+	return b < FT_BINS-1 ? b : FT_BINS-1;
+}
+static void R_FrameTime_Drop(void)
+{
+	int t = (ft.head - ft.count) & (FT_RING-1), b = R_FrameTime_Bin(ft.ms[t]);
+	ft.bins[b]--;
+	ft.sum -= ft.ms[t];
+	if (b == FT_BINS-1)
+		ft.oversum -= ft.ms[t];
+	ft.count--;
+}
+//when one of the kept slowest leaves the window, the next may be in the ring but not the list: take
+//them from the ring again (rare: only on an expiry). Where the view was survives for frames kept then.
+static void R_FrameTime_Rebuild(void)
+{
+	static ftbad_t old[FT_KEEP];
+	int i, j, k;
+	float ms;
+	memcpy(old, ft.bad, sizeof(old));
+	memset(ft.bad, 0, sizeof(ft.bad));
+	for (i = 0; i < ft.count; i++)
+	{
+		k = (ft.head - ft.count + i) & (FT_RING-1);
+		ms = ft.ms[k];
+		if (ms <= ft.bad[FT_KEEP-1].ms)
+			continue;
+		for (j = 0; ms <= ft.bad[j].ms; j++)
+			;
+		memmove(&ft.bad[j+1], &ft.bad[j], sizeof(ft.bad[0]) * (FT_KEEP-1 - j));
+		memset(&ft.bad[j], 0, sizeof(ft.bad[j]));
+		ft.bad[j].ms = ms;
+		ft.bad[j].at = ft.at[k];
+	}
+	for (j = 0; j < FT_KEEP && ft.bad[j].ms; j++)
+		for (i = 0; i < FT_KEEP && old[i].ms; i++)
+			if (old[i].known && old[i].at == ft.bad[j].at && old[i].ms == ft.bad[j].ms)
+			{
+				ft.bad[j] = old[i];
+				break;
+			}
+}
+//the last bin's frames, slowest first: exact from bad[] (they are the window's slowest), then its mean
+static float R_FrameTime_Over(int fromtop)
+{
+	int nb, n = ft.bins[FT_BINS-1];
+	double sb = 0;
+	for (nb = 0; nb < FT_KEEP && ft.bad[nb].ms >= (FT_BINS-1) * FT_BINMS; nb++)
+		sb += ft.bad[nb].ms;
+	nb = min(nb, n);
+	if (fromtop < nb)
+		return ft.bad[fromtop].ms;
+	return n > nb ? (ft.oversum - sb) / (n - nb) : 0;
+}
+//the mean of the slowest n frames, walking the histogram down (a bin's frames count at its middle)
+static float R_FrameTime_Slowest(int n)
+{
+	int b, c, k, left = n;
+	double s = 0;
+	for (b = FT_BINS-1; b >= 0 && left > 0; b--)
+	{
+		if (!ft.bins[b])
+			continue;
+		c = min(ft.bins[b], left);
+		if (b == FT_BINS-1)
+			for (k = 0; k < c; k++)
+				s += R_FrameTime_Over(k);
+		else
+			s += c * (b + 0.5) * FT_BINMS;
+		left -= c;
+	}
+	return n > left ? s / (n - left) : 0;
+}
+static void R_FrameTime_Stats(void)
+{
+	int b, c = 0, half = ft.count / 2, over;
+	float stut;
+	ft.avg = ft.count ? ft.sum / ft.count : 0;
+	for (b = 0; b < FT_BINS; b++)
+		if ((c += ft.bins[b]) > half)
+			break;
+	ft.median = (min(b, FT_BINS-1) + 0.5) * FT_BINMS;
+	ft.low1 = R_FrameTime_Slowest(max(1, ft.count / 100));
+	ft.low01 = R_FrameTime_Slowest(max(1, ft.count / 1000));
+	ft.worst = ft.bad[0].ms;
+	stut = ft.median * FT_STUTTER;
+	for (over = 0, b = R_FrameTime_Bin(stut) + 1; b < FT_BINS; b++)
+		over += ft.bins[b];
+	ft.stutters = over;
+}
+//unfocused with cl_idlefps on, the engine paces frames to it on purpose (CL_Frame's idle); unfocused
+//with it at 0 (the rig, a stream with OBS focused) they are real frames and count
+static qboolean R_FrameTime_Throttled(void)
+{
+	static cvar_t *idlefps;
+	if (vid.activeapp)
+		return false;
+	if (!idlefps)
+		idlefps = Cvar_FindVar("cl_idlefps");
+	return idlefps && idlefps->value > 0;
+}
+static void R_FrameTime_Sample(void)
+{
+	double now = Sys_DoubleTime(), window, span;
+	float ms, at;
+	int b, i;
+
+	if (!r_frametime.ival)
+	{
+		ft.on = false;
+		return;
+	}
+	if (!ft.on)
+	{
+		memset(&ft, 0, sizeof(ft));
+		ft.on = true;
+		ft.base = ft.last = ft.colstart = now;
+		return;
+	}
+	if (R_FrameTime_Throttled())
+	{
+		ft.last = now;
+		return;
+	}
+	ms = (now - ft.last) * 1000;
+	ft.last = now;
+	if (ms <= 0 || ms > 1000)
+		return;	//minimised, or a load: not a frame anyone watched
+	at = now - ft.base;
+
+	window = bound(1, r_frametime_window.value, 120);
+	while (ft.count && at - ft.at[(ft.head - ft.count) & (FT_RING-1)] > window)
+		R_FrameTime_Drop();
+	if (ft.count == FT_RING)
+		R_FrameTime_Drop();
+	ft.ms[ft.head] = ms;
+	ft.at[ft.head] = at;
+	ft.head = (ft.head + 1) & (FT_RING-1);
+	ft.count++;
+	b = R_FrameTime_Bin(ms);
+	ft.bins[b]++;
+	ft.sum += ms;
+	if (b == FT_BINS-1)
+		ft.oversum += ms;
+
+	//the window's slowest, and where the view was for each
+	for (i = 0; i < FT_KEEP && ft.bad[i].ms; i++)
+		if (at - ft.bad[i].at > window)
+		{
+			R_FrameTime_Rebuild();
+			break;
+		}
+	if (ms > ft.bad[FT_KEEP-1].ms)
+	{
+		for (i = 0; ms <= ft.bad[i].ms; i++)
+			;
+		memmove(&ft.bad[i+1], &ft.bad[i], sizeof(ft.bad[0]) * (FT_KEEP-1 - i));
+		ft.bad[i].ms = ms;
+		ft.bad[i].at = at;
+		VectorCopy(r_refdef.vieworg, ft.bad[i].org);
+		ft.bad[i].org[2] -= FT_EYE;
+		VectorCopy(r_refdef.viewangles, ft.bad[i].ang);
+		ft.bad[i].known = true;
+	}
+
+	//the graph's columns: a new one each slice; a gap leaves the ones it spans empty
+	span = bound(1, r_frametime_seconds.value, 120) / FT_COLS;
+	for (i = 0; now - ft.colstart >= span && i < FT_COLS; i++)
+	{
+		ft.col = (ft.col + 1) % FT_COLS;
+		ft.colmax[ft.col] = 0;
+		ft.colcount[ft.col] = 0;
+		ft.colstart += span;
+	}
+	if (now - ft.colstart >= span)
+		ft.colstart = now;
+	ft.colmax[ft.col] = max(ft.colmax[ft.col], ms);
+	ft.colcount[ft.col]++;
+
+	if (now >= ft.nextstats)
+	{
+		R_FrameTime_Stats();
+		ft.nextstats = now + 0.25;
+	}
+}
+static void R_FrameTime_Draw(void)
+{
+	float cw, gw, colw, gh = 120, x, y, scale, v, h;
+	static const float nice[] = {2, 5, 10, 15, 20, 30, 50, 100, 200, 500, 1000};
+	int i, c;
+
+	if (!ft.on || !ft.count)
+		return;
+	cw = (con_textsize.value < 0) ? (-con_textsize.value * vid.height) / vid.pixelheight : con_textsize.value;
+	if (!cw)
+		cw = 8;
+	gw = bound(FT_COLS, vid.width - 24, 2*FT_COLS);
+	colw = gw / FT_COLS;
+	x = vid.width - gw - 12;
+	y = 130;
+	if (r_budget.ival && 8 + budget_w + 12 > x)
+		y = vid.height - gh - 3*cw - 72;	//r_budget's panel is under the top right: go to the bottom
+	for (i = 0, scale = 0; i < countof(nice) && !scale; i++)
+		if (nice[i] >= ft.median * 3)
+			scale = nice[i];
+	if (!scale)
+		scale = nice[countof(nice)-1];
+
+	R2D_ImageColours(0, 0, 0, 0.6);
+	R2D_FillBlock(x - 4, y - 4, gw + 8, gh + 3*cw + 8);
+	R2D_ImageColours(1, 1, 1, 1);
+	Draw_FunStringWidthFont(font_console, x, y, va("^3frametime^7  avg %.0f fps   ^31%% low %.0f   0.1%% low %.0f", ft.avg > 0 ? 1000/ft.avg : 0, ft.low1 > 0 ? 1000/ft.low1 : 0, ft.low01 > 0 ? 1000/ft.low01 : 0), gw, false, false);
+	R2D_ImageColours(1, 1, 1, 1);
+	Draw_FunStringWidthFont(font_console, x, y + cw, va("^7median %.2f ms  worst %.1f  ^1stutters %i^7/%gs  top %g", ft.median, ft.worst, ft.stutters, bound(1, r_frametime_window.value, 120), scale), gw, false, false);
+	y += 2*cw + 4;
+
+	//oldest on the left; each column the slowest frame of its slice
+	for (i = 0; i < FT_COLS; i++)
+	{
+		c = (ft.col + 1 + i) % FT_COLS;
+		if (!ft.colcount[c])
+			continue;
+		v = ft.colmax[c];
+		h = min(v / scale, 1) * gh;
+		if (v > ft.median * FT_STUTTER)
+			R2D_ImageColours(1.0, 0.25, 0.25, 0.95);
+		else if (v > ft.median * 1.5)
+			R2D_ImageColours(0.95, 0.85, 0.3, 0.95);
+		else
+			R2D_ImageColours(0.35, 0.85, 0.35, 0.9);
+		R2D_FillBlock(x + i*colw, y + gh - h, colw, max(h, 1));
+	}
+	//the median and the stutter line
+	R2D_ImageColours(1, 1, 1, 0.5);
+	R2D_FillBlock(x, y + gh - min(ft.median / scale, 1) * gh, gw, 1);
+	R2D_ImageColours(1, 0.25, 0.25, 0.5);
+	R2D_FillBlock(x, y + gh - min(ft.median * FT_STUTTER / scale, 1) * gh, gw, 1);
+	R2D_ImageColours(1, 1, 1, 1);
+}
+//a dump stalled its own frame by 0.3 s in the P801 arm: asking must not add a stutter
+static void R_FrameTime_AfterDump(void)
+{
+	ft.last = Sys_DoubleTime();
+}
+static void R_FrameTime_Reset_f(void)
+{
+	ft.on = false;	//the next frame starts clean
+}
+static void R_FrameTime_Dump_f(void)
+{
+	char out[4096];
+	int i, b, c, n, p;
+	static const float pct[] = {50, 90, 99, 99.9f};
+	double now;
+	if (!ft.on || !ft.count)
+	{
+		Con_Printf("r_frametime_dump: turn r_frametime on first\n");
+		return;
+	}
+	R_FrameTime_Stats();
+	now = Sys_DoubleTime() - ft.base;
+	*out = 0;
+	Q_strncatz(out, va("frametime over %.1f s, %i frames (%s, %s)\n", ft.at[(ft.head-1) & (FT_RING-1)] - ft.at[(ft.head - ft.count) & (FT_RING-1)], ft.count,
+		cl.worldmodel ? cl.worldmodel->name : "no map", version_string()), sizeof(out));
+	Q_strncatz(out, va("  avg %.2f ms (%.0f fps)  1%% low %.2f ms (%.0f fps)  0.1%% low %.2f ms (%.0f fps)\n", ft.avg, 1000/ft.avg,
+		ft.low1, 1000/ft.low1, ft.low01, 1000/ft.low01), sizeof(out));
+	for (p = 0; p < countof(pct); p++)
+	{
+		n = ft.count * pct[p] / 100;
+		for (b = 0, c = 0; b < FT_BINS && (c += ft.bins[b]) <= n; b++)
+			;
+		Q_strncatz(out, va("  p%-4g %7.2f ms\n", pct[p], b < FT_BINS-1 ? (b + 0.5) * FT_BINMS : R_FrameTime_Over(ft.count - 1 - n)), sizeof(out));
+	}
+	Q_strncatz(out, va("  stutters (over %.1fx the median, %.2f ms): %i\n", FT_STUTTER, ft.median * FT_STUTTER, ft.stutters), sizeof(out));
+	Q_strncatz(out, "  slowest frames: ms, seconds ago, where you stood (standing height) and looked\n", sizeof(out));
+	for (i = 0; i < FT_WORST && ft.bad[i].ms; i++)
+		Q_strncatz(out, ft.bad[i].known
+			? va("    %7.2f  %6.1f s ago  setpos %.0f %.0f %.0f %.0f %.0f 0\n", ft.bad[i].ms, now - ft.bad[i].at,
+				ft.bad[i].org[0], ft.bad[i].org[1], ft.bad[i].org[2], ft.bad[i].ang[0], ft.bad[i].ang[1])
+			: va("    %7.2f  %6.1f s ago  (where was not kept)\n", ft.bad[i].ms, now - ft.bad[i].at), sizeof(out));
+	{
+		char *line = out, *nl;
+		while ((nl = strchr(line, '\n')))
+		{
+			Con_Printf("%.*s\n", (int)(nl - line), line);
+			line = nl + 1;
+		}
+	}
+	Sys_SaveClipboard(CBT_CLIPBOARD, out);
+	R_FrameTime_AfterDump();
 }
 
 void RSpeedShow(void)
@@ -98,8 +1147,17 @@ void RSpeedShow(void)
 	int frameinterval = 100;
 	int tsize;
 
+	R_Budget_Sample();	//FTESurf Patch 782
+	if (r_budget.ival)
+		R_Budget_Draw();
+	R_FrameTime_Sample();	//FTESurf Patch 801
+	if (r_frametime.ival)
+		R_FrameTime_Draw();
 	if (!r_speeds.ival)
+	{
+		R_Budget_Rebase();
 		return;
+	}
 
 	if (con_textsize.value < 0)
 		tsize = (-con_textsize.value * vid.height) / vid.pixelheight;	//size defined in physical pixels
@@ -144,6 +1202,12 @@ void RSpeedShow(void)
 	RSpNames[RSPEED_PROTOCOL]		= "Client Protocol";
 	RSpNames[RSPEED_SERVER]			= "Server";
 	RSpNames[RSPEED_AUDIO]			= "Audio";
+	//FTESurf Patch 782; the table draws every bucket's name, so a new one without one prints garbage
+	RSpNames[RSPEED_HOSTWORK]		= "Host frame work";
+	RSpNames[RSPEED_MAINTHREAD]		= " Main-thread work";
+	RSpNames[RSPEED_INPUT]			= " Input/console";
+	RSpNames[RSPEED_SERVERIDLE]		= "Server (between frames)";
+	RSpNames[RSPEED_WORLDPREPARE]	= "   Map PrepareFrame";
 
 	memset(RQntNames, 0, sizeof(RQntNames));
 	RQntNames[RQUANT_MSECS]					= "Microseconds";
@@ -220,6 +1284,7 @@ void RSpeedShow(void)
 		}
 		framecount=0;
 	}
+	R_Budget_Rebase();	//FTESurf Patch 782: after the sampler above may have zeroed them
 }
 
 
@@ -3822,6 +4887,15 @@ void SCR_Init (void)
 	Cmd_AddCommandD ("screenshot_cubemap",SCR_ScreenShot_Cubemap_f, "screenshot_cubemap <name> [size]\nTakes 6 screenshots forming a single cubemap.");
 	Cmd_AddCommandD ("envmap",SCR_ScreenShot_Envmap_f, "Legacy name for the screenshot_cubemap command.");	//legacy 
 	Cmd_AddCommand ("screenshot",SCR_ScreenShot_f);
+	Cvar_Register (&r_budget, "Screen options");	//FTESurf Patch 782
+	Cvar_Register (&r_budget_window, "Screen options");
+	Cvar_Register (&r_budget_csqc, "Screen options");	//FTESurf Patch 800
+	Cvar_Register (&r_frametime, "Screen options");	//FTESurf Patch 801
+	Cvar_Register (&r_frametime_seconds, "Screen options");
+	Cvar_Register (&r_frametime_window, "Screen options");
+	Cmd_AddCommandD ("r_frametime_dump", R_FrameTime_Dump_f, "FTESurf Patch 801. Prints r_frametime's lows, percentiles and slowest frames (with a setpos for each) and copies them to the clipboard.");
+	Cmd_AddCommandD ("r_frametime_reset", R_FrameTime_Reset_f, "FTESurf Patch 801. Starts r_frametime's window again.");
+	Cmd_AddCommandD ("r_budget_dump", R_Budget_Dump_f, "FTESurf Patch 782. Prints r_budget's breakdown as text and copies it to the clipboard.");
 	Cmd_AddCommandD ("r_speeds_dump", RSpeed_Dump_f, "Prints the current r_speeds 2 sample table to the console as text, so it can be logged with -condebug and reconciled arithmetically instead of read off a screenshot.");
 
 	scr_net = R2D_SafePicFromWad ("net");

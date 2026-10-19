@@ -668,6 +668,9 @@ void QCBUILTIN PF_base64decode(pubprogfuncs_t *prinst, struct globalvars_s *pr_g
 void QCBUILTIN PF_memalloc	(pubprogfuncs_t *prinst, struct globalvars_s *pr_globals);
 void QCBUILTIN PF_memrealloc(pubprogfuncs_t *prinst, struct globalvars_s *pr_globals);
 void QCBUILTIN PF_memfree	(pubprogfuncs_t *prinst, struct globalvars_s *pr_globals);
+void QCBUILTIN PF_memnostrings(pubprogfuncs_t *prinst, struct globalvars_s *pr_globals);	//FTESurf Patch 763
+pbool PR_AddressableNoStrings(pubprogfuncs_t *ppf, void *memptr);			//qclib/initlib.c
+size_t PR_AddressableNoStringsInfo(pubprogfuncs_t *ppf, unsigned int *blocks);
 void QCBUILTIN PF_memcmp	(pubprogfuncs_t *prinst, struct globalvars_s *pr_globals);
 void QCBUILTIN PF_memcpy	(pubprogfuncs_t *prinst, struct globalvars_s *pr_globals);
 void QCBUILTIN PF_memfill8	(pubprogfuncs_t *prinst, struct globalvars_s *pr_globals);
@@ -1280,6 +1283,7 @@ enum
 	globalfloat (predinput_forceduck)         /*DUCK: completed posture, 1 stand or 2 duck*/ \
 	globalfloat (predinput_sequence_lo)       /*P675: read-only exact sequence low 16 bits*/ \
 	globalfloat (predinput_sequence_hi)       /*P675: read-only exact sequence high 16 bits*/ \
+	globalfloat (predinput_held)              /*P754: nonzero lets the replay run through PM_NONE*/ \
 	\
 	globalvector(predmove_org0)				/*FTESurf P335: origin at the START of the predicted command (ro)*/ \
 	globalvector(predmove_org)				/*FTESurf P335: origin after PM_PlayerMove; QC may rewrite (rw)*/ \

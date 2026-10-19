@@ -228,8 +228,12 @@ typedef struct
    running a different number cannot vouch for a replay and must say so.
    Patch 492/538: versions 1/2 retain drift-only water and their original
    fixrampbugs clip cycle. Live version 3 adds swimming at either ramp setting.
-   SV_PMSrcVer accepts old pins only with their original matching ramp setting. */
-#define PMSRC_VERSION 4
+   SV_PMSrcVer accepts old pins only with their original matching ramp setting.
+   Patch 756: version 5 keeps a linked portal landing's exact position.
+   Patch 758: version 6 keeps moving when the hull clears a linked door's front.
+   Patch 764: version 7 traces a static prop's .phy hull as its convex pieces.
+   Patch 813: version 8 recovers a surfer whose retrace hits the same face again at fraction 0. */
+#define PMSRC_VERSION 8
 
 typedef struct {
 	//standard quakeworld
@@ -319,6 +323,7 @@ typedef struct {
 //included before this header (client/quakedef.h:186 vs :196).
 void PMSrc_SaveState(pmsourcestate_t *out);
 void PMSrc_LoadState(const pmsourcestate_t *in);
+void PMSrc_ReconcileHull(pmsourcestate_t *s, const vec3_t mins, const vec3_t maxs, float servereye);	//FTESurf Patch 754
 
 #define MOVEFLAG_VALID							0x80000000	//to signal that these are actually known. otherwise reserved.
 //#define MOVEFLAG_Q2AIRACCELERATE				0x00000001

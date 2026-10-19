@@ -395,6 +395,7 @@ qbyte		*h2playertranslations;
 
 cvar_t	host_speeds = CVAR("host_speeds","0");		// set for running times
 cvar_t	cl_debug_spikes = CVARD("cl_debug_spikes", "0", "Logs a timing breakdown whenever a client Host_Frame exceeds cl_debug_spike_ms.");
+extern cvar_t r_budget;	//FTESurf Patch 782, cl_screen.c
 cvar_t	cl_debug_spike_ms = CVARD("cl_debug_spike_ms", "2.0", "Frame time threshold, in milliseconds, for cl_debug_spikes logging.");
 
 int			fps_count;
@@ -5971,6 +5972,12 @@ void CL_Status_f(void)
 			count++;
 		}
 		Con_Printf("csqc entities    : %i/%i/%i (mem: %.1f%%)\n", count, csqc_world.num_edicts, csqc_world.max_edicts, 100*(float)(csqc_world.progs->stringtablesize/(double)csqc_world.progs->stringtablemaxsize));
+		{	//FTESurf Patch 763
+			extern size_t PR_AddressableNoStringsInfo(pubprogfuncs_t *ppf, unsigned int *blocks);
+			unsigned int blocks;
+			size_t skip = PR_AddressableNoStringsInfo(csqc_world.progs, &blocks);
+			Con_Printf("csqc gc reads    : %.1f MiB of %.1f MiB (%u blocks marked)\n", (csqc_world.progs->stringtablesize - skip)/(1024.0*1024), csqc_world.progs->stringtablesize/(1024.0*1024), blocks);
+		}
 		for (count = 1; count < MAX_CSMODELS; count++)
 			if (!*cl.model_csqcname[count])
 				break;
@@ -7433,6 +7440,8 @@ double Host_Frame (double time)
 	double spike_clienttime = 0;
 	double spike_gfx = 0;
 	double spike_audio = 0;
+	double hostwork_start;	//FTESurf Patch 782
+	int hostwork_depth;
 
 	RSpeedLocals();
 
@@ -7463,9 +7472,15 @@ double Host_Frame (double time)
 	spike_enabled = !!cl_debug_spikes.ival;
 	if (spike_enabled)
 		spike_start = Sys_DoubleTime();
+	//FTESurf Patch 782: latched so every RSpeed bracket in this frame agrees; the frame's own work is
+	//timed from here to its end, and an early return between frames adds nothing to it (that is idle)
+	r_speeds_timing = (r_speeds.ival > 1 || r_budget.ival);
+	rspeed_depth = 0;	//every bracket of this frame nests under this one; an unclosed one from before is gone
+	hostwork_start = RSpeed_Begin(&hostwork_depth);
 
 #ifdef WEBCLIENT
 //	FTP_ClientThink();
+	CL_Receipt_Think();
 	HTTP_CL_Think(NULL, NULL);
 #endif
 
@@ -7519,7 +7534,7 @@ double Host_Frame (double time)
 			{
 				RSpeedRemark();
 				SV_Frame();
-				RSpeedEnd(RSPEED_SERVER);
+				RSpeedEnd(RSPEED_SERVERIDLE);	//Patch 782: between frames, outside RSPEED_HOSTWORK
 			}
 			else
 				MSV_PollSlaves();
@@ -7634,7 +7649,9 @@ double Host_Frame (double time)
 		|| (cls.state < ca_active && worker_flush.ival && COM_HasWork())
 #endif
 		;
+	RSpeedRemark();
 	COM_MainThreadWork();
+	RSpeedEnd(RSPEED_MAINTHREAD);	//Patch 782
 	if (spike_enabled)
 		spike_work = Sys_DoubleTime();
 
@@ -7642,6 +7659,7 @@ double Host_Frame (double time)
 //		host_frametime = 0.2;
 
 	// get new key events
+	RSpeedRemark();
 	Sys_SendKeyEvents ();	//from windowing system
 	INS_Move();				//from things that need special polling
 
@@ -7650,6 +7668,7 @@ double Host_Frame (double time)
 
 	// process console commands from said click/button events
 	Cbuf_Execute ();
+	RSpeedEnd(RSPEED_INPUT);	//Patch 782
 	if (spike_enabled)
 		spike_input = Sys_DoubleTime();
 
@@ -7917,6 +7936,7 @@ double Host_Frame (double time)
 
 	host_framecount++;
 	cl.lasttime = cl.time;
+	RSpeed_Finish(RSPEED_HOSTWORK, hostwork_start, hostwork_depth);	//Patch 782
 	return 0;
 }
 

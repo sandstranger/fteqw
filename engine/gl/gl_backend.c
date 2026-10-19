@@ -26,6 +26,7 @@ extern cvar_t r_wireframe;
 extern cvar_t r_outline;
 extern cvar_t r_outline_width;
 extern cvar_t r_refract_fbo;
+extern cvar_t r_sky_forcedepth_push;	//FTESurf Patch 768, gl_warp.c
 extern cvar_t gl_line_width;				//nettest: CSQC debug wireframe line width (3D scene polys / R_DB_Poly)
 extern cvar_t gl_2dline_width;				//nettest: 2D drawline width (hit-marker reticle / dummybatch)
 extern void R_DB_Poly(batch_t *batch);			//nettest: gl_alias.c scenetris builder; tags CSQC debug-line batches
@@ -236,6 +237,7 @@ static struct {
 
 		vbo_t *sourcevbo;
 		const material_t *curshader;
+		qboolean polymodeowned;	//FTESurf Patch 780: r_wireframe/gl_outline hold glPolygonMode for a whole pass
 		const entity_t *curentity;
 		const batch_t *curbatch;
 		const texnums_t *curtexnums;
@@ -329,6 +331,12 @@ static void BE_PolyOffset(void)
 #endif
 	po.factor += shaderstate.polyoffset.factor;
 	po.unit += shaderstate.polyoffset.unit;
+	if ((shaderstate.flags & BEF_SKYDEPTH) && r_sky_forcedepth_push.value > 0)
+	{	//FTESurf Patch 768: away from the eye, whichever way the depth test runs. Steps only:
+		//a slope term grows without bound as the eye nears a sky plane (review).
+		extern int gldepthfunc;
+		po.unit += ((gldepthfunc == GL_LEQUAL) ? 1 : -1) * r_sky_forcedepth_push.value;
+	}
 
 #ifndef FORCESTATE
 	if (shaderstate.curpolyoffset.factor != po.factor || shaderstate.curpolyoffset.unit != po.unit)
@@ -3456,7 +3464,7 @@ static void BE_SendPassBlendDepthMask(unsigned int sbits)
 #endif
 }
 
-static void BE_SubmitMeshChain(qboolean usetesselation)
+static void BE_SubmitMeshChainDraw(qboolean usetesselation)
 {
 	int startv, starti, endv, endi;
 	int m;
@@ -3669,6 +3677,35 @@ static void BE_SubmitMeshChain(qboolean usetesselation)
 			qglUnlockArraysEXT();
 */
 	}
+}
+
+/*
+FTESurf Patch 780: a `wireframe` material's triangles go down as lines in every pass that
+comes through here (depth, colour, fog), so it never writes a filled depth.  The mode is
+restored before returning; the r_wireframe and gl_outline passes, which set it for all
+their batches, are left alone.  Where qglPolygonMode is NULL (GLES, core profiles,
+GLSLONLY) the surface draws filled, as do rtlight shadow-map casters (GLBE_RenderShadowBuffer).
+*/
+static void BE_SubmitMeshChain(qboolean usetesselation)
+{
+#ifdef GL_LINE
+	if (shaderstate.curshader && shaderstate.curshader->wireframe && qglPolygonMode &&
+		!(shaderstate.flags & BEF_LINES) && !shaderstate.polymodeowned)
+	{
+		//BE_PolyOffset enables the current offset for GL_POLYGON_OFFSET_FILL only; lines need their own
+		qboolean offset = shaderstate.curpolyoffset.factor || shaderstate.curpolyoffset.unit;
+		qglLineWidth(1);	//the last GL_LINES batch may have left a debug width
+		qglPolygonMode(GL_FRONT_AND_BACK, GL_LINE);
+		if (offset)
+			qglEnable(GL_POLYGON_OFFSET_LINE);
+		BE_SubmitMeshChainDraw(usetesselation);
+		if (offset)
+			qglDisable(GL_POLYGON_OFFSET_LINE);
+		qglPolygonMode(GL_FRONT_AND_BACK, GL_FILL);
+		return;
+	}
+#endif
+	BE_SubmitMeshChainDraw(usetesselation);
 }
 
 #ifndef GLSLONLY
@@ -6726,6 +6763,9 @@ typedef struct
 } glblendface_t;
 
 static qboolean gl_blendtrace_pending;
+static qboolean gl_blendtrace_started;
+static int gl_blendtrace_frame;
+extern int host_framecount;
 
 void GLBE_BlendTrace_f(void)
 {
@@ -6737,7 +6777,8 @@ void GLBE_BlendTrace_f(void)
 		return;
 	}
 	gl_blendtrace_pending = true;
-	Con_Printf("ALPHATRACE armed for one main-view blend pass; close the console if needed\n");
+	gl_blendtrace_started = false;
+	Con_Printf("ALPHATRACE armed for every view of the next frame drawn; close the console if needed\n");
 }
 
 // Use the same model matrix as GLBE_SelectEntity, including axis sign and scale.
@@ -6947,6 +6988,7 @@ typedef struct
 {
 	unsigned int admitted, edges, work, moved;
 	int status; // 0 unchanged, 1 ordered, -1 budget, -2 cycle.
+	int pass; // mode2 graph: 0 overlap, 1 overlap-confirmed, 2 P742.
 } glblendplanestats_t;
 
 static qboolean GLBE_BlendPlaneShaderEligible(const shader_t *shader)
@@ -6974,6 +7016,40 @@ static qboolean GLBE_BlendPlaneViewEligible(void)
 	return p[0] != 0 && p[5] != 0 && p[1] == 0 && p[4] == 0 &&
 		p[3] == 0 && p[7] == 0 && p[11] == -1 && p[15] == 0 &&
 		p[12] == 0 && p[13] == 0;
+}
+
+// Plane-side proofs read the eye from r_origin; GL and the overlap test use
+// m_view. Ray-disjoint screen bounds hold in any image frame (roll, mirror,
+// skyroom spin), so only the eye must agree. Stereo/VR eye offsets do not.
+static qboolean GLBE_BlendViewEyeAgrees(void)
+{
+	const float *m = r_refdef.m_view;
+	double det, eye[3], c[3][3];
+	int j;
+	for (j = 0; j < 16; j++)
+		if (IS_NAN(m[j])) return false;
+	for (j = 0; j < 3; j++)
+		if (IS_NAN(r_origin[j])) return false;
+	// GL's eye solves R*eye = -t, R's row k being m[k], m[4+k], m[8+k];
+	// c holds R's cofactors, so R's inverse is c transposed over det.
+	c[0][0] = (double)m[5]*m[10] - (double)m[9]*m[6];
+	c[0][1] = (double)m[9]*m[2] - (double)m[1]*m[10];
+	c[0][2] = (double)m[1]*m[6] - (double)m[5]*m[2];
+	c[1][0] = (double)m[8]*m[6] - (double)m[4]*m[10];
+	c[1][1] = (double)m[0]*m[10] - (double)m[8]*m[2];
+	c[1][2] = (double)m[4]*m[2] - (double)m[0]*m[6];
+	c[2][0] = (double)m[4]*m[9] - (double)m[8]*m[5];
+	c[2][1] = (double)m[8]*m[1] - (double)m[0]*m[9];
+	c[2][2] = (double)m[0]*m[5] - (double)m[4]*m[1];
+	det = m[0]*c[0][0] + m[4]*c[0][1] + m[8]*c[0][2];
+	if (fabs(det) < 1e-6) return false;
+	// Translation is float-rounded at map coordinates.
+	for (j = 0; j < 3; j++)
+	{
+		eye[j] = -(c[0][j]*m[12] + c[1][j]*m[13] + c[2][j]*m[14]) / det;
+		if (fabs(eye[j] - r_origin[j]) > 1.0/32) return false;
+	}
+	return true;
 }
 
 static qboolean GLBE_BlendPlaneGeometry(const glblendface_t *face, glblendplane_t *plane)
@@ -7082,15 +7158,12 @@ static qboolean GLBE_BlendWorldRasterEmptyNear(batch_t *batch, const mesh_t *mes
 	double h[GLBLEND_PLANE_VERTS][3], p[3], terms[6], area, scale;
 	unsigned int cull, ia, ib, ic;
 	int v, t, j;
-	qboolean nearspan = false, nondegenerate = false;
+	qboolean nearspan = false, behind = true, nondegenerate = false;
 	if (r_blendsort.ival != 2 || !GLBE_BlendWorldBatchEligible(batch) ||
 		!mesh || !mesh->xyz_array || !mesh->indexes || mesh->xyz2_array || mesh->numbones ||
 		mesh->numvertexes < 3 || mesh->numvertexes > GLBLEND_PLANE_VERTS ||
 		mesh->numindexes < 3 || mesh->numindexes > GLBLEND_PLANE_INDEXES || mesh->numindexes % 3)
 		return false;
-	cull = batch->shader->remapto->flags & (SHADER_CULL_FRONT | SHADER_CULL_BACK);
-	if (!cull) return false;
-	cull ^= r_refdef.flipcull;
 	if (IS_NAN(proj[0]) || IS_NAN(proj[5])) return false;
 	for (j = 0; j < 16; j++)
 		if (IS_NAN(view[j])) return false;
@@ -7105,8 +7178,15 @@ static qboolean GLBE_BlendWorldRasterEmptyNear(batch_t *batch, const mesh_t *mes
 		h[v][1] = proj[5]*(view[1]*p[0] + view[5]*p[1] + view[9]*p[2] + view[13]);
 		h[v][2] = -(view[2]*p[0] + view[6]*p[1] + view[10]*p[2] + view[14]);
 		if (h[v][2] <= GLBLEND_PLANE_EPS) nearspan = true;
+		if (h[v][2] > -GLBLEND_PLANE_EPS) behind = false;
 	}
+	// Every point of a wholly behind-eye face has w < 0, so no cull state draws
+	// it. Kept, it is an unadmitted barrier that forces status -3 when turning.
+	if (behind) return true;
 	if (!nearspan) return false;
+	cull = batch->shader->remapto->flags & (SHADER_CULL_FRONT | SHADER_CULL_BACK);
+	if (!cull) return false;
+	cull ^= r_refdef.flipcull;
 	for (t = 0; t < mesh->numindexes; t += 3)
 	{
 		ia = mesh->indexes[t]; ib = mesh->indexes[t+1]; ic = mesh->indexes[t+2];
@@ -7151,17 +7231,206 @@ static int GLBE_BlendPlaneSide(const glblendplane_t *a, const glblendplane_t *b)
 	return 0;
 }
 
+#define GLBLEND_CLIP_VERTS 16
+#define GLBLEND_OVERLAP_VERTS 32
+// Overlap proofs spend their own budget; once it is gone, pairs get P742 edges.
+#define GLBLEND_OVERLAP_WORK 65536
+#define GLBLEND_ORDER_DISJOINT 2
+// Depths within this many world units tie, so a shared edge or T-junction seam
+// gives no sign: 20x the float rounding (~0.0005) of ~15000-unit coordinates.
+// A width cut instead dropped real thin overlaps of up to ~200 px (review).
+#define GLBLEND_DEPTH_TIE 0.01
+#define GLBLEND_PAIR_UNSEEN 3	// screen bounds disjoint
+#define GLBLEND_PAIR_OPPOSED 4	// opposite strict plane proofs
+#define GLBLEND_PAIR_PENDING 5	// overlap verdict not computed yet
+typedef struct { double x, y, iw; } glblendproject_t;
+typedef struct
+{
+	glblendproject_t *verts;	// GLBLEND_CLIP_VERTS per triangle
+	signed char *count;		// per triangle: polygon vertices, 0 if empty
+	int state;			// 0 pending, 1 projected, -1 uncertain or out of budget
+} glblendprojface_t;
+
+// Clip an indexed world triangle before division; iw is affine on its screen
+// polygon. -1 is uncertainty, -2 budget, 0 empty.
+static int GLBE_BlendProjectTriangle(const mesh_t *mesh, int t, glblendproject_t *out, unsigned int *work)
+{
+	double h[2][GLBLEND_CLIP_VERTS][4], view[4], da, db, f, area;
+	// The world's GL modelview, not r_origin/vright: GLR_DrawPortal rebuilds
+	// those without screen roll or eye offsets, m_view keeps them.
+	const float *proj = r_refdef.m_projection_std, *m = r_refdef.m_view;
+	int i, j, k, v, plane, axis, sign, n = 3, count, src = 0, dst = 1;
+	unsigned int index;
+	for (j = 0; j < 16; j++) if (IS_NAN(proj[j]) || IS_NAN(m[j])) return -1;
+	for (v = 0; v < 3; v++)
+	{
+		if (*work >= GLBLEND_OVERLAP_WORK) return -2;
+		(*work)++;
+		index = mesh->indexes[t+v];
+		if (index >= (unsigned int)mesh->numvertexes) return -1;
+		for (j = 0; j < 3; j++)
+		{
+			if (IS_NAN(mesh->xyz_array[index][j])) return -1;
+			view[j] = m[12+j];
+		}
+		for (k = 0; k < 3; k++)
+			for (j = 0; j < 3; j++)
+				view[j] += (double)m[k*4+j]*mesh->xyz_array[index][k];
+		view[3] = 1;
+		for (j = 0; j < 4; j++)
+		{
+			h[0][v][j] = 0;
+			for (k = 0; k < 4; k++) h[0][v][j] += proj[k*4+j]*view[k];
+		}
+	}
+	for (plane = 0; plane < 6 && n; plane++)
+	{
+		axis = plane/2; sign = (plane & 1) ? -1 : 1; count = 0;
+		for (i = 0; i < n; i++)
+		{
+			if (*work >= GLBLEND_OVERLAP_WORK) return -2;
+			(*work)++;
+			j = (i+1)%n;
+			da = h[src][i][3] + sign*h[src][i][axis];
+			db = h[src][j][3] + sign*h[src][j][axis];
+			if (da >= 0)
+			{
+				if (count == GLBLEND_CLIP_VERTS) return -1;
+				memcpy(h[dst][count++], h[src][i], sizeof(h[dst][0]));
+			}
+			if ((da >= 0) != (db >= 0))
+			{
+				if (count == GLBLEND_CLIP_VERTS) return -1;
+				f = da/(da-db);
+				for (k = 0; k < 4; k++) h[dst][count][k] = h[src][i][k] + f*(h[src][j][k]-h[src][i][k]);
+				count++;
+			}
+		}
+		n = count; src ^= 1; dst ^= 1;
+	}
+	if (n < 3) return 0;
+	for (i = 0; i < n; i++)
+	{
+		if (h[src][i][3] <= 0) return -1;
+		out[i].x = h[src][i][0]/h[src][i][3];
+		out[i].y = h[src][i][1]/h[src][i][3];
+		out[i].iw = 1/h[src][i][3];
+	}
+	area = 0;
+	for (i = 0; i < n; i++) { j = (i+1)%n; area += out[i].x*out[j].y - out[j].x*out[i].y; }
+	// A degenerate (edge-on or collinear-split) triangle covers no pixel.
+	if (fabs(area) < 1e-16) return 0;
+	if (area < 0)
+		for (i = 0; i < n/2; i++) { glblendproject_t swap = out[i]; out[i] = out[n-1-i]; out[n-1-i] = swap; }
+	return n;
+}
+
+// Each admitted face is projected once per sort, on first use.
+static void GLBE_BlendProjectFace(const mesh_t *mesh, glblendprojface_t *face, unsigned int *work)
+{
+	int t, n;
+	face->state = 1;
+	for (t = 0; t+2 < mesh->numindexes; t += 3)
+	{
+		n = GLBE_BlendProjectTriangle(mesh, t, face->verts + (t/3)*GLBLEND_CLIP_VERTS, work);
+		if (n < 0) { face->state = -1; return; }
+		face->count[t/3] = n;
+	}
+}
+
+// 1/w is affine on the convex screen intersection, so its vertices bound the
+// depth order. hint: a strict plane order that needs only coverage confirmed.
+// Uncertainty or a spent budget returns hint (P742's edge).
+static int GLBE_BlendOverlapOrder(const mesh_t *a, glblendprojface_t *fa, const mesh_t *b, glblendprojface_t *fb, int hint, unsigned int *work)
+{
+	glblendproject_t clip[2][GLBLEND_OVERLAP_VERTS];
+	const glblendproject_t *pa, *pb;
+	double da, db, f, area, det, dx = 0, dy = 0, offset = 0, za, zb, diff, eps;
+	int at, bt, na, nb, n, count, src, dst, i, j, k;
+	qboolean seen = false, positive = false, negative = false;
+	if (!fa->state) GLBE_BlendProjectFace(a, fa, work);
+	if (!fb->state) GLBE_BlendProjectFace(b, fb, work);
+	if (fa->state < 0 || fb->state < 0) return hint;
+	for (at = 0; at < a->numindexes/3; at++)
+	{
+		na = fa->count[at]; pa = fa->verts + at*GLBLEND_CLIP_VERTS;
+		if (!na) continue;
+		for (bt = 0; bt < b->numindexes/3; bt++)
+		{
+			nb = fb->count[bt]; pb = fb->verts + bt*GLBLEND_CLIP_VERTS;
+			if (!nb) continue;
+			memcpy(clip[0], pa, na*sizeof(*pa)); n = na; src = 0; dst = 1;
+			for (k = 0; k < nb && n; k++)
+			{
+				j = (k+1)%nb; count = 0;
+				for (i = 0; i < n; i++)
+				{
+					glblendproject_t *p = &clip[src][i], *q = &clip[src][(i+1)%n];
+					if (*work >= GLBLEND_OVERLAP_WORK) return hint;
+					(*work)++;
+					da = (pb[j].x-pb[k].x)*(p->y-pb[k].y) - (pb[j].y-pb[k].y)*(p->x-pb[k].x);
+					db = (pb[j].x-pb[k].x)*(q->y-pb[k].y) - (pb[j].y-pb[k].y)*(q->x-pb[k].x);
+					if (da >= 0)
+					{
+						if (count == GLBLEND_OVERLAP_VERTS) return hint;
+						clip[dst][count++] = *p;
+					}
+					if ((da >= 0) != (db >= 0))
+					{
+						if (count == GLBLEND_OVERLAP_VERTS) return hint;
+						f = da/(da-db);
+						clip[dst][count].x = p->x + f*(q->x-p->x);
+						clip[dst][count].y = p->y + f*(q->y-p->y);
+						clip[dst][count++].iw = p->iw + f*(q->iw-p->iw);
+					}
+				}
+				n = count; src ^= 1; dst ^= 1;
+			}
+			if (n < 3) continue;
+			area = 0;
+			for (i = 0; i < n; i++) { j = (i+1)%n; area += clip[src][i].x*clip[src][j].y - clip[src][j].x*clip[src][i].y; }
+			if (!area) continue;
+			if (hint) return hint;
+			seen = true;
+			for (i = 1; i < nb-1; i++)
+			{
+				det = (pb[i].x-pb[0].x)*(pb[i+1].y-pb[0].y) - (pb[i+1].x-pb[0].x)*(pb[i].y-pb[0].y);
+				if (fabs(det) < 1e-16) continue;
+				dx = ((pb[i].iw-pb[0].iw)*(pb[i+1].y-pb[0].y) - (pb[i+1].iw-pb[0].iw)*(pb[i].y-pb[0].y))/det;
+				dy = ((pb[i].x-pb[0].x)*(pb[i+1].iw-pb[0].iw) - (pb[i+1].x-pb[0].x)*(pb[i].iw-pb[0].iw))/det;
+				offset = pb[0].iw - dx*pb[0].x - dy*pb[0].y;
+				break;
+			}
+			if (i == nb-1) return 0;
+			for (i = 0; i < n; i++)
+			{
+				za = clip[src][i].iw; zb = dx*clip[src][i].x + dy*clip[src][i].y + offset;
+				// A depth gap dw moves 1/w by about dw/w^2.
+				diff = za-zb; eps = GLBLEND_DEPTH_TIE*fabs(za*zb) + 1e-15;
+				if (diff > eps) positive = true;
+				if (diff < -eps) negative = true;
+			}
+			if (positive && negative) return 0;
+		}
+	}
+	if (!seen) return GLBLEND_ORDER_DISJOINT;
+	return positive ? 1 : negative ? -1 : 0;
+}
+
 static void GLBE_BlendPlaneSort(glblendface_t *faces, size_t n, glblendplanestats_t *stats)
 {
 	glblendplane_t *planes;
 	glblendface_t *ordered;
-	unsigned char *edges;
+	glblendprojface_t *proj = NULL;
+	glblendproject_t *projverts = NULL;
+	signed char *projcount = NULL, *pair = NULL, *verdict = NULL;
+	unsigned char *edges = NULL;
 	unsigned int degree[GLBLEND_PLANE_FACES] = {0}, order[GLBLEND_PLANE_FACES];
-	unsigned int verts = 0, i, j, pick, step, from, to, cost;
+	unsigned int verts = 0, tris = 0, i, j, pick, step, from, to, cost, idx, owork = 0;
 	size_t f;
 	int ab, ba;
 	stats->admitted = stats->edges = stats->work = stats->moved = 0;
-	stats->status = 0;
+	stats->status = stats->pass = 0;
 	// The point-eye and divided screen bounds prove only perspective rays.
 	// Nonstandard modes may select an override program with different geometry.
 	if (!GLBE_BlendPlaneViewEligible())
@@ -7181,23 +7450,71 @@ static void GLBE_BlendPlaneSort(glblendface_t *faces, size_t n, glblendplanestat
 	if (stats->admitted < 2)
 	{ BZ_Free(planes); return; }
 	edges = BZ_Malloc(stats->admitted * stats->admitted);
-	memset(edges, 0, stats->admitted * stats->admitted);
+	pair = BZ_Malloc(stats->admitted * stats->admitted);
+	// Plane-side proofs once per pair, on P742's budget.
 	for (i = 0; i < stats->admitted; i++)
 		for (j = i+1; j < stats->admitted; j++)
 		{
+			idx = i*stats->admitted + j;
 			if (planes[i].maxs[0] < planes[j].mins[0] || planes[j].maxs[0] < planes[i].mins[0] ||
 				planes[i].maxs[1] < planes[j].mins[1] || planes[j].maxs[1] < planes[i].mins[1])
-				continue;
+			{ pair[idx] = GLBLEND_PAIR_UNSEEN; continue; }
 			cost = planes[i].mesh->numvertexes + planes[j].mesh->numvertexes;
 			if (cost > GLBLEND_PLANE_WORK - stats->work)
 			{ stats->status = -1; goto done; }
 			stats->work += cost;
 			ab = GLBE_BlendPlaneSide(&planes[i], &planes[j]);
 			ba = -GLBE_BlendPlaneSide(&planes[j], &planes[i]);
-			if (ab && ba && ab != ba) ab = 0;
-			else if (!ab) ab = ba;
-			// A third face can otherwise reverse an unproven overlapping pair.
-			// Preserve its baseline order; incompatible constraints fall back.
+			pair[idx] = (ab && ba && ab != ba) ? GLBLEND_PAIR_OPPOSED : ab ? ab : ba;
+		}
+	// Pass 0 refines unproved pairs by screen overlap; pass 1 also drops strict
+	// edges between faces that never overlap. Pass 2 is P742's graph: a mix of
+	// proofs and baseline edges can cycle, or cross a barrier, where
+	// all-baseline did not. Mode1 runs pass 2 only.
+	stats->pass = r_blendsort.ival == 2 ? 0 : 2;
+	if (!stats->pass)
+	{
+		for (i = 0; i < stats->admitted; i++)
+			tris += planes[i].mesh->numindexes/3;
+		verdict = BZ_Malloc(stats->admitted * stats->admitted);
+		memset(verdict, GLBLEND_PAIR_PENDING, stats->admitted * stats->admitted);
+		proj = BZ_Malloc(stats->admitted * sizeof(*proj));
+		projverts = BZ_Malloc(tris * GLBLEND_CLIP_VERTS * sizeof(*projverts));
+		projcount = BZ_Malloc(tris);
+		for (i = 0, tris = 0; i < stats->admitted; i++)
+		{
+			proj[i].verts = projverts + tris*GLBLEND_CLIP_VERTS;
+			proj[i].count = projcount + tris;
+			proj[i].state = 0;
+			tris += planes[i].mesh->numindexes/3;
+		}
+	}
+rebuild:
+	stats->edges = 0;
+	memset(edges, 0, stats->admitted * stats->admitted);
+	memset(degree, 0, sizeof(degree));
+	for (i = 0; i < stats->admitted; i++)
+		for (j = i+1; j < stats->admitted; j++)
+		{
+			idx = i*stats->admitted + j;
+			ab = pair[idx];
+			if (ab == GLBLEND_PAIR_UNSEEN)
+				continue;
+			if (stats->pass == 2)
+			{
+				if (ab == GLBLEND_PAIR_OPPOSED) ab = 0;
+			}
+			// Opposite strict orders cannot share a positive view ray.
+			else if (ab == GLBLEND_PAIR_OPPOSED)
+				continue;
+			else if (!ab || stats->pass == 1)
+			{
+				if (verdict[idx] == GLBLEND_PAIR_PENDING)
+					verdict[idx] = GLBE_BlendOverlapOrder(planes[i].mesh, &proj[i], planes[j].mesh, &proj[j], ab, &owork);
+				ab = verdict[idx];
+				if (ab == GLBLEND_ORDER_DISJOINT) continue;
+			}
+			// Genuine depth reversals/uncertainty preserve baseline order.
 			if (!ab) ab = -1;
 			from = ab < 0 ? i : j; to = ab < 0 ? j : i;
 			edges[from*stats->admitted + to] = 1;
@@ -7210,7 +7527,10 @@ static void GLBE_BlendPlaneSort(glblendface_t *faces, size_t n, glblendplanestat
 		for (pick = 0; pick < stats->admitted; pick++)
 			if (!degree[pick]) break;
 		if (pick == stats->admitted)
-		{ stats->status = -2; goto done; }
+		{
+			if (stats->pass < 2) { stats->pass++; goto rebuild; }
+			stats->status = -2; goto done;
+		}
 		order[step] = pick;
 		degree[pick] = GLBLEND_PLANE_FACES + 1;
 		for (j = 0; j < stats->admitted; j++)
@@ -7223,7 +7543,10 @@ static void GLBE_BlendPlaneSort(glblendface_t *faces, size_t n, glblendplanestat
 		from = i < order[i] ? i : order[i];
 		to = i > order[i] ? i : order[i];
 		if (planes[to].slot - planes[from].slot != to - from)
-		{ stats->status = -3; goto done; }
+		{
+			if (stats->pass < 2) { stats->pass++; goto rebuild; }
+			stats->status = -3; goto done;
+		}
 	}
 	ordered = BZ_Malloc(stats->admitted * sizeof(*ordered));
 	for (i = 0; i < stats->admitted; i++)
@@ -7236,6 +7559,12 @@ static void GLBE_BlendPlaneSort(glblendface_t *faces, size_t n, glblendplanestat
 	BZ_Free(ordered);
 	stats->status = 1;
 done:
+	stats->work += owork;
+	if (projcount) BZ_Free(projcount);
+	if (projverts) BZ_Free(projverts);
+	if (proj) BZ_Free(proj);
+	if (verdict) BZ_Free(verdict);
+	BZ_Free(pair);
 	BZ_Free(edges);
 	BZ_Free(planes);
 }
@@ -7247,15 +7576,31 @@ static void GLBE_SubmitBlendedFaces(batch_t *world, batch_t *dynamic)
 	size_t count = 0, n = 0, f;
 	unsigned int m;
 	int l;
-	qboolean cullworld, trace = gl_blendtrace_pending && !r_refdef.recurse;
+	qboolean cullworld, trace;
 	glblendplanestats_t stats = {0};
 	float matrix[16], modelview[16];
 
+	// Finish capture/portal/sky recursion before gathering this view's records.
+	// The temp-batch pool appends during recursion; this view's batch addresses survive.
+	for (l = 0; l < 2; l++)
+		for (batch = lists[l]; batch; batch = batch->next)
+			if (GLBE_BlendBatchImmediate(batch))
+			{
+				view = *batch;
+				view.next = NULL;
+				GLBE_SubmitMeshesSortList(&view);
+			}
+	// Every pass of the armed frame traces: portal and skyroom views, light passes,
+	// the main view. r_portalonly never reaches the main view, so a frame disarms.
+	if (gl_blendtrace_pending && gl_blendtrace_started && gl_blendtrace_frame != host_framecount)
+		gl_blendtrace_pending = false;
+	trace = gl_blendtrace_pending;
 	if (trace)
 	{
-		gl_blendtrace_pending = false;
-		Con_Printf("ALPHATRACE begin mode=%d perspective=%d vieweligible=%d flip=%x worldflags=%x\n",
-			shaderstate.mode, r_refdef.useperspective, GLBE_BlendPlaneViewEligible(),
+		gl_blendtrace_started = true;
+		gl_blendtrace_frame = host_framecount;
+		Con_Printf("ALPHATRACE begin recurse=%d mode=%d perspective=%d vieweligible=%d eye=%d flip=%x worldflags=%x\n",
+			r_refdef.recurse, shaderstate.mode, r_refdef.useperspective, GLBE_BlendPlaneViewEligible(), GLBE_BlendViewEyeAgrees(),
 			(unsigned int)r_refdef.flipcull, (unsigned int)r_worldentity.flags);
 		Con_Printf("ALPHATRACE eye=%.9g,%.9g,%.9g forward=%.9g,%.9g,%.9g\n",
 			r_origin[0], r_origin[1], r_origin[2], vpn[0], vpn[1], vpn[2]);
@@ -7266,23 +7611,13 @@ static void GLBE_SubmitBlendedFaces(batch_t *world, batch_t *dynamic)
 			r_refdef.m_projection_std[8], r_refdef.m_projection_std[9], r_refdef.m_projection_std[10], r_refdef.m_projection_std[11],
 			r_refdef.m_projection_std[12], r_refdef.m_projection_std[13], r_refdef.m_projection_std[14], r_refdef.m_projection_std[15]);
 	}
-	// Finish capture/portal/sky recursion before gathering root-view records.
-	// The temp-batch pool appends during recursion; root batch addresses survive.
-	for (l = 0; l < 2; l++)
-		for (batch = lists[l]; batch; batch = batch->next)
-			if (GLBE_BlendBatchImmediate(batch))
-			{
-				view = *batch;
-				view.next = NULL;
-				GLBE_SubmitMeshesSortList(&view);
-			}
 	for (l = 0; l < 2; l++)
 		for (batch = lists[l]; batch; batch = batch->next)
 			if (!GLBE_BlendBatchImmediate(batch) && batch->meshes > batch->firstmesh)
 				count += GLBE_BlendFaceEligible(batch) ? batch->meshes - batch->firstmesh : 1;
 	if (!count)
 	{
-		if (trace) Con_Printf("ALPHATRACE empty main-view blend lists\n");
+		if (trace) Con_Printf("ALPHATRACE empty blend lists recurse=%d\n", r_refdef.recurse);
 		return;
 	}
 	// Invocation-owned heap storage survives recursive views; never frame-global scratch.
@@ -7302,7 +7637,7 @@ static void GLBE_SubmitBlendedFaces(batch_t *world, batch_t *dynamic)
 					n++;
 					continue;
 				}
-				cullworld = !r_refdef.recurse && GLBE_BlendPlaneViewEligible() && GLBE_BlendWorldBatchEligible(batch);
+				cullworld = GLBE_BlendPlaneViewEligible() && GLBE_BlendWorldBatchEligible(batch);
 				if (cullworld && shaderstate.curentity != batch->ent)
 					GLBE_SelectEntity(batch->ent);
 				for (m = batch->firstmesh; m < batch->meshes; m++)
@@ -7322,14 +7657,16 @@ static void GLBE_SubmitBlendedFaces(batch_t *world, batch_t *dynamic)
 				}
 			}
 	qsort(faces, n, sizeof(*faces), GLBE_BlendFaceCompare);
-	// Root static-world plane relations refine only eligible baseline slots.
-	if (!r_refdef.recurse)
+	// Static-world plane relations refine only eligible baseline slots. Portal and
+	// skyroom views sort too: their r_origin is m_view's eye, and the portal oblique
+	// near clip rewrites only the projection z row.
+	if (GLBE_BlendViewEyeAgrees())
 		GLBE_BlendPlaneSort(faces, n, &stats);
 	if (trace)
 	{
-		Con_Printf("ALPHATRACE result raw=%u gathered=%u admitted=%u status=%d edges=%u work=%u moved=%u\n",
+		Con_Printf("ALPHATRACE result raw=%u gathered=%u admitted=%u status=%d edges=%u work=%u moved=%u pass=%d recurse=%d\n",
 			(unsigned int)count, (unsigned int)n, (unsigned int)stats.admitted, stats.status,
-			(unsigned int)stats.edges, (unsigned int)stats.work, (unsigned int)stats.moved);
+			(unsigned int)stats.edges, (unsigned int)stats.work, (unsigned int)stats.moved, stats.pass, r_refdef.recurse);
 		for (f = 0; f < n && f < GLBLEND_PLANE_FACES; f++)
 		{
 			batch_t *b = faces[f].batch;
@@ -7507,15 +7844,173 @@ static void GLBE_SubmitBlendedWorld(batch_t *world)
 	BZ_Free(faces);
 }
 
+/*
+FTESurf Patch 782 -- r_budget's GPU half.  A GL_TIMESTAMP query wherever the frame moves from one
+kind of work to the next; the time between two marks belongs to the category the first one opened.
+A frame's marks are read back GLB_FRAMES frames later, and only once its last one is available, so
+reading never stalls the pipeline (a frame still in flight by then is dropped, and counted).
+*/
+#define GLB_FRAMES	4
+#define GLB_MARKS	192
+static struct
+{
+	qboolean made;
+	GLuint q[GLB_FRAMES][GLB_MARKS];
+	unsigned char cat[GLB_FRAMES][GLB_MARKS];
+	int nmarks[GLB_FRAMES];
+	qboolean pending[GLB_FRAMES];
+	unsigned int frame;
+	int slot;		//the frame being recorded, -1 when not recording
+	qboolean on;	//r_budget was on last frame: switching it on drops what was recorded before
+	int cur;		//its current category
+	int depth;		//inside a pushed pass or view: its own marks are ignored
+	double sum[GPUB_MAX], total;
+	int frames, dropped;
+} glb = {false, {{0}}, {{0}}, {0}, {0}, 0, -1};
+
+static void GLBudget_Mark(int cat)
+{
+	int s = glb.slot;
+	if (glb.nmarks[s] >= GLB_MARKS-1)
+		return;	//one is kept for the end mark; the rest of the frame stays in the current category
+	qglQueryCounter(glb.q[s][glb.nmarks[s]], GL_TIMESTAMP);
+	glb.cat[s][glb.nmarks[s]++] = cat;
+	glb.cur = cat;
+}
+
+static void GLBudget_Read(int s)
+{
+	GLuint avail = 0;
+	unsigned long long t, prev, first;
+	int i, n = glb.nmarks[s];
+
+	glb.pending[s] = false;
+	if (n < 2)
+		return;
+	qglGetQueryObjectuivARB(glb.q[s][n-1], GL_QUERY_RESULT_AVAILABLE_ARB, &avail);
+	if (!avail)
+	{
+		glb.dropped++;
+		return;
+	}
+	qglGetQueryObjectui64v(glb.q[s][0], GL_QUERY_RESULT_ARB, &first);
+	prev = first;
+	for (i = 1; i < n; i++)
+	{
+		qglGetQueryObjectui64v(glb.q[s][i], GL_QUERY_RESULT_ARB, &t);
+		if (t > prev)
+			glb.sum[glb.cat[s][i-1]] += (t - prev) / 1000000.0;	//ns to ms
+		prev = t;
+	}
+	if (prev > first)
+		glb.total += (prev - first) / 1000000.0;
+	glb.frames++;
+}
+
+void GLBudget_FrameBegin(void)
+{
+	extern cvar_t r_budget;
+	int s;
+
+	glb.slot = -1;
+	glb.depth = 0;
+	if (!r_budget.ival || !qglQueryCounter || !qglGetQueryObjectui64v || !qglGetQueryObjectuivARB || !qglGenQueriesARB)
+	{
+		glb.on = false;
+		return;
+	}
+	if (!glb.made)
+	{
+		qglGenQueriesARB(GLB_FRAMES*GLB_MARKS, &glb.q[0][0]);
+		glb.made = true;
+	}
+	if (!glb.on)
+	{	//frames recorded before it was last switched off are not this window's
+		memset(glb.pending, 0, sizeof(glb.pending));
+		glb.on = true;
+	}
+	s = glb.frame++ % GLB_FRAMES;
+	if (glb.pending[s])
+		GLBudget_Read(s);
+	glb.nmarks[s] = 0;
+	glb.slot = s;
+	//in a map, the GPU first waits while the CPU runs QC and prediction; a menu-only frame is all 2D
+	GLBudget_Mark((cls.state == ca_active && cl.worldmodel) ? GPUB_WAIT : GPUB_2D);
+}
+void GLBudget_FrameEnd(void)
+{
+	int s = glb.slot;
+	if (s < 0)
+		return;
+	qglQueryCounter(glb.q[s][glb.nmarks[s]], GL_TIMESTAMP);	//always room: Mark keeps it free
+	glb.cat[s][glb.nmarks[s]++] = GPUB_OTHER;
+	glb.pending[s] = true;
+	glb.slot = -1;
+}
+void GLBudget_Set(int cat)
+{
+	if (glb.slot < 0 || glb.depth)
+		return;
+	if (r_refdef.recurse)
+		cat = GPUB_PORTALS;	//a nested view (portal, mirror, reflection) is one item, whatever it draws
+	if (cat != glb.cur)
+		GLBudget_Mark(cat);
+}
+int GLBudget_Push(int cat)
+{
+	int prev = glb.cur;
+	if (glb.slot < 0)
+		return prev;
+	if (!glb.depth && cat != glb.cur)
+		GLBudget_Mark(cat);
+	glb.depth++;
+	return prev;
+}
+void GLBudget_Pop(int prev)
+{
+	if (glb.slot < 0 || !glb.depth)
+		return;
+	if (!--glb.depth && prev != glb.cur)
+		GLBudget_Mark(prev);
+}
+void GLBudget_Reset(void)
+{	//the context and its query objects are gone; a new one makes its own
+	memset(&glb, 0, sizeof(glb));
+	glb.slot = -1;
+}
+int R_BudgetGPUCollect(double ms[GPUB_MAX], double *total)
+{
+	int i, n = glb.frames;
+	for (i = 0; i < GPUB_MAX; i++)
+	{
+		ms[i] = glb.sum[i];
+		glb.sum[i] = 0;
+	}
+	*total = glb.total;
+	glb.total = 0;
+	glb.frames = 0;
+	return n;
+}
+//which category a sort level's world (or model) batches are
+static int GLBudget_SortCat(int sort, qboolean world)
+{
+	if (sort == SHADER_SORT_SKY)
+		return GPUB_SKY;
+	if (sort > SHADER_SORT_SEETHROUGH)
+		return GPUB_TRANSPARENT;
+	return world ? GPUB_WORLD : GPUB_MODELS;
+}
+
 void GLBE_SubmitMeshes (batch_t **worldbatches, int start, int stop)
 {
-	int i;
+	int i, prev;
 	int portaldepth = r_portalrecursion.ival;
 
 	for (i = start; i <= stop; i++)
 	{
 		if (i == SHADER_SORT_BLEND && r_blendsort.ival == 2)
 		{
+			GLBudget_Set(GPUB_TRANSPARENT);
 			GLBE_SubmitBlendedFaces(worldbatches ? worldbatches[i] : NULL, shaderstate.mbatches[i]);
 			continue;
 		}
@@ -7523,17 +8018,23 @@ void GLBE_SubmitMeshes (batch_t **worldbatches, int start, int stop)
 		{
 			if (i == SHADER_SORT_PORTAL && r_refdef.recurse < portaldepth)
 			{
+				prev = GLBudget_Push(GPUB_PORTALS);
 				GLBE_SubmitMeshesPortals(worldbatches, shaderstate.mbatches[i]);
+				GLBudget_Pop(prev);
 
 				if (!r_refdef.recurse && r_portalonly.ival)
 					return;
 			}
 
+			if (worldbatches[i])
+				GLBudget_Set(GLBudget_SortCat(i, true));
 			if (i == SHADER_SORT_BLEND && r_blendsort.ival == 1)
 				GLBE_SubmitBlendedWorld(worldbatches[i]);
 			else
 				GLBE_SubmitMeshesSortList(worldbatches[i]);
 		}
+		if (shaderstate.mbatches[i])
+			GLBudget_Set(GLBudget_SortCat(i, false));
 		GLBE_SubmitMeshesSortList(shaderstate.mbatches[i]);
 	}
 }
@@ -8341,6 +8842,8 @@ void GLBE_DrawWorld (batch_t **worldbatches)
 #endif
 	batch_t *batches[SHADER_SORT_COUNT];
 	batch_t **ob = shaderstate.mbatches;
+	qboolean ownedwas;	//FTESurf Patch 780: polymodeowned across a pass
+	int budgetprev;	//FTESurf Patch 782
 	RSpeedLocals();
 	shaderstate.mbatches = batches;
 
@@ -8392,6 +8895,7 @@ void GLBE_DrawWorld (batch_t **worldbatches)
 		if (worldbatches[SHADER_SORT_SKY] && r_refdef.skyroom_enabled)
 		{
 			batch_t *b;
+			budgetprev = GLBudget_Push(GPUB_SKYROOM);
 			for (b = worldbatches[SHADER_SORT_SKY]; b; b = b->next)
 				if (R_DrawSkyroom(b->shader))
 				{
@@ -8403,6 +8907,7 @@ void GLBE_DrawWorld (batch_t **worldbatches)
 					r_refdef.flags |= RDF_SKIPSKY;
 					break;
 				}
+			GLBudget_Pop(budgetprev);
 		}
 		if (gl_overbright.modified)
 		{
@@ -8449,7 +8954,9 @@ void GLBE_DrawWorld (batch_t **worldbatches)
 				//the frame -- bigger than Opaque Batches -- which made r_speeds actively
 				//misleading about where the time went.  Read it as "Shadow generation".
 				RSpeedRemark();
+				budgetprev = GLBudget_Push(GPUB_SHADOWS);
 				Sh_GenerateFakeShadows();
+				GLBudget_Pop(budgetprev);
 				RSpeedEnd(RSPEED_FAKESHADOWS);
 			}
 #endif
@@ -8473,7 +8980,9 @@ void GLBE_DrawWorld (batch_t **worldbatches)
 				RSpeedRemark();
 				TRACE(("GLBE_DrawWorld: drawing lights\n"));
 				GLBE_SelectEntity(&r_worldentity);
+				budgetprev = GLBudget_Push(GPUB_LIGHTS);
 				Sh_DrawLights(r_refdef.scenevis);
+				GLBudget_Pop(budgetprev);
 				RSpeedEnd(RSPEED_RTLIGHTS);
 				TRACE(("GLBE_DrawWorld: lights drawn\n"));
 			}
@@ -8494,7 +9003,10 @@ void GLBE_DrawWorld (batch_t **worldbatches)
 			qglEnable(GL_POLYGON_OFFSET_LINE);
 			qglLineWidth (bound(0.1, r_outline_width.value, 3.0));
 			qglPolygonMode(GL_FRONT_AND_BACK, GL_LINE);
+			ownedwas = shaderstate.polymodeowned;	//a nested GLBE_DrawWorld (portal, reflection) re-enters here
+			shaderstate.polymodeowned = true;
 			GLBE_SubmitMeshes(NULL, SHADER_SORT_PORTAL, SHADER_SORT_OPAQUE+1);
+			shaderstate.polymodeowned = ownedwas;
 			r_refdef.flipcull = oc;
 			GLBE_SelectMode(BEM_STANDARD);
 			qglDisable(GL_POLYGON_OFFSET_LINE);
@@ -8525,7 +9037,10 @@ void GLBE_DrawWorld (batch_t **worldbatches)
 		{
 			BE_SelectMode(BEM_WIREFRAME);
 			qglPolygonMode(GL_FRONT_AND_BACK, GL_LINE);
+			ownedwas = shaderstate.polymodeowned;
+			shaderstate.polymodeowned = true;
 			GLBE_SubmitMeshes(worldbatches, SHADER_SORT_PORTAL, SHADER_SORT_NEAREST);
+			shaderstate.polymodeowned = ownedwas;
 			BE_SelectMode(BEM_STANDARD);
 			qglPolygonMode(GL_FRONT_AND_BACK, GL_FILL);
 		}
@@ -8542,7 +9057,10 @@ void GLBE_DrawWorld (batch_t **worldbatches)
 		{
 			BE_SelectMode(BEM_WIREFRAME);
 			qglPolygonMode(GL_FRONT_AND_BACK, GL_LINE);
+			ownedwas = shaderstate.polymodeowned;
+			shaderstate.polymodeowned = true;
 			GLBE_SubmitMeshes(NULL, SHADER_SORT_PORTAL, SHADER_SORT_NEAREST);
+			shaderstate.polymodeowned = ownedwas;
 			BE_SelectMode(BEM_STANDARD);
 			qglPolygonMode(GL_FRONT_AND_BACK, GL_FILL);
 		}

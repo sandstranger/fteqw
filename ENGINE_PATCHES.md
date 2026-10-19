@@ -1,5 +1,2882 @@
 # Engine patches (fteqw `fteqw64.exe`)
 
+## Patch 826 — a refused zone publish says why (surfd zonepub + its installer)
+
+**Problem (Lex, 19 Oct):** P822's dialog worded a refusal from its status code ("update the game,
+link Steam, or ask for the role"), because the game's HTTP client keeps no body for a non-200
+reply (httpclient.c returns before opening the file), so the service's reason never reached QC.
+
+**Change:** zonepub.py's refusals answer 200 with ok=0, error and status; every client version
+already checks `ok`, so no game deploy. install_zonepub.py gains `--upgrade`: only a unit this
+installer wrote, byte for byte, with its six Environment keys and write paths; the installed release
+must exist and be what is running; it writes zonepub/<sha>, runs the idempotent init, rewrites
+WorkingDirectory, SURFD_TOOLS and ZONEPUB_SOURCE, probes loopback and public HTTPS, and on any
+failure (Ctrl-C too) resets the start limit and puts the old unit and release back.
+
+**Verified:** test_zonepub 48/48 (the new wire test errors on the old service); installer tests 7/7,
+incl. an upgraded unit equal to a fresh install of the new commit and hand edits refused; against
+the Pi's live unit, unit_text rebuilds it byte for byte and the upgrade changes exactly three lines.
+p822dialog 15/15 with the stand-in answering the P826 way (step 7 shows the service's own reason)
+and the old way (7b). Two review rounds on the root path: round 1 found three ways a failed upgrade
+could leave the service down, all fixed; round 2 found nothing at integrity level. Deployed by the
+owner's sudo ~07:05Z: release 189d9f08 serving, a public refusal is 200 + ok:0 + its reason.
+
+## Patch 824 — the chat box's width, height and full height; a field that wraps; hud_edit's Chat pane (csprogs)
+
+**Problem:** Lex, on P821's box: "the chatbox is to long", wanted "a option to display full height
+without the text being there to fill it up", the text box to "extend to 2 lines" once a line is
+full, and "a hud_edit menu section for chatbox configuration ... so I can find how I like it". The
+width was fixed at 45% of the screen, the open box only ever as tall as its chat, the field one
+row scrolled sideways, and no chat setting but its on/off switch was in hud_edit.
+
+**Change:** `cl_chat.qc`: `hud_chat_w` (0.35 of the screen, was a fixed 0.45), `hud_chat_rows` (10,
+the rows the box holds; was max(hud_chat_lines, 10)), `hud_chat_full` (0; 1 opens the box its whole
+height) and `hud_chat_bg` (0.88, its opacity). The field wraps raw text at a space (a word wider
+than a row is cut) and grows a row at a time, lifting the history and the box; the caret, the
+mouse and the selection work across its rows. A `hud_chat_size` of 0 is now 10 x hud_scale (20 at
+scale 2, was 4). While `hud_edit` is up the box draws open (no mouse, no caret) and hands over its
+rect with the bottom-left corner as the anchor, so it shows each setting as it changes and drags.
+`cl_hudedit.qc`: a listed "Chat" element (its on/off, Size 16-28, drag, reset to 0.05/0.95) whose
+pane has Width, Height, Open height, Shut show, Stays for and Box; the Chat switch left Display
+Info. Switched off, the box is not drawn and the editor's stand-in hangs up from the anchor
+(HEA_LB). Pass one registers the chat's box first, so a panel over it wins the overlap. Reset all
+writes the seven chat settings as literals: a value saved before the code registers it becomes its
+default. HE_MAX and HUDE_MAX 28 -> 30. `chat_rows` prints the field's row starts.
+
+**Verified:** build 0 warnings. `tools/p821chat.py` 40 of 40 on exe f49207dd (the window never
+foreground): P821's 28, and width 35% of 1280; full height taller than fit by (cap - used) rows and
+Height 6 four rows shorter than 10; a 110-character line wrapping the field to 3 rows with the field
+and the box growing by 2 rows; a click at row 2's start putting the caret on its first byte; emptied,
+one row; hud_edit showing the box open (claims 4 only) and listing Chat as drawn; the pane's seven
+chips; the Width chip stepping 35% to 40% with the box following; Chat off = no box, "not drawn";
+reset all from a `seta hud_chat_bg 0.5` saved before the code registered it (its default then read
+0.5) back to 0.88, and Width to 35%; `hud_edit ui` lists the chat's rect first. Screenshots read by
+eye. One review (indices, layout, the editor) found reset all keeping saved values, the box taking the
+Comparison's and the trainer's clicks, the off switch showing nothing, a stale p798 cfg, no wrap
+minimum, no face term in the wrap cache and a lighter default shadow, all fixed. **Known:** a click
+right of a row cut mid-word puts the caret at the next row's start (the same byte); real OS input
+and the look are Lex's check (lextest.md).
+
+## Patch 823 — the first-boot screens in the menus' style; no Updates screen (menu)
+
+**Problem (Lex, 19 Oct):** the terms, the Steam offer and the update screen did not look like the
+other menus, and the update screen should go: "just make people accept when people play online".
+
+**Change:** the terms, Steam offer and journal panel use sui_style_panel, a lowercase accent
+heading, 16 px margins and 30 px buttons, as Play and Friends. SCREEN_UPDATE (7) is gone. Play
+online on the terms also turns updates on (ui_tm_answer -> MU_Consent); Play offline leaves the
+permission as it was. The title menu's corner keeps the state and has Turn off / Turn on updates
+(on needs the online terms and a real click), Restart to update / through launcher, Check again
+after an error, and the error itself, wrapped. F2 opens the journal panel (`ui_journal`;
+`ui_updates` binds are repaired). FS_TERMS_ONLINE stays 7: earlier answers keep the update choice
+they made, so nobody holds more than they read and lobby csprogs is unaffected. The terms text
+says what Play online does to updates, and that zone uploads go live by themselves (P815).
+
+**Verified:** 0 warnings. `tools/p823shots.py` (the real manifest, no permission decided): the
+pre-P823 control sends F2 and the title menu to screen 7, the subject to 8 and 0, with Turn on
+updates in the corner; six screenshots against the Play panel. `tools/p647boot.py` with real
+keys: online writes the permission 1, offline and a synthetic answer leave it absent.
+`test_ingame_update.py`: all six menu arms pass (its cold-forged arm expects pre-P703 wording).
+Two review rounds (consent/mechanics lens): round 1 found the promised off switch missing and
+"Stay offline" withdrawing an earlier yes, both fixed; round 2 found nothing at integrity level.
+Not run: test_update_corner.py, test_update_handoff.py and the posix updater tests (BACKLOG).
+
+## Patch 822 — Publish saved asks in a dialog (csprogs)
+
+**Problem (Lex, 19 Oct):** "The enter thing was not obvious, need a real prompt."
+
+**Change:** zone_edit's Publish saved opens a modal dialog naming the map, zone count and crc.
+Publish -- the mouse press itself, or Enter -- signs (acct_sign kind -6) and posts; the engine
+signs only while a device's key event is delivered, mouse buttons included (CSQC_RealKey).
+Cancel/Esc backs out; the service's answer stays on its own page until OK. The dialog is cancelled
+whenever the panel stops showing it (placing, settings, look mode), acts only on the page drawn,
+and an upload in flight ends only with its answer or 120 s of silence. A non-200 reply reaches QC
+with no body (httpclient.c keeps no file), so zonepub's refusals are worded from their codes.
+Request ids start at a random offset per VM: a map change restarts the counter.
+
+**Verified:** 0 warnings. `tools/p822dialog.py` on a test build pointed at a 127.0.0.1 stand-in
+service, 13 checks: a command on Publish is refused and posts nothing; a real Esc cancels; a real
+Enter and a real MOUSE1 press each sign and post the saved file's bytes under the issued nonce;
+the answer pages; a 403 is worded; look mode cancels the dialog and a real Enter after it posts
+nothing. Two review rounds (predicate/adversary lens): round 1 found a hidden dialog still armed
+(a regression), fixed with four others; round 2 found nothing at integrity level.
+
+## Patch 811 — a lobby's saves and the install's are one list (qwprogs, csprogs)
+
+**Problem:** A save made in a lobby lives on the lobby's disk (data/saves/<map>/@<guid>), one made
+in a local game on the player's (data/saves/<map>), and neither side saw the other's: saves
+"disappeared" between the lobbies and a local game.
+
+**Change:** `cmd savesync list|add|del` (sv_savesync.qc: the player's own lobby block only; ten a
+second, and an add or delete also pays SV_SaveLocRate's charge, quietly) and the client half,
+cl_savesync.qc. A few seconds into each lobby map the client lists the block (16 rows a page,
+numbered, paced under the rate) and compares it with the install's list and a ledger
+(<lobby root>/sync.txt: the keys both held last time). A row is the same save on both sides when
+its origin and view agree within 0.05 (SS_Same), never by row or folder number. Lobby-only rows not
+in the ledger are copied into the install, install-only ones sent up; a ledgered key one side has
+lost entirely, from a listing that came back whole and with every install file read, is deleted on
+the other -- one row, a copy before an original. More than 5 and over half of either list at once is
+read as a lost folder and restored instead, unless a delete-all was seen. During the visit every new
+lobby row is copied as it lands (its picture a second later) and a delete follows once no lobby row
+of that key is left. The rewind's current resume row is never listed, pushed or matched. Both
+directions write the replay-point shape `sl_saveview` already takes from a client (idle timer, no
+run, the velocity under `rwvel`): a lobby run's recording stays the lobby's, and nothing sent up is
+timed. Pictures (trail.txt) are copied client side with their header made a placement's (ticks -1,
+so Trail_Load takes them), only when they end at the row. An install file is never removed: a delete
+moves it to data/saves/<map>/deleted/. A delete carried to the lobby is `sl_del`'s. Lists over 400
+on either side are not synced. `savesync status` / `now`; `cl_savesync 0` turns it off.
+
+The client learns its save root (`data/saves/<map>/@<guid>` in a lobby) from a string stat,
+STAT_FS_SAVEROOT, instead of the `set cl_saveroot` the server stuffed since Patch 333. CSQC's
+cvar_string returns a cvar's latched_string, and a cvar the server sets keeps the value from before
+the server took it there, so every read after a session's first root returned the first: after a
+lobby map change the client's seq.txt and run.view went into the first map's folder. A root not in
+yet or naming another map goes to `@pending`, and the save-event listeners leave an event unread
+until the root is in (string stats follow number stats in a packet) and never act on another
+player's stats (an engine spectator) or a demo's.
+
+**Verified:** 0 warnings. `tools/p811savesync.py` (a lobby server on its own basedir; one client
+install seeded with two offline saves): the control (main) lists neither and copies nothing; the
+subject passes all 10 -- both go up; S1 idle, S2 on a run and S3 held at S2's place are made, S1 and
+S2 copied (S2's picture rewritten, 18 samples); deleting L1's row in the lobby moves the install's
+L1 to deleted/, deleting S3 keeps S2's copy; after an offline delete and an offline save the second
+visit deletes S1 there and sends L3 up; after a changelevel the new map's save lands in its own
+@guid folder and the sync goes live there (the latch build: @pending, and the sync off on another
+map's root); a local game lists L2, S2, L3 and loading S2 draws its line. The same arm passes on the
+0.1.27 release exe. Five review rounds, and one on the root stat; the integrity lens found no row
+that can load timed or reach another block. The packet split behind the listeners' wait was not
+reproduced on localhost (tools/p811rootwait.py: three retries, no wait). Not checked: two machines
+on one guid, lists near 400 rows.
+
+## Patch 809 — ent_view's MOUSE3 is a bind (csprogs, default.cfg)
+
+**Problem:** MOUSE3 toggled the entity overlay from inside the input chain (Ev_PassiveKey since
+Patch 331), ahead of the key's bind: a MOUSE3 bound to anything else still opened ent_view, and the
+overlay could not be put on another key.
+
+**Change:** The chain keeps only ESC for the overlay. default.cfg binds `MOUSE3 ent_cursor`, and
+config_menu has an Entity view row (`ent_cursor`, also counting `ent_view`) at the end of Menus,
+rebindable like any other; the saves/run rows move down one (14-25). With ent_panel's cursor taken,
+the ent_cursor key lets it go as MOUSE3 did (Ev_InputEvent, before a results card could claim it),
+and spectating keeps the bind (SPEC_CMDS). KC_Assign's "with the save menu open" note tests the
+row's id, not a row number (Patch 806 moved the save menu off row 12). The results card still takes
+MOUSE3 while a card is up.
+
+**Verified:** 0 warnings. `tools/p809entview.py`: MOUSE3 fed through CL_InputEvent (`vote key 514`)
+is taken and opens the overlay on the control build and passes with no overlay on the subject; `bind
+MOUSE3` reads `ent_cursor`, `config_menu status` lists the row, and a typed `ent_cursor` opens the
+overlay. The panel's screenshot shows the Entity view row under Menus inside the panel. Not checked:
+a real MOUSE3 press (the bind running), spectating with it (Lex).
+
+## Patch 808 — the rewind's resume counts 3 again; a save or resume on its cursor is that moment's (csprogs)
+
+**Problem:** Patch 784 set `hud_rewind_countdown` to 0 at Lex's word; he has asked for the 3 seconds
+back. A save made on the rewind's cursor (S or a key bound to `sl_save`) wrote the Segments column
+of the pinned head, not of the cursor: on surf_dune a save at y 881 carried `anchorpos` y 1050, so
+loading it listed the segments after the save and the restore's guard waited for a body 170 units
+away. Its `.view` sidecar was walked back at most 256 frames, so at 1000 fps a cursor 0.5 s back
+kept frames 5 ticks past the save (last tick 29, save 24). A resume (ENTER) wrote neither: the
+server overwrites its save event with the load in the same frame, so the Segments panel kept the
+head's rows, and the live sidecar ran on from the head while the run's clock went back to the cursor
+-- camera frames for ticks the recording no longer held.
+
+**Change:** `hud_rewind_countdown` defaults to 3. `cl_board.qc` keeps the column by predicted run
+tick (2048 kept: at each row, at most every 2 ticks on another change, every 16 otherwise; never
+under the rewind's pin; started again by a new run, a retry or any other load). A save the rewind
+makes behind its head, and the rewind's own resume (`Rewind_GoLoaded`: the load answering its go,
+whenever it is read, and only at the cursor's place), take the column of that tick with the anchor
+at the row's origin, or none -- never the head's; the save events are read while the rewind browses.
+For the same two the view trim walks back as far as it takes from the buffer as the go found it; the
+resume writes its row's `run.view`, cuts the live sidecar there, and forgets every warm mark past
+the cut. Any load, a new recording and a dropped one forget the marks into lines they threw away
+(older: a warm load of a later save could take another attempt's frames). `rewind status` prints the
+live sidecar's backward steps and the column's rows.
+
+**Verified:** 0 warnings. `tools/p808rewind.py` (dedicated surf_dune, 1000 fps): the control build
+(main 633d131e) keeps the timed prefix, picture and segmented load and fails s-column (anchor y 1050
+against 881), s-view (tick 29 against 24) and go-column (no file); the subject passes all 14, among
+them the 3 s hold, the run after it, the resume row's column at its origin and a live sidecar with
+no backward step. With the resume's view fix taken out, go-view fails (one backward step, 951 lines
+against 600). `--lobby` (the server on its own basedir) passes too. Five review rounds (control
+flow; evidence and data; what a cheater gains; then integrity only). Not checked: the panel as drawn
+(Lex); a cursor minutes back; a resume after a cold load of another attempt's save.
+
+## Patch 821 — the open chat is a panel: its history, a real text field, the mouse to select and copy (csprogs)
+
+**Problem:** Lex: the chatbox "doesn't have a real text input that you can highlight and/copy/select";
+asked for a box that fades in holding the chat with an input box, takes the mouse so text can be
+selected and copied, gives it back when chat is done, the chat font a size smaller, and a better
+text input. The draft was an append-only line (Backspace only at the end, no caret, no selection),
+and nothing in the history could be clicked or copied.
+
+**Change:** `cl_chat.qc`. Opening a draft fades in (0.12 s; out 0.18 s) a Dusk panel at the
+chatbox's place: every line in the ring above a one-line field; the wheel and PgUp/PgDn scroll it,
+and a line that arrives while scrolled keeps the view. The panel takes the mouse (`UIC_CHAT` 1024)
+only while nobody else holds it (the inspector lets go of its own when another claim appears) and
+gives it back on Enter, Esc or the console key; the zone editor's blocker does not count it (it
+closes on a foreign claim, and the chat draws no sui bracket and takes every event while up).
+History: a drag selects across rows and messages, a double click a word, a triple the line, Shift
+extends; an end is (ring slot, its stamp, an offset into the line's drawn text -- `Chat_Plain`,
+codes dropped, `^^` one `^`), so a re-wrap keeps it, an overwritten slot drops it, and a copy
+carries no codes and gives a wrapped line whole. Field: drawn raw, a caret placed and a selection
+dragged by the mouse (double and triple click too), Shift+arrows/Home/End, Ctrl+arrows, Ctrl+Backspace
+and Ctrl+Delete by word, Ctrl+A/C/X, Ctrl+Insert, Shift+Delete, Shift+Insert and Ctrl+V through
+P667's asking paste, Up/Down for the last 20 lines sent, keypad Enter; it scrolls sideways to keep
+the caret in. Ctrl+C or mouse2 copies the field's selection, else the history's (`clipboard_set`),
+and "Copied" shows. Shut, the lines sit where they sit open, so opening moves none.
+`hud_chat_size` 24 -> 20, and a config still at 24 moves once (`HE_MigrateDefaults`, mark
+`hud_chat_rev`). `chat_rows` prints the panel, the claims, the field and both selections;
+`chat_mouse <x> <y> [<scan> <0|1>]` drives the cursor through the whole chain.
+
+**Verified:** build 0 warnings in a clean worktree on FTESurf main. `tools/p821chat.py` (one
+windowed client hosting a listen server in an owned basedir; keys through `vote key`, the cursor
+through `chat_mouse`; grades `chat_rows`, the cursor register and the real Windows clipboard): 27 of
+28 as run on exe f49207dd, the 28th (no focus) failing on its own regex and re-graded from that log;
+the pre-review build 26 of 26 on 219c737c, f49207dd and the 0.1.27 release exe e19f681d. Checks: a
+saved 24 reads 20, panel 1.00 and claims 1024 open, 0 and 0 shut; drags over a row, over a wrapped
+coloured line (its plain text whole), over two messages both ways; mouse2 and Ctrl+C copies; double
+and triple click; typing, Shift+Left, Ctrl+Left, Home/End, Ctrl+A, Ctrl+Backspace; field click and
+drag; Enter, Esc and the console key give the mouse back; Up/Down; wheel and a line arriving while
+scrolled; over the key panel chat claims nothing; over the zone editor looking it claims and the
+editor stays open (state 1). Screenshots read by eye. One review (predicate/control flow and the
+input chain) found six defects, all fixed: the zone editor closing, two lines moving a scrolled view,
+a click before motion at a stale position, the hit band half a gap below the highlight, a PM
+recalled into public chat, a slot overwritten between draw and click. **Known:** a Ctrl released
+under the console stays held for the field (`ui_kmods`, BACKLOG); real OS input and the look are
+Lex's check (lextest.md).
+
+## Patch 820 — imported replays' failed stage attempts; one "successful only" switch on the bar (csprogs)
+
+**Problem:** Lex, 19 Oct: "during demo playback allow filtering lines for suscessfull completes for
+stages, so you don't see all the lines that fail, and a demo option to show only sucessful stages
+on the demo playback window." P778 had a "skip fails" chip and a hud_edit line filter, but found
+failed attempts only from a .rec's `stagestart`/`restart` records. Momentum and KSF imports carry
+none, so their replays drew every failed attempt and skipped nothing; 16 of the 17 surf_dune main
+imports on this machine hold some. The line filter was not on the playback window.
+
+**Change:** FTESurf `src/client/cl_watch.qc`. Watch_ZoneEvents, P750's pass that derives an
+import's splits from the zones, also runs SV_TimerFrame's stage machine over it (whole runs, past
+stage 1): the stage's box by identity (SV_StageZone's first region), occupancy a point test,
+armed/hold/disarm as the server; leaving after a hold is a stagestart, back in the box disarmed a
+restart. Spans close through Watch_FailClose like pass one's and fill rec_wt_la, so a later "stage
+N only" starts at the last attempt; a line built with fails hidden before the pass ended is rebuilt
+once. The bar's chip is "successful only (N failed)": lit when either cvar filters, a click sets
+hud_watch_skipfail 1 and hud_watch_path_fails 0, or clears both. Native files are unchanged.
+
+**Verified:** 0 warnings. FTESurf `cfg/test/p820demo.cfg` on surf_dune imports: nevermind66
+stage 2 failed 23.475..28.005 s, stage 3 44.610..61.560; one click set both cvars, rebuilt the line
+without the fails (screenshot: the green failed-attempt lines gone), playback skipped 24.010 ->
+27.505, a second click restored both; mobyvyk (rank 1) none; kaan2005 stage 3 only, 43.515..94.635,
+and `replay window 3` from 94.635. Control, the installed csprogs 100068b0: 0 spans on every file,
+kaan's window from 43.515. One review (lens: what the viewer shows; a sweep of 2,485 imported main
+runs against a model of the server's rule) found the first cut's swept hull test filing near misses
+as fails (surf_tibet: 35 s of a good stage hidden), an END over the stage box hiding it, windows
+from the first attempt and the chip's state; all fixed by the stage machine above. Left open
+(BACKLOG): another track's END over a stage box loses that split (P750's rule), stage-run imports.
+
+**Deployed:** FTESurf f025d7a1 (code 8f4fb23c). All 12 lobbies 2026-10-19T04:51Z, csprogs 74fbeba9
+(.prev 100068b0); both installs the same by 04:55Z. Lobby smoke on the 0.1.27 exe (e19f681d)
+against lobby 1: served 74fbeba9, board drew, no QC error. Lex's look pending (lextest P820).
+
+## Patch 819 — hour-long lobby maps, hour extensions, a whole hour for the first player in (qwprogs, lobby cfgs)
+
+**Problem:** Lex, 19 Oct: "map map lobbies go for an hour, and make extend, extend the map by 1
+hour, and when a player first joins a empty server, restart the timeleft to be 1 hour." The lobbies
+ran lobby_cycle 1800 and lobby_extend_time 600, and an empty lobby's clock ran on.
+
+**Change:** FTESurf `ftesurf/cfg/lobby/lobby1..12.cfg` lobby_cycle 3600; lobby_extend_time 3600
+(lobby.cfg and the progs default). `src/server/sv_vote.qc` Vote_ClientConnect: a real player with
+no other live player in the lobby (Vote_LiveBut: their own classname is set later, in
+PutClientInServer) calls Vote_FreshClock: Lobby_CycleGo's re-arm with no map (a whole lobby_cycle,
+holds cleared, warnings as the latch sets them), extensions and their cap reset, the voted next map,
+!rtv and any running vote cleared. A change already issued, forced (!rtv) or in its hold's last ten
+seconds keeps its moment; a map's first begin (ClientConnect runs again for everyone after a
+changelevel) is skipped when the clock it latched is already whole.
+
+**Verified:** 0 warnings. FTESurf `cfg/test/p819clock.cfg`, a dedicated server and one client on
+surf_dune (lobby_cycle 3600): first join 59:41 left and no reset line; `extend` -> "extended -- 60
+more minutes", 1:59:34 left; disconnect and rejoin -> server "first player in an empty lobby --
+1:00:00 on surf_dune (was 1:59:19, 1 extension(s))", 59:51 left, extensions 0. One review (lens:
+server state and control flow) found the first-begin reset on every map change and a vote that
+could survive it; fixed. Left open (BACKLOG): an !extend in a hold's last hour, a lone player's
+reconnect resets. Not run: the reset NOT firing with a second client present.
+
+**Deployed:** FTESurf f025d7a1. All 12 lobbies 2026-10-19T04:51Z: qwprogs 234261dd (.prev f08f6fc1),
+lobby cfgs (backups `*.pre819-20261019T045018Z`); rcon read back lobby_cycle 3600 and
+lobby_extend_time 3600 on every port. Both installs' qwprogs the same. Lex's check pending.
+
+## Patch 818 — surf_view: red resets, yellow clip, blue ramps (engine)
+
+**Problem:** Lex, 19 Oct: "surf_view is currently busted, the colours are all over the place. I
+wanted red on reset triggers, yellow on clip brushes, and blue on the ramps, which are planes that
+are greater then 45degrees, my tool C:\Users\Lex\Documents\wrlines did it correctly." P776 drew
+surfable faces and teleport volumes in the same red, and every SURF_NODRAW side of a solid brush
+yellow: on Source maps the hidden back and underside of most ramps, and the nodraw shell round the
+play area (surf_dune's spawn view: yellow stipple over the whole screen).
+
+**Change:** `engine/client/cl_ents.c` SurfView_*. Red: trigger_*teleport* volumes (the resets).
+Blue: a face with normal z in [0.1, standable) on any brush, clip included (a clip ramp is a ramp,
+as wrlines draws it), and displacement triangles. Yellow: the other faces of a brush with no face
+drawn (clip, toolsinvisible), read off the faces: Source compiles textured grates and
+toolsinvisible to grate, which FTE loads as clip. A nodraw side of a drawn brush is not drawn. The
+first-frame line reads "N ramp face(s), N clip face(s), N teleport(s) in N face(s)".
+
+**Verified:** build 0 new warnings. FTESurf `cfg/test/p818sv.cfg` (surf_kitsune, surf_dune), exe
+`git-7496-patch-818-0-g306a6304d` against the installed P813 exe: kitsune 3351 ramp / 550 clip
+faces, 44 teleports in 300 (control: 3351 surfable / 13316 invisible solid); dune 4119 / 1298 / 160
+in 1597 (control 4119 / 20046). At 1:1 kitsune's stage-1 clip ramp is blue (38,115,255); the
+control's dune spawn view is yellow edge to edge, the subject's only the blocks' ramp faces, blue.
+Offline over 13 maps' brushes: every PLAYERCLIP-only brush has all faces nodraw, and the drawn
+"clip" brushes are grates (surf_disneyland 160). One review (lens: predicate and control flow) found
+clip ramps yellow and grates as clip; both fixed. Left open (BACKLOG): Quake 2/3 maps build no
+collision tree by default, so surf_view draws nothing there.
+
+**Deployed:** engine 306a6304d (tag patch-818; merged into main 19b9ea60b). Both installs by
+2026-10-19T04:55Z: exe f49207dd (.prev 219c737c), plugins unchanged (hl2 6a235275). Client only;
+the lobbies' native is untouched. Lex's look pending (lextest P818).
+
+## Patch 816 — refuse frozen clocks native replay cannot model (engine verifier)
+
+**Problem:** Native `pm_verify` skipped known `hold` accounting while comparing the
+raw mover clock to the timer. A current genuine normal run supplied an acting native
+PASS control; inert and positive-accounting derivatives also passed unchanged. The
+positive declaration was not modeled, so that verdict could not establish timer
+consistency. A refusal is an unsupported-evidence boundary, not a cheating finding.
+
+**Change:** Recognize body `hold` records and parse two nonnegative decimal counters,
+1–10 ASCII digits each and at most signed-32 maximum, matching the paired reader's
+lexical bound. Native verification refuses positive exclusions and malformed or
+overflowing accounting explicitly. Zero edges remain inert. No frozen-clock
+reconstruction, legacy eligibility widening, recorder/journal format, mover or
+permission change; `pm_recsim` remains diagnostic. The client `rec_hid_upload` help
+matches the already-shipped online disclosure: new acceptance includes uploads
+unless opted out, old answers do not grant the new scope, and Stop remains effective.
+Only description text changes; defaults, saved answers, setters and gates are untouched.
+
+**Verified:** Exact integrated source `ebc96a081` includes the published P818 surf-view
+code unchanged. Full Windows/QC build and native ARM build succeed, no new diagnostics
+in changed native units. Both platforms: genuine 21.920 s, inert zero, padded-ten-digit
+and whitespace controls PASS; positive exclusions, negative/overflow counters and
+both overlong-zero-padding positions explicitly REFUSE. Diagnostic replay still acts.
+Thirty normalized lines match across bhop_eazy, surf_ace and surf_boreas, including
+an acting prop-piece control. Python 409 checks / zero failed; same captured corpus
+bytes (318 recordings / 109 views) have identical before/after reader findings.
+Two fresh independent review rounds: the first lexical finding was reproduced and
+fixed; round two found no issues. Source verified; deployment recorded separately.
+No native frozen-clock reconstruction, legacy eligibility or calibration claim.
+
+## Patch 815 — admin zone uploads are published by themselves; clients show the lobby's zones (qwprogs, csprogs, menu, surfd zonepub)
+
+**Problem:** Lex: admins (him, proto) make zones in zone_edit, save, "hit upload for it to be
+uploaded to the nanopi/r2 server, so when the next time someone trys to connect to the map via the
+map picker, they get the new zone file. I want it to work automagically"; existing times kept. P729
+had the upload and a deny-by-default role/proof service, stopped at a draft and was never installed.
+And: the release ships 648 zone files under `maps/zones/local`, the own edit's name, which beat every
+fetched copy, so a publish could never reach a player on those maps; the upload read that name
+with `fgets`, which drops a byte at every 4095 (276 of the 648 are longer).
+
+**Change:** surfd/zonepub.py + zonepub_publish.py: an accepted upload from a zone admin is queued and
+written (temp file + rename, 0644, the row with the replaced bytes committed first, a flock across
+processes) to the lobbies' `maps/zones/local` and the site's zones once every lobby is heard in surfd's
+lobbies table (any row over 30 s = nothing known), no lobby has had the map (or an assignment to it,
+or a posted stage of it) for 600 s, the sweeper owes it no verdict (sweep.pending's predicate) and its
+log moved 360 s after that; the service hears the lobbies every minute. validate() reads as the engine
+does (no duplicate keys, no escapes, number tokens of at most 32 characters, sh_zonefile.qc's limits).
+Rollback by id, sticky over a pending publish; 20 publishes an hour; only a csprogs carrying this
+patch's upload flow can publish. QC: Publish works only in a game this client hosts
+(`isserver()`, no demo, "ip" beginning QLoopBack), from the button's own device click, force-saves
+the table and sends exactly the bytes that save wrote, re-checked at Enter. The server publishes
+serverinfo `zonecrc`; a client whose table differs and is not its own loose edit fetches the map's
+file from our origin (once a minute) and shows whichever held copy matches, never mid-run or
+mid-edit. A picker game (`sv_zones_curated`, set by Play) reads own edit, the curated refresh, then
+the shipped library; every other server, lobbies and sweep.py's verifier alike, keeps the old order.
+
+**Verified:** test_zonepub.py 46/46, test_zonepub_install 3/3, test_reccheck 403/0; 13 of 13
+mutants of the publish gate, queue, rollback and validator killed. tools/p815zones.py on surf_dune
+(end-zone heights A shipped / B published / C own edit, crc 5545b345 / 87784c97 / 4e15411a).
+Five review rounds of two or three lenses (control flow, timing and evidence, what an attacker gains);
+the fifth found nothing at integrity level. Left open (BACKLOG): saves carry no zonecrc, the sweep
+log's mtime is a weak "a sweep ran", an own edit is not proof of authorship, a map's own pack can
+supply `data/maps/zones/local` on any server, zonecrc does not cover destinations.
+tools/p815zones.py: lobby -- the client switches to the server's table (control stays on the
+shipped one); own edit kept; no copy matching, no switch; hosted reads the curated copy (control
+the shipped); the 0.1.27 exe the same; no QC fault in any run.
+
+**Deployed:** FTESurf 151d65a5. Both installs and all 12 lobbies 2026-10-19T03:44Z: qwprogs
+f08f6fc1, csprogs 100068b0 (lobby .prev b7c29da0), menu.dat 15a24f21 on the installs; lobby 1's
+serverinfo carries zonecrc. The Pi service: installed by the owner 04:05Z, release d9bf33b4
+(two installer fixes after failed-safe runs: 887ffa7b ships steam.py and imports FILES first;
+d9bf33b4 edits sites-enabled's regular file and checks `nginx -T`); public challenge 200 with
+that source header, GET 403; the applier ticking; the zone-admin role granted to Lex's account.
+
+## Patch 810 — Source's PlayerProximity fade on brush entities; 16 portals per view (csprogs)
+
+**Problem.** Lex, 19 Oct, on surf_tripportals: "in Momentum that neon fades out with distance from
+the player" (two Momentum screenshots), and "r_portalmaxviews 16 is much better!".
+
+**Change.** FTESurf `src/client/cl_proximity.qc` (new). At map load the brush submodels' materials
+are read; an UnlitGeneric with `$alpha <- Subtract($var, P)`, `P <- PlayerProximity` (Source's
+Init rules: the vars must be declared) on a plain identity-alphaGen pass gets a deltalisten
+callback, which writes alpha = base - scale * |entity centre - player centre| every frame
+(proxyplayer.cpp:45-60). The pass takes it through RF_TRANSLUCENT -> BEF_FORCETRANSPARENT
+(gl_backend.c:3054-3058). Measured from the player (feet + 31), a replay's or watched player's
+body, or a free camera. `vbsp_proximity` 0/1/2. r_portalmaxviews default 2 -> 16 (default.cfg,
+defaultuser.cfg; a saved 2 moves once, `portal_cfg_rev`). No native change.
+
+**Verified.** This PC, listen server. surf_tripportals: 279 entities accepted, 1 declined, 217-232
+ms at load; from spawn 24 of 123 drawn, matching an offline recompute; the client path with the
+fade off differs from the engine's by 0 pixels; QC 0.05 ms a frame (all QC 0.89 against 0.87
+with no listen). timerefresh at the tripportals spawn: 5.6 ms at 2 views, 9.2 at 16, 2.6 at 16
+with recursion 1; surf_kitsune's spawn 3.6 / 3.2. One review round (two lenses), its fixes in.
+Momentum's part-faded pieces read brighter (0.94 against 0.72 at 186 units). FTESurf 2254d304;
+installs 21:56Z, lobbies through P814's fleet deploy 00:51Z (csprogs b7c29da0). Not yet run on
+the 0.1.27 exe.
+
+## Patch 807 — volume brushes Source never draws are not drawn (qwprogs)
+
+**Problem.** Lex, 19 Oct: surf_voyager save 1 shows a func_smokevolume brush, "I can see a
+trigger brush which is a smoke volume".
+
+**Change.** FTESurf `src/server/sv_entities.qc`: func_dustmotes, func_dustcloud,
+func_smokevolume, func_precipitation and color_correction_volume drop their model after setmodel;
+the precache stays for cl_emit.qc's probe. ShouldDraw is false for C_Func_Dust,
+C_BaseParticleEntity and C_ColorCorrectionVolume; precipitation is kRenderEnvironmental and
+always transparent, so RENDER_GROUP_OTHER. 112 in 34 maps had faces the plugin draws (a Strata
+v25 face's texinfo is an int at offset 16). No native change.
+
+**Verified.** surf_voyager save 1: the tools/toolsfog block is drawn by the live build and gone in
+the new one; the map's smoke emitters still load. The two added classes were not seen on screen.
+FTESurf 2254d304; qwprogs bf5e014b in both installs (21:56Z) and on all 12 lobbies (00:51Z).
+
+## Patch 814 — recover own online replay frames and request opted-in HTTPS journals (csprogs + lobby config)
+
+**Problem:** A real bhop_ambience23.500 finish uploaded its valid committed per-frame
+view, but its online replay used a database-ID filename and found no adjacent
+sidecar. The client's own copy remained private and nonce-staged. The same signed
+receipt said journal kept0: official lobbies still requested only views at
+run_evidence_ul1 even though the HTTPS collector/proxy was deployed.
+
+**Change:** Online full-run playback may recover only the matching nonce-named local
+staged view, with a matching map and validated native header/finite frame schema.
+A short nonce-keyed renderer-only `.ownview` cache survives map staging cleanup
+without publishing private views or changing submitted evidence. Its counted
+header and terminal completion record reject interrupted copies; the completion
+record is removed before rendering. Existing targets remain intact; missing/invalid
+nonces and stage slices do not borrow a full-run view. Official lobby config requests level2
+before map initialization; native per-player permission and the native server's
+refusal to send raw journals over the legacy channel remain unchanged. Build and
+native engine pins unchanged.
+
+**Verified:** All three QC VMs compile with zero warnings. A pre-change acting
+viewer control has no sidecar; the subject uses the staged frames' pitch/yaw/keys,
+and a fresh VM uses the cache with no staged source. Review findings reproduced
+on the initial candidate: malformed/incomplete views were adopted and a supported
+long online filename could not cache. The repaired subject refuses those inputs,
+and long-name warm/cold playback uses the bounded cache. Missing/wrong nonce,
+wrong map, stage slice, invalid nonce and non-online paths do not borrow frames;
+existing cache targets and source fixtures remain byte-identical. These are
+synthetic viewer controls, not recorder/consent evidence. Reader regression:403 checks pass;
+unchanged-reader runs sweep adds no faults. Human playback and a new genuine
+consenting signed HTTPS receipt/HID file join remain PENDING. No calibration or
+attestation claim; deployed code is not a human pass.
+
+**Deployment:** Both Windows installs have the verified P814 programs. At
+2026-10-19 00:51–00:53Z, clean QC source16ea34c3 passed the normal empty-fleet
+progs deployment: destination hashes match both installs, predecessors are retained,
+and all12 restarted lobbies publish the map-initialized `fs_ul 2`. The guarded
+HTTPS collector remains open. Native binaries, engine pins, Build number and
+personal permission settings were not changed. Human replay acceptance and a
+new genuine signed HTTPS journal join remain pending. Provenance is in FTESurf
+`tools/lobby-progs-p814-20261019.md`.
+
+## Patch 813 — a surfer pinned to the face they are sliding along recovers instead of stopping (mover 8)
+
+**Problem.** Lex: on surf ramps "you randomly stop", rarely. His lobby run on
+surf_colin_blaster_69000 (18 Oct, 0009194, pin 7) stopped dead at t 19.200 on its curved
+ramp: position unchanged for a tick, velocity exactly (0, 0, -6). `pm_verify` on the Pi and
+`pm_recsim` on Windows replay that file exactly, stop included. A diagnostic build
+(`pm_stopprobe`, never shipped) showed the tick: crossing the concave seam between two of
+the curve's brushes, 1.4 degrees apart, left the hull about 0.001 u from the new face
+(Source's both-ends-in-front early-out does not keep the 1/32 clearance on a shallow
+approach). At x ~ -20000 a float32 origin resolves 1/512, so the retrace parallel to that
+face dips into it and hits it at fraction 0. Since Patch 492 a fraction-0 trace is valid on
+fixrampbugs 2, so bumps 1-5 filed the same plane five times and the loop cleared the
+velocity. Momentum 0.8.7's IsValidMovementTrace refuses every fraction-0 trace and its ramp
+fix nudges the hull 0.2 off the face.
+
+**Change.** `PMSrc_SamePlaneAgain` (engine/common/pm_source.c): at bump >= 1 in the air, a
+fraction-0 hit on a plane already clipped against since the last progress is refused like an
+invalid trace, so the ramp-fix recovery runs. A fraction-0 hit on a new plane still reaches
+the crease (Patch 492, voyager's V troughs). Mover 8 (PMSRC_VERSION, pin 8 in SV_PMSrcVer);
+fixrampbugs >= 2 only. As in 0.8.7, two equal planes can no longer be filed in the air, so
+the crease's same-plane push is unreachable there. Brush faces only. `pm_dettest` gains
+`pinmover`, the srcmover walk on mover 8.
+
+**Verified.**
+- Census of 131 replayable lobby and desktop runs (42 of 57 maps; stopped twice by low
+  memory), open loop only: the same-plane fraction-0 case occurred twice under fixrampbugs 2
+  (Lex's colin run, pin 7; bhop_zentic 0005033, pin 3, a wall) and both ended in a velocity
+  clear; four times in pin-1 runs, where 0.8.7's rule recovered and the run went on. Two more
+  stops are in parked resume runs (surf_666, a second colin run), replayed exactly. The pinned
+  arm of `pm_recsim` (state snapped to %.2f) invents such stops: three it showed
+  (surf_aesthetic, surf_aircontrol, surf_boreas) are not in the runs.
+- Lex's colin file at its own pin 7: 9190/9190 packets exact on this build; the same inputs at
+  pin 8 leave the recording at packet 1279 (the stop tick) and do not stop.
+- surf_voyager's P492 flight (p492voy.rec): 4417/4417 exact at pins 2, 7 and 8; no same-plane
+  fraction-0 hit in it.
+- pm_dettest: every line equal to the parent build on bhop_eazy, surf_ace, surf_boreas and
+  surf_colin_blaster_69000, and the Pi native equal to Windows on all four (pinmover = propmover).
+- One review round, three lenses (control flow, evidence, cheater): no integrity finding; the
+  round added the dettest pass and corrected comments.
+- Deployed 2026-10-18 21:20Z: lobby native 06fee9ab (rollback pre813 = P812's 7c72bbdf),
+  pm_sourceversion 8 on all 12; both installs' client 219c737c, C:\FTEQuake server c6dbcef3
+  (FTESurf tools/lobby-engine-p813-20261018.md).
+
+**Known.** An old client exe on a mover-8 lobby predicts the old stop and is corrected. Never
+roll the sweeper back below 813 (an older verifier REFUSEs pin 8). The rest of the audit
+(start-of-tick ground check, duck crop, CheckStuck, edge bevels) is in FTESurf BACKLOG.
+
+## Patch 812 — velocity past 4096 u/s is predicted: PEXT2_BIGVELOCITY is offered (client and server exe)
+
+**Problem:** Lex: prediction errors at ~4500 u/s on surf_joutsenlaulu. The cap was not it:
+lobby 2 ran `maxvel 9999/axis` (its cfg/maps file) and a client's `serverinfo` read
+`sv_maxvelocity 9999`. The wire was: the client printed `Using FTE extensions
+0x387fedeeffdf`, pext2 0x387f without 0x4000. PEXT2_BIGVELOCITY had a reader, a writer and
+a PEXT2_CLIENTSUPPORT entry but was never put in Net_PextMask -- the same omission as 125 and
+141 -- so it was never negotiated, the UFP velocity fields stayed 16-bit at 1/8 unit, and
+SV_EncodeVelocity saturated each axis at 4095.875 u/s. Above that the client replayed every
+command slower than the server moved: at 4600 u/s `prederr ... off by 7.56` per tick on the
+fast axis, which is 69.0 - 61.44 u, i.e. 4600 against 4095.9.
+
+**Change:** `mask |= PEXT2_BIGVELOCITY;` in Net_PextMask's replacement-deltas block
+(common/net_chan.c), beside the other UF/UFP payload bits. Both sides must carry it; either
+side without it negotiates 0 and behaves exactly as before. MVDs keep their fixed recorder mask
+(sv_mvd.c), so their format is unchanged and their playback still clamps at 4095.9 per axis; a
+client demo records the negotiated mask, which this fork since bf24802ed reads and upstream FTE
+does not. `info` still names 0x4000 UNKNOWN.
+
+**Verified:** FTESurf-worktrees `maxvel_arm.py`, a dedicated socket on surf_joutsenlaulu
+(cfg/maps 9999), saves rewritten to Lex's save063 position with the dominant axis at 3800,
+4600 and 6000, loaded by `cmd sl_first/sl_next`, client prederr counted for 3 s (the load's
+own snap is one line in every arm). Installed pair (client a77d4a3f, server 35384294): 1 / 1 /
+83 at 3300 / 3800 / 4600. This build (client 7f8e25fb, server 3ff93982,
+git-7483-patch-812-0-g92f020ed3): pext2 0x787f, 2 / 1 / 2 lines at 3800 / 4600 / 6000, the
+second being one single correction ~6 ticks after the load at both speeds. New client on the
+old server: 0x387f, 2 / 86 / 74. Old installed client and the 0.1.27 client (e19f681d) on the
+new server: 0x387f, 1 / 82 / 72 and 3 / 86 / 73 -- unchanged, no failure. Zero new compiler
+warnings. aarch64 native (7c72bbdf): pm_dettest on bhop_eazy, surf_ace, surf_boreas,
+surf_leidenfrost and surf_surreal and both pm_verify files print exactly what the live P802
+native's gate printed (its known boreas physents HOLD included). One review (wire format, mixed
+versions, demos): every writer keys the width on the stream owner's mask and every reader on the
+mask its serverdata or demo header announced; no defect.
+
+## Patch 806 — Player (hud_player) in the key panel and the key strip (csprogs)
+
+**Problem.** Lex asked for `hud_player` and `config_menu` in the bottom-left key hints.
+`config_menu` was already there (K Keys); `hud_player` had no row in the key table, so
+neither the panel nor the strip could show or rebind its key.
+
+**Change.** FTESurf `src/client/cl_keycfg.qc`: a `player` row (hud_player, default P) is
+the last row under Menus; the save and run rows move up one (KC_N 25); the strip shows
+P Player between HUD and Noclip (KC_HINTS 7). No native change.
+
+**Verified.** 0 warnings; `tools/p762keys.py` 56/56 on the new csprogs, the hint read
+back as `Z|Saves;X|Graphics;C|HUD;P|Player;V|Noclip;Bksp|Rewind;K|Keys`; screenshots
+of the strip and the panel read. FTESurf 633d131e. Both installs csprogs 03feab73.
+
+## Patch 805 — the step smoother no longer pins the camera after a long frame (client exe)
+
+**Problem:** Lex: on surf_null "you visually stay at the wrong height until you jump".
+His machine, F8 capture: `eye: cam 7299.722 org 7136.031 -> eye 163.691 | stat 64`, and
+`cl_predtrace` put it in the step smoother -- `vh 64.000 crouch 103.208`, frozen. In
+CL_CalcCrouch (client/cl_pred.c) the step-down branch sets extracrouch = drop +
+host_frametime*400 + 15, floored at -5 and never capped. One long frame over a ground
+step-down -- the 25 u spawn fall seen across a ~0.25 s hitch -- made it +88; the clamp
+`oldz > orgz + 15 - extracrouch -> oldz = orgz + 15 + extracrouch` then held the camera
+103 u above the feet every frame, and that branch never decays a positive value. Only a
+jump (the air branch) reset it. At 30 fps a 25 u drop seen in one frame left 18 u.
+
+**Change:** the step-down extracrouch is capped at 0 and the step-up one floored at 0;
+each branch decays a carried value of the other sign. Client only, no header change.
+
+**Verified:** a line-for-line model of the function gives 103.2 from one 0.2455 s frame
+and returns to 0 in every case with the change. tools/p805crouch.py (conbridge on
+surf_null, three respawns at cl_maxfps 4, then cl_predtrace): installed exe 4b4c91f8
+(patch-802) crouch 96.355 in 3 of 3; this build (a77d4a3f,
+git-7479-patch-805-0-g12a173c4c) 0.000 in 3 of 3. One review: normal stairs unchanged
+above 80 fps (below it a 20-22 u drop's +0..1.7 is now 0); no other reader of
+extracrouch. Known, pre-existing and not touched: a ground flag that flickers at a
+constant height can freeze a NEGATIVE crouch (view up to ~20 u low) until the height
+changes (BACKLOG).
+
+## Patch 804 — disclosed online journal acceptance and guarded collector activation
+
+**Problem:** The owner approved activating the built journal collector/proxy and
+accepting uploads through online play. Earlier online answers promised a separate
+choice. Buffered consent writes could fail at close; deferred/helper-selected
+input and same-batch navigation/confirmation could reach a grant. The legacy
+guard rejected the collector's extra hash, and nginx validation did not bind the
+eventual reload/success receipt.
+
+**Change:** Preserve published P795–P805, including the current native P805 pin
+and P801 frame-time work. The short P796 page remains: its new online tier 7 includes
+journal uploads by default, with the checkbox as an explicit opt-out and F2
+Allow/Stop retained. Opening the page or having an old answer never grants
+permission. Saved readback and real input are required. Synthetic action/focus
+provenance survives suspension; native motion/navigation clearing helper focus
+also latches that draw until SUI applies the replacement and consumes any queued
+activation. Local recording keeps tier 1; client angle/journal sending requires
+online tier 7, and both views disclose the client angle sidecar. The successor
+builder independently pins old/new guards, uses an exact schema20 `hid-v1`
+nine-hash profile and imported-collector witness, and preserves retained-helper
+pins. HID-only nginx setup is additive, predecessor-bound, backed up, validated
+before reload and rechecked/read back afterward; rollback never overwrites peer
+edits. No native code/pin/tag, Build, database schema, collection-policy knob,
+threshold, ranking or enforcement change of our own.
+
+**Verified:** Integrated three-VM build: zero warnings. Real fixture-window input
+on installed native P802 (4b4c91f8): fresh/prior-tier online answers record 7/raw1;
+explicit checkbox opt-out records 7/raw0; offline records 1/raw0; failed fresh
+consent persistence grants nothing. Same-batch native navigation/confirmation
+actually grants 7/raw1 on the prior candidate and is refused on the subject;
+separated genuine input still accepts. Immediate/deferred synthetic actions and
+helper-selected focus regressions pass too. Screenshots/logs retained privately;
+these fixtures are not human acceptance. Reader tests pass; the unchanged reader
+was swept read-only over the current corpus, with existing faults retained and
+changed corpus membership explicit in private evidence. Eight signed collector
+tests, eight additive installer tests (two discriminating predecessor failures)
+and the POSIX admission/candidate/drain/death/hash/profile suite pass. Actual
+non-serving builder initialization succeeds for all 77 runtime pins; the legacy
+guard refuses the extra hash before creating state. The service suite's missing
+archived-fixture arm passes after supplying its exact same-commit nginx fixture
+to the same stage; unchanged passed arms reused, MOM conversion fixture explicitly
+unavailable. The online-only sending predicate is compiled/source-reviewed;
+the corrected input/harness delta passed both independent reviews. Exact-base
+composition preserved published P805/P806 and reviewed product bytes. Published
+QC29b71b37 is installed in both Windows gamedirs and all 12 empty lobbies, with
+matching six-file build outputs and fresh served-client smoke. At 20:50Z the new
+collector generation was serving internally: actual source/module/schema20 witness,
+new OPEN/retired fully drained, seven dispatchers/four cron routes and momrequests'
+new admission lease verified. Existing reads/health12 pass; invalid HID length
+is refused by the declared handler. The private read-only database snapshot was
+retained; no DB restore or existing-player consent rewrite. Owner installed the
+additive nginx route21:29:25Z; independent21:30:50Z checks prove exact new config
+suffixes and retained predecessor bytes, trusted TLS health/directory200, HID
+GET403 and empty POST413 from the handler. Reviewed body/rate/concurrency config
+matches; no live saturation claim. Deployment is complete. Human consent and a
+genuine signed HTTPS finish remain PENDING, not inferred from fixture/refusal tests.
+Native help wording still describes the older tier (nonblocking BACKLOG item).
+
+## Patch 802 — the server sends what a client sees through a portal; doors show in noclip
+
+**Problem:** Lex, 19 Oct, on surf_tripportals: walking back and forth at the stage-1 start zone,
+"they show the previous levels deloading incorrectly"; doors "weirdly turn off/on depending on how
+I look at them"; "can noclip not disable portals unless in the void?"
+
+**Change (server exe, csprogs):**
+- The server culled entities from the client's own eye only. From the start zone the hub, seen
+  through the `start2` door that fills the back wall, lost its brush-entity art (signs, neon), and
+  the zone's cluster cannot see the hub's. `SV_Snapshot_SetupPVS` now adds a PVS camera for each
+  SOLID_PORTAL in the PVS built so far, at the door's exit doorway (QC `lpd_ob + lpd_fb*8`, where
+  cl_portal.qc samples the far PVS). The merge lets a door seen through a door qualify, up to
+  SV_PVS_CAMERAS (16). A point with no cluster is skipped: in solid it would fat-PVS every bit
+  and send the whole map. `sv_portalpvs 0` turns it off. The two field caches join
+  SV_FS_ResetFieldCaches.
+- The legacy-client player path passed `&cameras->numents` to EdictInFatPVS as its area list;
+  with two or more cameras that reads pointer halves as areas (Host_Error "area > numareas" on a
+  VBSP map). It passes `cameras->area` now.
+- cl_portal.qc: FS_PortalPredraw no longer refuses every door while the movetype is noclip
+  (noclip and spectating). From the void, `checkpvs` already refuses them: cluster -1's PVS row is
+  empty (VBSP_ClusterPVS).
+- Not changed: `r_portalmaxviews` (2 per view, largest first) is the on/off with view angle. In the
+  tripportals hub 11-17 doors are offered; 2 per view renders 2-4 scenes, 16 with recursion 2
+  renders 10-16, 16 with recursion 1 renders 5-8. The cost on this PC could not be measured fairly
+  (an unfocused rig window is throttled), so the default waits for Lex.
+
+**Verified:** this PC, a local dedicated server and one client at Lex's tripportals save 2. Control
+(C:/FTEQuake server 5dd6583d, live progs): through `start2` the hub has no art and `b5_0` floats as
+a grey box -- Lex's surf_tripportals_001. Ship server (fteqwsv64 35384294, git-7477-patch-802-0-
+g1866f1052): the art is there (his _002); no Host_Error in either log. surf_kitsune in noclip: door
+offers 0 -> 146 lines over the same view, walking 138. One review round with P799's.
+
+**Known:**
+- One level of cameras per snapshot, and the 16-camera cap: a hub with more open doors in view
+  than that sends the far side of the first 16 only.
+- Entities behind a door are sent whether or not the client faces it, as Source sends through its
+  portals.
+
+## Patch 799 — glows hidden where Source hides them; areaportal windows fade
+
+**Problem:** Lex, 19 Oct: surf_jumble's wall-light glows show through its ramps; surf_dragon's
+`window21` func_brush draws as a black disc that Momentum does not show; an env_sprite behind a
+func_illusionary on surf_dragon is hidden where Momentum draws it.
+
+**Change (hl2 plugin, csprogs, qwprogs):**
+- Glare traces ask for what Source's depth query sees. jumble's ramps are non-solid static props
+  over player clips, so no trace had them. The plugin keeps a second, draw-only tree -- static
+  props outside the collision tree and NOHULL displacements, opaque ones only (a vol_light cone
+  must not hide its own lamp) -- built on the first trace whose mask has `VBSP_CONTENTS_VISUAL`
+  (0x400). The world's NativeTrace becomes `VBSP_TraceVisual`, which traces the movement tree with
+  that bit cleared, then the draw-only tree. A mask without the bit is passed through unchanged.
+- Opacity is `passes[0]`'s blend, not `shader->sort`: the plugin's `shader_t` diverges from the
+  engine's past `passes[]`. `shaderpass_t` ends in a D3D11/VK-only pointer, 488 bytes in the plugin
+  and 496 in the engine, so `sort` sits at 8672 against 8800 (measured with both builds' flags).
+  Alpha-tested materials count as see-through (foliage gaps). An all-bits mask (WPhys_CheckWater,
+  solidhere) and a renderer-less server never reach the draw-only tree.
+- cl_sprites.qc: glares trace SOLID|BODY|VISUAL, without WINDOW. VBSP gives translucent brushes
+  TRANSLUCENT|WINDOW (the dragon pane is 0x10000002) and MASK_OPAQUE leaves them out. The mask
+  rides on the passedict: the skipped occluder, or a tracer entity.
+- func_areaportalwindow (276 on 73 maps): the server hides the window's first target
+  (EF_NODRAW, as CFuncAreaPortalWindow::Activate does) and the client draws that brush with Source's
+  `RemapValClamped(eye distance to its box, FadeStartDist, FadeDist, TranslucencyLimit, 1)`.
+  Both sides take the first caseless match, and a non-brush first match draws nothing, as in
+  Source. The hide survives Alpha and Enable inputs (`vbsp_apwhide`; Source's InputAlpha leaves
+  EF_NODRAW alone), runs before the first frame's spawn outputs, and panes are not glare
+  occluders (Source draws them translucent). Windows join the stale-lump signature.
+
+**Verified:** this PC, one client per variant, control = the installs' live exe 8abba595, plugin
+de079afd and progs. jumble: 741 of 819 props in the draw-only tree (78 see-through declined), 86528
+NOHULL displacement triangles. Twelve views placed behind a ramp prop facing a glow: at s1_r4's the
+centre crop goes from mean luma 68.5 to 16.3 and glows drawn from 10 to 5; screenshots show the ramp
+covering them. dragon save 2: 4 of 4 glares hidden -> 3 of 4, the sprite drawn over the pane; save 1
+(115 units from window21, fade start 500): the disc is gone and the pit shows. Rerun on the stamped
+ship build (exe 4b4c91f8, plugin 6a235275). One review round, two lenses: no defect in the engine
+half; the QC half's Alpha-input defect and the risks above are fixed. QC 0 warnings; no warning in
+the changed C.
+
+**Known:**
+- A scaled prop occludes at scale 1, as it collides (bihtransform has no scale); a prop's fade
+  distance is ignored. BackgroundBModel (one map) stays an ordinary server entity, unfaded.
+- Translucent world brushes no longer hide glows, which is Source's rule; a glow behind glass now
+  shows.
+- Any plugin read of a `shader_t` field past `passes[]` would have the same offset fault; none
+  exists today (the plugin reads `flags` and `prog`, both before it).
+
+## Patch 801 — r_frametime: a frame-time graph with 1% and 0.1% lows and stutter marks
+
+**Problem:** Lex, 19 Oct: "some sort of efficent, low budget frame time/frametime graph we could
+get to see/analysise the 1% or 0.1% lows, see visually to see if a map has a stutter issue".
+
+**Change (client exe, cl_screen.c):**
+- `r_frametime 1`: at the top right (the bottom right when r_budget's panel would reach it), a graph
+  of the last `r_frametime_seconds` (10), each of 300 columns the slowest frame of its slice so a
+  spike is never averaged away: green, yellow over 1.5x the median, red over 2.5x (a stutter), with
+  the median and stutter lines. Above it the average fps, the 1% and 0.1% lows (the mean of the
+  slowest 1% / 0.1%), the median, the worst frame and the stutter count over `r_frametime_window` (30).
+- One sample per rendered frame from RSpeedShow. The lows come from a 4000-bin histogram (0.05 ms
+  bins to 200 ms) kept as frames arrive and expire from a 65536-frame ring, so computing them never
+  costs a frame; the window's 64 slowest are kept exactly, with where the player stood and looked,
+  and frames over 200 ms are read from them.
+- `r_frametime_dump`: the lows, p50/p90/p99/p99.9, the stutter count and the eight slowest frames
+  with a `setpos` for each (origin and angles), to the clipboard. `r_frametime_reset`.
+- Frames over a second (a load, minimised) and frames cl_idlefps throttles while unfocused are not
+  counted; a dump (either command) starts the next interval after itself, since it stalls its own frame.
+
+**Verified:** on this PC, surf_demise, the owner's `r_renderscale 2`. `cl_maxfps 60`: median 16.68,
+average 16.67 ms, 1% low 53 fps, no stutters. Three forced hitches (a `screenshot` each, 0.72-0.74 s):
+3 red spikes and 3 stutters counted; the 0.1% low of 2217 frames read 733.17 ms, the exact mean of the
+two slowest (736.64, 729.69), where the bin's mean would give 727.5. A dump's `setpos -12000 -3900
+14976 15 90 0` matched `viewpos` after facing 15/90. With `cl_idlefps 60` the (unfocused) rig window
+counted no frames; at 0, 869 in 4.7 s. Cost: r_budget's `panel` 0.16 ms without it, 0.19 with it.
+Uncapped: median 5.28 ms, p99 6.63. Shots read at 1:1, beside r_budget 2 at 1920x1200. One review
+round (kept slowest lost frames, inexact over 200 ms, setpos from the eye with no angles, tabbed-out
+frames, small screens), all fixed and each measured. Ship exe 8abba595, one stamp, both installs.
+
+**Known:**
+- A dump stalled its own frame by about 0.3 s in the arm (r_budget_dump too); the next interval
+  starts after it, so it does not count, but the stall is real.
+- `setpos` uses the standing view height (64); a crouched stutter reads 18 units low.
+- Past 2184 fps (or 546 at a 120 s window) the ring holds less than the window; the dump's span says so.
+
+## Patch 803 — a departed player's body stops being solid (qwprogs)
+
+**Problem:** the engine clears a leaving player's edict only for NQ progs (sv_user.c
+SV_DespawnClient, ED_Clear under PROG_NQ), and ClientDisconnect never touched `.solid`,
+so the body stood on as a SOLID_SLIDEBOX box. Found reproducing Lex's surf_null spawn
+report: a `reconnect` took another slot and spawned 25 u above the old body, inside it.
+The server held the new body at z 7161 for good (walking and jumping moved nothing) while
+the client predicted the fall and was pulled back every packet, so the camera sat at the
+spawn height. A body dropped from above the spawn landed on the invisible box at 7198.1.
+
+**Change:** ClientDisconnect ends with SOLID_NOT, MOVETYPE_NONE and a setorigin that
+relinks the body out of the solid lists. No native change.
+
+**Verified:** conbridge, dedicated server + client on surf_null in the real install:
+pre-fix (qwprogs 2ff5ba15) after `reconnect` the body stayed at 7161 and a drop from 7300
+stopped at 7198.1; fixed (qwprogs 6b8707e2, which answers `tp_player`) the body fell to
+7136 and the drop landed at 7136. Known: Lex's own symptom -- a fresh connect, the server
+body on the floor, the camera ~25 u high until a jump -- was seen once and not again in
+three fresh connects; it is not explained by this patch.
+
+## Patch 797 — Teleport to a player from the TAB player list (qwprogs, csprogs)
+
+**Problem:** Lex asked for a teleport-to-player button on the server player list.
+
+**Change:** each other player's row gets a Teleport chip that sends `cmd tp_player
+<entnum>` and closes the board. SV_TpPlayer refuses world, self, a non-player or
+unspawned slot, a resume, a replay pin, ghost, a second teleport inside a second, and
+nowhere to stand. It ends a run as `!r`'s move does (release, then SV_TimerVoid), so a
+run that posted a stage is kept closed where the body was, then makes setpos's move --
+now SV_SetPosSelf, shared with `setpos`, same order -- to 48 u behind the target with
+its aim: behind a grounded target over a step (18 u up, footing within 36 u down),
+never into mid-air; level behind an airborne one; the target's own spot otherwise. The
+sweeps are the target's and pass through the mover; the stand check is MOVE_NORMAL, so
+props, clip and (off a lobby) players count. No native change.
+
+**Verified:** tools/p797tp.py, server + Mover + Target on surf_kitsune, players
+colliding, client = released 0.1.27 exe e19f681d. Subject (qwprogs 3e4b255e) 12/12:
+setpos moves and aims; tp_player 0, 99 and self refused, no move; a clean running run
+cancelled, timer idle; landing 48 u behind on footing 12.8 u up a slope with the
+target's yaw; a second within a second refused; the mover inside the sweep's path
+still lands behind; a target sunk 30 u into the floor refused, no move. Control
+(pre-P797 qwprogs fa94eb5d) 8/8: tp_player answers nothing and moves nothing. Four
+static review rounds (lens: what a player gains, what reaches evidence): the jump with
+no `warp`, overlap where players collide and no rate limit (round 1), the foot-level
+sweep (2), the mover in the sweep (3; the arm then hit it live), nothing (4). Known:
+behind an airborne target in a start box it reaches setpos's mid-air arm (BACKLOG); no
+per-player block or opt-out.
+
+## Patch 796 — a short first-boot terms screen; journal uploads chosen there (menu)
+
+**Problem:** Lex: the "Before you play" screen is far too long to be read, and Input
+journal uploads should be part of that first screen, not a main-menu button.
+
+**Change:** the terms open on a four-line summary (recorded on this PC incl. mouse and
+keyboard input; offline nothing about a run leaves; online leaderboards, the server's
+recording, others see you, our servers see your IP; never recorded: what you type, only
+that a key was pressed and when). The two cards are behind "Full details"; answers
+"Play offline" / "Play online". P774's separate journal consent is a box on the summary:
+it mirrors rec_hid_upload until the player changes it, a tick takes a real click and
+applies only with "Play online" and the online tier on record, an untick applies with
+either answer, and it is added after the answers so it is never the keyboard default.
+The main-menu button is gone; F2 has an "Input journal uploads: on/off -> Change" row to
+the journal screen, whose Back (now its default) and ESC return to F2. FS_TERMS_VERSION
+unchanged.
+
+**Verified:** tools/p795menu.py screenshots: the final menu (41128506) draws the summary at 700 x 353 at 16 px with the box's whole label, the full cards at 1240 x 1015, F2's row, and the main menu without the button; installed menus answer `ui_strip_test screen terms|termsfull`. Three static review
+rounds (lens: predicate, control flow, consent): a stale box re-applying an old choice,
+the offline answer applying a tick, the summary's wording, the full view's strip room,
+the journal screen's default (1); an untick ignored offline, a failed write dropping a
+tick, the label clipped before "F2" (2); nothing new (3). The box's click paths are
+covered by review, not by an arm: ui_click is synthetic and refused by design.
+
+## Patch 795 — a map picked from a player profile no longer kills the menu (menu)
+
+**Problem:** P789's MP_Of chose a picture slot with `old < 0 || mp_used[i] <
+mp_used[old]`; QC evaluates both sides, so mp_used[-1] failed the bound check once a
+second new picture was drawn with slot 0 held. The menu VM died and ESC then opened the
+engine's Quake menu. Lex hit it opening a map's board from a player profile
+(menucore.txt, 18 Oct 15:39Z: MP_Of, i 0, old -1, the check's operands as temps).
+
+**Change:** the test nested, as cl_steampic.qc's is; `ui_board_test` prints the picture
+slots held. No native change.
+
+**Verified:** tools/p795menu.py, surf_beginner's KSF board (50 of 50 rows pictured), an
+isolated basedir: control (menu.dat eaf20c34) "Progs boundcheck failed. Value is -1" at
+MP_Of+58 from Mlb_DrawRow, Menu_Abort; subject 21 slots held, 8 fetched, no fault,
+the menu answering after.
+
+## Patch 798 — hud_edit: a Display Info row, Input display, Boarding and Enter/Exit speeds (csprogs)
+
+**Problem:** Lex: replace the Key hints row with "Display Info" holding the Map info
+and Key hints switches, the chips at the bottom of the HUD Layout window, chat and
+Spectate's "Who's watching"; remove the Spectate row (distance stays a console
+setting); rename Mouse "Input display" with switches for the keys and the mouse;
+rename Boarding "Enter/Exit speeds" and Board "Boarding".
+
+**Change:** cl_hudedit.qc only. A new options-only `display` row: Map info, Map time
+left (the hidden Map info row's pane, unreachable since build 66), Key hints, Chat
+(`hud_chat`), Who's watching, then the old fixed chips as cycles in their old order
+(Crosshair 1/2/3/off, Text plain/outline/shadow, Number rate tick/10/20/30 Hz/frame,
+Number step 1/2/5/off). The fixed block is `reset all` (full width) and `done`
+(HE_FIXEDROWS 5 -> 3). Key hints is a hidden row (still drawn, dragged and reset).
+The Spectate row is gone; `reset all` still resets `spec_dist`, and writes
+`hud_chat 1` as a literal because default.cfg never sets it. The `mouse` row is
+listed as Input display: Keys and Mouse rows lead its pane, its square switches
+both, its reset also puts the key block back; its outline is still labelled Mouse.
+Harness hovers of the removed chip ids (ui_modern.cfg, ui_gallery.py,
+test_p676zonetips.py) open the Display Info pane and hover its rows instead.
+
+Review fix: HE_Default had no `keyhint` line since Patch 762, so no reset moved the
+strip; it now resets to 0.0333 / 0.955.
+
+**Verified:** FTESurf 4cb8ba62. build.ps1 0 warnings. `cfg/test/p798hud.cfg` in an
+isolated test_ui_modern rig: the element dump shows the Display Info row and its nine
+chips and none of the removed ids; each click reads back its cvar (chat, crosshair,
+Input display square both ways, Keys alone, Input display reset); `reset all` restores
+hud_chat, spec_dist and the key-hint x (0.5 stays on the pre-fix build). Both panes
+read at 1:1. test_ui_modern.py fails the same 3 round/SUI-frame checks on the
+pre-patch build as on this one (BACKLOG); its selection check now discriminates. One
+independent review. Not yet seen by Lex.
+
+## Patch 800 — r_budget_csqc: CSQC by QC source file and function; the panel's own time
+
+**Problem:** Lex, 19 Oct, on r_budget: "can we also get a indication of how much the display is
+taking in terms of CPU time? and also can we get a break down of CSQC the same way? These tools
+don't cause slowdown when not running them correct?"
+
+**Change (client exe, qclib):**
+- The header and `r_budget_dump` show `panel`: the panel's own CPU time (RSPEED_RSPEEDSHOW).
+- `r_budget_csqc 1` (with r_budget): "CSQC by QC file", busiest first, bars on the QC total's
+  scale; `r_budget 3` adds the three busiest functions under the first four files; the panel shows
+  ten files, `r_budget_dump` sixteen with their functions; `r_budget 1` a "qc" legend line.
+- qclib: SetProfiling (only between calls), EnumProfile (self and total per function), and
+  ProfileExclude, a window the host opens round engine work it times elsewhere -- renderscene's
+  R_RenderView and addentities. It is paused while QC nested inside runs, so a predraw function
+  still counts as its caller's child. The three are appended to pubprogfuncs_t after `user`.
+- The profiler runs only while r_budget_csqc shows: off, one branch a frame, and QC keeps the
+  fast interpreter. The first window after switching on is partial and is not shown.
+
+**Verified:** on this PC, surf_demise, uncapped, the owner's `r_renderscale 2`, three runs.
+Grouping by file: cl_hud 26-27% of QC, cl_zones 16%, then a long tail, each with its busiest
+functions (HUD_TextDraw, Zone_Line, Chat_Draw). The profiler's cost on the CSQC row: 0.54-0.61 ms
+off against 0.65-0.70 on (+0.07 to +0.13), back on switching off. "all QC" reads 0.38-0.42 of that
+row. The panel: 0.08 ms at level 1, 0.16-0.17 at 2, 0.24-0.27 at 2 with the breakdown, 0.40-0.48 at
+3 with it. Shots read at 1:1 at levels 1, 2 and 3; the first level-3 shot ran off a 1200 px
+screen, hence ten files and functions under four. One review round (grouping, abort reset,
+first-window skip, backdrop, CSQC_DAT guard), all fixed. Ship exe 33466461, one stamp throughout,
+both installs.
+
+**Known:**
+- "all QC" is not the CSQC row: QC run from entity setup (predraw) is under World there, and the
+  unbucketed parts of R_RenderView stay in CSQC.
+- Builtins count toward the QC function that called them (drawstring is HUD time), except the two
+  excluded. SSQC and menu QC are not broken down.
+- A csprogs reload inside one window can show a single partial window as full.
+
+## Patch 794 — preserve view validation faults on usable angle clocks (consumer)
+
+**Problem:** a usable angle comparison could mask independent sidecar validation
+faults: the reader rejected malformed content but the receipt still said OK.
+The consumer preserved these faults only when the clock/join was unavailable.
+
+**Change:** propagate every independent view validation fault before comparison
+eligibility/classification. Mixed validation/mismatch pairs retain both findings
+and actual comparison detail. Measurements lead the bounded detail field, followed
+by one validation summary; genuine angular proof stays primary in the sweep's short
+reason. Valid unresolved pairs remain BLIND. Digest, I/O, signature and reset
+authority paths are unchanged. No native code, pin, Build, threshold, ranking-code
+or forced historical reread change.
+
+**Verified:** seven parser-acting fault types fail the old receipt grade while
+the good/tight and rotated controls ACT. Mixed-fault tests discriminate the initial
+candidate's lost proof and first-fault summary; 30 repeated malformed markers
+cannot crowd measurements out of the actual 1,000-character sweep field. Real
+test-key signatures stay valid through normal, delayed-view and delayed-recording
+API paths; mixed faults retain proof, validation and measurements through those
+paths. Parent reader 403 / receipt 268 checks, sweep and all 15 path-bound controls
+pass. Unchanged QC build inputs reuse the three-program
+zero-warning build. Captured 612-record/383-view parser faults remain 211/224 in
+both arms. Four matched-digest pair API replays change BLIND to FAULT for
+already-parsed view faults, not new angular judgments; all 383 pair grades and
+bytes remain unchanged by the mixed-fault fix. Eleven added records and one
+unavailable prior record explain the changed corpus size, not a reader regression.
+Signature fixtures do not claim real-device/human provenance.
+
+## Patch 793 — bind initial recording clocks before judging angles (reader)
+
+**Problem:** before the first input row, a cumulative held interval could project
+before the declared run origin and still produce an eligible angle comparison.
+A restored initial header also claimed a usable angle transform without the
+missing clock history. Permissive integer preflights could terminate the reader.
+
+**Change:** bound the first fresh projected origin and every raw trace horizon.
+Restored/missing initial origins explicitly abstain; no guessed post-session
+origin or frozen-finish equality. Use one bounded ASCII integer lexer for shared
+and direct preflights. Independent sidecar faults and trusted-clock detection
+remain active; an invalid recording clock is not a sidecar conviction. No native
+code, engine pin, Build, threshold, ranking or historical-reread change.
+
+**Verified:** parent baseline/new controls act: equality and rotated-view
+positives, malformed first origins, initial restored headers and bounded integer
+faults without exceptions. Reader 403 / receipt 198 checks and sweep suite pass.
+Same bytes of 602 recordings / 383 sidecars retain 201 recording-format / 214
+pair faults, with no new fault or availability transition. Retained native held
+prefix stays fault-free (one epoch, short/sweep-only). Post-session timer origins,
+final-clock validation and genuine-input calibration remain open.
+
+## Patch 792 — keep timing-format faults distinct from clock abstention (readers)
+
+**Problem:** held-clock parsing exposed unchecked counter conversion and projected
+array overflow. The receipt consumer also ignored independent malformed-sidecar
+faults when its angle join was unavailable. Promoting every old view diagnostic
+instead falsely faulted repeated retries and cold loads.
+
+**Change:** bound the new counter tokens before conversion and check projected
+angle timestamps before storage. Invalid clocks fault without an angle judgment.
+Retain independent sidecar faults when the comparison is unavailable; valid
+unresolved pairs stay BLIND, not OK. Client-local reset allowances use validated
+server restore/session history, counting a cold restore and its new session once.
+Resume authority also requires an ASCII integer slot in the writer's 0..999 range.
+Shape, finite-number, invariant run-clock and end-range checks stay active.
+Captured bytes and digest checks are unchanged. No native/QC behavior, engine pin,
+Build, ranking policy or threshold change.
+
+**Verified:** independent reviews exposed the cases; parent baseline/head probes
+reproduced them before correction. Reader 363 / receipt 183 checks and sweep suite:
+zero failed. Same bytes of 602 recordings / 383 sidecars: no new faulting pairs;
+two formerly faulting cold-load pairs remain unavailable, not angle-clean.
+The retained native held prefix still joins without faults (short capture, THIN).
+
+## Patch 791 — Source render_rope beams: surf_boreas's end beam (tools, csprogs, particles/surf_boreas.cfg)
+
+**Problem:** Lex, 18 Oct: Momentum's surf_boreas end room has a beam; ours had none. It is
+`tendies_endparticle05`, a render_rope (one ribbon through the particles in birth order) and
+a child of `tendies_endparticle01`. Patch 787 declined ropes: as billboards of radius 1500
+they whited out the room.
+
+**Change:**
+- tools/pcf.py `translate_rope`: a rope writes a 25-word `rope` index line -- spawn offset,
+  gravity, life, rate, width, colour, the fade (start_alpha up to the particle's alpha, then
+  down to end_alpha: C_OP_FadeAndKill as read, closed source), image and blend from the .vmt.
+  Refused rather than drawn wrong: operators outside ROPE_OPS, a spawn box with spread, a
+  timed emitter, a material that does not resolve. Width is 0.5 x radius, fitted to ONE
+  Momentum screenshot (surf_boreas0000, core ~120 units of laser01).
+- cl_emit.qc: Emit_RopeNote / Emit_RopeAt / Emit_RopeFrame draw a camera-facing strip along
+  the steady-state path, a segment between each two live particles up to 32, SRC_ALPHA ONE,
+  sorted additive. `vbsp_emit_ropes` (default 1) is independent of vbsp_emit_psys_children.
+
+**Verified:** pcf tests 27 (rope line field positions, refusals); surf_tensor2's bake is
+byte-identical. surf_boreas fixture, same camera with ropes on and off: a beam from the pit
+to the ceiling, brightest low and fading up, like Momentum's; the client logs the rope it
+placed. 0.1.26 release exe and current exe: no QC errors. Three review rounds (fade
+semantics and continuity, refusals, segment ceiling, overflow, a one-particle rope).
+Installed 2026-10-18T11:56:48Z: csprogs `75b75a77`, bake `0d1f6cd7` / index `cbab1bbd`;
+lobbies with 89's deploy of QC main e3dfce05.
+
+## Patch 790 — momentary_rot_button: non-solid as Source says, and the non-solid ones turn (qwprogs)
+
+**Problem:** Lex, 18 Oct: Momentum's surf_boreas end room has spinning floor symbols; ours
+were frozen, and solid. momentary_rot_button spawned as func_wall; Source makes it non-solid
+under SF_ROTBUTTON_NOTSOLID (buttons.h:16) and turns it on SetPosition. Census of 1,349
+maps: 131 on 17 maps, 115 non-solid on 16 (walls here), 60 looping themselves on 6.
+
+**Change (sv_entities.qc):**
+- Spawnflag 1 gives SOLID_NOT, model kept; a solid one stays a frozen func_wall and answers
+  nothing, so it never claims an arrival.
+- SetPosition / SetPositionImmediately move a live one: position 0..1 along its AxisDir axis,
+  angles from the clock in one driver think (at most 20 Hz, and at each predicted arrival);
+  OnFullyClosed at 1, OnFullyOpen at 0 (Valve's naming), OnReachedPosition. Every arrival
+  is settled before any output fires.
+- A child of a spinning yaw-axis button orbits it (surf_boreas's outer three).
+- A model with no faces or only tools/ faces does not turn: 77 prop carriers, whose props
+  do not follow here, would only cost the lobbies packets.
+- SV_IODeliver: Source's classname fallback (cbase.cpp:944-958) for this class only; the
+  library's other classname targets (player_speedmod, player, ...) are BACKLOG.
+- Enable / Disable / Toggle are swallowed: they gate Use in Source.
+
+**Consequence, Lex's call (ship now, rule bump after):** the `pe` digest hashes solid
+brushes near the player, so a run recorded before P790 on those 16 maps and verified after
+reads HOLD physents differ. A header rule on the `proprule` precedent is BACKLOG.
+
+**Verified:** surf_boreas: 19 turn, 3 orbit, shots 2 s apart differ 4.5% (old progs 0.13%);
+surf_gradient's 15 and surf_nyx's 20 faceless carriers still; bhop_avantasia's buttons
+loop (3-15 restarts in 3 s); 0.1.26 release exe and current exe: no QC errors. Five review
+rounds (arrival ordering through inline relays, Kill, Enable, carriers; the output fired
+for a goal changed under it; an arrival lost before the tick; a late wake; float32 eta).
+Installed 2026-10-18T11:56:48Z: qwprogs `fa94eb5d`; lobbies with 89's deploy of e3dfce05.
+
+## Patch 789 — a player's picture beside their name, wherever it is drawn (csprogs, menu)
+
+**Problem:** Lex: "wherever a player name is, also place their display picture -- like
+in the friends list in the map display, on the demo playback window, and wherever else."
+Pictures (P640) were drawn on the online board, the Players tab, the in-game Friends
+tab, the profile card, overhead labels, race-ghost tags and board line labels only;
+the menu had no picture code at all.
+
+**Change:**
+- Game: the demo window title (the board row's mark when the board opened it, your own
+  for your runs, else a letter disc); the replay's line label and the "You" trail; the
+  Comparison window's "vs" line; the spectator HUD's WATCHING line and Spec: list;
+  another player's completion banner; the share card; your own TAB Local rows; chat
+  lines from a player or a friend's PM (a picture at the message's first row, the text
+  wrapped beside it). SteamPic_SlotMark gives a connected player's mark.
+- Menu: m_pics.qc ports the game's cache to the menu VM -- the game's disk copies
+  first, else one paced ask of the board's avatar route on its shared budget -- and the
+  friends panel rows and the leaderboard rows draw from it.
+
+**Verified:** see the commit (runlines arm p789pics with two pictures planted from disk:
+the toast, a PM chat line, the demo title and the menu friends panel).
+
+## Patch 788 — friends: an add is one-way until added back; the "added you" toast (surfd, csprogs, menu)
+
+**Problem:** Lex: a toast when someone adds you, F2 to respond; people who added you at
+the bottom of the friends list, darkened, to add back. P770 made an add a friendship at
+once (one row, accepted 1) and the poll upgraded any pending row, so nobody could learn
+who added them.
+
+**Change:**
+- surfd: an add writes accepted 0 (relation 1 mine, 2 theirs); adding back (add, or the
+  old accept) makes it 1; the poll no longer upgrades pending rows. Presence, Join and
+  messages are for friendships only, so an add cannot watch anyone. An add I have not
+  returned takes none of my slots; blocking one on a full list is refused (Decline
+  still works). Lists sort friends, blocks, then incoming adds, drop a banned adder's
+  row, and are cut at 128 rows (only incoming adds are ever cut). The menu route stays
+  read-only (the engine signs only list/join).
+- Game: incoming rows faded with Add back / Remove; labels Add back / Added. A toast
+  (picture, name, "F2 Add back", 12 s) once per account, remembered in
+  data/friends_toasted.txt; it waits while the board (pinned or held), the profile card
+  or a resume offer covers it, pauses there, and F2 re-checks the relation.
+- Menu: the friends panel draws incoming rows faded with Add back while connected
+  (through the game's friends_menu_add); disconnected it says to add back in a lobby.
+- Rollback hazard (AGENT_NOTES): surfd generations before P788 upgrade accepted 0 rows
+  on every poll; a rollback deletes them inside rollback.sh after its step 3.
+
+**Verified:** surfd/test_social.py 39 OK (one-way rows show no presence and cannot Join,
+add back, decline, slots and the 128 cut, a full list cannot block past it, banned
+adders hidden, the menu refuses op add); the new tests fail on the old social.py. In
+game (runlines arm p788toast): the toast shows for an incoming add, waits under the
+profile card, and F2 sends `friend add <who>` during a replay; the main build shows no
+toast and sends nothing.
+
+## Patch 786 — spectate inside a trigger; the hold keeps the body in it (qwprogs)
+
+**Problem:** Lex: "it prevents you from going spec if you're inside a trigger??" Patch
+382 refused the entry while a trigger touched the body on the last packet or had not
+seen it leave, because a hold ran the trigger's state on in world time: the end-touch
+sweep counted the held body absent, fired OnEndTouch at it and cleared its masks, so
+the release was a fresh OnStartTouch. The touch stamp was also the first line of all
+five touch handlers, so a disabled, filtered or spent trigger refused too.
+
+**Change:**
+- The stamp moves past each handler's returns for a trigger that cannot act on the
+  player (trigger_multiple only where it has outputs).
+- SV_TriggerEndThink never counts a held player absent (SV_TouchHeld; the one-toucher
+  path skips its clock while held and gets the hold added back at release).
+- SV_TrigResume at a release where the body stays (leave, notarget, move): the release
+  counts as a touch (a PlayerPostThink release comes before the next move, and a sweep
+  between must not see absence); a speed pad the body rests in has no enter edge; the
+  player's OnTrigger on a `wait` trigger counts as just fired if its window had
+  expired, and a window only the player spent moves by the hold.
+- SV_SpecStart allows the entry inside a trigger and keeps the run ranked. It still
+  refuses while an output delayed with the player as activator is due (anywhere in the
+  edict walk), during Monolith B4's pad profile, and within `run_spec_cooldown` (0.25 s,
+  never under 0.1) of a release where the body stayed: holds toggled faster than the
+  0.03 s sweep would keep a LEFT trigger's touch alive (OnJump anywhere), and each
+  toggle walks every edict twice.
+
+**Rejected, across five review rounds:** practice-marking a running run and clearing
+the carrier (the masks still emptied, so a player not yet running could stack an
+OnStartTouch booster into a clean run); counting a player held only after a 0.03 s
+window (its first sweep could mark absence that a PostThink release then turned into an
+exit and a re-fired entry, about 1 in 4 such releases).
+
+**Verified:** tools/p786trig.py on surf_colony's trigger *93 (`echo` on OnStartTouch),
+dedicated server + 2 clients: main refuses; the first cut re-fires the entry output on
+release; this patch accepts ("touch 1, pending 1") and stays silent, the trigger still
+sees the exit and the next entry, toggled re-entries are refused by the cooldown, and
+20 countdown releases inside the trigger fire nothing (the window-rule build re-fires;
+c410d513, the round-2 build, keeps a left touch alive under toggling). Not driven: the
+pad and `wait` halves of SV_TrigResume (no reachable map case). Known: BACKLOG "Spectate
+inside a trigger (P786)".
+
+## Patch 787 — particle bakes draw the material's image with Source's blend; ropes declined (tools, particles/surf_boreas.cfg)
+
+**Problem:** Lex, 18 Oct: Momentum's surf_boreas end room has a beam and little
+particles; ours has neither. They are child systems of `tendies_endparticle01`, and
+`vbsp_emit_psys_children 1` turned the room white.
+- tools/pcf.py wrote the MATERIAL name as `texture`; FTE's particle loader takes an
+  IMAGE name and draws its default particle when there is none (p_script.c:1008).
+  particle_glow_11 -> effects/tesla_glow, glow_04_additive -> particle_glow_04,
+  laser -> laser01: white discs. Every block was `blendalpha` where Source adds.
+- The beam (`tendies_endparticle05`) is `render_rope`, drawn as 24 billboards of
+  radius 1500.
+
+**Change (tools/pcf.py, tools/sourceassets.py, test_pcf_resources.py):** `material_look`
+resolves the .vmt (map pak first, then `--content`, default CS:S's cstrike_pak and
+hl2_misc) to its `$basetexture`, and writes `blend adda` for `$additive` or a Sprite in
+render mode 3/5/7/9 (sprite_dx9.cpp). `render_rope` systems are declined. A quoted
+`"[ 0.5 0.5 ]"` VMT value is a vector, not a `[$X]` conditional.
+
+**Verified:** 24 resource tests (two new). surf_boreas re-bake: 8 blocks change image
+and blend, two ropes declined, index otherwise identical; surf_tensor2's bake and index
+byte-identical to the installed ones. A/B in game, children on: the white-out is gone,
+but `tendies_endparticle04` (radius 800, 64/s, alpha 0.8-1) still draws a saturated
+dome over the pit, so children stay off (BACKLOG: likely Source's linear-light
+blending). Installed in C:\FTESurftesurf 2026-10-18T09:35Z: `particles/surf_boreas.cfg` `15ccc3ca`,
+`data/mapparticles.txt` `9570137e` (were `bb277920` / `6c1f06ec`).
+
+## Patch 783 — surf_boreas: 16-bit VTFs load, $additive blends as Source does, water takes its srgb? fog colour (hl2 plugin, gl_shader.c)
+
+**Problem:** Lex, 18 Oct: surf_boreas's end-room "smoke" drew the missing checker, and
+its water lacks Momentum's blue fog (his surf_boreas0001.tga against surf_boreas_007).
+- `tendies_smoke.vtf` is BGRA4444 (VTF format 19); img_vtf.c rejected all three 16-bit
+  formats. Library: BGRA4444 5 files on 3 maps, BGR565 6 on 3, BGRA5551 none.
+- Loaded, the ribbons (displacements; `$additive $translucent $vertexalpha`) drew ONE
+  ONE, a saturated white column. Source adds with SRC_ALPHA when alpha is opacity
+  (BaseShader.cpp:632), and their painted alpha is 0-6 of 255.
+- water01's blue is `srgb?$fogcolor {120 200 255}`. Every srgb? key read false, so the
+  water fogged toward the plain `{255 255 255}`.
+
+**Change:**
+- img_vtf.c: the three formats are sized at 2 bytes a texel and each mip expanded to
+  BGRA8 (BGRX8 for 565), first-named channel in the low bits (imageformat.h:230-284).
+  Not uploaded as ARGB4444/1555/RGB565: Vulkan claims ARGB4444 and Sys_Errors creating
+  it, the software converters swap red and blue, nothing converts RGB565.
+- mat_vmt.c `VMT_AdditiveBlend`: SRC_ALPHA ONE for `$vertexalpha` (its value), 0 <
+  `$alpha` < 1, or `$translucent` without alphatest/`$selfillum`/`$basealphaenvmapmask`;
+  Sprite and SpriteCard always; the emissive pass stays ONE ONE (emissive.glsl writes
+  alpha 0); otherwise ONE ONE. The UnlitGeneric pass arm, both flipbook arms and the
+  shared tail use it.
+- gl_shader.c `Shader_Finish`: a pass 0 of SRC_ALPHA ONE auto-sorts additive as ONE ONE
+  does, so those surfaces keep their bucket. Also moves quakers' `gfx/rain/streak` and
+  `gfx/tracer` (effects.shader, no sort) from BLEND to ADDITIVE.
+- mat_vmt.c: `srgb?` is taken for `$fogcolor` only: water.cpp:331 converts it
+  gamma-to-linear and the sRGB write converts back, so it shows as written. It wins over
+  a plain `$fogcolor` in either order; an unreadable one is ignored. The other srgb? keys
+  (1,168 materials: `$alpha .375`, `$overbrightfactor .75`, `-dx10` tool textures)
+  compensate for linear-light blending, which FTE does not do, and stay false.
+
+**Verified:** build, no new warnings. surf_boreas, fixture basedir: the smoke texture
+loads and the ribbons draw `src_alpha one` at sort 12 (additive; 11 before the sort
+change). Water under a copy of Lex's ftesurf.cfg (`hl2_water 2`): same views, control
+grey-white over shallow water as in Lex's 007, candidate blue-tinted with the bottom
+showing, as in Momentum's 0001; the deep lake fogs nearly solid in both (grazing view).
+Three review rounds: round 1 (emissive went invisible, the `$translucent` term, the
+flipbook arms, the sort bucket), round 2 (an explicit `sort additive` pre-empted
+DECAL/NEAREST/SEETHROUGH, `$vertexalpha 0`, an unreadable srgb? colour), round 3 none.
+Not verified: other maps' additive materials on screen (the rule is Source's; no
+library A/B was run). Stamped build git-7448-patch-783-0-g70d794dd3 (-Full, from the tag): client `e19f681d`, hl2
+`de079afd`, in both Windows installs 2026-10-18T09:47:16Z (`.prev` = P782 `a7f3dfc4` / hl2
+`0bd360e0`). It replaced a first install (09:35:22Z) stamped 7419: the build wrapper passed the
+raw commit count, not the Makefile's count + 29 that releaselib.ps1 Test-RevisionMatch checks.
+
+## Patch 782 — r_budget: where each frame goes, CPU groups, idle and GPU passes, as bars
+
+**Problem:** Lex, 18 Oct: "a low budget way of seeing how the scene is being spent on the GPU and
+the CPU in some sort of visual human graph way ... a text bar graph ... bundle up the info so I can
+see breakdowns of specific parts. display, world calculations, HL2 plugin rendering". `r_speeds 2`
+had about thirty CPU buckets as raw nested microseconds, no GPU timing (`r_speeds 3` puts a glFinish
+in every bucket, a different, serialised frame), and nothing for idle.
+
+**Change (client exe):**
+- `r_budget 1`: one compact panel -- frame ms and fps, CPU busy, GPU busy, idle, a verdict, and two
+  stacked bars on one scale (the CPU's groups then idle; the GPU's passes) with the three biggest
+  of each named. `2` adds a row per group (ms, share, bar), `3` every bucket under its group.
+  `r_budget_window` (0.5 s) averages; `r_budget_dump` prints the table with `#` bars and copies it.
+- CPU groups: server; CSQC; world walk, entities, lightmaps; PrepareFrame (named the HL2 plugin's
+  map vis and props on a Source map); draw calls; shadows; particles; post; HUD and 2D; display
+  (swap, pacing, screen setup); input, network, audio; loading; other host work. Each bucket counts
+  its SELF time: RSpeed_Begin/RSpeed_Finish (render.h macros) keep a depth stack on the main thread,
+  and a bracket hands its whole time to the one it sits in, so portal views inside "opaque",
+  lightmaps inside PrepareFrame and shadow draws count once. r_speeds still reads inclusive times.
+  New buckets: the host frame's whole work, COM_MainThreadWork, input and console, server frames
+  between client frames, PrepareFrame; r_speeds 2 names them. Timing is latched per host frame
+  (`r_speeds_timing`), so a bracket cannot open on one setting and close on another.
+- Four brackets opened and never closed on an early return (classic particles with none alive,
+  brightening with nothing to do, screen setup on loading frames and the editor, the fake-shadow
+  atlas failing); with self times that re-parents everything after them. `r_budget_dump` counts
+  brackets closed with others open inside.
+- GPU: GL_TIMESTAMP queries (ARB_timer_query, GL 3.3+) where the frame moves from one kind of work
+  to the next -- each sort level's world and model lists, pushed passes (3D sky, portals, shadows,
+  RT lights), post, then HUD and 2D -- read four frames later and only once available, so never a
+  stall; at most 192 marks a frame. Stretches where the CPU runs QC or walks the world are
+  "Waiting on the CPU" and are not GPU busy.
+
+**Verified:** on this PC at 1920x1200 and the owner's `r_renderscale 2` unless set. The groups' self
+times sum to the frame: surf_demise 5.56 of 5.56 ms, surf_kitsune 2.81 of 2.80 (r_speeds' inclusive
+"Host frame work" over its own 100 frames: 5.38, 2.87). Brackets left open per dump: 3524 before the
+four closes, 0 after, on both maps. The GPU rows sum to GPU busy (2.51 of 2.52, 1.69 of 1.68).
+Where the GPU is the bottleneck GPU busy matches the frame: `r_renderscale 3` 5.18 against 5.24 ms,
+`4` 8.17 against 8.25, verdict "GPU-bound"; `0.5` drops it to 0.32. `hl2_propdist 1` takes
+"Models & props" from 0.25 to 0.04 ms; `cl_maxfps 60` puts 11.12 of 16.68 ms in idle, verdict
+"headroom". Overhead is the panel's own CPU time ("r_budget / r_speeds"), two passes on the shipped
+exe: 0.07 ms at level 1, 0.16-0.18 at 2, 0.27 at 3 (1-5% of a 5.4 ms frame); screenshot fps could
+not separate the levels (one level's readings spread 21 fps).
+Columns checked on shots at 1:1. Ship exe a7f3dfc4 (one stamp throughout), both installs.
+
+**Known:**
+- "HUD & 2D" on the GPU includes the GPU's idle while the HUD's QC runs; splitting it needs
+  a mark per 2D flush.
+- GPU timing is GL only (3.3+ or ARB_timer_query); D3D and Vulkan say "n/a". Vulkan's submit-thread
+  brackets keep their r_speeds time and stay out of the groups, and three Vulkan-only paths still
+  leave a bracket open (`VK_SCR_GrabBackBuffer`'s early returns, the `r_lightprepass` branch).
+- A map frame that never reaches GLR_RenderView (an opaque menu) is all "Waiting on the CPU".
+- `r_speeds 3`'s glFinish now runs on any GL build, not only Windows.
+
+## Patch 785 — preserve the recording clock across practice holds (qwprogs, tools)
+
+**Problem:** a held run excludes frozen mover ticks from its timer and client
+sidecar, but the server input trace retained the raw mover clock without recording
+that exclusion. An honest practice pair could therefore be reported as mismatched.
+
+**Change:** additive `holdclock 1` / cumulative `hold` records describe effective
+thaws without changing raw input fields. The angle reader projects later rows onto
+that declared clock. Legacy practice/prefix clocks and other unresolved origins
+remain explicitly unavailable to both angle rules, not clean or guilty. Format
+faults remain faults. No thresholds, ranking policy, native binary or pin changed.
+
+**Verified:** QC build, zero warnings; real dedicated-server hold/release and saved
+recording/sidecar join (short capture, insufficient for a full angle verdict).
+Independent-clock controls retain tight comparison and reject altered sidecars;
+old reader fails the honest held pair. Reader 327 checks, receipt 74, sweep suite:
+zero failed. Same bytes from 602 historical recordings / 383 sidecars: no new
+faulting files; unavailable historical joins are not reclassified clean.
+
+## Patch 784 — a demo or a profile opens over an open one; no countdown out of spectate or the rewind (csprogs, qwprogs)
+
+**Problem:** Lex: picking a demo while one is playing does nothing, and the same with a
+profile open (TAB, click a name); leaving spectate counts down 3 s, and so does coming
+back from the rewind; can these go.
+- `Watch_OpenIn` and `Av_OpenAt` both replace what is open; the clicks never arrived. A
+  TAB board you only HOLD drops clicks (Patch 635), and over a replay or the profile card
+  the pointer was already up, so the board looked live. The card took the mouse before
+  the board, so even right-click could not pin it.
+- Letting go of TAB closed the board and dropped an online replay still downloading.
+- `run_spec_countdown` 3 (server) and `RW_COUNT` 3 (client) were UX, not integrity: the
+  clock is stopped and nothing is recorded during either.
+
+**Change:**
+- cl_scores.qc: over an open replay or profile card (UIC_WATCH, UIC_AVATAR) holding TAB
+  opens the board pinned, so a row or a name replaces what is open; right-click does not
+  drop it back to a dead held board there; letting go keeps a board fetching a replay
+  until it lands. The Players tab's Profile honours the editor check as the board does.
+- cl_watch.qc: a wrong file is refused before the open replay is let go; an unreadable
+  or empty one stops the replaced replay cleanly (pin and cursor released).
+- `run_spec_countdown` defaults to 0: leaving releases on the packet (SV_SpecCount);
+  `hud_rewind_countdown` (default 0) replaces RW_COUNT. Both keep their old value as a
+  setting. tools/spec_chat_smoke.py accepts the immediate release.
+
+**Verified:** see the commit (arm p784open: replay replaced through the board's Local
+row, profile replaced through "my profile" over an open card; control build: both
+clicks dropped). Not verified in game: the spectate release with two players (code
+path: the countdown's own SV_SpecRelease, called at once), the rewind at 0.
+
+## Patch 779 — the Comparison window: you against the ghost's line, live, at splits and segments (csprogs)
+
+**Problem:** Lex: a hud_edit window "Comparison" comparing you to the ghost or the best
+line -- your time, speed and energy against that player's at that moment -- with options
+for the segments and the splits showing two lines, yours and theirs, and the difference
+("300 / 270 = +30 energy") coloured ahead or behind.
+
+**Change (new cl_compare.qc; cl_raceghost.qc, cl_hudedit.qc, cl_board.qc, cl_timer.qc,
+cl_main.qc):**
+- Against the race ghost's first line (your PB, else the first ticked board line). With
+  `hud_ghost 0` RG_Frame still chooses for the window; it draws no body or tag.
+- Measured where you are: the line's point nearest your feet, followed by a cursor and
+  found afresh over the leg (from the line's anchor) after a teleport or a new attempt,
+  not by its clock -- after a fail you are seconds off its pace and still on its route.
+  Time: yours minus theirs to get here; speed and energy: yours minus theirs here, on the
+  speedometer's zero. Green ahead, red behind.
+- `hud_compare_splits`: at each stage, checkpoint and finish, your row against their own
+  crossing of it (their line's first entry into that box, swept). `hud_compare_segs`: the
+  last Segments row's energy, you / them / difference.
+- hud_edit "Comparison" (position, size, the two options); `compare` prints it.
+
+**Verified:** a planted PB (surf_aesthetic player_r4): live match 29-98 u off the line
+with you/them/differences; the stage-2 split against their crossing at 8.415 s (=
+`stage 1 561`); Segments rows (Air, Bhop: you 58 them 52 +6e); still comparing with
+the ghost off; the hud_edit pane's Segments option clicked off. Screenshots read. Not
+verified: a real run against a real ghost (the arm places the body with setpos).
+
+## Patch 775 — a fail teleport back into your start box resets the run, from rest (qwprogs)
+
+**Problem:** Lex: the practice tag reset only on `!r`, not on the map's fail teleporter,
+and the race ghost "doesn't notice you fail, and won't playback when you leave the
+startzone of that stage". A map teleport is seen only by the next tick's zone scan:
+- a STAGE run (`!s N`) back in its own box was never re-armed (`SV_TimerTryArm` returned
+  for every non-START box while running), so its clock, practice tag and ghost ran on;
+- a bhop map defers a START re-arm to the next standing jump;
+- the hopped-start tag survives every arm (Patch 445), so a fall into the start kept the
+  next attempt practice until `!r`.
+
+**Change (sv_timer.qc, sv_entities.qc, sv_player.qc):**
+- `SV_TimerMapTeleport` latches each map teleport (trigger_teleport both exits,
+  trigger_teleport_relative, bhop blocks) for the next `SV_TimerFrame`, per packet.
+- A stage run back in its own box re-arms as a START re-entry does: on a teleport, or a
+  walk back off bhop maps -- from outside the whole box (not a seam) and only at a walk's
+  or a jump's speed (`SV_TimerBackInBox`; faster, the run goes on as before). On bhop
+  maps a teleport into the run's own START re-arms instead of waiting for the jump. A
+  stage-1 run stays stage 1, as `!r` keeps it.
+- `!r` is safe because it zeroes the velocity; this keeps it, so a teleport arriving
+  faster than a walk across the ground (carrier included) sets the hopped tag with the
+  finish's rest forgiveness armed (`run_t_finfgv` 2): stop moving and the next start is
+  clean, leave at speed and it is practice ("back in the box at speed"). A teleport that
+  leaves you armed in the box with a tag already up arms the same forgiveness.
+- A packet that also crosses the run's finish does not take the new paths
+  (`run_t_tpfin`). A surf START that is also the END keeps its cancel: three tracks'
+  fall-offs land in both. `run_tpreset 0` restores the old rules.
+
+**Verified:** surf_exxak: the map's own fail trigger re-armed the stage-2 run; a teleport
+into the START cleared hopped 1 -> 0; `run_tpreset 0` kept the run RUNNING practice and
+the tag. bhop_clrs: falls into the floor teleporter re-armed; control kept RUNNING.
+surf_kitsune, a save loaded above the speed-keeping fail floor at 1040 u/s: tagged and
+told, forgiven at 221 u/s once slowed in the box; the round-1 build re-armed it clean.
+agtricks (surf mode locally): the finish teleport still cancels. Four integrity review
+rounds: fixed the kept-speed laundering (bhop maps' free prespeed), the own-box test,
+seams, labels, a held spectator's latch, a finish-by-fall-off on three START+END
+tracks, a never-forgiven tag on surf_polygon b4; round 4 found nothing P775 makes newly
+exploitable (residuals in BACKLOG). Not verified: the race ghost on screen (it follows
+the state stats), real players.
+
+## Patch 777 — share paint and saves with the player you look at; paint layouts per map
+
+**Problem:** Lex: "an option for sharing paint? or saving layouts for a map? also same
+for save-locks ... look at someone in game, and hit a share button to share paint (both
+see each other's paint) or send them a save-lock or send them the paint of the whole
+level you've saved! people use it to know where to board and where to leave on ramps."
+Paint (P772/P773) was client-only: a disc was a decal handle and nothing else, so it
+could be neither saved nor sent.
+
+**Change (csprogs):**
+- `cl_paint.qc`: every disc keeps what it was placed with (origin, normal, colour, size,
+  alpha, who sent it). `paint_save [name]` / `paint_load [name]` write and read
+  `data/paint/<map>[.name].txt`, a line a disc, read 400 lines a frame. `paint_autoload`
+  (1) loads the map's layout 3 s after the map. A disc whose face is not here yet (a
+  brush entity outside the packet the clip reads) waits and is retried, 64 a second,
+  within 4096u of the camera.
+- `cl_share.qc` (new): `share` (default F) picks the player nearest the crosshair
+  (lobby body, else the engine entity; ~3.5 degrees or a body's width; not behind a
+  wall) and opens a card: 1 paint together, 2 send my paint (the saved layout, else what
+  is up), 3 send my selected save. The receiver answers F3 / F4 or `share yes|no`.
+  Live paint goes out at up to 60 discs a second; a stream is paced to the receiver's
+  ping (about 26 discs a round trip). A layout you take becomes yours. Received discs
+  arrive in `CSQC_Parse_Event`.
+- hud_player PAINT: Save layout, Load (count), Auto-load. Key panel: "Share (look at a
+  player)", F.
+
+**Change (qwprogs):**
+- `sv_share.qc` (new): `cmd share offer|answer|ack|stop|status`. An offer stands 20 s and
+  carries an id the answer must echo; one pending per receiver; two seconds between a
+  player's offers; after a no or no answer, that sender waits 60 s for that receiver. Live
+  links are pairwise and both ways.
+- Discs arrive as sendevent ("pd" live, "pl" streamed, "ple" a stream's end), are
+  range-checked and held to 300 a second per sender, and are re-encoded by the server into
+  one SVC_CGAMEPACKET to the one client (`MULTICAST_ONE_R_NOSPECS`). A stream is accepted
+  only from a linked pair or for the layout offer the receiver said yes to (its id rides
+  in the target), up to the count they were shown. The stuffcmds carry numbers only.
+- Both reliable channels are windowed on acknowledgement: a client keeps at most 20
+  events the server has not confirmed (`SH_EV_GOT`), and the server keeps at most 300
+  discs a receiver has not acknowledged (`cmd share ack`), dropping past that, counted.
+  A client's reliable buffer holds about one 1440-byte packet a round trip and is cleared
+  past that; a server drops a client whose backlog passes 16 x 1200 bytes. Link changes
+  are events in order with the discs.
+- A sent save is the replay-point row `sl_saveview` already makes
+  (`SV_SaveLocCreateAt(..., view)`): idle timer, no run, speed under `rwvel`. It is the
+  sender's selected row, read when the offer is made, and lands in the receiver's list
+  only on their yes. `SV_SaveLocCreateAt` names the sender in its line.
+- `share_offers 0` declines every offer unseen.
+
+**Verified:** tools/p777share.py: a dedicated server and two clients (Alice, Bob), each
+with its own basedir, lobby bodies streamed, surf_dune; keys posted to each window. 23 of 23:
+- Bob looking at Alice, `share` opens the card on her (looking 90 degrees away: no card);
+  1 sends the offer, F3 links both ways.
+- Live: 21 discs Alice sprayed, 21 at Bob; 21 the other way; relay dropped 0.
+- A 42-disc layout arrives whole, and Bob's `paint_save` file equals Alice's disc for disc
+  (origin to 0.01u, normal, colour, size, alpha). 1542 discs arrive whole in 7.1 s.
+- `paint_load` restores a saved layout.
+- A sent save: Bob's list gains the row ("share: save 1 (slot 001) from Alice").
+- F4 reaches Alice as "said no"; an unanswered offer runs out after 20 s and Bob's card
+  goes; `share_offers 0` declines unseen; `share stop` ends the link and nothing crosses.
+- Review round 1 (two reviewers: protocol and control flow; abuse and saves) found the
+  stream unpaced against the reliable channel (a sender's buffer overflows above ~120 ms;
+  a receiver's server backlog fills and the engine drops them; an end marker had no
+  rate), a layout permission with one target that never ended, answers not tied to
+  offers, a re-link duplicating discs, `<map>_<name>` file names colliding with real
+  maps, and a sent save answering the receiver's last save ticket. It confirmed the sent
+  save carries nothing of the sender's run and gives nothing `sl_saveview` does not.
+  Fixed (`5a8c405`): pacing to both round trips, a per-receiver byte budget on the
+  server, per-pair layout permission bounded by the count shown, offer ids, a 10 s wait
+  after a no, layouts taken become yours, `<map>.<name>.txt`.
+- tools/p777lag.py, 1500 discs with `cl_delay_packets 300` on both clients: the first
+  build overflowed 7 times and delivered 89 while saying "sent you 1500 marks".
+- Review round 2 (one reviewer, integrity) found the round-1 budgets refilled with time,
+  not acknowledgement: tools/p777lag.py `--freeze 8` (Bob suspended mid-stream) got Bob
+  dropped on the round-1 build (MAX_BACK_BUFFERS, "Server connection timed out"). Also a
+  link stuffcmd running after the discs behind it, end markers not tied to their stream,
+  and a cooldown two senders could take turns past. Fixed (`03194e7e`): acknowledgement
+  windows, links as ordered events, stream ids, 60 s per-pair cooldowns. Re-measured on
+  this build: tools/p777share.py 25 of 25 (a re-link brings the partner's 5 discs once);
+  three runs of 1500 discs at `cl_delay_packets 300`, each 1500 of 1500 with no overflow,
+  about 47 s; `--freeze 8`, Bob stays connected and is told "sent you 1500 marks, 901
+  arrived". An earlier cut of the windows overflowed and crawled because its stall timer
+  started at 0; fixed before these runs.
+- 0 warnings.
+- Not verified: on the Pi's lobbies, waiting discs on a brush-entity ramp, a save sent
+  while the receiver's timer runs.
+
+**Known:** received discs share the ring with your own; a sent save carries no
+map-progress name; a layout is keyed by map name, not build; a new link drops the live
+paint of whoever held that slot before; see BACKLOG.
+
+## Patch 780 — Source map visuals: leaf-ambient index wrap and blend, model light point, Wireframe, missing-checker grid
+
+Developed as P774 and renumbered: a private branch (ac-delivery-20261019) holds a local
+`patch-774` tag for different work.
+
+**Problems** (the owner's saves, 18 Oct): surf_me's pillar props drawn orange, black and
+lavender side by side, where Momentum draws one sandstone colour (the owner's Momentum
+screenshots); surf_not_so_sinister's ramp model far darker than the brush ramps; surf_666's
+spawn a purple checker room; the missing-texture checker "blown up" on big textures.
+surf_devil's ramps (one too yellow, one too dark) are only partly fixed.
+
+**Causes and fixes** (all in the hl2 plugin unless named):
+- **Leaf ambient index wrap.** `dleafambientindex_t::firstAmbientSample` is an unsigned
+  short and VRAD stores the running sample count in it (`leaf_ambient_lighting.cpp:672`),
+  so past 65535 samples every later leaf read another leaf's cubes. `VBSP_LoadLeafLight`
+  rebuilds the start from the running total on a lump that can wrap (over 65536 points)
+  and whose counts sum to its size, and drops a range past the lump's end (read
+  unchecked before). Library, 1926 maps: 457 lumps (309 LDR, 148 HDR) wrap, 1,575,459
+  leaves rebuilt, none disagreeing, none out of range. surf_me 3308 of 7893 lit leaves,
+  surf_devil 8580 of 13982, surf_666 6446 of 11505. This is the pillars.
+- **Leaf ambient blend.** The cube at a point is the inverse-square-distance average of
+  the leaf's samples, 1/(d²+1) in world units: VRAD's `Mod_LeafAmbientColorAtPos`, which
+  its `CompressAmbientSampleList` drops samples against. It was the nearest sample.
+  `hl2_lt_blend 0` restores that, live.
+- **Model light point.** A static prop with no usable lighting origin is lit from the
+  model's `$illumposition` through its transform (Source's `R_ComputeLightingOrigin`;
+  studiomdl defaults it to the hull centre), not from its origin. ramp10's origin is its
+  bottom corner, its illumposition 1000 units up the ramp. `hl2_lt_illumpos 0` restores
+  the origin, live. `galiasinfo_t` gains append-only `hasillum`/`illumposition`.
+- **Wireframe.** The `Wireframe` class and `$wireframe` draw as UnlitGeneric under `$color`
+  with a new material keyword `fte_wireframe` (gl_shader.c, `shader_s::wireframe`); the
+  GL backend submits that material's triangles as lines (`BE_SubmitMeshChain`), outside
+  the r_wireframe/gl_outline passes, with the current polygon offset. Source applies
+  `$wireframe` as line mode in every shader (`BaseShader.cpp:197`). surf_666's spawn is
+  `dev_nyro/blends/wire_white` on 8 displacements; about 30 maps draw such materials
+  (surf_fortum/jaqen2/zae ramp layers and surf_polygon among them).
+- **Missing-checker grid.** A world face whose diffuse image will not load draws the
+  checker at `hl2_missinggrid` world units a square (32), texinfo axes normalised and the
+  offset dropped. Decided per texture at material registration by the image's own file
+  (two spellings), else one synchronous probe load through the real image search. Not
+  the material census: surf_me's walls resolve their VMT and miss the image without the
+  TF2 pack, and surf_joutsenlaulu's unresolved `ceiling/tar` still draws by name. Water,
+  refract/reflect/portal shaders and two-layer materials are never rescaled.
+
+**Verified** (subject basedir with the owner's mapdeps.txt and pack cache, the owner's
+saves, installed P772 build against the stamped P780 build):
+- surf_me: the colonnade pillars' solved lit ends go from 87/21/1 .. 202/165/207 to
+  137/109/127 .. 195/157/187, one colour family, as Momentum draws them.
+- surf_not_so_sinister ramp10: lit end 28.9/24.9/14.5 → 105.5/90.0/68.6.
+- surf_666: the spawn draws a grey wire grid over black.
+- Checker: without the TF2 pack surf_me's walls draw 32-unit squares; with it, nothing
+  on surf_me or surf_devil is marked.
+- Library change (all static props, old pick against P780): of 106,979 props lit from the
+  leaf cube, 21,502 move by 12+ sRGB levels and 6,238 by 32+. The largest are the wrap
+  correcting (bhop_treason_speedrun's underground trusses 255 → ~30, unmoved).
+- Build: 77 compiler warnings, the same set as P771's final.
+- Reviews: round 1 (correctness; consequences) and round 2 (the fix delta), no crash or
+  memory bug. Round 1 found the grid rescaling water ripples in hl2_water 1/2 and a
+  WVT second layer, the A/B switches not live, and decal lines without offset; round 2
+  the rebuild needing a whole-lump check (ab_baume shares one sample) and the owned
+  polygon-mode flag needing save/restore. All fixed.
+
+**Open:** surf_devil's ramps. ramp09's warm look is three local lights near its centre
+applied to a 3264-unit model; the curved ramp's centre sees none of the lights its surface
+would. Per-vertex local light for props (HL2_MODEL_LIGHTING.md §2) is the fix. v25
+(Strata) maps' 8-byte leaf-ambient index is not read at all (VBSP_LoadLeafLight returns
+at its size check), so those maps' props get no leaf ambient.
+
+## Patch 778 — demo playback skips and hides failed stage attempts (csprogs)
+
+**Problem:** Lex: "for demo playback, a filter for lines for successful stage completes,
+and an option to show only successful stages in the playback bar, like the remove
+stills". A `.rec` holds each attempt (`stagestart`) and each fail back into the box
+(`restart`, also `!r`), but the viewer read neither, and "stage N only" without a
+stagepost started at the stage's entry, failed attempts included.
+
+**Change (cl_watch.qc, cl_hudedit.qc, tools/onlinecache.py):**
+- `Watch_Scan`'s pass one files, per segment that restarted, a span from its `stage`
+  entry to its last attempt's start (an abandoned run's last segment to the end).
+- The bar marks them (butter) beside the still marks. A "skip fails (N)" chip
+  (`hud_watch_skipfail`, default 0) skips them while playing, landing 0.5 s before the
+  attempt that succeeded; not the stage a window is cut to, not at the cut's end.
+- `hud_watch_path_fails 0` (hud_edit Run lines: "Demo attempts") leaves them off the
+  replay's line, rebuilt on the switch; the run graph follows the line.
+- A stage window starts at the stage's last `stagestart` or `restart`, its own clock, as
+  a stagepost window does, for the replay and the board's line job; the oracle and the
+  p395 arms' pinned windows moved with it.
+
+**Verified:** surf_aesthetic player_r4: one span, 8.415..20.895 s (ticks 561..1393, read
+off the file); clicking the chip skipped 8.430 -> 20.395 (control played to 9.00); the
+hud_edit row rebuilt the line 5156 -> 4324 samples (832 = 12.48 s / 0.015); "stage 2
+only" 1393..2103, was 561..2103. surf_aweles kap_r19: the three predicted spans; its
+stagepost window agrees. The abandon fixture's stage 5 window plays (was a jump to its
+end). `onlinecache.py selftest` PASS, re-pinned from the files (r3 688, r16 1061/3700,
+fixture 1678). One review; its findings fixed. Not verified: Lex's eye on the colours.
+
+## Patch 776 — surf_view: surfable faces and teleports red, invisible solid faces yellow; ent_view's mouse1 pins and expands, mouse2 copies
+
+**Problem:** Lex, 18 Oct: "Make a command that shows you all surfable surfaces (surfaces at
+a 45>degree angle) and all teleport triggers in dithered red, and all clip brushes yellow
+(anything invisable and would block the player). sort of like ent_view, but without the
+info, just visuals", and "enhance ent_view Make mouse1 expand and tell you more and mouse2
+copy to clipboard when in ent_view mode."
+
+**Change (client exe):** `surf_view [0|1]` toggles a depth-tested dither overlay built from
+COLLISION, not from what is drawn (an invisible ramp has no surface; a drawn one can be
+non-solid).
+- Red: a player-solid face with normal z in [0.1, standable) (0.7), the mover's ramp band
+  (pm_source.c, Patch 131: below 0.1 a face is a wall); displacement triangles in that band
+  on either side (BIH_ClipToTriangle collides them as a 4-unit slab); and every
+  `trigger_*teleport*` in the lump, its brushes posed by its origin/angles keys as ent_view
+  poses them, whatever their slope.
+- Yellow: a player-solid face with SURF_NODRAW (0x80 in Q2, Q3 and Source) that is not sky
+  (0x4, Source's 2D sky 0x2), or any face of a PLAYERCLIP-only brush.
+- Sources: the world BIH through the new BIH_EnumCollision (brushes, displacement triangles,
+  Patch 764's prop hull pieces; a prop without them is counted and skipped), cut once per map;
+  solid brush entities from the packet entities the prediction collides with (ES_SOLID_BSP),
+  cut once per model and posed per frame.
+- Its own two-sided shader `ftesurf_surfview` on r_showbrushes' dither program, with
+  polygonoffset. `surf_view_dist` 8192, `surf_view_fill` 0.25.
+- It culls on its own view cone. R_CullSphere's frustum at this call site is whichever view
+  rendered last: on surf_boreas (3D sky) it culled 85992 of 86076 faces.
+
+**Change (csprogs):** while ent_view's passive overlay is up, Ev_PassiveMouse takes MOUSE1 and
+MOUSE2 in CL_InputChain ahead of Keys_Edge.
+- Mouse1 pins the crosshair's entity (or, aiming at open space, the volume you stand in). The
+  card stays when you look away and lists the server's ent_info answer, caught off
+  CSQC_Parse_Print for 3 s, then every key. Mouse1 again, or on nothing, closes it.
+- Mouse2 copies the pinned or hovered entity as lump text, the server's lines as `//`.
+- A reply is kept only if it is the pinned row's: same classname, same `*N` when the server
+  still has one (triggers are stripped to `-`), and on its second line the same targetname
+  and target, compared case-blind (SV_RepairTargetCase rewrites 1,168 teleport targets).
+- The hover card's footer reads "mouse1 more | mouse2 copy | ESC off".
+
+**Verified:**
+- surf_view, conbridge from each map's start zone at four yaws. Counts (surfable / invisible
+  solid / teleports in faces, cut time): surf_boreas 42497 / 1059 / 21 in 359, 12 ms;
+  surf_monolith 3877 / 7838 / 447 in 3560, 31 ms; surf_kitsune 3351 / 13316 / 44 in 300,
+  20 ms; surf_board_this 3986 / 10336 / 115 in 1862, 33 ms.
+- By eye, on/off pairs: monolith's sloped triangle face turns red, its stage doorways (the
+  teleports) fill, and a clip column in the spawn ceiling shows yellow; board_this's bonus
+  pads carry red teleport columns. A colour count could not grade it: the scene has its own
+  reds and yellows, and the downsampled render turns the 4/16 stipple into an exact 25% blend.
+- Cost, surf_boreas uncapped, final build (second of on/off/on/off): range 8192, 295.5 fps on
+  and 270.0 off, i.e. inside this machine's ~10% run-to-run noise; whole map, 235.7 vs 347.3
+  (about 1.4 ms). The first cut re-cut the brush entities every frame and cost 0.9 ms at 8192
+  (257.9 vs 330.8).
+- ent_view: ftesurf/cfg/test/p776ev.cfg in a runlines_smoke overlay on surf_tensor2, through
+  `vote key`: off took 0; mouse1 took 1, printed the summary and keys, the reply arrived and the
+  card showed it; looking away kept it; mouse2 copied with "and the server's answer"; mouse1
+  unpinned; off took 0. The Windows clipboard held the 11 keys and 3 server lines.
+  The same cfg on release 0.1.26's exe (104dd762, what lobby players run): identical.
+- Reply attribution, ftesurf/cfg/test/p776ev2.cfg (pins `trigger_multiple *109` in the
+  frame another request goes out, so its own request falls in the 0.25 s cooldown): the
+  control filed `*36`'s reply (class differs) and another trigger_multiple's (same class)
+  under `*109`; the fix rejects both and keeps `*109`'s own. p776ev3.cfg, surf_kitsune's
+  `*1` (lump target "Red", server "red"): the control copied "and its 10 keys" (its own reply
+  thrown away), the fix "and the server's answer".
+- Review: three rounds, one reviewer each. Round 1: the cone read a zeroed fov (always 86
+  degrees), brush entities drawn at the packet pose not the interpolated one, 0x2 is Q2/Q3
+  slick, and a pinned card took the first reply after the pin, whoever's it was. Round 2:
+  the cone's fallback used the console size, not the pixel aspect; a lerp slot from an
+  older frame; the spectating footer. My first attribution fix also rejected a trigger's
+  own reply (the server strips trigger models), found by p776ev2 case 3. Round 3: target
+  case rewritten by the server; the spectating footer named a command that reports the
+  hovered entity. All fixed and re-measured; round 3's two fixes (a case-blind compare and
+  a footer string) were measured, not reviewed again.
+- 0 new compiler warnings; csprogs 0 warnings. Ship exe bf1a9aac (git-7428-patch-776-0-gbd2e03757), same 20
+  DLL imports as the installed one.
+
+**Known:**
+- Depth-tested, so only what you can see is marked: a teleport buried in a wall shows nothing.
+- From outside the playable map (above the sky), faces of the 3D sky room and of areas behind
+  walls float in the sky. Inside the map, walls and the sky's depth hide them.
+- A static prop with no hull pieces (traced as its model) is not drawn; the count is printed.
+- A face steeper than 84 degrees counts as a wall, not a ramp.
+- A teleport parented to a mover is drawn where the lump puts it.
+- With ent_view on, mouse1 and mouse2 do not duck or jump; spectate keeps them.
+- ent_info answers the smallest box of the class that holds the asked point, so a large
+  trigger whose centre lies in a smaller one of its class gets the small one's answer (as
+  ent_here always has). Two same-class entities with no model, targetname or target pinned
+  within one round trip cannot be told apart. BACKLOG.
+- On a mover below version 7 a prop collides as its mesh but the overlay shows its hull
+  pieces. Q3 patches and triangle soups are not drawn.
+
+## Patch 774 — deliver signed input journals outside the game netchan
+
+**Problem:** the evidence transport refused files above 4 MiB and sent one small
+chunk per round trip. Real input journals outgrew it, leaving a signed commitment
+without the journal needed for input checks. Raising the netchan cap alone would
+still consume gameplay-channel bandwidth for many round trips.
+
+**Change:** capable clients advertise `fshidhttp`. The server's existing evidence
+request names the same armed nonce/kind plus its server-selected map/run basename;
+only HID takes a fixed-origin binary HTTPS POST via a distinct `rec_ul_http`
+command. `.view` retains the existing protocol. Older clients are not asked for
+raw journals; even a spoofed capability cannot make their legacy handler upload
+one through the new verb. A domain-separated Ed25519 request must match an existing
+server-written receipt's key, nonce, kept status, SHA-256 and length. The collector
+streams into a private temporary file and publishes only a matching complete
+journal, atomically without replacement; retries are idempotent and conflicting
+existing evidence is preserved. Missing receipts/I/O are service errors, never
+cheating findings. Collector/proxy/configuration live in the game repository.
+
+The native sender accepts only its per-run armed file and BOTH registered local
+upload switches. **Raw uploads separately default OFF** (`rec_hid_upload`): the
+existing online terms promised raw journals stayed local. A separate informed
+menu choice is required; online acceptance never enables it. MQC uses its trusted
+local-command builtin for protected enable/revoke, with synthetic enabling
+refused. CSQC stages only on a supporting native engine with both switches on.
+Registration preserves early local upload-off values and adds native server
+protection; a server cannot re-enable them. Legacy raw upload is disabled. One active request, 64 MiB journal cap,
+300-second deadline and disconnect/disarm/revocation cleanup bound ownership.
+The fixed small acknowledgement has 8 KiB header/512-byte body limits; redirects,
+compressed and transfer-coded responses are refused for this request only. A
+local-only diagnostic accepts a loopback receiver, never another remote origin.
+No detector, receipt semantics, ranking policy or automatic punishment changes.
+
+**Verified:** Windows client/server/plugin build; native dedicated-socket controls
+with synthetic signed fixtures: 5,242,913-byte journal delivered byte-for-byte and
+its digest acknowledged, while the small legacy `.view` also arrived exactly.
+A historical old-protocol control refused the same journal at 4,194,304 bytes.
+The final old-client control keeps `.view` working and deliberately skips raw
+requests. Early global upload-off and independent raw-opt-in-off controls, each
+with an acting server enable attempt, post nothing until local re-enablement,
+which then delivers the journal. A malformed
+chunked acknowledgement was rejected; the same client immediately reused the
+upload slot and completed an ordinary acknowledgement. Backend eight focused
+falsifiers and existing directory/sweeper tests pass; recorder reader 306 checks,
+zero failed. Existing corpus baseline is unchanged reader input, not a claim that
+its historical malformed fixtures are clean. These are collection controls, not
+input/physics classification, cohort calibration, numerical throughput, release
+or fleet-deployment evidence. Larger-than-64-MiB journals retain an explicit
+transport limit; older peers keep raw data local. Real menu-click acceptance and
+deployment provenance are recorded separately.
+
+## Patch 773 — paint sprays while a key is held; random colour; body/belt presets set what you picked
+
+**Problem:** Lex: "holding down the key should spray repeatedly", spray speed in
+player_edit, a random colour per glob, z-fighting "only if you're really close to the
+wall", and the body/belt presets "result in the slider being set to 255".
+- Lex's keys (`i`, MOUSE3) are bound to the one-shot `paint`, so a held key painted one
+  disc. `+paint` repeated, but skipped any disc within 0.3 of the size of the last one,
+  so a key held still also painted one.
+- A body/belt preset was a palette ask (`lobbycolor`) that only a lobby server resolves.
+  Solo, `cl_pcolour` stays 0, `Av_PaletteRGB(0)` is white: the body stayed white and the
+  sliders read 255 255 255.
+
+**Change (csprogs):**
+- `Paint_InputEvent` (CSQC_InputEvent, watches only): a key bound to `paint` (with
+  its modifiers, first command) holds the spray until that key comes up; `+paint` and
+  up to two such keys hold separately. Held, a disc goes down every frame the aim has
+  moved 0.3 of a disc (a sweep is a line) and, on a still aim, every 1/`paint_rate` s
+  (0 = every frame), so a spray builds up.
+- `paint_color random`: a new hue for every disc.
+- The paint vertex shader moves each vertex 0.125u toward the eye along its own ray (same
+  pixel, nearer depth). `polygonoffset` alone is depth-buffer steps, which near a wall are
+  thousandths of a unit, below the decal clip's float rounding at map coordinates.
+  `e_eyepos` is declared in the program: an inline `glslprogram` does not include
+  sys/defs.h, and without it the program failed and drew a square fallback.
+- hud_player: a swatch sets the half the sliders edit. The body's is the palette ask a
+  lobby resolves for everyone (lobbybody/lobbyrgb cleared, so body, trail and chat stay
+  one colour); solo the body wears the ask (Av_MyRGB). The belt takes it exactly. A
+  one-colour body opens on Body. The sliders follow the worn colour when it changes.
+  Paint section: Random chip, Rate slider.
+
+**Verified:** conbridge on surf_dune, control = the P772 csprogs.
+- A key bound to `paint`, posted WM_KEYDOWN held 2 s at 20/s: 42 discs (control 1).
+  `+paint` 2 s: 44 at 20/s, 11 at 5/s; 1 s at max: 114 (100 fps).
+- Panel: `lobbybody "0 128 255"` shows sliders 0/128/255; solo `lobbycolor 3` wears and
+  shows yellow 255/255/0.
+- Close paint: square on at 2-16u and grazing at 2-8u off the wall, both builds draw the
+  disc solid. **Lex's z-fighting was not reproduced**, so the pull is verified only to
+  draw correctly.
+- Review round 1 (one reviewer) found: rate-pacing turned a sweep into dots; a body
+  swatch written exactly let a lobby give a body unlike its trail; the panel opened on
+  Belt; the sliders re-read the echo every frame and snapped back. Fixed and
+  re-measured against the pre-fix build: a fixed colour held still 2 s placed 43
+  (pre-fix 1); a 40 deg/s sweep at rate 2 placed 121 (pre-fix 5); the panel opens on
+  Body for a one-colour body.
+- The deployed csprogs (f6103f93) was built from the pushed tree. 0 warnings.
+
+**Known:** the z-fighting itself is unconfirmed (lextest asks where it was seen).
+
+## Patch 770 — Friends need no acceptance; TAB board Scoreboard / Players switch, Styles row and a new Players list (QC, surfd)
+
+**Problem:** Lex, 18 Oct: the main menu's Friends list did not load; adding a friend
+waited on the other player accepting; the board's Online / Segmented / Local / Players
+tab strip mixed boards with the player list (he asked for a "Scoreboard/Players" button
+above the board, and Segmented as the first entry of "KSF Styles", renamed "Styles");
+and the Players page looked bad, with Spectate/Add/Mute as small chips under each name.
+
+**Cause (menu list):** the Pi's surfd was sealed generation 36697da (16 Oct morning),
+older than P741's `/api/social/menu` routes, and the public proxy had no locations for
+them: `play.proto.bar/api/social/menu/challenge` answered 404.
+
+**Change:**
+- surfd `social.py`: `add` makes both accounts friends at once (a pre-P770 request is
+  completed by an add, or by the next lobby poll). Without acceptance an account needs a
+  way to refuse one: `block` ends a friendship, purges queued messages and refuses that
+  account's add, message and join; both sides' blocks stand until each lifts its own
+  (accepted -1 / -2); the blocker sees relation 4 with Unblock, being blocked is not
+  shown and takes no friend slot; menus before P770 get no relation-4 rows.
+- `cl_scores.qc`: tab strip Online / Local; a Scoreboard | Players switch centred above
+  the panel (Scoreboard returns to the board and KSF style it left); "Styles" opens with
+  Segmented, then FW / SW / HSW / BW; left / right go Online, Local, Players.
+- `cl_players.qc`: a row per player (picture or initial, name, You / Spectating /
+  Blocked / Voice muted, ping, PB). The row spectates; Profile, Add friend, Mute (voice,
+  the engine's, session only) and Block (saved chat silence plus the service block)
+  sit on it. `sv_social.qc` passes block / unblock; the Friends tab lists blocks.
+- `tools/surfd_successor/`: build, suite, cutover and rollback for a code-only
+  successor generation (the sealed one refuses `surfd-deploy.ps1`). It moves every
+  host binding together: the guard, 4 cron lines, `run.sh`, the six import stubs in
+  `/srv/nvme/surfd` (which run the generation's code for unguarded crons and
+  `momrequests.service`), and restarts that service.
+
+**Verified:** `test_social.py` 36 pass (each new test fails on the code before it) here
+and in the Pi stage, with the whole surfd suite. QC builds with 0 warnings. A fixture
+arm (7 synthetic roster rows, owned overlay) at 1280x720 and 800x600: every switch,
+Styles chip and arrow path acts, read from `scores status`, screenshots read; Block
+sends `friend block`. Three review rounds (social, QC, Pi scripts): a step-2/3 cutover
+failure without a working rollback, a harasser's block making the victim's a no-op,
+hidden rows taking slots, the rollback ordering, all fixed. Live: QC on 12 lobbies
+(qwprogs `24e65490`, csprogs `bc93f6db`) and both installs (menu `7cdba577`) at
+22:47-22:48Z; surfd 8182c6f promoted at 22:58:21Z after 64 s of 503s (step 3 waited
+its 60 s on momrequests' shared lock); 12 lobbies heartbeating, social polls 200,
+local `menu/challenge` ok. Not verified: the public menu route (the proxy snippet
+needs Lex's sudo), real linked accounts, more than one real player. FTESurf
+`884a85b`..`8182c6f`.
+
+## Patch 772 — paint: discs sprayed where you aim, clipped to the faces as Source's are; the player trail as a line
+
+**Problem:** Lex asked for `paint`: a coloured disc sprayed where you aim, with no
+latency and as many as possible, clipped to the surface so a ramp's edge shows. He also
+asked for player_edit's trail to be a line that follows the player, not the particle
+dots it was. The persistent decal (`adddecal_static`) was the right base: it is clipped
+once and copied each frame. But it only reached faces the world's BSP leaves list:
+- VBSP leaves list no displacements: 0 of 452 on surf_dune, 457 on surf_ethereal,
+  493 on surf_aquaflow.
+- Brush entities were never clipped. Across 1,131 surf maps, a quarter or more of the
+  surfable face area is a func_brush or func_illusionary on 116 maps, and a
+  displacement on 35.
+- Every decal was emitted every frame. 29,992 decals out of view took a frame from
+  1.1 to 4.7 ms (≈920 → 213 fps).
+
+**Change (engine):**
+- `adddecal_static` reads srange's third figure as flags; older engines ignore it.
+  PDC_SOURCE (1) also clips the decal to two more things:
+  - The world's displacements. They are the only non-fan meshes in a VBSP world;
+    `Mod_ClipDecalDisplacements` (q1bsp.c) keeps them with their bounds per map.
+  - The unrotated brush entities in the current packet. Source stores their models
+    about the entity origin, so the clip runs in model space and the fragments are
+    shifted back.
+  - Extension `FTESURF_DECAL_SOURCE`.
+- No decal lands on a hidden tool face (`SURF_NODRAW`: triggers, clip).
+- `CL_EmitPersistentDecals` skips a decal whose clipped bounds are outside the frustum,
+  unless a portal or mirror view drew the world in the previous frame. Those views
+  draw the main view's scene tris. The skyroom draws none and does not count.
+
+**Change (csprogs):**
+- `cl_paint.qc`: `+paint`, `paint`, `paint_clear`, `paint_fill <n> [deg]`,
+  `paint_status`, and the cvars `paint_color` ("" = your body colour), `paint_size`,
+  `paint_alpha` and `paint_max` (8192; the oldest goes).
+  - The disc is a GLSL coverage circle, placed in the frame the key is down, client
+    only.
+  - The aim stops at player collision (solid + player clip). If no face takes the
+    disc there, it tries the first visible solid within 32 units further on.
+  - `hud_player` has a Paint section under the body; the key panel has a
+    "Paint (hold)" row, unbound.
+- `cl_ptrail.qc`: the trail is one camera-facing ribbon per body
+  (`R_EndPolygonRibbon`), cut at teleports, faded by age. The four length stops keep
+  the particle blocks' lives (0.6/1.2/1.8/3 s). Motes are gone from the panel and from
+  other players' bodies, and opening the panel clears the old bit.
+
+**Verified:** client exe built from this tree, beside a dedicated server, via conbridge.
+- surf_raqbonus3ramp: the func_illusionary ramp face takes paint, cut at its ridge and
+  foot. Of a 6,000-disc spray, 542 failed under the P771 exe (46 on a brush entity,
+  496 with no face); 2 failed under this one.
+- surf_dune: the sand mound (a displacement) is bare at a straight line under P771 and
+  painted with a soft fade under this build. Discs stop at face edges (the arch's
+  frame, the floor's rim).
+- The same csprogs under the installed P771 exe: source clip 0, world faces painted,
+  the trail drawn, no QC error.
+- Cost, the same pose with the paint out of view: 0 decals 0.94 ms; 27,951 decals
+  1.5-2.3 ms with the cull, 4.7 ms without. In view: 2.4 ms (4.2 ms before).
+- Trail: your own (slot 0) and a streamed body (`lobby_av_self 1`, slot 2) both fed;
+  one ribbon of 90 points drawn in the trail colour.
+- 0 warnings, both builds.
+- Review, one round. It found that brush entities were clipped in world space, that
+  triggers' hidden faces would take paint, that a failed aim at the cap dropped the
+  oldest disc, a per-failure surface scan, a cache key that could go stale, and a
+  short reach. All fixed; the brush-entity fix re-measured above.
+
+**Known:**
+- Static props take no paint. surf_ethereal's ramps are props.
+- A rotated or moving brush entity is left out, or keeps its paint where it was clipped.
+- The first frame a portal comes into view, decals outside the main frustum are
+  missing from it.
+- Other players do not see your paint.
+- Trail drawing in a full lobby (32 × up to 192 points) is not measured.
+
+## Patch 771 — the 3D sky through a door is no longer cut by the door's near plane
+
+**Problem:** on surf_kitsune, the stage 2 room's 3D-sky grid seen through the stage 1
+exit door appeared only within ~220 units of the door (the owner's saves 17-19). From
+save 18 it was there; 18 units further back and beyond, it was not. P758 had placed
+the sky camera per view, and that was right.
+
+**Cause:** `GLR_DrawPortal` bends the portal view's `m_projection_std` with
+`R_ObliqueNearClip`, so that view clips at the door plane. `R_DrawSkyroom` reused that
+projection from the sky camera, for its frustum and on the GPU. So the sky room lost
+everything nearer than the eye's distance to the door.
+
+How it was measured:
+- A diagnostic build (never shipped) put the moved sky camera, and the sky_camera
+  origin, in the same open cluster (99) at all three distances. So visibility is not
+  the cause.
+- With `r_fastsky 1` the grid is gone at every distance, so the grid is the skyroom.
+- `r_portalrecursion 1`, `r_portalmaxviews 8` and `r_portalscissor 0` change nothing.
+
+**Fix:** `R_SetupGL` keeps the root view's projection in
+`r_refdef.m_projection_noclip`, which portal views inherit and the oblique clip never
+touches. A nested skyroom draws with it. `GLBE_DrawWorld` reloads the backend's cached
+projection on entry and exit, so the portal view draws on with its own. If the copy
+was never set (all zero), the old behaviour stays. The main view is unchanged.
+
+**Verified:**
+- Kitsune, the owner's settings, `r_portalfbo 1`. P771 shows the grid at saves 17 and
+  18 and at every point of a sweep out to 530 units. The installed P766 build shows it
+  at save 18 only.
+- Frame diffs against that build: at the poses on a floor, every change is inside the
+  door. `r_fastsky 1` differs by 2 px, against 12-65 px between two runs of one build.
+- P758's sky arm at saves 12-15 is unchanged.
+- Review, one round on render state: no defect. It found redundant projection flushes
+  (removed) and a cosmetic risk. With `r_portalfbo 0`, or where `GLR_PortalScreenRect`
+  falls back to the full viewport, the far-side sky can now fill the door's scissor
+  rectangle past its outline, where it meets the skyline. The FBO path paints the
+  exact aperture.
+- Water reflection and refraction views take the unclipped sky too.
+
+## Patch 768 — the forced sky depth sits just behind the sky brush (`r_sky_forcedepth_push`)
+
+**Problem:** Lex, 17 Oct: in surf_monolith's bonus 4 the map's own blue sky
+(sky138a) showed through the room's red fake sky along the far wall, a solid band
+with stipple at its edges, and only from some angles ("you have to offset your view
+angle before loading the save"). B4 is roofed and walled by a WindowImposter slab a
+few units in front of its sky brush. `r_sky_forcedepth 2` (default since Patch 296)
+draws the sky brushes depth-only so the level behind the sky stays hidden; seen at
+range the gap is under one depth step (24-bit depth, `gl_mindist` 1: a step is about
+d²·6e-8 units, 6 units at 10000), so the slab lost the depth test.
+
+**Change:** `GL_SkyForceDepth` tags its depth-only draw `BEF_SKYDEPTH` (bit 11), and
+`BE_PolyOffset` gives such a batch `r_sky_forcedepth_push` depth steps (default 4)
+away from the eye (signed by `gldepthfunc`). `0` restores the old mask. Steps only: a
+slope term grows without bound as the eye nears a sky plane (review). The D3D and
+Vulkan backends do not test the bit, and on paths where the sky writes its own depth
+(Quake skies, GLSL surface skies) the push has no effect.
+
+**Verified:** client build, no new warning. Save 18's origin, pitch -8 and -7.5 by
+five yaws, share of the horizon band that is sky138a blue, one binary and session:
+push 0 0.07-25.8%; push 1, 2, 4, 8, 16, 64 0.00-0.01%. `r_sky_forcedepth 1` and `0`
+also read 0.00% there; `r_novis 1`, `r_blendsort 0`, `r_portalrecursion 0` did not
+(23.9-25.8%). surf_kitsune, four zone starts by four yaws, push 0 against 4 (on the
+first cut, which pushed further): at most 0.09% of pixels differ (motion). One review
+(state and leaks; what now shows through); its slope-term finding is the second commit.
+
+**Limits:** the mask now lets through geometry within 4 depth steps behind a sky
+brush: about 1 unit at 2000, 24 at 10000, 60 at 16000 (`gl_mindist` 1). Patch 296's
+surf_fantasy case was not reproduced in the arm: at its four zone starts the mask hid
+at most 0.26% of the frame, so this measures no regression there and no protection
+either (BACKLOG). Inside a mirror or portal view the oblique near clip rewrites the
+depth row, so 4 steps may cover more distance there (unmeasured).
+
+## Patch 767 — Modulate multiplies as Source does, whatever `$additive` says (hl2 plugin)
+
+**Problem:** Lex, 17 Oct: surf_board_this's stage 1 sky drew flat yellow with
+streaks. Stage 1 sits inside model `*457`, six faces of
+`Modulate { $basetexture "lody/rainbow" $additive 1 $nocull 1 }`, a box that tints
+the sky behind it. The Modulate arm wrote DST_COLOR*SRC_COLOR for a plain Modulate
+and DST_COLOR*(1-SRC_ALPHA) under `$mod2x`, the reverse of `modulate_dx9.cpp`
+(DST_COLOR*ZERO; DST_COLOR*SRC_COLOR with `$mod2x`), and left `st->additive` set, so
+the tail's `progblendfunc add` replaced the pass blend (Patch 219 lets it reach a
+pass): the rainbow was added over the nebula instead of multiplying it.
+
+**Change:** the arm writes Source's two blends and clears `st->additive` and
+`st->alphaval`, which Source's Modulate never blends by (the tail re-derived
+translucency from a fractional `$alpha` and replaced the multiply too). `$mod2x`
+reads its value: `"$mod2x" "0"` was 2x. DecalModulate is unchanged.
+
+**Verified:** plugin build, no new warning. Same exe (20d3e0b1), installed plugin
+against this one, main start of surf_board_this at yaw 0/90/180/270, share of the
+frame that is saturated yellow: 55.8/0.0/18.0/28.6% against 0.0/0.0/0.2/0.0%; the
+nebula now shows through, tinted. `r_showshader lody/rainbow`: `blendFunc
+gl_dst_color gl_src_color` + `progblendfunc add` against `gl_dst_color gl_zero` and
+no progblendfunc. `tools/census/modulate.py` over 1926 library maps: 26 packed
+Modulate materials in 12 maps move (16 `$additive`, 10 `$mod2x`; board_this,
+surf_era and surf_pride's lody set; six maps' combine_binocoverlay; df_upvno's six
+glass panes go from 2x to Source's 1x).
+
+One review (translation against modulate_dx9.cpp and the tail); its `$alpha` and
+`$mod2x 0` findings are the second commit.
+
+**Limits:** still unlike Source: `$writez` is ignored, `$color`/`$color2` are not
+applied, transparent texels are not faded to grey, and DecalModulate's `$mod2x`
+branch writes DST_COLOR*(1-SRC_ALPHA) where Source always doubles (BACKLOG). The
+streaks at the stage box's edges remain.
+## Patch 766 — borderless stays visible to display capture (`vid_borderless_capture`)
+
+**Problem:** OBS display capture showed the owner's borderless game as black, with a
+flicker every few seconds. Measured with ffmpeg's ddagrab (Desktop Duplication, OBS's
+"DXGI Desktop Duplication" method) and gfxcapture (Windows Graphics Capture, its
+"Windows 10 1903 and up") on the primary monitor (1920x1200 @ 360 Hz, RTX 2080 SUPER,
+driver 591.86). While the OpenGL window is exactly the monitor's size AND the foreground
+window, Desktop Duplication fails on every frame (887a0026 DXGI_ERROR_ACCESS_LOST,
+"ReleaseFrame failed") and Graphics Capture delivers nothing. The gamma ramp is not the
+cause: it never changed, and the log says hardware gamma is not supported. A background
+window of the same size captures (121 of 121 frames), which is why the first arm passed.
+
+**Fix:** `VID_BorderlessOverhang` on WM_WINDOWPOSCHANGING (gl_vidnt.c). When a move or
+size of the MS_FULLWINDOW window would exactly cover a monitor, it grows the window one
+row or column past the first edge with no monitor beyond it (bottom, right, top, left;
+bottom if all have one). Maximize, alt-tab restore and display changes all pass through
+it. The engine renders at the client size, so the extra row is drawn and falls off-screen.
+`vid_borderless_capture` (archived, video latch, default 1); 0 keeps the exact size.
+
+**Verified:** FTESurf `tools/p766capture.py`, game made the foreground window, view
+turning; live frames of total over 6 s:
+
+| Build | Window | Desktop Duplication | Graphics Capture |
+| --- | --- | --- | --- |
+| 758 install | 1920x1200 | 0 (15 attempts) | 0 |
+| 758, same window grown from outside | 1920x1201 | 181/181 | 179/179 |
+| 766 test build (before the review fixes), `vid_borderless_capture 0` | 1920x1200 | 0 (11 attempts) | 0 |
+| the same, `1` | 1920x1201 | 181/181 | 180/180 |
+| the same, `1`, minimized and restored | 1920x1201 | 181/181 | 180/180 |
+| 766 as installed (`66e7748e`), `1` | 1920x1201 | 181/181; restored 182/182 | 180/180; restored 181/181 |
+| the same, `0` | 1920x1200 | 0 (15 attempts) | 0 |
+| the same, `1` with `vid_srgb 2` | 1920x1200 (no overhang) | 0 | 0 |
+
+At 1:1 the screen's first row matches its second and its last matches the one above,
+so nothing is undrawn or shifted. The taskbar (bottom, not auto-hidden) stays behind
+the window: the game's own bottom-right fps counter is in the captured frames.
+
+Not measured: the latency or tearing change of being composited, AMD and Intel drivers,
+and a monitor with neighbours on every side. `vid_restart` with a map loaded ends the
+client on the 758 install too (BACKLOG), so the arm sets the cvar at launch.
+
+Review, one round (predicate and control flow, Win32 semantics). It found no defect in
+the predicate or the message handling, and two fixes came from it. The overhang is now
+WGL only: EGL takes its maximize after the last VID_UpdateWindowStatus, with WM_SIZE
+skipped, so its image would sit a row low; Vulkan and NV-Vulkan are unmeasured. It is
+also skipped at `vid_srgb >= 2`, whose fp16 backbuffer CheckForcePixelFormat asks for
+only because NVIDIA treats it as linear when it is presented directly.
+
+Installed in both Windows clients at 2026-10-17T19:38:17Z: `66e7748e`, stamp
+git-7410-patch-766-0-g23f7bf2c3 (P763 to P766, so P765 now ships inside this exe);
+`.prev` is P765's `20d3e0b1`. The plugins and the FTEQuake server are unchanged (P764's).
+Then the installed `C:\FTESurftesurf64.exe` itself: 1920x1201, 181/181 and 180/180;
+minimized and restored, 181/181 and 181/181.
+
+## Patch 765 — a Source map's packed materials beat other games' copies
+
+**Problem:** Lex, 17 Oct: surf_monolith looked inside-out, as if its face normals
+were flipped; zone lines and particles showed through walls at its spawn and on
+surf_joutsenlaulu after turning right. `flocate "materials/silkroad/egypt/wall
+(3).vmt"` named a loose copy in Lex's `Counter-Strike Source/cstrike`, which says
+`"$translucent" 1`; the copy packed in surf_monolith.bsp has no `$translucent`.
+`FS_LoadMapPackFile` mounts a map's pakfile as SPF_TEMPORARY, and
+`FS_AddPathHandle` appends that after every mount (`path` lists it after Momentum,
+CS:S, HL2, TF2, CS:GO and Portal 2); Source searches the BSP pakfile first. 16 of
+monolith's wall, floor and stair materials and 10 of joutsenlaulu's resolved that
+way to sort 11 (`progblendfunc src_alpha one_minus_src_alpha`) and wrote no depth.
+`r_blendsort` 0 and 1 have always drawn zones through them; mode 2 hid it until
+Patch 739 moved stock fill_trans lines to the post-world layer, as it says it does.
+
+**Change:** `FS_FLocateFile` gives a `materials/` lookup a pass of its own before
+the main walk: every non-SPF_ADDON path first (FTESurf's gamedir, server
+packages), then the SPF_TEMPORARY map pakfiles, then the ordinary walk. The pak is
+asked for the name hash's own entry first; only when the hash names another
+mount's copy (the shadowed case) does it scan by name. A pak hit ranks one level
+below the last mod path, so Image_LocateHighResTexture's first-lowest-depth pick
+still gives a format tie to the mod. `models/` is unchanged: `.phy` collision lives
+there. `fs_mapmaterials 0` (CVAR_NOTFROMSERVER, not archived) restores the old
+order for materials loaded after it is set.
+
+**Verified:** client build, no compiler warning in fs.c. A detector counts zone-box
+pixels on a stone wall: at monolith's spawn red/green 148/243, and red on the right
+wall at its main start 1693, where a correct frame has 0. One P765 binary: 0/0 and 0
+with `fs_mapmaterials 1` (`flocate` "inside surf_monolith.bsp", no progblendfunc),
+148/243 and 1693 with 0 (cstrike, progblendfunc); joutsenlaulu's
+silkroad/china/china_wall_tile.vmt the same way. Release 0.1.26 gives 1693/1693/0 in
+r_blendsort 0/1/2, and P739, P756 and P758 give 1693 in all three. P758 with
+`hl2_translucent 0` gives 0. Cost of the pass, timer build: surf_monolith 1199
+calls, 924 found in its pak, 2.3 ms; surf_fantasy (2564 packed files) 6001/5874,
+12.9 ms. A name scan on every call cost 155.7 ms there. One review (predicate and
+control flow; what a map or a player can now override) plus a round on the fixes.
+
+**Limits:** `tools/census/shadowed.py`: packed materials/ and models/ that another
+mount shadows with different bytes, monolith 46 of 592, joutsenlaulu 29 of 1463,
+board_this 83 of 1376; only the materials/ ones move. A map-pak hit ties the
+gamedir's `downloads/` (the first SPF_ADDON path) on depth (BACKLOG). monolith's B4
+and board_this's room skies are unchanged by this. A material already loaded keeps
+its copy until the map reloads.
+
+## Patch 764 — mover 7: a static prop's collision hull is traced as its convex pieces
+
+**Problem:** Lex, 18 Oct: on curved prop ramps the game throws the rider off where
+Momentum and CS:S ride smoothly, hands off (surf_leidenfrost save 4, surf_surreal
+save 3). `pm_dispprobe 3` named both stops: the rider slid on the prop's top faces
+(`convex_ramp_detailed.mdl`, `ramp10_1.mdl`), then was clipped by an edge-cross-axis
+bevel of a VERTICAL triangle, (0 -0.787 0.617) against the face's (0.330 -0.676 0.659)
+on leidenfrost, (0 0.845 0.534) against (0.508 0.555 0.658) on surreal, about 25
+degrees off the surface. A `.phy` hull is a set of convex IVP ledges, and the walls
+BETWEEN two ledges are faces of both. A solid static prop has collided through its
+model's BIH, built from those triangles, each a prism with four units of solid behind
+it (`BIH_ClipToTriangle`), so the inner walls are thin slabs standing at every seam.
+Offline over the two hulls (FTESurf `tools/census/physeams.py`, the same walk as
+`mod_phy.c`): 32 ledges and 168 wall faces on leidenfrost's, 88 and 124 on surreal's,
+every ledge convex; each wall meets its ledge's top a fraction of a degree short of
+square (89.62 and 89.06 degrees), so its slab's far edge stands up to 0.027 and 0.066
+above the ramp, the second over the 1/32 a rider rides at, at all 124 of surreal's
+seams. Source sweeps each ledge as one convex solid, which no box outside it can
+meet at an inner wall.
+
+**Change:** `mod_phy.c` records where each ledge's triangles start and exports
+`Mod_PHY_ConvexPieces` (the model load's parse and bounds check, kept per ledge). At
+map load `mod_vbsp.c` (`VBSP_PhyBrushes`) turns each colliding static prop's ledges
+into world-space brushes on its `bihtransform_s` (`phybrushes`): a side per face, the
+six axial planes and every edge-cross-axis bevel whose edge is on the hull, each plane
+at the ledge's own support so none can cut it; world space, so the bevel axes are the
+box's. A ledge with a point over 0.05 in front of a face, under four points, or under
+0.01 thick behind any face refuses the prop, which keeps its triangles.
+`BIH_RecursiveTrace`/`BIH_RecursiveTest` sweep those brushes, culled against the whole
+move, in place of the model while `bih_phybrushes` is set; `PMSrc_PlayerMove` sets it
+at `movevars.sourceversion >= 7` beside Patch 492's `bih_sourceclip`, so the brush test
+is Source's at fixrampbugs 2. `PMSRC_VERSION` 7 and `SV_PMSrcVer` accepts pin 7; a pin
+below 7 replays the triangles, and QC traces, rendering and every other caller keep
+them. The builder is part of pin 7 (a change to it is a new version). The load line
+names the props, pieces, planes and KB. `MODPLUGFUNCS_VERSION` 5: `bihtransform_s`
+grew, and an old hl2 plugin under the new engine read `lightorg` as the brush pointer,
+so a mismatched pair now refuses to load Source maps instead. `pm_dettest`: `srctrace`
+and `srcmover` stay the triangles every older pin replays on (`mover`/`srcmover`
+pinned to mover 6); `proptrace` (with how many traces a prop piece decided) and
+`propmover` are mover 7.
+
+**Verified:** the two saves through `conbridge`, `pm_dispprobe 3` on the server, the
+installed P758 pair as control: leidenfrost, the control is stopped at (5162.5 -9797.3
+7654.7) by bevel #6 of a wall and thrown onto the floor at (7318 -10197 6929); this
+build at the same tick hits the face (0.330 -0.676 0.659) of a hull piece and rides on
+over faces (0.365 -0.658 0.659) to (5999 -9743 7261), where hands off it slides off
+the ramp's bottom edge (z 7168.5). Surreal, the control takes bevel #3 at (2788.7
+-8076.3 -12998.1) into a wall at (3860 -8001); this build is clipped by the face to
+(2464 -980 -1131) and flies on as the curve falls away: positions sampled every frame
+lie 21.8, 34.7 and 58.6 units above successive faces of the hull (offline, from the
+same `.phy`), never inside one. Same result on the three builds after review round
+1's fix; the last, 31a45ac8e, loads leidenfrost's 25 props as 192 pieces (3104 planes, 118 KB) and
+surreal's 38 as 1341 (34791, 1285 KB), none refused. 16 recordings on maps with props
+(surf_mesa 230, surf_demise 434, surf_666 600 colliding props) get the same `pm_verify`
+verdict on both builds (PASS, HOLD at the same row, or REFUSE on zones). `pm_dettest`
+trace/mover/srctrace/srcmover are equal on both builds on bhop_eazy, surf_ace,
+surf_boreas, surf_leidenfrost and surf_surreal (bhop_eazy f7958b04/3d136f8d/de0ed342,
+surf_ace 9ba6ebb0/2b575b87/f89ef15d, as at 492); proptrace's prop pieces decide 0, 1,
+3, 23 and 33 of the traces there. FTESurf `tools/test_portal_landing.py` (pin 7
+accepted, 8 refused), `test_portal_carveexit`, `test_portal_collision`,
+`test_portals` pass. Builds: no warnings in the touched files.
+Review: two lenses (geometry and control flow; evidence, replay and prediction), four
+rounds. Round 1 found the first cut unusable: this plugin's `VectorNormalize` returns
+1/length and the builder read it as a length, so every large ledge became its bounding
+box (the first subject arm stood on a (0 0 1) box top; the reviewer's harness measured
+180-512 units of phantom), plus qbsp's bevel thresholds (2-7 unit wedges), a dropped
+three-point ledge, the plugin ABI crash, and `srctrace` no longer measuring old pins.
+Round 2: exactly flat ledges oriented by rounding noise (13.8-39.3 unit half-boxes;
+none in the three maps measured, thinnest 0.9999), and a gate whose prop lines could
+compare nothing. Round 3: the flatness test looked at one face. Round 4: nothing; the
+harness, against exact Minkowski sums in double, gives phantom <= 0.001 and hole
+<= 0.0005 on ramps, wedges, near-axial edges, thin plates and 70 random hulls and
+curved caps, far from the origin included.
+
+**Limits:** displacements, brush-mounted and dynamic props, and QC `tracebox` are still
+triangles (BACKLOG). A scaled static prop still collides unscaled, and a hull reaching
+past its leaf's unscaled radius is still missed outside it, as before. No Momentum
+recording rides these two seams on the save's line, so the ride is checked against
+the hull's own geometry, not against Momentum tick by tick. An old client on a new
+server predicts the triangles and is corrected at prop seams; an old verifier REFUSEs
+pin 7, so the Pi's sweeper takes this binary, and its hl2 plugin, with or before any
+lobby. Times on maps with solid static props are not comparable across mover 6 and 7.
+
+## Patch 763 — the CSQC tempstring GC skips blocks the QC marks string-free
+
+**Problem:** on surf_kitsune, once a run had started, a ~20 ms frame came every ~415
+frames (0.45 s at ~930 fps). The owner felt it as stutter and poor 1% lows. qclib's
+collector runs as the top-level QC call returns. Every collection either copies the
+whole QC hunk on the main thread (`pr_gc_threaded 1`, the default) or scans it
+(`0`). FTESurf's run-line pool (`cl_lines.qc` Line_Alloc, ~80 MB of float and vector
+arrays, allocated at the first line) takes the CSQC hunk from 0.3 % to 4.2 % of
+2 GiB, and that made each collection 19-24 ms. With the collector off (`2`,
+diagnostic) the spikes were gone.
+
+**Fix:** `float memnostrings(__variant *ptr)`, a CSQC builtin bound by name. The QC
+promises that a memalloc block never holds a string, and it is registered, if its
+header is a used block wholly inside the hunk. The table holds up to 128 blocks,
+sorted. `PR_RunGC`'s threaded copy and its same-thread scan then read the hunk
+minus those blocks (`PR_QCGC_Segments`), cut to whole words so every word read
+sits where an unskipped scan reads it. `memfree`, and `memrealloc` through it, drop
+every registration that overlaps the freed block. The VM's flush clears them.
+`cl_status` prints "csqc gc reads: X MiB of Y MiB (N blocks marked)". With nothing
+registered, the reads are what they were. A false promise frees a string that is
+still referenced: with the threaded GC that is `PR_QCGC_Sweep`'s FIXME race, which
+a csprogs could already reach by hiding a reference.
+
+**Verified:** FTESurf `tools/test_qcgc_nostrings.py` compiles initlib.c's
+allocator, the skip table and both GC read paths. In random
+alloc/mark/free/realloc/forged-header sequences (forgeries inside blocks and in
+the globals), it checks the marks against a plain word scan that leaves out only
+the ranges an independent model says are registered. That is ~30,000 checks with
+the marks equal on both paths, and four controls fail `marks_ok`.
+
+Native arm, surf_kitsune at the owner's settings, hub walks after one door crossing:
+
+| Build | GC reads | ~20 ms spikes |
+| --- | --- | --- |
+| 763 engine + QC | 7.2 of 86.8 MiB, 29 blocks marked | none, threaded or same-thread; a ~4 ms frame per collection remains; 1% low 267-301 fps |
+| 763 engine, P758 QC (control) | all 86.8 MiB | 19-28 ms every ~0.5 s; 1% low 73-104 fps |
+| P758 engine, 763 QC | (no builtin) | as before; no QC error |
+
+No run logged an invalid-tempstring warning. Review, one round with two lenses
+(flow, hostile csprogs): no defect for a QC that keeps its promise. It found a
+false comment, a forged registration outliving a freed block, the header read
+reaching past the hunk, and the status wording; all four are fixed and covered by
+the harness. Provenance: FTESurf `tools/p763gcskip.md`.
+
+## Patch 758 — portal views see their own sky; mover 6 leaves a door at speed; `frametimes`
+
+**Problem:** On surf_kitsune the owner saw the room behind a door with no 3D sky,
+or red fragments of it, until walking through (saves 12-15); bhopping through a
+door sometimes stopped dead; the map felt stuttery with poor 1% lows.
+
+**Sky:** CSQC sets `VF_SKYROOM_CAMERA` from the player's eye once a frame and every
+recursive view inherited it, so a portal view of a room thousands of units away
+looked into the wrong part of the sky room. The property takes an optional fifth
+argument, the parallax scale (FTESurf passes its `sky_camera` scale);
+`R_DrawSkyroom` moves the camera by (that view's eye - the setter's eye) / scale.
+`V_ClearRefdef` clears the scale for each view, so only that frame's call sets it.
+Without the argument nothing changes.
+
+**Mover 6 (`PMSRC_VERSION` 6):** `PM_PortalCSG`'s linked branch clips a trace that
+starts with the hull embedded in the wall behind an exit to the carve region's
+boundary. Its plane 0 is the hull clearing the door into the room in front; the
+clip reported it as a wall facing back and `ClipVelocity` zeroed the forward
+speed. A bhop tick (10-15 units) can start that deep: 8 of 20 crossings of the hub
+door stopped dead at 700-1000 u/s with autohop, on movers 4 and 5 alike. P756's
+review had recorded it as pre-existing and unseen, from walking speed (3.4 units a
+tick). Under mover 6 that stop is a waypoint: `PM_PlayerTrace` hands it to
+`PM_CarveExitRest`, which traces the rest of the move from the stop moved 1/16
+along the door's forward (1/32 clear of the carve), so whatever is really in front
+still stops the hull. A rest that starts in solid keeps mover 5's stop; a blocked
+rest is charged its end projected on the move, below 1. Movers 1-5 replay
+unchanged; `SV_PMSrcVer` accepts pin 6, which an older verifier refuses (REFUSE,
+not a fault). On the Pi: binary (the sweeper's verifier) before lobby restarts,
+and never roll it back below 758 once a lobby ran it.
+
+**`frametimes`:** a console command. Present-to-present intervals since the last
+call (2^18 frames; it says when the window filled): average fps, 1% low,
+p50/p99/p99.9/max, and the times of the slow frames, so a periodic stutter shows
+its period. GL on Windows.
+
+**Verified:** FTESurf `tools/test_portal_carveexit.py` (actual `PM_PlayerTrace`,
+`PM_PortalCSG` and `PM_CarveExitRest` over box and half-space brushes with the
+mover's tick shape; 12 checks: flush and in-slop exits continue, past the slop and
+at an obstacle they stop, non-upright and grazing exits keep mover 5's stop, a
+corridor wall beside a door is passed in none of 43,380 exit states a mover, a
+blocked rest is charged its projection below 1; five controls fail their named
+checks), `test_portal_collision.py` (28), `test_portal_landing.py` (pin 6
+accepted, 7 refused). Native, listen server: 20 hub-door crossings at 700/1000 u/s
+across the hop phase, mover 5 stops 8, mover 6 none; a walk crosses both ways
+unbroken. Sky: saves 12-14's views show the sky grid the crossed view shows, where
+the old build showed none or red fragments. Review, four rounds, three lenses
+(control flow, evidence, cheater): round 1 found a stuck rest passed on as a move
+(a non-upright exit tunnelled through a wall), round 2 a grazing move left
+untraced (through a jamb or corridor wall, 0.4-1.5% of exit states), round 3 a
+blocked rest reported as a full move; each was fixed and re-measured, and round 4
+found nothing. Movers 4 and 5 are bitwise identical to the base over 200,000
+fuzzed exits in both physent orders (an acting control differs on 42,881); mover 6
+adds no client/server disagreement mover 5 lacks. Limits in FTESurf BACKLOG's
+mover 6 item. Provenance: FTESurf `tools/p758portalsky.md`.
+
+## Patch 760 — a run line's sample store is sized to its run (QC only)
+
+**Problem:** each scoreboard line slot had a fixed store: 65,536 samples for lines
+1-8 and 8,192 (about 2 min) for lines 9-64. Past it a line kept every other
+sample, then every fourth. 18 % of Momentum's 2,491 main runs are over 2 min, and
+a typical line used a sixth of a big slot. Drawing already windows and simplifies
+far parts, so the limit was the fixed split, not the draw (30 s chunks loaded
+around the player were weighed and left in BACKLOG: they matter only past
+200,000 samples, 1 file of 5,281).
+
+**Change:** FTESurf `cl_lines.qc`. The replay (slot 0), the live run (9, 10) and
+the race ghost's whole-run PB (68) keep their fixed places. Every other slot
+takes a region of the rest, 991,232 samples in two ranges either side of the
+live run, from a best-fit allocator in whole 512-sample groups, at most 65,536.
+Each region owns its chunks and LOD groups, so the engine's per-draw bases need
+nothing. A line job asks for the file's size / 40, and gives back what it does not
+hold at the end of its build or when it stops early. Clearing a line returns its
+region, and free neighbours merge. `lines native` prints the regions.
+
+**Verified:** `p760pool.cfg`, graded by `tools/test_p760pool.py`, on the current
+exe and on the 0.1.26 release exe. The owner's Kitsune PB in lines 1, 9 and 64
+keeps all 9,996 samples (the build before: 4,998 in 9 and 64). 19 copies of a
+58,126-sample run: 15 whole (8 + 7, as the two ranges hold beside three short
+runs), the rest halved down to an eighth. No region, used or free, overlaps
+another or a fixed place. Two lines off join into one free region, and a run
+ticked again lands inside it. Cleared, the pool is whole. The build before the
+review fails the grader. p649lines 11 of 11; race ghost stage and pose arms pass.
+One review: the ghost PB had been pooled, and a job that stopped early kept its
+65,536. FTESurf `c62aa38`, review fixes `6bf55c5`.
+
+## Patch 759 — 3/4/5/6 and `!s N`/`!b N` are predicted (QC only)
+
+**Problem:** on a Patch 754 client, which predicts through a save-lock hold, every
+3/4/5/6 press under a hold printed a `prederr`: the server moved the held body by
+stringcmd and the replay, re-based one snapshot late, finalized the old row (the
+owner's Kitsune walk through saves 12 to 15: 9-4421 u). Turning prediction off
+around the step does not help: on resume the engine re-bases at `prop.sequence`,
+a frame before the step. `!s N` and `!b N` still waited a round trip.
+
+**Change:** FTESurf `sv_warpop.qc`/`cl_warpop.qc`, on Patch 753's ops: 205-208
+sl_next/prev/first/last, 209+N-1 `!s N` (N up to 30), 239+N-1 `!b N` (up to 16),
+applied through the same calls as the stringcmds and chat. The server publishes the
+four rows a step can land on (STAT_FS_WOPROW, every PostThink), P680's answer for
+each existing stage and bonus (STAT_FS_WOPLEGS, six string stats, at most once a
+second per player) and the last op it answered (STAT_FS_WOPACK, which travels with
+those stats; servercommandframe can lead them). Every press is sent at once and in
+order; the client walks the unanswered loads and steps through the server's cursor
+arithmetic, predicts only a row it was given, and otherwise sends the op
+unpredicted. A client mirror of SV_SaveLocRate keeps a refused press out of the
+walk, and a key's auto-repeat waits for the answer.
+
+**Verified:** `tools/p753warpop.py --more`, dedicated surf_dune, sv_minping 80, 754
+client. The live build printed 1343-28654 u per held step, 10923 for `!s 2`, 29608
+for `!b 1` and 498 for a free step; this build 0 in every predicted window, each op
+at the same command on both sides, rows landing in order (a step onto an
+unpublished row is corrected once, as designed). The 0.1.26 release client
+predicts all but held steps, which fall back. Three control-flow and two integrity
+review rounds; a first cut that held early presses back let later keys overtake
+them and was replaced. Not this patch's: a landing from surf_dune's void teleports
+after a fast fall is sometimes corrected on every engine (FTESurf BACKLOG).
+
+## Patch 762 — key configuration panel, key hints, the save-lock keys as binds (QC only)
+
+**Problem:** There was no in-game way to rebind keys. The save panel's z and the
+panel-down 1/2/4 were fixed scancodes in SaveLoc_Key, so they could not be moved
+and a bind on those keys never ran. Nothing on screen said which key opens which
+menu, and the vote box still drew the rows Patch 606 replaced.
+
+**Change:** FTESurf `cl_keycfg.qc`. `config_menu` (default K) is a SUI panel in
+the shared card style, with two key slots per action: movement, +left/+right,
+the save menu, save/load/delete/prev/next, restart/respawn (goto_start,
+goto_spawn), rewind, noclip, hud_edit, gfx_menu, config_menu. It also has
+cl_yawspeed and sensitivity sliders and a reset that asks twice. Binds go
+through setkeybind on all modifier states. A CSQC bind has the insecure level
+(`bindlevel <key> 30`) and runs at it. A key an action gives up is bound to "":
+Key_WriteBindings writes no unbound key and no unbindall, so an unbind would
+come back from default.cfg. A capture comes first in CL_InputChain, ignores OS
+repeats and takes its key's release. A click away from the waiting chip cancels
+rather than binding Mouse 1. `hud_keyhint` is a bottom-left strip of the bound
+keys of the save, graphics and HUD menus, noclip, rewind and the key panel; it
+is listed in hud_edit. default.cfg binds z save_menu (a new name beside
+saveloc_menu), 1 sl_save, 2 +sl_hold, 4 sl_del and k config_menu. A `+sl_hold`
+from a printable key owns its hold as the fixed 2 did. Its owner checks run
+above the rec_savelock gate, so the repeat deadman still lets go of a lost
+key-up. `-sl_hold <key>` releases only that key's hold, because keys.c keeps it
+after CSQC takes the up. SaveLoc_Key keeps only the open panel's digits and lets
+the save_menu key through; rewind and spectate pass those binds. The vote box
+uses the KeyMenu_Row card.
+
+**Verified:** three progs 0 warnings; csprogs global defs 123,068 of 131,072.
+`tools/p762keys.py` drives a windowed client on a generated map, posting native
+WM_KEY* only to its own window. It passes 56/56: default binds; the strip; native
+1/z through their binds; a cleared 1 no longer saving; captured j and x (x's old
+action named); a held W's repeat not captured; the sliders; ESC; the saved
+bindlevel lines; a restart keeping a cleared key cleared over default.cfg;
+reset; sl_save/save_menu/noclip from panel-made binds; the deadman on a lost
+release; rec_savelock 0; a stale -sl_hold 50; a stray click; save_menu on 8.
+Controls: origin/main 1b92f58 4/4 (1 saves with its bind cleared; no
+config_menu); the first cut's source (048ed47) fails the four first-review
+checks; the first fix's (b144a1a) fails the two second-review checks.
+Reviews: the first (control flow and input routing) found seven defects, five
+fixed and two low ones to BACKLOG; a narrow review of the fix found three more
+in the hold ownership, two fixed and one
+(the deadman after Windows stops a key's repeats, old behaviour) to BACKLOG.
+Mouse clicks on the panel were not driven by the arm (lextest).
+FTESurf `048ed47`, `b144a1a`, `be10183`.
+
+## Patch 757 — KSF demos that begin in the start zone, or time off the frame count (backend tool)
+
+**Problem:** FTESurf `tools/ksfconvert.py` refused 17 of the 155 KSF demos the
+crawler tried on 2026-10-17. Ten begin inside the start zone (two bookmarks: the
+exit at frame 334, then the finish), so "no initial start-zone entry", although
+exit to finish is the official time within 0.13 tick. Seven differ from the frame
+count by more than the one tick allowed: 1.005 to 2.03 ticks on short runs, 3.99
+and 24.15 over 57,053 and 24,692 frames (the second repeats 23 frames). KSF's
+time is its timer's, not the frame count.
+
+**Change:** a course with no entry before its one exit is accepted when an
+official time binds it (never without one); the official time must be within 2.5
+ticks plus each frame the file repeats while moving plus one a 10,000 frames. A
+wrong course or run is seconds off.
+
+**Verified:** all 17, fetched again one at a time, convert with their rows' exact
+times; the 12 P702 clips convert to identical bytes; converter tests 11 pass, the
+old converter fails 6 of the new checks. The refused surf_monolith main FW demo
+replays with zone splits each one tick before KSF's own stage bookmarks (9 of 9).
+Pinned by the sealed schema20 generation: live with the next guarded cutover.
+FTESurf `cad73a2`, `tools/p757ksfconvert.md`.
+
+**Review (one round, FTESurf `c91719f`):** the first cut allowed 0.2 % of the run
+(1.8 s at 900 s); now bounded by counted repeated frames. `surfd/ksfgrab.py` stored
+the bookmark interval as the run page's time; it stores the row's now (its owner
+asked). test_ksfgrab 49 pass; the old ksfgrab fails the new test.
+
+## Patch 750 — Momentum and KSF replays show splits, boards and boarding (QC only)
+
+**Problem:** A replay's split list, Board panel and Boarding enter row were read
+from a file's own `stage`, `cp` and `board` records, which only a native recording
+has; the leave row was blank in every replay; a KSF v2 file has no ground flag, so
+its contact was not inferred and Segments was empty. Measured: a Momentum replay
+showed Segments and the trainer only (its timer at "stage 1/3" 40 s in), a KSF v2
+one the trainer only.
+
+**Change:** FTESurf `cl_watch.qc`. Stage and checkpoint crossings of a file without
+those records come from this map's zones by the server's own rule (SV_ZoneScan:
+the first END, else STAGE, touched per tick; the next stage only; checkpoints on a
+change of region), a few thousand lines a frame. Boards of a file without them are
+inferred in the build pass where contact begins after the engine's air gate: the
+plane is the face the map has along the velocity's clip, the pre-clip velocity the
+sample's in-plane part plus the last sample's along the normal; the panel says
+"inferred". Every replay keeps its leaves for the Boarding window. KSF v2 reads
+ground from vz (`cl_infer.qc` Infer_Ground: on the three KSF v3 clips vz is 0 on
+all 270 ground samples and on none of the other 10,747).
+
+**Verified:** Lex's surf_kitsune PB rewritten as an import: split ticks 8 of 8
+exact; boards 38 of 38 within two ticks, plane error median 0.00 max 0.66 deg, kept
+% median 0.04, grade equal on 36 (35 of 38 with its contact inferred too); leaves 38
+of 38. A surf_dune Momentum import: both splits, 22 boards. A KSF v2 surf_monolith
+clip: contact at the 12.00 step, 5 boards, 6 leaves, ground 59 of 59. The build
+without the patch fails the import arm 9 times and the KSF arm 6. One review: the
+first cut split on any higher stage a hull touched (a hub map would show three at
+once); fixed with the server's rule, boards retried on a ride's first three samples.
+The import arm also passed on the 0.1.26 release engine (before the fix). FTESurf `8105095`, review fix `b7f6f02`.
+
+## Patch 756 — mover 5: walking through a linked portal no longer sticks
+
+**Problem:** On surf_kitsune a player who walked through a floor-level linked
+portal stuck just past the exit; jumping through worked and a duck tap freed
+them. Walking back from stage 1 into its entry door never crossed. A per-tick
+diagnostic build (not shipped) showed why: the walker crosses on the hull centre
+plane, so half the hull is still inside the wall behind the exit and every trace
+starts in solid. `PM_PortalCSG`'s linked branch then keeps only the six window
+planes, whose bottom one is offset to the box centre 31 units under the sill, so
+the ground probe passed through the floor (airborne), gravity's move ended 0.18
+inside the real floor and `PMSrc_TryPlayerMove` refused it and cleared the
+velocity every tick. The 1/8-unit landing snap was a first suspect; an exact
+landing alone still stuck 3.9 units past the exit.
+
+**Change:** `PMSRC_VERSION` 5 (`common/pmove.h`). Under mover 5, for an upright
+linked door (its up within 0.7 of world up) `PM_PortalCSG` bounds a carved trace
+by a seventh plane, the player box's lowest corner against the opening's own
+bottom edge (Patch 216's start-only gate as a sweep); tilted doors keep mover 4's
+sweep. A linked landing keeps its exact position instead of the 1/8 snap
+(`PM_PortalTransform`, `PM_PlayerTracePortals`). Movers 1-4 replay unchanged;
+`SV_PMSrcVer` accepts pin 5, which an older verifier refuses (REFUSE, not a
+fault): on the Pi swap the binary (the sweeper's verifier) before restarting
+lobbies, and never roll it back below 756 once a lobby ran it.
+
+**Verified:** FTESurf `tools/test_portal_collision.py` (actual `PM_PortalCSG`,
+22 checks): under mover 5 the sill is ground, a walk out is still carved, a fall
+stops on it, a 50-degree door sweeps as mover 4; mover 4 still carves the sill;
+controls without the plane or the upright gate fail. `tools/test_portal_landing.py`
+(actual transform, trace and `SV_PMSrcVer`): 816.03125 vs 816.0, pin 5 accepted,
+6 refused; snap controls fail. Native timeline, settled walk, eye every 300 ms:
+mover 4 freezes 3 units past the hub door's exit and 7 short of stage 1's entry
+for the rest of the walk; mover 5 crosses both ways at an unbroken ~225 u/s; jump
+and duck-tap arms still cross. Review (flow, evidence, cheater): no gain for an
+unearned run; two commits both pinning 5 were squashed; tilted doors excluded;
+the mid-air perch, a departure-tick clip and door edges below the floor are in
+BACKLOG. Provenance: FTESurf `tools/p756portalwalk.md`.
+
+## Patch 752 — portal rooms: the door seen through a door opens
+
+**Problem:** The owner asked for a setting for how many rooms you see through
+portals, two by preference. `r_portalrecursion` is that setting (default.cfg 2),
+but on linked-portal maps the second level never opened: FTESurf's
+`FS_PortalPredraw` offered a door only if it faced the player's eye, sat within
+`vbsp_portal_dist` of it and in its PVS, so the door in the room behind a door was
+never in the scene for `CSQC_SetupToRenderPortal` to recurse into. The cvar was
+not archived either.
+
+**Change:** `client/renderer.c`: `r_portalrecursion` is `CVAR_ARCHIVE`, described
+in rooms. `gl/gl_rmain.c` `GLR_PortalDrawableAt`: a view budgets only doors in its
+own PVS (`r_refdef.scenevis`; nothing else culls portal batches by PVS with
+`r_ignoreentpvs 1`), so a door offered for another level cannot take a slot. FTESurf `cl_portal.qc` `Portal_Offer`: once per frame, the player's eye
+and then each offered door's far-side eye (`FS_PortalWarp`/`FS_PortalRotate`, PVS
+at the exit doorway as the renderer samples it), up to `r_portalrecursion`
+levels; only the `r_portalmaxviews` largest doors in front of an eye carry the
+walk deeper (at most 32 eyes). `vbsp_portal_dist` bounds directly seen doors only.
+
+**Verified:** Native A/B at the Kitsune hub, P748 engine, latest-main progs
+against P752's: the old progs offer `portal_hub_exit` only and render 1 door at
+depth 1; P752 offers `portal_s1_exit` at view level 1, renders 2, and stage 2's
+door frame appears inside stage 1's exit through the hub door; the hidden hub door
+seen from stage 1 is no longer rendered at depth 1. Cost (`timerefresh 2 720`,
+FBO portals, 960x720, final build): hub 0.39 s at recursion 1, 1.55 s at 2 (old
+build 0.48 / 0.59). One review: findings fixed or in BACKLOG. QC 0 warnings.
+Provenance and limits: FTESurf `tools/p752portalrooms.md`.
+
+## Patch 748 — mode2 sorts translucent panes seen through portals and in the 3D sky
+
+**Problem:** After P743 the owner found two more surf_kitsune flips: stage 1's
+floor seen through `portal_hub_exit` (save 8 vs save 9, 0.04 degrees apart) and
+the skybox grid at stage 1's start (save 11 vs 10). `GLBE_SubmitBlendedFaces` ran
+the raster-empty cull and the plane sort only at `r_refdef.recurse == 0`, so every
+pane in a portal, skyroom or FBO-capture view kept P736's centre-depth order.
+
+**Change:** mode2 only, `gl/gl_backend.c`. Recursive views gather, cull and sort
+as the main view does (one basis from `GLR_DrawPortal`/`R_DrawSkyroom`; the
+oblique near clip rewrites only the projection z row). `GLBE_BlendViewEyeAgrees`
+gates the sort on GL's eye, solved from `m_view`, lying within 1/32 unit of the
+proofs' `r_origin`: ray-disjoint bounds hold in any image frame, so roll, mirrors
+and skyroom spin sort, a stereo/VR eye offset keeps the baseline. `r_blendtrace`
+traces every pass of the next frame drawn (`recurse=`, `eye=`); a later frame's
+first pass disarms.
+
+**Verified:** Actual-C suites, four variants, 48 acting mutants (portal order and
+cull, eye guard, roll/mirror/spin still sort, per-axis tolerance, singular
+`m_view`, one-frame trace). Native A/B against a trace-only control at the owner's
+saves (recursion 2, FBO portals): control portal/skyroom views status 0 with 0
+admitted and save 8's portal order differing from save 9's; P748 status 1, the
+same order at both, frames matching the owner's good views (save 9/10 0 px from
+control, save 8's 7,400-pixel doorway difference is the save-9 layering, save 11
+vs 10 30k px against 120k); main views and P743's poses unchanged. Cost +0.04 to
++0.12 ms a frame. Two review rounds (the first guard over-refused correct sorts;
+a stuck trace; test gaps), fixed; round 2 found no wrong-order path. Provenance:
+FTESurf `tools/p748portalsort.md`.
+
+## Patch 754 — prediction runs through a held body and takes the server's posture
+
+**Problem:** Client prediction stopped whenever the server reported PM_NONE (the
+save-lock hold), so a release applied at its usercmd (Patch 753) could not be
+replayed and still waited a round trip; when prediction resumed it seeded the
+replay from a stale propagated pmsrc. pmsrc is never networked, so a duck the
+server forced (a save load's `run_forceduck`) or the client mispredicted stayed
+wrong until the player's own duck input reconciled it: loading a crouched mid-air
+save while standing, the server unducked at the release and the client did not,
+an 8.5-unit (PMSrc_AirDuckShift) snap, and the camera sat at the wrong eye height.
+
+**Change:** `cl_pred.c`: PM_NONE no longer forces `nopred` when the CSQC module
+exports the pre-move hook and sets `predinput_held` (`CSQC_PredictsHeld`); a PM_NONE replay only
+categorizes, so a held body predicts held. Where the replay is seeded from the
+acked snapshot, `PMSrc_ReconcileHull` (pm_source.c) takes the snapshot's Source
+hull (floor 0, the stand or duck height, which the server pushes onto the edict
+after every move) as the completed posture when it disagrees. Server unchanged.
+
+**Verified:** FTESurf `tools/p753warpop.py` on surf_dune at sv_minping 80: with
+this client every window (reset, spawn, a held load of a ducked mid-air save and
+its release) has 0 prederr, against one at the release on the installed client.
+`--posture` (old stringcmds, ducked save, standing player, hold): `cl_predtrace`'s
+predicted eye is 47 (ducked) on this client and 64 on the same build without the
+reconcile. On a client without this patch the trace shows the server's eye (the
+replay is off), so that client is no control. 0 new compiler warnings. Review:
+PM_NONE is predicted only where the CSQC sets `predinput_held` (FTESurf: servers
+with `fs_wop`; never in demos), since sv_nqplayerphysics also reports PM_NONE; the
+spectate hold (msec 0, no touches) is replayed as a P672 HOLD by FTESurf; a
+standing hull with duck held is a forced stand only at the full standing eye
+(`STAT_VIEWHEIGHT`), else a duck in progress; the reconcile runs on every
+snapshot-seeded replay, not only the propagated one.
+## Patch 753 — `!r`, `!m` and the save-lock load key are predicted (QC only)
+
+**Problem:** `!r`/`!m` and a save load waited a round trip and then snapped:
+every one printed a `prederr` line (a dedicated surf_dune at sv_minping 80: 371 u
+for `!r`, 361 for `!m`, 105 for a held load and 23 more at its release). The
+stringcmd that asked for them lands between packets, at whichever command the
+reliable channel delivered it before, so the client could not know which of its
+replayed commands to move. Players also asked for client-side goto_start/goto_spawn.
+
+**Change:** FTESurf `sv_warpop.qc`/`cl_warpop.qc`. The op is ONE usercmd's impulse
+(201 `!r`, 202 `!m`, 203 load + hold, 204 release). `SV_WarpOpCommand` runs first
+in PlayerPreThink, where a stringcmd sent just before that command would run, and
+calls what that stringcmd calls (`SV_ZoneChatCommand`, `SV_SaveLocLoad` +
+`SV_SaveLocHold`, `SV_SaveLocHold(FALSE)`, with sl_load's rate charge); it acts
+only on a decoded command newer than the last op (P675 `input_cmd_*`), since the
+engine re-runs `lastcmd` with its impulse. The server publishes where `!r` and
+`!m` would put the body (P680's `SV_MovePrepReset`, STAT_FS_WOPR/WOPM) and the
+cursor save's velocity (STAT_FS_SLVEL), and `fs_wop` once it sees a decoded command.
+The client attaches a queued op in CSQC_Input_Frame and applies the same body
+change for that command's sequence in `CSQC_PredictPlayerPreMove` (P672) on every
+replay. `say !r`/`!m` from binds (CSQC_ChatSay) and the chat box, the load key and
+`+sl_hold`, and new `goto_start`/`goto_spawn` use it; anything it cannot predict
+(an old engine or server, spectate/replay/ghost/rewind, a list command in flight)
+sends the old command. `cl_warpop 0` turns it off.
+
+**Verified:** `tools/p753warpop.py`, dedicated surf_dune, sv_minping 80. Control
+(`cl_warpop 0`): the four corrections above. Subject on the installed client:
+each op ran at the same command on both sides (`warpop:` dprints), `!r`/`!m` 0
+prederr, the held load of a ducked mid-air save 0 until its release, then one at
+the release (7.5 and 22 u in two runs); with the Patch 754 client, 0 everywhere.
+`--threaded` (`cl_threadedphysics 1`, no CSQC_Input_Frame): no op is queued and
+every gesture falls back. QC 0 warnings. Three review lenses (integrity: no
+exploit, the gates match the stringcmds'; correctness; a round on the fixes)
+found: ops stranded or sent late (threaded input, a replay's early returns:
+now expired after 0.25 s), the hold backstop landing before a fast tap's load,
+`!r` overtaking an in-flight save, the release mode, `.impulse` written without a
+command (now `input_impulse`), the fixangle snap-back (now a Patch 396 predicted
+snap), and a non-short-circuit `||` that would have written through an
+unallocated ring on any client off this path. All fixed and re-measured.
+## Patch 755 — Steam pictures stay on disk and draw from it at once (QC only)
+
+**Problem:** P715's picture cache kept each copy for one local day, so every
+picture was fetched again after midnight; a disk copy waited behind the 1.5 s
+ask pacing like a request, so a board of 13 took 19.3 s from disk on every map;
+and 256 two-hex bucket files let players evict each other.
+
+**Change:** `cl_steampic.qc` keeps one file per origin+mark SHA256 for 30 days.
+Copies load two a frame, regardless of ask pacing, strikes or the hold; a copy
+of an earlier day is drawn and refreshed by a paced ask behind it, and kept if
+the refresh fails. A 404 deletes the mark's copy. Old bucket files are read.
+Draw contract unchanged; no new builtin, limit or draw path.
+
+**Verified:** Three progs 0 warnings, as the base. `tools/p755pics.py`, real
+client, 13 pictured players: warm board 1.0 s from disk with 0 requests (base
+19.3 s); a day-old cache drawn at once then refreshed; legacy, >30-day,
+corrupt and other-origin arms as designed. One review found an in-flight
+origin race and three smaller faults, all fixed; the fixes were not reviewed
+again, and the 404 deletion is not reached by an arm. `vid_restart` kills the
+rig client on both builds (BACKLOG). FTESurf `tools/p755steampic.md`.
+
+## Patch 751 — a lobby sees the saves another lobby made on the same map (QC only)
+
+**Problem:** Saves placed in one lobby were missing in another lobby on the same
+map. All twelve Pi lobbies share one `data/saves` (one basedir, one `sv_guidkey`,
+so one `@<guid>` folder a player), but `fopen` finds only the files the process's
+name hash held at its last map load (`fs.c` FS_FLocateFile, `fs_cache 1`), while
+`search_begin` lists the disk. A save made in lobby A therefore read as torn in a
+lobby B already on that map: missing from B's list, and B's next save took the
+same folder number and wrote over it. A block scanned once also stayed fresh for
+that guid across a leave and rejoin.
+
+**Change:** FTESurf `sv_saveloc.qc`: every list change in a lobby folder
+(create, rewind save, delete, a delete-all batch) rewrites `@<guid>/gen.txt` with
+a port/clock/counter line, and the first save-list use after `ClientConnect`
+(Sync, or Begin for a command ahead of the first move) rescans a fresh block whose
+`gen.txt` no longer matches. A read that misses adopts the file into the hash
+(`frename(p, p)`, which `FS_Rename2` follows with `FS_FlushFSHashWritten`, as
+`SV_MsAdopt` does), only where the disk listing found it.
+
+**Verified:** `tools/p751lobbysaves.py`: two dedicated servers on one basedir
+(surf_dune, recording on), one client B -> A -> B -> A, A's save made mid-run.
+Control (FTESurf `223475b`): B lists nothing, saves into slot 001 and A's save is
+gone (one folder left). Subject (FTESurf `b047d03`): B lists A's save, loads it
+with the run resumed, takes slot 002, A lists both after the rejoin, and B's log
+shows the gen.txt and state.txt adoptions (each runs only after a missed read).
+One review round: a command ahead of the first Sync skipped the check, adopting
+mkdir'd missing folders, and it ran on every row; fixed. A streamed run.rec is
+read FS_GAMEONLY and needed no adoption (a mutant without one still resumed).
+QC 0 warnings. Traps: `cl_sendguid 1` hashes the guid with the server ADDRESS,
+and a rejoined slot answers `viewpos` before its spawn. Not covered: two
+connections on one guid saving in two lobbies at once.
+
+## Patch 749 — the race ghost ducks, faces its player's view, has a name tag (QC only)
+
+**Problem:** Patch 746's ghost always stood and faced its direction of travel:
+a line sample kept no view yaw and no duck flag, though the loader read both.
+Nothing drew whose ghost it was.
+
+**Change:** FTESurf `cl_lines.qc` keeps `ln_pose` per sample (the view yaw, plus
+512 when ducked; written by Line_Point from what it was already handed, carried
+through the past-the-cap halving; +4.8 MiB). `cl_raceghost.qc` turns the body the
+shortest way between the samples either side, takes the nearer sample's duck and
+swaps in the ducked model as a lobby body does, and draws a name tag like a
+player's (picture or a chip, "Your PB" / "Your stage N PB" / the line's owner,
+fading past 256 u, hidden behind a wall; `hud_ghost_names`, a hud_edit row).
+
+**Verified:** `raceghost_pose.cfg` uses a rewind's exact clock to put the ghost at
+nine chosen moments of a real surf_kitsune PB: its three ducks and three places
+where view and travel part by 54-177 degrees. Yaw and duck equal the file's at
+all nine; the 746 build fails 18 checks. The look arm with that PB ducked for
+its first second shows a shorter body with its "Your PB" tag; the stage arm tags
+a ticked line with the file's owner. One stage run of four froze the client with
+no VM error; the other three passed. 0 warnings, FTESurf `da909c0`. Not deployed.
+
+## Patch 747 — unknown KSF players no longer park the crawler (backend only)
+
+**Problem:** No KSF row ever had a replay, so the board offered no Watch or
+line for KSF. A profile view queues a KSF walk for any Steam player; KSF answers
+HTTP 500 for one it does not know, the crawler read that as a host refusal, and
+the walk stayed first in the queue. From 2026-10-15T14:31Z every tick made one
+request and parked (6 h doubling), so no board, top-up or demo request ran.
+Demo discovery also ignored which maps people view.
+
+**Change:** `ksfprofile.step` ends a walk KSF answers 500 for (`unknown`, or
+`limited` after a page) and stops profile work for the tick without parking;
+the crawl's next request still parks a failing host. `ksfgrab` scans boards of
+recently viewed maps (mapwant) first on their own bounded cursor, downloads
+their demos first, and lets them take a cold unwanted slot in a full queue.
+Rate unchanged (two downloads a tick).
+
+**Verified:** Profile 20, grab 48 and ksfimport suites pass; the seven new
+tests fail on the unpatched code, the watch-tick one with the live symptom (one
+request, then park). One review: a swallowed 500 could lift an expired park;
+fixed and tested. Read-only Pi probe: the stuck walk 500s, a board and
+`/api/replays/<file>?game=66t` answer 200. NOT deployed: both files are pinned
+by the sealed schema20 generation, so this ships with the next guarded cutover.
+Owner-approved interim, 2026-10-17T03:56Z: the 7 stuck walks set `unknown` and
+the park lifted, live DB, crawler lock held, guard OPEN. The next tick (04:01Z)
+linked the first two KSF replays ever. FTESurf `tools/p747ksfunblock.md`.
+
+## Patch 746 — race ghost of your PB and ticked runs (QC only)
+
+**Problem:** Nothing showed a comparison body. FTESurf's `ghost` is a freecam,
+and a run line shows where a run went, not where it is at your time.
+
+**Change:** FTESurf `cl_raceghost.qc`. Your PB for the run or stage you are on
+(data/runs) is built into two line slots appended to the table (67 a stage's at
+LN_CAP2, 68 a whole run's at LN_CAP) by the board lines' own job; it and the
+first `hud_ghost_lines` ticked board lines run beside you on your own clock from
+the moment you leave the start box, or again from each stage's box with
+`hud_ghost_sync 1`. A whole run asked for a stage is cut where its body left that
+stage's box (its samples against the zone file; the last exit before the next
+stage, so a fail and retry counts the retry). The clock is the drawn body's: the
+timer stat plus the wall time since the frame it acknowledges was predicted
+(Patch 611's kept frames). Off/body/line highlight/both, an offset, opacity by a
+dither material or a blend, a fade near the eye, ghosts at a rewind's cursor, a
+hud_edit Ghost pane and `raceghost`. Ghost slots are never ranked or graphed.
+Patch 745's follow-up (FTESurf `fb3b39d`) also put the replay line's name on its
+window and distance, as its review found it was not.
+
+**Verified:** Dedicated surf_kitsune behind sv_minping 120: the ghost is 0.05 u
+off the PB file at its clock, and the server's own recording at your clock is
+0.6-8.9 u from the predicted body against 35-52 u at the timer stat's. Stage
+runs: the anchors equal the PB's own `stagestart` records (stage 2 4.98 s, stage
+7 37.02 s, not its first 29.475 s); a ticked line ghosts with the PB off, the same
+file ticked and as PB is one ghost. Pictures: dither, blend, highlight, off, the
+pane. Mutants without the lead (36-64 u off) and keeping the first exit (29.475 s)
+each fail. 0 warnings, csprogs `24dd85cf`, FTESurf `6195307`. Not covered: a
+ducked ghost (it stands), names over ghosts, the owner's feel (lextest).
+
+**Review (one round, FTESurf `b4ab2c1`):** two real defects, both in the stage-PB
+slot the stage arm never filled: once a stage's own PB had finished, the whole
+run's PB stood in further along the map, and with "your run" the stage PB was
+cleared and read again at every abandoned attempt (RUNLEG is 0 between runs).
+Fixed with five risks it named (scan cost, zone edits, rewind under "each stage",
+a line outliving a map change, facing across a teleport); a thin stage box is
+BACKLOG. `raceghost_stagepb.cfg` (a stage-2 PB cut from the Kitsune PB): the
+6195307 build fails all four checks, the fix passes; every arm passes again on
+the tree rebased onto Patch 744.
+
+## Patch 745 — a hidden player line still records; a replay line's own window (QC only)
+
+**Problem:** `hud_trail 0` reset and stopped the live run line, so a rewind
+refused ("hud_trail is off") and saves carried no picture: hiding the line took
+away what reads it. A replay's line had no hud_edit window: board lines follow
+"Board lines show" (`hud_lines_order`), the demo line only the console's
+`hud_lines_win/winf`, so it was drawn whole. `hud_watch_path_far` did already
+apply to a replay (measured below).
+
+**Change:** FTESurf `cl_trail.qc`: `hud_trail` only hides the line; Trail_Frame
+always records it and Rewind_Open no longer checks it. Run lines gains **Demo line
+shows** (`hud_lines_demo`: seconds ahead of the playhead and a quarter behind, at
+least 1 s, faded at both ends as a board line's window; 0 whole; -1, the default,
+follows `hud_lines_order`) and **Demo visible for** (`hud_lines_demo_far`, -1 =
+`hud_watch_path_far`), set after Line_ViewFrame through `Line_FarSet`. The
+console's `hud_lines_win/winf` still win when set.
+
+**Verified:** `runlines_hidden.cfg` on a dedicated surf_dune with the line off:
+it grows (19 points), a rewind opens and leaves, and turning it on shows the 41
+recorded; the installed build (`108748bb`) records 0 and refuses. 
+`runlines_demowin.cfg` on a surf_kitsune PB paused at 40 s: no window when whole,
+[39, 44] at 4 s, [38, 48] as board lines at 8, the console's [34, 42] wins;
+1500 u by either distance draws 431 of 691 points, which the old build did for
+`hud_watch_path_far` and not for the new one. 0 warnings, csprogs `b70ea5ef`,
+FTESurf `53adbba`. Not covered: the mode-1 3D ribbon (no window, as before).
+The changed default replay look is the owner's to judge (lextest).
+
+## Patch 744 — a spectated player's splits, segments, boarding and trainer (QC only)
+
+**Problem:** Spectating showed the watched player's speed, keys and run clock,
+and nothing else: the pose stream's SPEC block carries no stage, checkpoint,
+ramp-contact or board state, so the HUD switched Splits, the timer's stage line,
+Segments, Board, Boarding and the strafe trainer off (Patch 385). Separately,
+`Pose_Capture`'s `force = tp || heldchg || (...)` parsed as `(force = tp) || ...`,
+so a watched body at rest published at the 2 Hz keepalive, not every tick.
+
+**Change:** FTESurf `sv_pose.qc`: two watcher-only blocks. RUN (4 B, with every
+SPEC): ramp contact and the velocity's part under SPEC's 1 u/s rounding, in
+1/254. STATE (40 B, on change and once when a watch starts, `pb_kwatch`): board
+count with the plane and pre-clip velocity latched on the move the count changed
+(the engine copies its shared pmove into those fields after every move),
+seg/segs, cp, stage fails and closes, the stage and close SF words, split, delta,
+cp ticks, cp delta, pb. The force expression is bracketed, and a publish only the
+watch asks for goes to the watchers alone, so other viewers keep their gap and
+2 Hz keepalive; the budget counts a watcher's target every tick. `cl_body.qc`
+keeps both blocks per sample. `cl_spectate.qc` `Spec_Feed` runs every drawn
+sample, oldest first, through the anchor, `Board_Frame` (new `board_ov_spec`: a
+live frame on those inputs and the watched timer's state, no save-lock events)
+and `Trn_Sample`, on a tick clock; `Timer_Draw`'s live path reads the drawn
+sample (`Timer_Stat`), its latches seeded from the first one. The watcher's own
+segment column (and its fade), split list, anchor and board streak are held for
+the window and restored; the trainer starts clean after. Mode 1's energy zero is
+unknown until the watched body stands. The results card and your own live
+machines wait while you spectate; a replay cannot be opened then. No strafe bar
+(it needs the ramp plane and wish direction per frame). `spectate status` prints
+the feed's counters.
+
+**Verified:** `tools/p744spec.py`: a dedicated socket, `sv_csqcdebug 1`, three
+clients on surf_kitsune. The Surfer walks out, enters stage 2, hops with a
+strafe and rides a real ramp; the Watcher, who made rows of its own first,
+spectates it throughout and again mid-run; the Bystander watches nobody. 35/35
+on the rebased build (csprogs `b5f6aa6c`) and 35/35 with the released 0.1.25
+client (`0deac625`): trainer jumps agree in count, end and strafes (air within 4
+ticks, a constant turn within 2.5%, rates from a teleport's yaw step or a turn
+across the ramp exit within 10%), segment rows within 0.5 units, board entry,
+the stage-2 split row exact, no row from before a mid-run watch, the Watcher's
+own rows restored, no CSQC overread. At rest the Watcher takes 76-98 of 119
+ticks, the Bystander 3 of 67. Controls: `bb18c5e` fails 14 of 21 subject checks;
+the pre-review commit sends the Bystander 88 of 120 ticks and draws a stale row
+on the re-watch. Same gestures before/after the bracket: 287 against 679 samples
+fed. One review, two lenses (client state, wire and server); its findings are
+fixed above. Limits: STATE is sent on change, so under loss a split or board
+lands on a sample up to a round trip late; the absolute energies in the Segments
+and Splits columns read from the watch's first height until the watched body
+stands; after a map teleport into a stage start the server ran no move ticks for
+0.7 s and never set the ground flag while the Surfer's prediction landed, so the
+watched column follows the server there. 0 warnings in all three VMs.
+
+**Deployed:** main `b4ab2c1` (with 745 and 746) to all 12 lobbies at
+2026-10-17T01:38Z and to both Windows installs: csprogs `b7d751ee`, qwprogs
+`aca51849`, `.prev` kept. Host hashes read back; a fresh 0.1.25 client on
+:27510 was served `b7d751ee` and drew the board. Owner check pending (lextest).
+
+## Patch 743 — prove ambiguous alpha order over projected overlap
+
+**Problem:** P742's stage3 fix is accepted, but stage1 saves 5/6 still flip:
+all 12 world panes admitted, then a cycle (48 edges, 546 work, status -2). A
+pair with no plane-side proof got a mandatory centre-depth edge; on these long
+slanted ramp fans the centre often orders the pair backwards. Logged native keys
+plus frozen geometry reproduce it: the proof-only edges are acyclic, so the cycle
+is artificial, not a case for OIT or splitting. Separately, a face wholly behind
+the eye stays in the list as an unadmitted barrier and forces status -3 when the
+player turns round.
+
+**Change:** Mode2 only (`GLBE_BlendPlaneSort`). Plane-side proofs are taken once
+per pair on P742's budget. For a pair without one, both faces' triangles (each
+face projected once per sort through `m_view`, clipped in homogeneous space) are
+intersected on screen and affine 1/w compared at every intersection vertex:
+disjoint means no edge, one sign gives that order, mixed signs (a real crossing)
+or uncertainty keep the baseline edge. Depths within 0.01 units tie, so shared
+edges and T-junction seams give no sign. Opposite strict plane proofs cannot
+share a view ray and add no edge. A cycle or a barrier crossing (-3) is retried
+with every edge confirmed by real overlap (pass 1), then with P742's own graph
+(pass 2), so the result is never a fallback where P742 sorted. Overlap work has
+its own 65536 budget; once spent, remaining pairs get P742's edges.
+`GLBE_BlendWorldRasterEmptyNear` drops a face whose every vertex is at least 0.125
+behind the eye (w < 0 everywhere, no cull state draws it). `ALPHATRACE result`
+prints `pass=`. No map, material or surface exemptions; modes 0/1 and default1
+use P742's graph unchanged.
+
+**Verified:** Actual-C suites (`tools/test_gl_blend_faces.py`, 4 normal/HEXEN2/
+fast-math variants, 35 acting mutants; `test_gl_blend_planes.py`) pass. The frozen
+stage1 scene at the logged camera now sorts (status 1, 44 edges, 8 moved). Graded
+independently against clipped screen overlap in Python, over 360 yaws x 15
+pitches at each saved eye: stage1 (save 6) views with a pair drawn nearer-first
+fall from 978 of 5400 with P742's sorter to 0, and the stage3/save5 scene from
+475 to 0; peak work 4230. Two review rounds: the first cut abandoned busy scenes
+on budget, signed hinge seams and could cycle where P742 did not; a sliver-width
+cut then dropped real thin overlaps and -3 was not retried. Each fix has an
+acting control (hinge seams 0 signed of >1000 pairs; a 0.2 px-wide real overlap
+keeps its order). In the reviewer's ramp and wall scenes (16-52 faces) P742 was
+never better. Geometry evidence, not GPU pixels; owner live check pending.
+
 ## Patch 742 — retain mode2 ordering across eye-spanning world panes
 
 **Problem:** P739 fixes most owner switching, but farther-right save4/5 still
@@ -80,14 +2957,18 @@ validity/expiry/capacity and all existing codec/import/foreign-replay checks.
 Canonical helpers retain the existing sealed-generation pre-import fence;
 no sealed manifest/source, schema, native engine, QC or lobby change.
 
-**Verified:** Ten offline worker/priority controls and nine existing request
-controls pass; existing momgrab controls exit zero. Original source acts A,B
-and fails the mid-batch A,C,B falsifier, while fixed source passes. Canonical
-admitted KSF max-zero probe exits zero, discovers four pending demos and makes
-zero upstream requests. KSF schedule enabled 2026-10-16T15:30:35Z with its
-existing HTTP500 cooldown intact. Momentum delivery/live acceptance is pending;
-see FTESurf `tools/p740demograb.md` for deployment evidence and limits. No live
-KSF playback claim while its upstream is parked.
+**Verified:** Fifteen worker/priority controls (one a real loopback transfer
+interrupted by SIGTERM, on Linux), nine request controls and the existing
+momgrab controls pass. Original source acts A,B and fails the mid-batch A,C,B
+falsifier; four controls fail on the first reviewed cut (7808c0a) for the
+reviewers' findings. Final helper (44dc15e) and deploy-seam (6474131) reviews
+clear. Deployed `35988cd` momgrab only, no reload, 2026-10-16T16:39Z; the user
+unit has been active since 16:43Z. A real public request outside the top ten
+went queued to ready in 1.263 s, served a 212857-byte replay that reccheck
+passes, and the board row then had Watch. Still live at 21:58Z. KSF's `--demos`
+row (enabled 15:30:35Z) discovers demos (50 pending) but requests none until
+its upstream HTTP500 cooldown ends 2026-10-17T08:36Z: no KSF download or
+playback, and no in-game playback, is claimed. FTESurf `tools/p740demograb.md`.
 
 ## Patch 739 — keep wire annotations out of world-pane ordering
 

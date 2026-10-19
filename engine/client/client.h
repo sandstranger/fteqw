@@ -1209,6 +1209,8 @@ void CL_InitDlights(void);
 void CL_Receipt_Init(void);
 //FTESurf Patch 418: forget any evidence file armed for the server we are leaving.
 void CL_Receipt_Disarm(void);
+//P774: cancel an expired/revoked HTTP journal before pumping HTTP.
+void CL_Receipt_Think(void);
 void CL_FreeDlights(void);
 dlight_t *CL_AllocDlight (int key);	//allocates or reuses the light with the specified key index
 dlight_t *CL_AllocDlightOrg (int keyidx, vec3_t keyorg); //reuses the light at the specified origin...
@@ -1290,7 +1292,9 @@ extern unsigned int cl_maxstris;
 */	} while(0)
 
 //nettest: persistent lit decals (cl_ents.c) — clip once + cache, re-emit cheaply each frame.
-int CL_AddPersistentDecal(const char *shadername, const vec3_t origin, const vec3_t up, const vec3_t side, const vec3_t rgb, float alpha, float aspect, float lifetime, const float *texrange);
+#define PDC_SOURCE	1	//FTESurf Patch 772: also displacements and brush entities, as a Source decal
+void CL_PersistentDecals_PortalView(void);	//FTESurf Patch 772: a recursive view drew scene tris (r_surf.c)
+int CL_AddPersistentDecal(const char *shadername, const vec3_t origin, const vec3_t up, const vec3_t side, const vec3_t rgb, float alpha, float aspect, float lifetime, const float *texrange, unsigned int clipflags);
 void CL_RemovePersistentDecal(int handle);
 void CL_UpdatePersistentDecal(int handle, const vec3_t rgb, float alpha);
 void CL_EmitPersistentDecals(void);	//called from the world draw (r_surf.c) before BE_DrawWorld
@@ -1582,6 +1586,8 @@ qboolean CL_MayLerp(void);
 //
 #ifdef CSQC_DAT
 qboolean CSQC_Inited(void);
+qboolean CSQC_SetProfiling(qboolean on);	//FTESurf Patch 800: false while QC is running
+void CSQC_EnumProfile(void (*cb)(void *ctx, const char *func, const char *file, double selfus, double totalus), void *ctx);
 void	 CSQC_RendererRestarted(qboolean initing);
 qboolean CSQC_UnconnectedOkay(qboolean inprinciple);
 qboolean CSQC_UnconnectedInit(void);
@@ -1611,6 +1617,7 @@ void	 CSQC_PredictPlayerMove(int seat, const usercmd_t *cmd, const float *preori
 void	 CSQC_PredictPortalAngles(int seat, const usercmd_t *cmd);
 void	 CSQC_PortalView(playerview_t *pv);
 int      CSQC_PredictPlayerPreMove(int seat, const usercmd_t *cmd, float offsetmsec);
+qboolean CSQC_PredictsHeld(void);	//FTESurf Patch 754
 void	 CSQC_PredictConsumeBaseVel(int seat, int sequence, qboolean restoreprevious);
 void     CSQC_PredictSaveBaseVel(int seat, int sequence);
 void	 CSQC_PredictBaseVelFlush(void);
@@ -1648,6 +1655,7 @@ void	 CSQC_CvarChanged(cvar_t *var);
 #define CSQC_PredictPortalAngles(seat,cmd)
 #define CSQC_PortalView(pv)
 #define CSQC_PredictPlayerPreMove(seat,cmd,offsetmsec) 0
+#define CSQC_PredictsHeld() false
 #define CSQC_PredictConsumeBaseVel(seat,sequence,restoreprevious)
 #define CSQC_PredictSaveBaseVel(seat,sequence)
 #define CSQC_PredictBaseVelFlush()

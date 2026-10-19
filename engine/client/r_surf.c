@@ -3950,6 +3950,8 @@ void Surf_DrawWorld (void)
 					P_DrawParticles ();
 				if (!r_refdef.recurse)
 					CL_EmitPersistentDecals ();	//nettest: persistent lit decals (before BE_DrawWorld consumes cl_stris)
+				else if (!(r_refdef.flags & RDF_DISABLEPARTICLES))
+					CL_PersistentDecals_PortalView ();	//FTESurf Patch 772
 
 				TRACE(("dbg: calling BE_DrawWorld\n"));
 				r_refdef.scenevis = surfvis;
@@ -3973,7 +3975,10 @@ void Surf_DrawWorld (void)
 		if (currentmodel->funcs.PrepareFrame)
 		{
 			int clusters[2] = {r_viewcluster, r_viewcluster2};
+			int prepd;	//Patch 782: inside RSPEED_WORLDNODE; a Source map's vis and static props
+			double prep = RSpeed_Begin(&prepd);
 			currentmodel->funcs.PrepareFrame(currentmodel, &r_refdef, r_viewarea, clusters, &surf_frustumvis[r_refdef.recurse], &entvis, &surfvis);
+			RSpeed_Finish(RSPEED_WORLDPREPARE, prep, prepd);
 		}
 		else if (currentmodel->type != mod_brush)
 			entvis = surfvis = NULL;
@@ -4027,6 +4032,8 @@ void Surf_DrawWorld (void)
 				P_DrawParticles ();
 			if (!r_refdef.recurse)
 				CL_EmitPersistentDecals ();	//nettest: persistent lit decals
+			else if (!(r_refdef.flags & RDF_DISABLEPARTICLES))
+				CL_PersistentDecals_PortalView ();	//FTESurf Patch 772
 		}
 
 		//FTESurf Patch 218: the world walk emitted these near-to-far, which is

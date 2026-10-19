@@ -1654,6 +1654,12 @@ static void Shader_EntityMergable (parsestate_t *ps, const char **ptr)
 	shader->flags |= SHADER_ENTITY_MERGABLE;
 }
 
+//FTESurf Patch 780: draw the surface's triangles as lines; see BE_SubmitMeshChain.
+static void Shader_Wireframe (parsestate_t *ps, const char **ptr)
+{
+	ps->s->wireframe = true;
+}
+
 #if defined(GLQUAKE) || defined(D3DQUAKE)
 static qboolean Shader_ParseProgramCvar(char *script, char **cvarnames, int *cvartypes, int cvartype)
 {
@@ -3602,6 +3608,7 @@ static shaderkey_t shaderkeys[] =
 //	{"lpp_light",			Shader_Deferredlight,		"fte"},	//(sort = prelight)
 	{"affine",				Shader_Affine,				"fte"},	//some hardware is horribly slow, and can benefit from certain hints.
 	{"fullrate",			Shader_FullRate,			"fte"},	//blocks half-rate shading on this surface.
+	{"wireframe",			Shader_Wireframe,			"fte"},	//FTESurf Patch 780: Source's MATERIAL_VAR_WIREFRAME (GL only)
 
 	{"bemode",				Shader_BEMode,				"fte"},
 
@@ -6603,7 +6610,8 @@ done:;
 				s->sort = SHADER_SORT_OPAQUE;
 			else if (maskpass == -1)
 			{
-				if (s->numpasses && s->passes[0].blendmode == PBM_ADD)
+				if (s->numpasses && (s->passes[0].blendmode == PBM_ADD ||	//FTESurf Patch 783: and additive with alpha
+				    (s->passes[0].shaderbits&SBITS_BLEND_BITS) == (SBITS_SRCBLEND_SRC_ALPHA|SBITS_DSTBLEND_ONE)))
 					s->sort = SHADER_SORT_ADDITIVE;
 				else
 					s->sort = SHADER_SORT_BLEND;

@@ -727,6 +727,8 @@ struct shader_s
 #define MATERIAL_FACTOR_COUNT 5
 	vec4_t factors[MATERIAL_FACTOR_COUNT];
 
+	qboolean wireframe;	//FTESurf Patch 780: `fte_wireframe` -- GL draws the triangles as lines (Source's MATERIAL_VAR_WIREFRAME). flags has no bit left.
+
 	//arranged as a series of vec4s
 /*	struct
 	{
@@ -832,6 +834,7 @@ mfog_t *Mod_FogForOrigin(model_t *wmodel, vec3_t org);
 #define BEF_FORCECOLOURMOD		(1u<<8) //q3 shaders default to 'rgbgen identity', and ignore ent colours. this forces ent colours to be considered
 #define BEF_LINES				(1u<<9)	//draw line pairs instead of triangles.
 #define BEF_FORCETWOSIDED		(1u<<10) //more evilness.s
+#define BEF_SKYDEPTH			(1u<<11) //FTESurf Patch 768: GL_SkyForceDepth's mask, pushed away from the eye (r_sky_forcedepth_push)
 //#define	BEFF_POLYHASNORMALS		(1u<<31) //false flag - for cl_scenetries and not actually used by the backend.
 
 typedef struct
