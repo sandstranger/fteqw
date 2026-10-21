@@ -211,6 +211,8 @@ void (APIENTRY *qglGetTexEnviv) (GLenum target, GLenum pname, GLint *params);
 
 void (APIENTRY *qglDrawRangeElements) (GLenum, GLuint, GLuint, GLsizei, GLenum, const GLvoid *);
 void (APIENTRY *qglMultiDrawElements) (GLenum mode, const GLsizei * count, GLenum type, const GLvoid * const * indices, GLsizei drawcount);
+void (APIENTRY *qglDrawElementsInstanced) (GLenum mode, GLsizei count, GLenum type, const GLvoid *indices, GLsizei instancecount);	//FTESurf Patch 831
+void (APIENTRY *qglTexBuffer) (GLenum target, GLenum internalformat, GLuint buffer);	//FTESurf Patch 831
 void (APIENTRY *qglArrayElement) (GLint i);
 void (APIENTRY *qglVertexPointer) (GLint size, GLenum type, GLsizei stride, const GLvoid *pointer);
 void (APIENTRY *qglNormalPointer) (GLenum type, GLsizei stride, const GLvoid *pointer);
@@ -255,6 +257,7 @@ void (APIENTRY * qglGetPointerv) (GLenum pname, GLvoid **parms);
 
 void (APIENTRY *qglDrawBuffers)(GLsizei n, GLsizei *ids);	//gl2
 #ifndef GL_STATIC
+void (APIENTRY *qglBlendFuncSeparate)(GLenum srgb, GLenum drgb, GLenum sa, GLenum da);	//gl1.4, FTESurf Patch 871
 void (APIENTRY *qglGenRenderbuffersEXT)(GLsizei n, GLuint *ids);
 void (APIENTRY *qglBindRenderbufferEXT)(GLenum target, GLuint id);
 void (APIENTRY *qglRenderbufferStorageEXT)(GLenum target, GLenum internalFormat, GLsizei width, GLsizei height);
@@ -3045,6 +3048,9 @@ static void GLSlang_ProgAutoFields(program_t *prog, struct programpermu_s *pp, c
 	pp->parm = NULL;
 
 	pp->factorsuniform = qglGetUniformLocationARB(pp->h.glsl.handle, "factors");
+	pp->instuniform[0] = qglGetUniformLocationARB(pp->h.glsl.handle, "s_instdata");	//FTESurf Patch 831
+	pp->instuniform[1] = qglGetUniformLocationARB(pp->h.glsl.handle, "s_instvc");
+	pp->instuniform[2] = qglGetUniformLocationARB(pp->h.glsl.handle, "e_instbase");
 
 	for (i = 0; shader_unif_names[i].name; i++)
 	{
@@ -3439,6 +3445,9 @@ void GL_ForgetPointers(void)
 	qglBindVertexArray = NULL;
 
 	qglDrawBuffers = NULL;
+#ifndef GL_STATIC
+	qglBlendFuncSeparate = NULL;
+#endif
 
 	qglLoadMatrixf = NULL;
 	qglPolygonMode = NULL;
@@ -3522,6 +3531,13 @@ qboolean GL_Init(rendererstate_t *info, void *(*getglfunction) (char *name))
 	qglDisableClientState	= (void *)getglcore("glDisableClientState");
 
 	qglMultiDrawElements	= (void *)getglext("glMultiDrawElements");	//since gl2
+	//FTESurf Patch 831: instanced props. Both since gl3.1, else the ARB extensions.
+	qglDrawElementsInstanced = (void *)getglext("glDrawElementsInstanced");
+	if (!qglDrawElementsInstanced)
+		qglDrawElementsInstanced = (void *)getglext("glDrawElementsInstancedARB");
+	qglTexBuffer = (void *)getglext("glTexBuffer");
+	if (!qglTexBuffer)
+		qglTexBuffer = (void *)getglext("glTexBufferARB");
 
 
 	qglGetTexEnviv		= (void *)getglext("glGetTexEnviv");
@@ -3632,6 +3648,12 @@ qboolean GL_Init(rendererstate_t *info, void *(*getglfunction) (char *name))
 		qglDrawBuffers = (void *)getglext("glDrawBuffers");
 	else
 		qglDrawBuffers = NULL;
+#ifndef GL_STATIC
+	if (gl_config.gles ? gl_config.glversion >= 2 : gl_config.glversion >= 1.4)
+		qglBlendFuncSeparate = (void *)getglext("glBlendFuncSeparate");
+	else
+		qglBlendFuncSeparate = NULL;
+#endif
 
 	if (gl_config.gles && gl_config.glversion >= 2)
 	{

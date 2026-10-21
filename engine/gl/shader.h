@@ -389,6 +389,8 @@ enum{
 
 	#define PERMUTATION_VC				(1u<<PERMUTATION_BIT_VC)
 	PERMUTATION_BIT_VC,					//nettest: baked static-prop per-vertex colour multiplier (RGBPROPLIGHT)
+	#define PERMUTATION_INSTANCED		(1u<<PERMUTATION_BIT_INSTANCED)
+	PERMUTATION_BIT_INSTANCED,			//FTESurf Patch 831: one draw for a run of identical props, each prop's data from s_instdata
 
 	PERMUTATION_BIT_MAX
 };
@@ -552,6 +554,7 @@ struct programpermu_s
 #endif
 #ifdef GLQUAKE
 	int factorsuniform;
+	int instuniform[3];	//FTESurf Patch 831: s_instdata, s_instvc, e_instbase
 #endif
 	unsigned int permutation;
 	unsigned int attrmask;
@@ -728,6 +731,7 @@ struct shader_s
 	vec4_t factors[MATERIAL_FACTOR_COUNT];
 
 	qboolean wireframe;	//FTESurf Patch 780: `fte_wireframe` -- GL draws the triangles as lines (Source's MATERIAL_VAR_WIREFRAME). flags has no bit left.
+	qboolean reflectnoents;	//FTESurf Patch 868: `fte_reflectnoentities` -- Source water with no $reflectentities: its reflection draws only the world. Appended: plugins read shader_t by offset.
 
 	//arranged as a series of vec4s
 /*	struct
@@ -835,6 +839,7 @@ mfog_t *Mod_FogForOrigin(model_t *wmodel, vec3_t org);
 #define BEF_LINES				(1u<<9)	//draw line pairs instead of triangles.
 #define BEF_FORCETWOSIDED		(1u<<10) //more evilness.s
 #define BEF_SKYDEPTH			(1u<<11) //FTESurf Patch 768: GL_SkyForceDepth's mask, pushed away from the eye (r_sky_forcedepth_push)
+#define BEF_UNDERBLEND			(1u<<12) //FTESurf Patch 847: a scene poly sorted before SHADER_SORT_BLEND (DRAWFLAG_UNDERBLEND)
 //#define	BEFF_POLYHASNORMALS		(1u<<31) //false flag - for cl_scenetries and not actually used by the backend.
 
 typedef struct

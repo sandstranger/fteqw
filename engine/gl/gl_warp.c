@@ -362,6 +362,48 @@ void R_DrawFastSky(batch_t *batch)
 //2) or if r_ignoreentpvs==1 we must mask depth and waste a whole load of batches drawing invisible ents in the sky
 extern cvar_t r_ignoreentpvs;
 
+extern unsigned int r_vs_skycam;	//renderer.c, printed by r_viewstats
+
+//FTESurf Patch 880: the first sky_camera's origin as the lump spells it -- the one CSQC takes (cl_decals.qc).
+static qboolean R_SkyCameraOrigin(vec3_t out)
+{
+	static model_t *mod;
+	static char name[MAX_QPATH];
+	static qboolean have;
+	static vec3_t org;
+	if (mod != cl.worldmodel || strcmp(name, cl.worldmodel->name))
+	{
+		const char *data = Mod_GetEntitiesString(cl.worldmodel);
+		char key[256], value[1024];
+		mod = cl.worldmodel;
+		Q_strncpyz(name, cl.worldmodel->name, sizeof(name));
+		have = false;
+		while (data && (data = COM_ParseOut(data, key, sizeof(key))) && key[0] == '{')
+		{
+			qboolean cam = false, hasorg = false;
+			vec3_t o = {0, 0, 0};
+			while ((data = COM_ParseOut(data, key, sizeof(key))) && key[0] != '}')
+			{
+				if (!(data = COM_ParseOut(data, value, sizeof(value))))
+					break;
+				if (!strcmp(key, "classname"))
+					cam = !strcmp(value, "sky_camera");
+				else if (!strcmp(key, "origin"))
+					hasorg = sscanf(value, "%f %f %f", &o[0], &o[1], &o[2]) == 3;
+			}
+			if (cam)
+			{
+				have = hasorg;
+				VectorCopy(o, org);
+				break;
+			}
+		}
+	}
+	if (have)
+		VectorCopy(org, out);
+	return have;
+}
+
 qboolean R_DrawSkyroom(shader_t *skyshader)
 {
 	float vmat[16];
@@ -379,6 +421,15 @@ qboolean R_DrawSkyroom(shader_t *skyshader)
 
 	oldrefdef = r_refdef;
 	r_refdef.recurse+=1;
+	{	//FTESurf Patch 850: the sky room's own props, not again the outer views' (R_RenderScene_Internal)
+		extern cvar_t r_nestedents;
+		extern int r_visdynamic;
+		if (r_nestedents.ival && r_visdynamic < cl_numvisedicts)
+		{
+			r_refdef.visskipfrom = r_visdynamic;
+			r_refdef.visskipto = cl_numvisedicts;
+		}
+	}
 
 //	if (r_ignoreentpvs.ival)	//if we're ignoring ent pvs then we're probably drawing lots of ents in the skybox that shouldn't be there
 //		r_refdef.firstvisedict = cl_numvisedicts;
@@ -387,6 +438,12 @@ qboolean R_DrawSkyroom(shader_t *skyshader)
 	r_refdef.forcevis = false;
 	r_refdef.flags |= RDF_DISABLEPARTICLES;
 	r_refdef.flags &= ~RDF_SKIPSKY;
+	if (r_refdef.flags & RDF_NOENTS)
+	{	//FTESurf Patch 868: a world-only water reflection's 3D sky (r_waterskyroom 1) keeps its props
+		extern int r_noentsfirstvisedict;
+		r_refdef.flags &= ~RDF_NOENTS;
+		r_refdef.firstvisedict = r_noentsfirstvisedict;
+	}
 	r_refdef.forcedvis = NULL;
 	r_refdef.areabitsknown = false;	//recalculate areas clientside.
 	r_refdef.sceneareas = NULL;
@@ -432,6 +489,42 @@ qboolean R_DrawSkyroom(shader_t *skyshader)
 		}
 		VectorCopy(sky, r_refdef.vieworg);
 		VectorCopy(sky, r_refdef.pvsorigin);
+
+		/* FTESurf Patch 880: Source draws the 3D sky with the sky camera's own vis and area alone,
+		   wherever the scaled eye lands (viewrender.cpp:4627-4630, 4675). From the eye, a view
+		   past the room's walls was in solid -- cluster -1, area 0, the whole map from the sky
+		   (surf_tendies save 5: no sky, 426 draws, 4.5 ms; save 6, 36 units lower, 46). */
+		if (cl.worldmodel && (cl.worldmodel->engineflags & MDLF_SOURCEBSP) && cl.worldmodel->funcs.InfoForPoint)
+		{
+			vec3_t cam, lump, d;
+			int area, cluster;
+			unsigned int contents;
+			VectorCopy(r_refdef.skyroom_pos, cam);
+			if (r_refdef.skyroom_scale > 0 && !IS_NAN(r_refdef.skyroom_scale))
+				VectorMA(cam, -1 / r_refdef.skyroom_scale, r_refdef.skyroom_eye, cam);
+			//CSQC's camera + eye/scale is float-rounded (~1e-4): surf_santorini's camera sits on its
+			//floor plane and the rebuilt one fell into the floor in 15-26% of eye positions.
+			if (R_SkyCameraOrigin(lump))
+			{
+				VectorSubtract(cam, lump, d);
+				if (DotProduct(d, d) <= 1)
+					VectorCopy(lump, cam);
+			}
+			cl.worldmodel->funcs.InfoForPoint(cl.worldmodel, cam, &area, &cluster, &contents);
+			if (cluster >= 0)
+			{
+				VectorCopy(cam, r_refdef.pvsorigin);
+				if (area > 0 && area < MAX_MAP_AREA_BYTES*8)
+				{
+					memset(r_refdef.areabits, 0, sizeof(r_refdef.areabits));
+					r_refdef.areabits[area>>3] |= 1<<(area&7);
+				}
+				else	//the null area sees every area (VBSP_WriteAreaBits)
+					memset(r_refdef.areabits, 0xff, sizeof(r_refdef.areabits));
+				r_refdef.areabitsknown = true;
+				r_vs_skycam++;
+			}
+		}
 	}
 
 	/*
@@ -496,7 +589,13 @@ qboolean R_DrawSkyroom(shader_t *skyshader)
 	VectorCopy(r_refdef.vieworg, r_origin);
 
 	Surf_SetupFrame();
-	Surf_DrawWorld ();
+	{
+		double vst0;
+		int vsd0;
+		R_ViewStatsEnter(r_refdef.recurse, &vst0, &vsd0);	//FTESurf Patch 868
+		Surf_DrawWorld ();
+		R_ViewStatsLeave(r_refdef.recurse, vst0, vsd0, 4);
+	}
 
 	r_viewarea = oldarea;
 	r_viewcluster = oldcluster[0];

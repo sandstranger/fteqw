@@ -8405,6 +8405,15 @@ static qboolean check_notrerelease		(extcheck_t *extcheck) {return !extcheck->wo
 //static qboolean check_rerelease			(extcheck_t *extcheck) {return !!extcheck->world->remasterlogic;}
 
 #ifdef HAVE_CLIENT
+static qboolean check_2d_coverage(extcheck_t *extcheck)
+{
+	(void)extcheck;
+#ifdef GLQUAKE
+	return GLBE_CoverageSupported();
+#else
+	return false;
+#endif
+}
 static qboolean check_hl2_waterbudget(extcheck_t *extcheck)
 {
 	(void)extcheck;
@@ -8583,6 +8592,7 @@ qc_extension_t QSG_Extensions[] = {
 	{"FTESURF_HID_HTTP", NULL, 0,{NULL}, "Armed raw input journals use fixed-origin HTTPS only with separate default-off rec_hid_upload consent. Legacy raw uploads are disabled (FTESurf Patch 774)."},
 #endif
 #ifdef HAVE_CLIENT
+	{"FTESURF_2D_COVERAGE", check_2d_coverage, 0,{NULL}, "setproperty(VF_RT_COVERAGE (226), 1) while a 2D render target is bound: a blend over the target adds to its alpha and an additive one leaves it, and drawsetcliparea is not mirrored there, so the target composites exactly with blendfunc gl_one gl_one_minus_src_alpha (FTESurf Patch 871)."},
 	{"FTE_CSQC_HL2_WATER_BUDGET", check_hl2_waterbudget, 0,{NULL}, "Local programmable OpenGL renderer has the live hl2_water policy and a loaded material loader providing vmt/waterbudget. Mode 4 needs no scene captures; availability is not a driver-compilation guarantee."},
 #endif
 	{"FTE_CSQC_WINDOWCAPTION",			NULL,	1,{"setwindowcaption"}, "Provides csqc with the ability to change the window caption as displayed when running windowed or in the task bar when switched out."},

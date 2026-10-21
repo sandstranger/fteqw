@@ -126,6 +126,54 @@ static uploadfmt_t ImageVTF_VtfToFTE(fmtfmt_t f, unsigned int vtfflags)
 		return PTI_INVALID;
 	}
 }
+
+//FTESurf Patch 887: half float in, half float out, every bit pattern once (VTF_Init).
+static unsigned short vtf_lin2srgb[65536];
+static cvar_t *vtf_vid_srgb;
+static float VTF_HalfToFloat(unsigned int h)
+{
+	unsigned int e = (h >> 10) & 31, m = h & 1023;
+	float f;
+	if (e == 31)
+		f = m ? 0 : 65504;	//NaN -> 0, inf -> the largest finite half
+	else if (!e)
+		f = ldexpf((float)m, -24);
+	else
+		f = ldexpf((float)(m | 1024), (int)e - 25);
+	return (h & 0x8000) ? -f : f;
+}
+static float VTF_SRGBEncode(float c)
+{
+	if (!(c > 0))
+		return 0;	//negative or NaN
+	if (c <= 0.0031308f)
+		return c * 12.92f;
+	return 1.055f * powf(c, 1/2.4f) - 0.055f;	//keeps rising past 1: an HDR texel stays brighter
+}
+static unsigned short VTF_FloatToHalf(float f)	//f >= 0
+{
+	int e;
+	unsigned int frac, x;
+	float m;
+	if (!(f > 0))
+		return 0;
+	if (f >= 65504)
+		return 0x7bff;
+	m = frexpf(f, &e);	//f = m * 2^e, m in [0.5, 1)
+	if (e < -13)
+		return (unsigned short)(f * 16777216.0f + 0.5f);	//subnormal: f / 2^-24
+	x = (unsigned int)(e - 1 + 15);
+	frac = (unsigned int)((2*m - 1) * 1024 + 0.5f);
+	if (frac == 1024)
+	{
+		frac = 0;
+		x++;
+	}
+	if (x >= 31)
+		return 0x7bff;
+	return (unsigned short)((x << 10) | frac);
+}
+
 struct pendingtextureinfo *Image_ReadVTFFile(unsigned int flags, const char *fname, qbyte *filedata, size_t filesize)
 {
 	struct vtf_s
@@ -429,8 +477,8 @@ struct pendingtextureinfo *Image_ReadVTFFile(unsigned int flags, const char *fna
 		    uint32  compressed size of each mip level, SMALLEST level first -- the
 		            file's own order, so entry k is level mipmapcount-1-k
 		and the image resource is those frames laid end to end: arbre01's twelve sizes
-		sum to its file length less the image offset, exactly.  One frame holds a whole
-		level -- every frame and face of it -- so the chain is inflated once into a
+		sum to its file length less the image offset, exactly.  In a single-frame file one
+		frame holds a whole level (Patch 875 below has the rest), so the chain is inflated once into a
 		buffer laid out exactly as an uncompressed file's would be, and the loop below
 		walks it unchanged.
 
@@ -463,29 +511,81 @@ struct pendingtextureinfo *Image_ReadVTFFile(unsigned int flags, const char *fna
 			}
 			else
 			{
-				size_t total = 0, srcofs = 0, outofs = 0;
-				unsigned int k;
+				/*
+				FTESurf Patch 875: a multi-frame or cube 7.6 file carries one zstd frame per
+				level x frame (x face), not one per level: Momentum's dev/water_normal (9
+				levels, 29 frames) has 261, its 8 cubemaps 6 per level.  Census of the mount's
+				5,589 AXC files: per level 5,521, per level x frame 60, per level x face 8, no
+				other shape.  Entries stay smallest level first, then frame, then face -- the
+				uncompressed layout -- so each inflates to its level's size / entries a level.
+				*/
+				size_t total = 0, srcofs = 0, outofs = 0, comp = 0;
+				unsigned int k, j, n = (axclen - 4) / 4, per = n / nlevels;
+				if (n % nlevels || !per || (storedfaces * vtf->numframes) % per || filedata > end)
+				{
+					Con_Printf(CON_ERROR"%s: VTF 7.6 auxiliary compression has %u entries for %u levels\n", fname, n, nlevels);
+					plugfuncs->Free(mips);
+					return NULL;
+				}
+				/*
+				Validate before allocating (the allocator Sys_Errors on failure, so a few-KB
+				hostile file in a map pak must not reach it): every entry lies in the file and
+				its zstd frame declares the size this level expects (all 22,266 of the mount's
+				frames declare one), the total is at most 32768x the compressed bytes (zstd's
+				ceiling, a 4-byte RLE block per 128 KiB: a solid 2048^2 DXT1 chain is ~10,000x) and
+				at most 256 MB (its largest is 10 MB; an uncompressed 4096^2 RGBA16F chain
+				fits).
+				*/
 				for (k = 0; k < nlevels; k++)
 				{
-					w = vtf->width>>k;	if (!w) w = 1;
-					h = vtf->height>>k;	if (!h) h = 1;
-					total += (size_t)((w+bw-1)/bw) * ((h+bh-1)/bh) * ((d+bd-1)/bd) * bb * storedfaces * vtf->numframes;
+					unsigned int lvl = nlevels-1-k;
+					size_t want;
+					unsigned long long decl;
+					w = vtf->width>>lvl;	if (!w) w = 1;
+					h = vtf->height>>lvl;	if (!h) h = 1;
+					want = (size_t)((w+bw-1)/bw) * ((h+bh-1)/bh) * ((d+bd-1)/bd) * bb * storedfaces * vtf->numframes;
+					total += want;
+					want /= per;
+					for (j = 0; j < per; j++)
+					{
+						size_t csize = AXC_LE32(axc + 8 + 4*(k*per + j));
+						if (csize > (size_t)(end - filedata) - comp)
+							break;
+						decl = ZSTD_getFrameContentSize(filedata + comp, csize);
+						if (decl == ZSTD_CONTENTSIZE_ERROR || (decl != ZSTD_CONTENTSIZE_UNKNOWN && decl != want))
+							break;
+						comp += csize;
+					}
+					if (j < per)
+						break;
+				}
+				if (k < nlevels || total > (size_t)256*1024*1024 || total / 32768 > comp)
+				{
+					Con_Printf(CON_ERROR"%s: VTF 7.6 auxiliary-compressed image does not match its header\n", fname);
+					plugfuncs->Free(mips);
+					return NULL;
 				}
 				axcraw = plugfuncs->Malloc(total);
 				for (k = 0; k < nlevels; k++)
 				{
 					unsigned int lvl = nlevels-1-k;	//the file's order: smallest level first
-					size_t csize = AXC_LE32(axc + 8 + 4*k), want, got;
+					size_t want, got, csize = 0;
 					w = vtf->width>>lvl;	if (!w) w = 1;
 					h = vtf->height>>lvl;	if (!h) h = 1;
-					want = (size_t)((w+bw-1)/bw) * ((h+bh-1)/bh) * ((d+bd-1)/bd) * bb * storedfaces * vtf->numframes;
-					if (filedata + srcofs + csize > end)
+					want = (size_t)((w+bw-1)/bw) * ((h+bh-1)/bh) * ((d+bd-1)/bd) * bb * storedfaces * vtf->numframes / per;
+					for (j = 0; j < per; j++)
+					{
+						csize = AXC_LE32(axc + 8 + 4*(k*per + j));
+						if (filedata + srcofs + csize > end)
+							break;
+						got = ZSTD_decompress(axcraw + outofs, want, filedata + srcofs, csize);
+						if (ZSTD_isError(got) || got != want)
+							break;
+						srcofs += csize;
+						outofs += want;
+					}
+					if (j < per)
 						break;
-					got = ZSTD_decompress(axcraw + outofs, want, filedata + srcofs, csize);
-					if (ZSTD_isError(got) || got != want)
-						break;
-					srcofs += csize;
-					outofs += want;
 				}
 				if (k < nlevels)
 				{
@@ -583,6 +683,34 @@ struct pendingtextureinfo *Image_ReadVTFFile(unsigned int flags, const char *fna
 				px[0]=r; px[1]=g; px[2]=b; px[3]=a;
 			}
 		}
+	}
+
+	//FTESurf Patch 887: a float cubemap (.hdr.vtf) is linear light, and Source writes its envmap
+	//term through an sRGB encode; the shaders here add textureCube().rgb straight into a gamma
+	//framebuffer, so surf_demise's red underlay drew at 12/255 for Source's ~69. Encode once here.
+	//vid_srgb 1/2 (and -1) encode in the framebuffer instead, so they keep the linear texels.
+	if (mips && mips->type == PTI_CUBE && vmffmt == VMF_RGBA16F && !(flags & IF_HDRDECOMPRESS) &&
+		!(vtf_vid_srgb && vtf_vid_srgb->ival))
+	{
+		unsigned int m;
+		size_t p, n;
+		for (m = 0; m < mips->mipcount; m++)
+		{
+			qbyte *px = mips->mip[m].data;
+			if (!px)
+				continue;
+			n = mips->mip[m].datasize / 8;	//RGBA, two bytes a channel; alpha untouched
+			for (p = 0; p < n; p++, px += 8)
+			{
+				unsigned short r = vtf_lin2srgb[px[0] | (px[1]<<8)];
+				unsigned short g = vtf_lin2srgb[px[2] | (px[3]<<8)];
+				unsigned short b = vtf_lin2srgb[px[4] | (px[5]<<8)];
+				px[0] = r & 0xff;	px[1] = r >> 8;
+				px[2] = g & 0xff;	px[3] = g >> 8;
+				px[4] = b & 0xff;	px[5] = b >> 8;
+			}
+		}
+		Con_DPrintf("%s: linear float cubemap encoded to sRGB (Patch 887)\n", fname);
 	}
 
 	/*
@@ -695,9 +823,16 @@ static plugimageloaderfuncs_t vtffuncs =
 
 qboolean VTF_Init(void)
 {
+	unsigned int h;
+
 	imagefuncs = plugfuncs->GetEngineInterface(plugimagefuncs_name, sizeof(*imagefuncs));
 	if (!imagefuncs)
 		return false;
+	//Patch 887: built here, before any loader thread can read it.
+	for (h = 0; h < 65536; h++)
+		vtf_lin2srgb[h] = VTF_FloatToHalf(VTF_SRGBEncode(VTF_HalfToFloat(h)));
+	if (cvarfuncs)
+		vtf_vid_srgb = cvarfuncs->GetNVFDG("vid_srgb", "0", 0, NULL, NULL);
 	return plugfuncs->ExportInterface(plugimageloaderfuncs_name, &vtffuncs, sizeof(vtffuncs));
 }
 

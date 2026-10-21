@@ -81,6 +81,8 @@ static cvar_t	cl_predict_freshtype = CVARD("cl_predict_freshtype","1", "Take the
   hook itself is inert unless the csprogs exports CSQC_PredictPlayerMove; this
   cvar exists so an engine-side 0 is still a bisectable answer.*/
 cvar_t	cl_predict_qchook = CVARD("cl_predict_qchook","1", "Call CSQC_PredictPlayerMove once per predicted usercmd, letting CSQC run map triggers inside client prediction (FTESurf Patch 335). 0 restores the historical behaviour where only the server's touches exist and every trigger costs a round trip.");
+/*FTESurf Patch 862: the trigger mirror on a listen server.  See CSQC_PredictListenGated.*/
+cvar_t	cl_predict_listen = CVARD("cl_predict_listen","1", "Run the CSQC trigger mirror (teleports, pushes, speed triggers) inside client prediction on a listen server too, as against a remote one (FTESurf Patch 862). 0 restores the old gate: offline, a map teleport is predicted past and corrected a frame later. The warp-op pre-move hook stays off on a listen server either way.");
 cvar_t	cl_predict_angleexact = CVARD("cl_predict_angleexact","1", "Reconcile a predicted teleport's view snap with the server's setangle by absolute target and command sequence (FTESurf Patch 396). 0 restores Patch 335's arithmetic, which rotates twice or not at all depending on frame rate and timing.");
 cvar_t	cl_predict_angledebug = CVARD("cl_predict_angledebug","0", "FTESurf Patch 396: 1 records every predicted-snap and setangle decision into a memory log; 2 also each sent command's yaw and the view yaw for 1 s after each. predangle_dump prints and clears it. Nothing prints while recording.");
 static cvar_t	cl_prederror = CVARD("cl_prederror","4", "Print one line per acked command whose server origin differs from what this client predicted for it by more than this many units (FTESurf Patch 335). 0 disables. The line IS the snap-back report: it names the sequence and both origins, so a disagreement between the client's trigger mirror and the server's is a quotable number instead of a feeling.");
@@ -505,6 +507,10 @@ static void CL_PredictUsercmdPart (int pnum, int entnum, player_state_t *from, p
 
 	movevars.entgravity = cl.playerview[pnum].entgravity;
 	movevars.maxspeed = cl.playerview[pnum].maxspeed;
+	//FTESurf Patch 882: the server's latest; a trigger edge mispredicts until it arrives
+	pmove.momlimit = cl.playerview[pnum].statsf[STAT_MOMLIMIT];
+	pmove.momslide = cl.playerview[pnum].statsf[STAT_MOMSLIDE];
+	pmove.momcool = cl.playerview[pnum].statsf[STAT_MOMCOOL];
 	movevars.bunnyspeedcap = cl.bunnyspeedcap;
 	pmove.onladder = false;
 	pmove.safeorigin_known = false;
@@ -2023,6 +2029,7 @@ void CL_InitPrediction (void)
 	Cvar_Register (&cl_predict_velblend,	cl_predictiongroup);	//FTESurf Patch 269
 	Cvar_Register (&cl_predict_freshtype,	cl_predictiongroup);	//FTESurf Patch 243
 	Cvar_Register (&cl_predict_qchook,	cl_predictiongroup);	//FTESurf Patch 335
+	Cvar_Register (&cl_predict_listen,	cl_predictiongroup);	//FTESurf Patch 862
 	Cvar_Register (&cl_prederror,	cl_predictiongroup);	//FTESurf Patch 335
 	Cvar_Register (&cl_predict_angleexact,	cl_predictiongroup);	//FTESurf Patch 396
 	Cvar_Register (&cl_predict_angledebug,	cl_predictiongroup);	//FTESurf Patch 396

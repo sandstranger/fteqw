@@ -278,6 +278,12 @@ typedef struct {
 #ifndef R_MAX_RECURSE
 #define R_MAX_RECURSE	6
 #endif
+extern int r_visdynamic;	/*FTESurf Patch 850, renderer.c*/
+#define R_VS_KINDS 5	/*FTESurf Patch 868, renderer.c: r_viewstats' per-view times -- main, reflection, refraction, portal, 3D sky*/
+int R_ViewStatsKind(void);
+void R_ViewStatsEnter(int depth, double *t0, int *d0);
+void R_ViewStatsLeave(int depth, double t0, int d0, int kind);
+extern unsigned int r_vs_frames, r_vs_views[R_MAX_RECURSE], r_vs_skydrawn, r_vs_skyskipped, r_vs_entskipped;
 #define RDFD_FOV 1
 typedef struct refdef_s
 {
@@ -387,6 +393,12 @@ typedef struct refdef_s
 	vec3_t		skyroom_eye;		/*FTESurf Patch 758: vieworg when skyroom_pos was set*/
 	float		skyroom_scale;		/*...and its parallax divisor, 0 for none (a fixed camera)*/
 	float		m_projection_noclip[16];	/*FTESurf Patch 771: the root view's m_projection_std, which no portal's oblique near plane touches; the skyroom draws with it*/
+
+	//FTESurf Patch 850. Added at the end: the hl2 plugin reads this struct by offset.
+	int			visskipfrom, visskipto;	/*in a nested view, the outer views' own entities*/
+	int			capturekind;		/*GLR_DrawPortal's type, 0 for a portal or the main view*/
+	qboolean	insideportal;		/*a portal's view or one nested inside it*/
+	qboolean	skyroom_noleafsky;	/*FTESurf Patch 880: the hl2 plugin found this view's eye leaf without 3D sky in its PVS*/
 } refdef_t;
 
 extern	refdef_t	r_refdef;
@@ -953,6 +965,10 @@ enum {
 };
 //sums of finished frames since the last call, in milliseconds; returns how many frames (0: none, or no timer queries)
 int R_BudgetGPUCollect(double ms[GPUB_MAX], double *total);
+extern int r2d_coverage;	//FTESurf Patch 871: CSQC's VF_RT_COVERAGE, set only while its 2D target is bound
+#ifdef GLQUAKE
+qboolean GLBE_CoverageSupported(void);	//FTESurf Patch 871: FTESURF_2D_COVERAGE
+#endif
 extern int r_speeds_timing;	//Patch 782: r_speeds >= 2 or r_budget, latched once per host frame
 
 enum {

@@ -21,6 +21,7 @@ Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
 #include "pr_common.h"
 #include "fs.h"
 #include "netinc.h"
+#include <float.h>
 
 #ifndef CLIENTONLY
 
@@ -635,6 +636,109 @@ static int QDECL CompleteMapListExt (const char *name, qofs_t flags, time_t mtim
 	ctx->cb(name+5, NULL, NULL, ctx);
 	return true;
 }
+
+/*FTESurf Patch 846: the map list, enumerated once. SV_Map_c's eighteen globs walked every
+  searchpath (the Momentum library directory among them) on each keystroke, so typing
+  `map surf_n` juddered. Two enumerations fill this; a keystroke then runs SV_Map_c's own
+  patterns over it with wildcmp, the filter every backend uses, so the same names match.
+  Sorted, so past Cmd_Complete's 256 slots the rows kept are the alphabetical first rather
+  than the first enumerated. Rebuilt when FS_ListGeneration moves (a map another program drops
+  in lands at the next hash rebuild, i.e. a map load), or when the cvar changes value.*/
+static struct
+{
+	unsigned int gen;	//FS_ListGeneration it was built at; 0 = never
+	size_t count, max;
+	struct { char *name; int ext; } *e;
+} sv_mapcache;
+static void QDECL SV_MapCompletionCache_Callback(struct cvar_s *var, char *oldvalue)
+{
+	sv_mapcache.gen = 0;	//callbacks fire on a change only: 0 then 1 is "look again"
+}
+cvar_t sv_mapcompletioncache = CVARCD("sv_mapcompletioncache", "1", SV_MapCompletionCache_Callback, "Whether the map command's completion lists maps from a cached list rather than searching every mounted path on each keystroke. The list is rebuilt when this engine changes or notices a change in its files, and at each map load, so a map another program adds shows after the next map load; setting this to 0 and back to 1 rebuilds it at once.\n0: search on each keystroke (before Patch 846).");
+static const struct
+{
+	const char *ext;
+	int (QDECL *cb)(const char *name, qofs_t flags, time_t mtime, void *parm, searchpathfuncs_t *spath);
+	qboolean sub;	//also matched one directory down, maps/<typed>*/
+} sv_mapexts[] = {
+	{"bsp", CompleteMapList, true}, {"d3dbsp", CompleteMapList, true},
+	{"bsp.gz", CompleteMapListExt, true}, {"bsp.xz", CompleteMapListExt, true},
+	{"map", CompleteMapListExt, true}, {"map.gz", CompleteMapListExt, true},
+	{"cm", CompleteMapList, true}, {"hmp", CompleteMapList, true},
+	{"ent", CompleteMapListEnt, false},
+};
+
+static int QDECL SV_MapCache_Add(const char *name, qofs_t flags, time_t mtime, void *parm, searchpathfuncs_t *spath)
+{
+	const char *base = COM_SkipPath(name);
+	char glob[16];
+	int i;
+	for (i = 0; i < countof(sv_mapexts); i++)
+	{
+		Q_snprintfz(glob, sizeof(glob), "*.%s", sv_mapexts[i].ext);
+		if (*base && wildcmp(glob, base))
+			break;
+	}
+	if (i == countof(sv_mapexts))
+		return true;
+	if (sv_mapcache.count == sv_mapcache.max)
+	{
+		sv_mapcache.max = sv_mapcache.max ? sv_mapcache.max*2 : 1024;
+		sv_mapcache.e = BZ_Realloc(sv_mapcache.e, sizeof(*sv_mapcache.e)*sv_mapcache.max);
+	}
+	sv_mapcache.e[sv_mapcache.count].name = Z_StrDup(name);
+	sv_mapcache.e[sv_mapcache.count].ext = i;
+	sv_mapcache.count++;
+	return true;
+}
+static int QDECL SV_MapCache_Sort(const void *a, const void *b)
+{
+	return Q_strcasecmp(*(char*const*)a, *(char*const*)b);	//name is the struct's first member
+}
+static void SV_MapCache_Build(void)
+{
+	size_t r, w;
+	double t = Sys_DoubleTime();
+
+	for (r = 0; r < sv_mapcache.count; r++)
+		Z_Free(sv_mapcache.e[r].name);
+	sv_mapcache.count = 0;
+	sv_mapcache.gen = FS_ListGeneration();
+	COM_EnumerateFiles("maps/*", SV_MapCache_Add, NULL);
+	COM_EnumerateFiles("maps/*/*", SV_MapCache_Add, NULL);
+
+	qsort(sv_mapcache.e, sv_mapcache.count, sizeof(*sv_mapcache.e), SV_MapCache_Sort);
+	for (r = w = 0; r < sv_mapcache.count; r++)
+	{	//one entry per path, however many searchpaths hold it
+		if (w && !Q_strcasecmp(sv_mapcache.e[r].name, sv_mapcache.e[w-1].name))
+			Z_Free(sv_mapcache.e[r].name);
+		else
+			sv_mapcache.e[w++] = sv_mapcache.e[r];
+	}
+	sv_mapcache.count = w;
+	Con_DPrintf("map completion: %u map files listed in %.1f ms\n", (unsigned)w, (Sys_DoubleTime()-t)*1000);
+}
+//partial and raw as SV_Map_c globs them; neither holds a path separator
+static void SV_MapCache_Complete(const char *partial, const char *raw, struct xcommandargcompletioncb_s *ctx)
+{
+	char top[countof(sv_mapexts)][MAX_QPATH+16], sub[countof(sv_mapexts)][MAX_QPATH+16];
+	size_t i;
+
+	if (sv_mapcache.gen != FS_ListGeneration() || !sv_mapcache.gen)
+		SV_MapCache_Build();
+	for (i = 0; i < countof(sv_mapexts); i++)
+	{
+		Q_snprintfz(top[i], sizeof(top[i]), "maps/%s*.%s", partial, sv_mapexts[i].ext);
+		Q_snprintfz(sub[i], sizeof(sub[i]), "maps/%s*/*.%s", raw, sv_mapexts[i].ext);
+	}
+	for (i = 0; i < sv_mapcache.count; i++)
+	{
+		int x = sv_mapcache.e[i].ext;
+		if (wildcmp(top[x], sv_mapcache.e[i].name) || (sv_mapexts[x].sub && wildcmp(sub[x], sv_mapcache.e[i].name)))
+			sv_mapexts[x].cb(sv_mapcache.e[i].name, 0, 0, ctx, NULL);
+	}
+}
+
 static void SV_Map_c(int argn, const char *partial, struct xcommandargcompletioncb_s *ctx)
 {
 	if (argn == 1)
@@ -664,6 +768,16 @@ static void SV_Map_c(int argn, const char *partial, struct xcommandargcompletion
 			partial = lenient;
 		}
 
+		//the cache holds two levels; a typed separator reaches a third, so that goes live
+		if (sv_mapcompletioncache.ival && !strchr(raw, '/') && !strchr(raw, '\\'))
+		{
+			SV_MapCache_Complete(partial, raw, ctx);
+#ifdef PACKAGEMANAGER
+			PM_EnumerateMaps(raw, ctx);
+#endif
+			return;
+		}
+
 		//FIXME: maps/mapname#modifier.ent
 		COM_EnumerateFiles(va("maps/%s*.bsp", partial), CompleteMapList, ctx);
 		COM_EnumerateFiles(va("maps/%s*.d3dbsp", partial), CompleteMapList, ctx);
@@ -689,6 +803,73 @@ static void SV_Map_c(int argn, const char *partial, struct xcommandargcompletion
 		PM_EnumerateMaps(raw, ctx);
 #endif
 	}
+}
+
+//FTESurf Patch 846, for con_selftest: every name SV_Map_c offers for `partial`, live and
+//cached, with no 256 cap. Returns how many names are in one set and not the other.
+struct mapcompare_s
+{
+	struct xcommandargcompletioncb_s cb;
+	char **names;
+	size_t n, max;
+};
+static void SV_MapCompare_Add(const char *value, const char *desc, const char *repl, struct xcommandargcompletioncb_s *vctx)
+{
+	struct mapcompare_s *m = (struct mapcompare_s*)vctx;
+	if (m->n == m->max)
+	{
+		m->max = m->max ? m->max*2 : 1024;
+		m->names = BZ_Realloc(m->names, sizeof(*m->names)*m->max);
+	}
+	m->names[m->n++] = Z_StrDup(value);
+}
+static int QDECL SV_MapCompare_Sort(const void *a, const void *b)
+{
+	return Q_strcasecmp(*(char*const*)a, *(char*const*)b);
+}
+int SV_MapCompletionCompare(const char *partial, int *nlive, int *ncached)
+{
+	struct mapcompare_s m[2];
+	int savecache = sv_mapcompletioncache.ival, i, c, differ = 0;
+	size_t a, b;
+
+	memset(m, 0, sizeof(m));
+	for (i = 0; i < 2; i++)
+	{
+		m[i].cb.cb = SV_MapCompare_Add;
+		sv_mapcompletioncache.ival = i;	//ival alone: setting the cvar would drop the cache
+		SV_Map_c(1, partial, &m[i].cb);
+		qsort(m[i].names, m[i].n, sizeof(*m[i].names), SV_MapCompare_Sort);
+		for (a = b = 0; a < m[i].n; a++)
+		{	//distinct names, as Cmd_Complete keeps them
+			if (b && !Q_strcasecmp(m[i].names[a], m[i].names[b-1]))
+				Z_Free(m[i].names[a]);
+			else
+				m[i].names[b++] = m[i].names[a];
+		}
+		m[i].n = b;
+	}
+	sv_mapcompletioncache.ival = savecache;
+
+	for (a = b = 0; a < m[0].n || b < m[1].n; )
+	{
+		c = (a == m[0].n) ? 1 : (b == m[1].n) ? -1 : Q_strcasecmp(m[0].names[a], m[1].names[b]);
+		if (c)
+			differ++;
+		if (c <= 0)
+			a++;
+		if (c >= 0)
+			b++;
+	}
+	*nlive = m[0].n;
+	*ncached = m[1].n;
+	for (i = 0; i < 2; i++)
+	{
+		for (a = 0; a < m[i].n; a++)
+			Z_Free(m[i].names[a]);
+		BZ_Free(m[i].names);
+	}
+	return differ;
 }
 
 #ifdef WEBCLIENT
@@ -4040,12 +4221,13 @@ static int SV_DetRange (unsigned int *s, int lo, int hi)
 
 extern int bih_sourceclip;	//Patch 492, com_bih.c
 extern int bih_phybrushes;	//Patch 764, com_bih.c
+extern int bih_phyfix;		//Patch 888, com_bih.c
 extern int bih_probe_kind;	//Patch 764: which leaf decided the last trace (com_bih.h)
 extern model_t *bih_probe_model;
 
 //pm_dettest's collision-tree sweep: ntrace random box traces, every field that
 //decides a move hashed.  A function since Patch 492's review, to run it twice.
-static unsigned long long SV_DetTraceHash(model_t *world, unsigned int *seed, const int *lo, const int *hi, int ntrace, qboolean print, int *propwins)
+static unsigned long long SV_DetTraceHash(model_t *world, unsigned int *seed, const int *lo, const int *hi, int ntrace, qboolean print, int *propwins, int *fixwins)
 {
 	unsigned long long htrace = SV_DETHASH_INIT;
 	vec3_t tmins = {-16,-16,-24}, tmaxs = {16,16,32};
@@ -4065,6 +4247,9 @@ static unsigned long long SV_DetTraceHash(model_t *world, unsigned int *seed, co
 		                         tmins, tmaxs, false, MASK_PLAYERSOLID, &tr);
 		if (propwins && tr.fraction < 1 && bih_probe_kind == 2 && bih_probe_model)
 			(*propwins)++;	//Patch 764: a prop piece decided this trace
+		if (fixwins && tr.fraction < 1 && (bih_probe_kind == 1 || bih_probe_kind == 2) &&
+			bih_probe_model && bih_probe_model->phyfixed)
+			(*fixwins)++;	//Patch 888: a hull whose old indices wrapped decided it
 
 		htrace = SV_DetHash(htrace, &tr.fraction,     sizeof(tr.fraction));
 		htrace = SV_DetHash(htrace, &tr.truefraction, sizeof(tr.truefraction));
@@ -4101,9 +4286,11 @@ static void SV_DetTest_f (void)
 	unsigned long long hsrctrace, hsrcmover = SV_DETHASH_INIT;	//Patch 492
 	unsigned long long hproptrace, hpropmover = SV_DETHASH_INIT;	//Patch 764
 	unsigned long long hpinmover = SV_DETHASH_INIT;	//Patch 813
+	unsigned long long hfixtrace, hfixmover = SV_DETHASH_INIT;	//Patch 888
+	int                fixwins = 0, wrapwins = 0;	//Patch 888
 	int                propwins = 0;					//Patch 764
 	unsigned int       ticktotal = 0;				//FTESurf Patch 325
-	unsigned int seed = 20260914u, seedrerun, seedprop;
+	unsigned int seed = 20260914u, seedrerun, seedprop, seedfix;
 	int ntrace = atoi(Cmd_Argv(1));
 	int ntick  = atoi(Cmd_Argv(2));
 	int lo[3], hi[3], i, k, pass;
@@ -4152,26 +4339,30 @@ static void SV_DetTest_f (void)
 	   `srctrace` stays the triangles every older pin replays on. */
 	seedrerun = seed;
 	seedprop = seed;
-	htrace = SV_DetTraceHash(world, &seed, lo, hi, ntrace, true, NULL);
+	seedfix = seed;
+	htrace = SV_DetTraceHash(world, &seed, lo, hi, ntrace, true, NULL, NULL);
 	bih_sourceclip = 1;
-	hsrctrace = SV_DetTraceHash(world, &seedrerun, lo, hi, ntrace, false, NULL);
+	hsrctrace = SV_DetTraceHash(world, &seedrerun, lo, hi, ntrace, false, NULL, NULL);
 	bih_phybrushes = 1;
-	hproptrace = SV_DetTraceHash(world, &seedprop, lo, hi, ntrace, false, &propwins);
+	hproptrace = SV_DetTraceHash(world, &seedprop, lo, hi, ntrace, false, &propwins, &wrapwins);
+	bih_phyfix = 1;	//Patch 888: `fixtrace`, mover 9's hulls
+	hfixtrace = SV_DetTraceHash(world, &seedfix, lo, hi, ntrace, false, NULL, &fixwins);
 	bih_sourceclip = 0;
 	bih_phybrushes = 0;
+	bih_phyfix = 0;
 
 	/* ---- 3. the mover, for real. ---------------------------------------- */
 	/* Patch 492: pass 0 is `mover`, pinned to fixrampbugs 1, the value every
 	   recorded reading ran at; pass 1 is `srcmover`, the same walk at 2.
 	   Patch 764: both at mover 6, which they had run at live; pass 2 is
 	   `propmover`, the walk at 2 on mover 7.  Patch 813: pass 3 is `pinmover`,
-	   the same walk on mover 8. */
+	   the same walk on mover 8.  Patch 888: pass 4 is `fixmover`, on mover 9. */
 	seedrerun = seed;
-	for (pass = 0; pass < 4; pass++)
+	for (pass = 0; pass < 5; pass++)
 	{
 		movevars_t savemv = movevars;
 		playermove_t savepm = pmove;
-		unsigned long long *hm = (pass == 3) ? &hpinmover : (pass == 2) ? &hpropmover : pass ? &hsrcmover : &hmover;
+		unsigned long long *hm = (pass == 4) ? &hfixmover : (pass == 3) ? &hpinmover : (pass == 2) ? &hpropmover : pass ? &hsrcmover : &hmover;
 
 		if (pass)
 			seed = seedrerun;
@@ -4207,7 +4398,7 @@ static void SV_DetTest_f (void)
 		movevars.maxspeed      = 320;
 		movevars.entgravity    = 1;
 		movevars.fixrampbugs   = pass ? 2 : 1;
-		movevars.sourceversion = (pass == 3) ? 8 : (pass == 2) ? 7 : 6;
+		movevars.sourceversion = (pass == 4) ? 9 : (pass == 3) ? 8 : (pass == 2) ? 7 : 6;
 
 		/* Start in the middle of the world's box, well above the floor, so the
 		   first few ticks are a fall onto whatever is there rather than a
@@ -4228,6 +4419,7 @@ static void SV_DetTest_f (void)
 			pmove.angles[0] = pmove.cmd.angles[0] * (360.0f/65536.0f);
 			pmove.angles[1] = pmove.cmd.angles[1] * (360.0f/65536.0f);
 			pmove.angles[2] = 0;
+			pmove.momlimit = pmove.momslide = 0;	pmove.momcool = 0;	//FTESurf Patch 882: no trigger state here
 
 			PM_PlayerMove(1.0f);
 
@@ -4313,6 +4505,7 @@ static void SV_DetTest_f (void)
 			for (k = 0; k < 3; k++)
 				pmove.origin[k] = (float)((lo[k] + hi[k]) / 2);
 
+			pmove.momlimit = pmove.momslide = 0;	pmove.momcool = 0;	//FTESurf Patch 882
 			for (i = 0; i < census_n; i++)
 			{
 				pmove.cmd.msec = arm_msec[a];
@@ -4349,6 +4542,13 @@ static void SV_DetTest_f (void)
 	Con_Printf("^5pm_dettest^7 propmover %016llx\n", hpropmover);
 	/* Patch 813.  Equal to propmover where the walk never pinned against a face. */
 	Con_Printf("^5pm_dettest^7 pinmover %016llx\n", hpinmover);
+	/* Patch 888.  Equal to proptrace/pinmover on a map with no wrapped .phy hull. */
+	/* wrapwins: what those hulls' OLD geometry decided at proptrace; 0 on a map with them means
+	   the twins were never built.  On surf_pantheon ramp07's real hull lies under a clip brush, so
+	   fixwins is 0 there while wrapwins is not. */
+	Con_Printf("^5pm_dettest^7 fixtrace %016llx  unwrapped hulls decided %i traces, wrapped %i at proptrace\n",
+	           hfixtrace, fixwins, wrapwins);
+	Con_Printf("^5pm_dettest^7 fixmover %016llx\n", hfixmover);
 }
 
 /*
@@ -4931,6 +5131,83 @@ static const char *SV_RecSim_HoldRefusal (const char *s)
 	return frozen ? "frozen timer accounting (`hold`) is not modeled" : NULL;
 }
 
+/* P842: v11 declares final exclusions, including a close without a thaw.
+   This is NOT a held-clock model. Only counted zero accounting is supported;
+   reader-side declared-state arithmetic is not independent simulation proof. */
+/* Byte width of Python str.split whitespace in a UTF-8 metadata line.
+   Ownership must agree even when the payload will be explicitly refused. */
+static int SV_RecSim_White(const char *s)
+{
+	const unsigned char *p = (const unsigned char *)s;
+	if ((p[0] >= 9 && p[0] <= 13) || (p[0] >= 28 && p[0] <= 32)) return 1;
+	if (p[0] == 0xc2 && (p[1] == 0x85 || p[1] == 0xa0)) return 2;
+	if (p[0] == 0xe1 && p[1] == 0x9a && p[2] == 0x80) return 3;
+	if (p[0] == 0xe2 && p[1] == 0x80 &&
+	    ((p[2] >= 0x80 && p[2] <= 0x8a) || p[2] == 0xa8 || p[2] == 0xa9 || p[2] == 0xaf)) return 3;
+	if (p[0] == 0xe2 && p[1] == 0x81 && p[2] == 0x9f) return 3;
+	if (p[0] == 0xe3 && p[1] == 0x80 && p[2] == 0x80) return 3;
+	return 0;
+}
+
+/* Even empty new metadata belongs to its parser/refusal, not an unknown line. */
+static const char *SV_RecSim_RecordArgs(const char *s, const char *keyword)
+{
+	size_t n = strlen(keyword);
+	int white;
+	while ((white = SV_RecSim_White(s))) s += white;
+	if (strncmp(s, keyword, n) || (s[n] && !SV_RecSim_White(s+n)))
+		return NULL;
+	s += n;
+	while ((white = SV_RecSim_White(s))) s += white;
+	return s;
+}
+
+static const char *SV_RecSim_ClockRefusal(const char *s)
+{
+	const char *p;
+	char *end;
+	unsigned long origin, frozen;
+	double carried;
+	float single;
+	qboolean nonzero = false, exponent = false;
+
+	while (*s == ' ' || *s == '\t') s++;
+	if (strncmp(s, "counted", 7) || (s[7] != ' ' && s[7] != '\t'))
+		return "a non-counted/kept v11 closing clock (not modelled)";
+	s += 7;
+	while (*s == ' ' || *s == '\t') s++;
+	if (*s < '0' || *s > '9') goto malformed;
+	origin = strtoul(s, &end, 10);
+	if ((*end != ' ' && *end != '\t') || origin > 0x7fffffffUL ||
+	    (double)(float)origin != (double)origin) goto malformed;
+	s = end;
+	while (*s == ' ' || *s == '\t') s++;
+	for (p = s; *p && *p != ' ' && *p != '\t'; p++)
+	{
+		if (*p == 'e' || *p == 'E') exponent = true;
+		else if (*p >= '0' && *p <= '9')
+		{
+			if (!exponent && *p != '0') nonzero = true;
+		}
+		else if (*p != '+' && *p != '-' && *p != '.') goto malformed;
+	}
+	if (p == s || (*s == '-' && nonzero)) goto malformed;
+	carried = strtod(s, &end);
+	if (end != p || !(carried >= 0 && carried <= FLT_MAX)) goto malformed;
+	single = (float)carried;
+	if (single == 0 && nonzero) goto malformed; /* source cannot print an underflow */
+	s = end;
+	while (*s == ' ' || *s == '\t') s++;
+	if (*s < '0' || *s > '9') goto malformed;
+	frozen = strtoul(s, &end, 10);
+	if (frozen > 0x7fffffffUL || (double)(float)frozen != (double)frozen) goto malformed;
+	while (*end == ' ' || *end == '\t') end++;
+	if (*end) goto malformed;
+	return frozen ? "a positive final frozen-clock exclusion (not modelled)" : NULL;
+malformed:
+	return "a malformed v11 closing clock";
+}
+
 static void SV_RecSim_Run (const char *fname, int stopat, qboolean verify)
 {
 	model_t      *world = sv.state?sv.world.worldmodel:NULL;
@@ -4940,6 +5217,9 @@ static void SV_RecSim_Run (const char *fname, int stopat, qboolean verify)
 	char          mapname[64];
 	unsigned int  filecrc = 0;
 	qboolean      havecrc = false, inbody;
+	int           hdrentfile = 0;	/* Patch 890: `entfile`; absent = 0, the map's own lump */
+	qboolean      hdrentbad = false;
+	char          hdrpintext[2048] = "";	/* Patch 882: for SV_PMPinNamesBelow */
 	float         rate = 0;
 	int           instart_mt = -1, instart_run = -1;
 	int           nin = 0, nsam = 0, nwarp = 0, nride = 0, i, pass;
@@ -4979,6 +5259,8 @@ static void SV_RecSim_Run (const char *fname, int stopat, qboolean verify)
 	recsim_spec_t *spc = NULL;		/* Patch 380 */
 	const char   *specbad = NULL;
 	const char   *holdbad = NULL;
+	const char   *clockbad = NULL;
+	int           nclock = 0, nexcluded = 0;
 	int           nspec = 0, nspinside = 0, spinside_row = -1;
 	char          spinside_kind[16] = "";
 	int           nmc = 0, mcbad = 0, mcrow = -1;	/* Patch 376: the client's mouse counts */
@@ -5009,6 +5291,19 @@ static void SV_RecSim_Run (const char *fname, int stopat, qboolean verify)
 		Con_Printf(CON_ERROR "pm_recsim: cannot read \"%s\"\n", fname);
 		return;
 	}
+	/* P842: do not admit a C-string prefix or join tokens across raw CR.
+	   The loader's appended terminator is outside fsz; CRLF and EOF CR are safe. */
+	end = buf + fsz;
+	for (p = buf; p < end; p++)
+	{
+		if (!*p || (*p == '\r' && p+1 < end && p[1] != '\n'))
+		{
+			RECSIM_REFUSE("recording contains invalid raw line bytes");
+			Con_Printf(CON_ERROR "pm_recsim: invalid raw recording line bytes.\n");
+			FS_FreeFile(buf);
+			return;
+		}
+	}
 	mapname[0] = 0;
 	memset(hdrpin, 0, sizeof(hdrpin));
 	memset(&seedstate, 0, sizeof(seedstate));
@@ -5029,6 +5324,8 @@ static void SV_RecSim_Run (const char *fname, int stopat, qboolean verify)
 		p = buf; end = buf + fsz; inbody = false;
 		while ((ln = SV_RecSim_Line(&p, end, line, sizeof(line))) != NULL)
 		{
+			const char *fzargs = SV_RecSim_RecordArgs(ln, "fzin");
+			const char *clockargs = SV_RecSim_RecordArgs(ln, "clockend");
 			if (!*ln)
 				continue;
 			if (pass == 0 && strlen(ln) >= sizeof(line)-1)
@@ -5047,6 +5344,15 @@ static void SV_RecSim_Run (const char *fname, int stopat, qboolean verify)
 						hdrtick = atof(ln+9);
 					else if (!strncmp(ln, "mapcrc ", 7))
 						{ filecrc = (unsigned int)strtoul(ln+7, NULL, 16); havecrc = true; }
+					else if (!strncmp(ln, "entfile ", 8))	/* Patch 890 */
+					{
+						char *numend;
+						long v = strtol(ln+8, &numend, 10);
+						if (numend == ln+8 || (*numend && *numend != '\r' && *numend != '\n') || v < 0 || v > 0xffffff)
+							hdrentbad = true;
+						else
+							hdrentfile = (int)v;
+					}
 					else if (!strncmp(ln, "instart ", 8))
 						sscanf(ln+8, "%i %i", &instart_mt, &instart_run);
 					else if (!strncmp(ln, "FTESURF-REC ", 12))
@@ -5054,7 +5360,10 @@ static void SV_RecSim_Run (const char *fname, int stopat, qboolean verify)
 					else if (!strncmp(ln, "proprule ", 9))
 						filepropr = atoi(ln+9);
 					else if (!strncmp(ln, "pmpin ", 6))	/* Patch 347 */
+					{
 						pinfound = SV_PMPinParse(ln+6, hdrpin);
+						Q_strncpyz(hdrpintext, ln+6, sizeof(hdrpintext));
+					}
 					else if (!strncmp(ln, "zonesrc ", 8))	/* Patch 349 */
 						Q_strncpyz(hdrzsrc, ln+8, sizeof(hdrzsrc));
 					else if (!strncmp(ln, "zonecrc ", 8))
@@ -5117,12 +5426,13 @@ static void SV_RecSim_Run (const char *fname, int stopat, qboolean verify)
 				}
 				csam++;
 			}
-			else if (!strncmp(ln, "in ", 3))
+			else if (!strncmp(ln, "in ", 3) || fzargs)
 			{
+				if (pass == 0 && fzargs) nexcluded++;
 				if (pass == 1 && cin < nin)
 				{
 					recsim_in_t *r = &ins[cin];
-					int nf = sscanf(ln+3, "%i %i %f %f %f %f %f %f %f %i %i",
+					int nf = sscanf(fzargs ? fzargs : ln + 3, "%i %i %f %f %f %f %f %f %f %i %i",
 					           &r->pk, &r->mt, &r->carry,
 					           &r->mv[0], &r->mv[1], &r->mv[2],
 					           &r->ang[0], &r->ang[1], &r->ang[2], &r->bt, &r->fl);
@@ -5194,6 +5504,16 @@ static void SV_RecSim_Run (const char *fname, int stopat, qboolean verify)
 			{
 				if (sscanf(ln+6, "%i %f", &inend_mt, &inend_carry) != 2)
 					inend_mt = -1;
+			}
+			else if (clockargs)
+			{
+				if (pass == 0)
+				{
+					nclock++;
+					if (!clockbad)
+						clockbad = filever == 11 ? SV_RecSim_ClockRefusal(clockargs)
+						                        : "a v11 closing clock under another format";
+				}
 			}
 			else if (!strncmp(ln, "hold", 4) && (!ln[4] || ln[4] == ' ' || ln[4] == '\t'))
 			{
@@ -5318,7 +5638,8 @@ static void SV_RecSim_Run (const char *fname, int stopat, qboolean verify)
 						VectorCopy(so, seedorg);
 						VectorCopy(sv, seedvel);
 						seedground = sg;
-						seedstate_ok = SV_PMStateParse(q, &seedstate);
+						/* Patch 882: at mover 10 the cooldown's clock is state too */
+						seedstate_ok = SV_PMStateParse(q, &seedstate) && (SV_PMSrcVer(hdrpin) < 10 || SV_PMStateHasLand(q));
 					}
 					else if (cses && cses <= nses && !ses[cses-1].seeded)
 					{
@@ -5327,7 +5648,7 @@ static void SV_RecSim_Run (const char *fname, int stopat, qboolean verify)
 						VectorCopy(so, s->org);
 						VectorCopy(sv, s->vel);
 						s->ground = sg;
-						s->stateok = SV_PMStateParse(q, &s->st);
+						s->stateok = SV_PMStateParse(q, &s->st) && (SV_PMSrcVer(hdrpin) < 10 || SV_PMStateHasLand(q));
 					}
 				}
 			}
@@ -5488,8 +5809,8 @@ static void SV_RecSim_Run (const char *fname, int stopat, qboolean verify)
 	}
 	/* Patch 367: v10 is read -- each session is reseeded from its own `seed` on
 	   its restarted counter.  Anything this replay cannot follow is refused. */
-	if (filever > 10)
-		sesbad = "a newer format (this verifier reads FTESURF-REC 10)";
+	if (filever > 11)
+		sesbad = "a newer format (this verifier reads FTESURF-REC 11)";
 	else if (!sesbad && npause && filever < 10)
 		sesbad = "a `pause` under a header below FTESURF-REC 10";
 	else if (!sesbad && !npause && filever == 10)
@@ -5518,6 +5839,10 @@ static void SV_RecSim_Run (const char *fname, int stopat, qboolean verify)
 		           : "^1DIFFERENT MAP -- every number below is meaningless^7");
 	else
 		Con_Printf("  map pin   ^3none in the header^7 (predates build 73)\n");
+	/* Patch 890: absent is 0, the lump before entity fixes existed */
+	Con_Printf("  entities  file %i  world %i  -- %s\n", hdrentfile, (int)world->entitiescrc,
+	           hdrentbad ? "^1UNREADABLE^7" : hdrentfile == (int)world->entitiescrc ? "^2MATCH^7"
+	           : "^1A DIFFERENT ENTITY LUMP^7 (an entity fix differs)");
 	Con_Printf("  body      %i in rows, %i samples, %i packets, %i warps, %i rides\n",
 	           nin, nsam, nin?(ins[nin-1].pk - ins[0].pk + 1):0, nwarp, nride);
 	if (inend_mt >= 0)
@@ -5527,7 +5852,8 @@ static void SV_RecSim_Run (const char *fname, int stopat, qboolean verify)
 	/* Patch 347: v9.  EXACT means the file states the seed, the carried mover
 	   state and every pinned input -- then the replay is the mover, not a model
 	   of it, and any sample it disagrees with is the file's fault. */
-	exact = haveseed && seedstate_ok && pinfound == SV_PMPIN_COUNT;
+	exact = haveseed && seedstate_ok && pinfound &&	/* Patch 882: every name its version publishes */
+	        SV_PMPinNamesBelow(hdrpintext, SV_PMPinNeed(hdrpin)) == SV_PMPinNeed(hdrpin);
 	for (i = 0; exact && i < nses; i++)	/* Patch 367: every session must restate its state */
 		if (!ses[i].seeded || !ses[i].stateok)
 			exact = false;
@@ -5536,7 +5862,7 @@ static void SV_RecSim_Run (const char *fname, int stopat, qboolean verify)
 		           nses, pausewhys);
 	if (filever >= 9 || pinfound || haveseed)
 		Con_Printf("  v9 state  pin %i/%i names, seed %s, %i pm, %i pe, %i portal -- %s\n",
-		           pinfound, SV_PMPIN_COUNT,
+		           pinfound, SV_PMPinNeed(hdrpin),
 		           haveseed ? (seedstate_ok ? "exact" : "^3carried state incomplete^7") : "^3absent^7",
 		           npm, npe, nportal,
 		           exact ? "^2EXACT REPLAY^7" : "^3approximate (the file lacks state)^7");
@@ -5621,10 +5947,18 @@ static void SV_RecSim_Run (const char *fname, int stopat, qboolean verify)
 			refuse = specbad;
 		else if (holdbad)
 			refuse = holdbad;
+		else if (nexcluded)
+			refuse = "excluded-clock release inputs (not modelled)";
+		else if (clockbad)
+			refuse = clockbad;
+		else if (filever == 11 && nclock != 1)
+			refuse = "missing or duplicate v11 closing clock";
 		else if (nrestart && !(svprogfuncs && (vf_restart = PR_FindFunction(svprogfuncs, "SV_VerifyRestart", PR_ANY))))
 			refuse = "a stage restart (these progs have no SV_VerifyRestart, Patch 369)";
 		else if (!havecrc || filecrc != (unsigned int)world->checksum)
 			refuse = "a different map";
+		else if (hdrentbad || hdrentfile != (int)world->entitiescrc)	/* Patch 890 */
+			refuse = hdrentbad ? "an unreadable `entfile`" : "a different entity lump (entfile: an entity fix or .ent differs)";
 		else if (pinbad)
 			refuse = (pinbad[0] == 1 && SV_PMSrcVer(pinbad) == 2)
 			         ? "a mover before Patch 492's review (pmsrcver 1 at fixrampbugs 2)" : "a different mover (pmsrcver)";
@@ -6623,6 +6957,7 @@ void SV_InitOperatorCommands (void)
 #endif
 	Cvar_Register(&sv_cheats, "Server Permissions");
 	Cvar_Register(&sv_mapcompletion, "server control variables");	//FTESurf Patch 215
+	Cvar_Register(&sv_mapcompletioncache, "server control variables");	//FTESurf Patch 846
 	if (COM_CheckParm ("-cheats"))
 	{
 		Cvar_Set(&sv_cheats, "1");

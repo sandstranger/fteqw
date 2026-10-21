@@ -171,7 +171,77 @@ cvar_t gl_line_width						= CVARD ("gl_line_width", "1", "Pixel width of CSQC de
 cvar_t gl_2dline_width						= CVARD ("gl_2dline_width", "2", "Pixel width of 2D drawline strokes (e.g. the hit-marker reticle). Separate from gl_line_width (3D debug wireframe). Driver-clamped.");
 cvar_t r_wireframe_smooth					= CVAR ("r_wireframe_smooth", "0");
 cvar_t r_refract_fbo						= CVARD ("r_refract_fbo", "1", "Use an fbo for refraction. If 0, just renders as a portal and uses a copy of the current framebuffer.");
+//FTESurf Patch 850: what a water capture, a portal view and the 3D sky redraw.
+//FTESurf Patch 850: the entity list before the top-level view's world walk added its own props and
+//statics. A nested view sees those and its own walk's, not the outer views' ones again.
+int r_visdynamic;
+unsigned int r_vs_frames, r_vs_views[R_MAX_RECURSE], r_vs_skydrawn, r_vs_skyskipped, r_vs_entskipped;
+unsigned int r_vs_skycam;	//FTESurf Patch 880: 3D skies drawn from the sky camera's vis (gl_warp.c)
+unsigned int r_vs_copies;	//FTESurf Patch 878: $currentrender screen copies in top-level views (gl_backend.c)
+double r_vs_copypixels;	//and the pixels they copied
+//FTESurf Patch 868: CPU self time (ms) and draw calls by kind of view (R_ViewStatsEnter/Leave keep
+//a child's total out of its parent's self time, by depth).
+static const char *r_vs_kindname[R_VS_KINDS] = {"main", "reflection", "refraction", "portal", "3D sky"};
+static double r_vs_ms[R_VS_KINDS];
+static double r_vs_draws[R_VS_KINDS];	//double: an unsigned int wraps within the hour at hundreds of fps
+static double r_vs_childms[R_MAX_RECURSE+1];
+static int r_vs_childdraws[R_MAX_RECURSE+1];
+int R_ViewStatsKind(void)
+{
+	if (!r_refdef.recurse)
+		return 0;
+	if (r_refdef.capturekind == 1)
+		return 1;
+	if (r_refdef.capturekind >= 2)
+		return 2;
+	return 3;
+}
+void R_ViewStatsEnter(int depth, double *t0, int *d0)
+{
+	*t0 = Sys_DoubleTime();
+	*d0 = rquant[RQUANT_DRAWS];
+	if (depth >= 0 && depth <= R_MAX_RECURSE)
+		r_vs_childms[depth] = 0, r_vs_childdraws[depth] = 0;
+}
+void R_ViewStatsLeave(int depth, double t0, int d0, int kind)
+{
+	double tot = (Sys_DoubleTime() - t0) * 1000;
+	int dr = rquant[RQUANT_DRAWS] - d0;
+	if (depth < 0 || depth >= R_MAX_RECURSE || kind < 0 || kind >= R_VS_KINDS)
+		return;
+	r_vs_ms[kind] += tot - r_vs_childms[depth], r_vs_draws[kind] += dr - r_vs_childdraws[depth];
+	r_vs_childms[depth] = 0, r_vs_childdraws[depth] = 0;
+	if (depth > 0)
+		r_vs_childms[depth-1] += tot, r_vs_childdraws[depth-1] += dr;
+}
+static void R_ViewStats_f(void)
+{
+	unsigned int i, f = r_vs_frames ? r_vs_frames : 1;
+	Con_Printf("r_viewstats: %u top-level views (a frame's, or each eye/face/renderscene); per one, views by depth:", r_vs_frames);
+	for (i = 0; i < R_MAX_RECURSE; i++)
+		Con_Printf(" %.2f", r_vs_views[i] / (double)f);
+	Con_Printf("; 3D skies drawn %.2f skipped %.2f; nested entities passed over %.1f; 3D skies from the sky camera %.2f; screen copies %.2f (%.2f Mpx)\n",
+		r_vs_skydrawn / (double)f, r_vs_skyskipped / (double)f, r_vs_entskipped / (double)f, r_vs_skycam / (double)f, r_vs_copies / (double)f,
+		r_vs_copypixels / f / 1e6);
+	Con_Printf("r_viewstats: cpu self ms / draw calls:");
+	for (i = 0; i < R_VS_KINDS; i++)
+		Con_Printf(" %s %.3f/%.0f", r_vs_kindname[i], r_vs_ms[i] / f, r_vs_draws[i] / (double)f);
+	Con_Printf("\n");
+	r_vs_frames = r_vs_skydrawn = r_vs_skyskipped = r_vs_entskipped = r_vs_skycam = r_vs_copies = 0;
+	r_vs_copypixels = 0;
+	memset(r_vs_views, 0, sizeof(r_vs_views));
+	memset(r_vs_ms, 0, sizeof(r_vs_ms));
+	memset(r_vs_draws, 0, sizeof(r_vs_draws));
+}
+cvar_t r_nestedents						= CVARD ("r_nestedents", "1", "1: a nested view (a water reflection or refraction, a portal, the 3D sky) draws the frame's own entities and the props and statics its own world walk found, not again the props its outer views found (each copy of which it drew a second time). 0: every entity in the list, as before Patch 850.");
+cvar_t r_skyroomneed						= CVARD ("r_skyroomneed", "2", "Where the 3D sky is drawn only if the view has sky surfaces to show it through.\n1: water reflections and refractions (a refraction looks under the water; a cave's reflection has no sky).\n2: and the main view, which then shows what is behind a crack in the world instead of the 3D sky.\n0: every view of a map with sky draws it, as before Patch 850. Portal views always do: they inherit the near view's areas, so the far side's sky surfaces can be culled while the 3D sky still shows.");
 cvar_t r_refractreflect_scale				= CVARD ("r_refractreflect_scale", "0.5", "Use a different scale for refraction and reflection texturemaps. Because $reasons.");
+//FTESurf Patch 868: Source's water views (viewrender.cpp CAboveWaterView::CReflectionView::Setup, :5690-5700).
+cvar_t r_waterskyroom						= CVARD ("r_waterskyroom", "0", "Whether a water reflection or refraction draws the 3D sky.\n0: no -- the reflection shows the 2D skybox through its sky surfaces, as Source's does (viewrender.cpp: \"draw the 2d skybox in the reflection, instead of the 3d skybox\"), and the refraction looks under the water. Two exceptions, as in Source: with the eye under water the refraction (looking up out of it) keeps the 3D sky, and water seen through a portal draws it too.\n1: yes, as before Patch 868 (still subject to r_skyroomneed).");
+cvar_t r_waterviews						= CVARD ("r_waterviews", "1", "FTESurf Patch 879: how many water reflection/refraction captures a view renders.\n0: one for every water batch, as before.\n1: one pair, as Source (viewrender.cpp DrawWorldAndEntities: one fog volume per view), for the level water that most fills the screen on the eye's side of it (tops from above, undersides from in the water) and that the eye can see past the world; every level water facing the same way samples it, as every Source water material samples the same _rt_WaterReflection/_rt_WaterRefraction. Water facing the other way, sloped water and water on brush entities capture their own.\n2: one pair per plane: a plane's batches share a capture, other planes render their own.");
+cvar_t r_capturelog						= CVARD ("r_capturelog", "0", "FTESurf Patch 879: for this many top-level views (a frame's, or each eye/face/renderscene), print each view's water choice (and any plane rejected as hidden) and every water reflection/refraction capture and share (level, kind, shader, plane, the plane that placed it, meshes).");
+cvar_t r_nearestsort						= CVARD ("r_nearestsort", "1", "FTESurf Patch 878: how panes that refract the screen (Refract at hl2_refract 1) are ordered.\n1: the world's first, sharing the view's most recent copy of the screen (Patch 895; Source's brushes never copy), then models' back to front, each over a fresh copy, as Source draws its models.\n0: in the order they were submitted, world first, each over its own copy (the engine's order and copies before Patches 878 and 895; not a pre-878 picture, since the plugin's depth rule stays). Either way a model pane that Source draws opaque writes depth, and a world or brush pane does not. GL only.");
+cvar_t r_waterforcereflectentities			= CVARD ("r_waterforcereflectentities", "0", "Source's cvar. 0: a water reflection draws entities and props only if its material says $reflectentities, as Source does -- most Source water reflects only the world and the 2D sky. 1: every water reflection draws them, as before Patch 868.");
 cvar_t r_drawviewmodel						= CVARF  ("r_drawviewmodel", "1", CVAR_ARCHIVE);
 cvar_t r_drawviewmodelinvis					= CVAR  ("r_drawviewmodelinvis", "0");
 cvar_t r_dynamic							= CVARFD ("r_dynamic", IFMINIMAL("0","1"),
@@ -791,6 +861,9 @@ cvar_t r_lodbias							= CVARFD ("r_lodbias", "0", CVAR_ARCHIVE, "Biases the lev
 //below the threshold.  Size-aware for free (it is screen coverage, not raw distance), so a van stays
 //visible far out while a grass tuft drops early.  0 = off (the stock behaviour).
 cvar_t r_model_mincoverage					= CVARFD ("r_model_mincoverage", "0", CVAR_ARCHIVE, "Cull model entities whose projected on-screen size (fraction of screen height, as used by the LOD selector) falls below this. Players, viewmodels and skeletal-object entities are exempt from this AND from the near-plane reject it enables (their e->origin is not a world position). 0 = off. Try 0.002-0.01 on prop-dense maps.");
+cvar_t r_batchsort						= CVARD ("r_batchsort", "1", "FTESurf Patch 831: sort opaque model batches by shader, model and surface, so consecutive draws share their state. 0 draws them in entity order (the A/B).");
+cvar_t r_multidraw						= CVARD ("r_multidraw", "1", "FTESurf Patch 831: draw a batch of several meshes straight from its index buffer with one glMultiDrawElements, where the compatibility profile copied every index into a fresh list per draw. 0 = the copy (the A/B).");
+cvar_t r_instancing						= CVARD ("r_instancing", "1", "FTESurf Patch 831: draw a run of identical props (same model, surface and material, after r_batchsort) as one instanced draw. 0 draws each prop alone (the A/B); 2 prints one frame's runs.");
 cvar_t r_shadows							= CVARFD ("r_shadows", "0", CVAR_ARCHIVE, "Draw basic blob shadows underneath entities without using realtime lighting.");
 //nettest: whether BRUSH entities (the inline "*N" submodels a map's func_ classes are made of)
 //cast shadows at all.  DEFAULT 0 = models only: doors, lifts, crates, buttons and invisible
@@ -832,6 +905,18 @@ static cvar_t hl2_dither_alpha_shaderpolicy = CVARFD("hl2_dither_alpha", "1", CV
 	"Coverage multiplier for dithered Source surfaces. Water keeps a readable minimum unless force is set.");
 static cvar_t hl2_dither_force_shaderpolicy = CVARFD("hl2_dither_force", "0", CVAR_SHADERSYSTEM,
 	"Explicit coverage for dithered Source surfaces; 0 uses each material's derived coverage.");
+// Patch 894: the rest of the hud_gfx material rows, read only while a .vmt is turned into a shader,
+// so a change rebuilds materials without restarting the map. Default, help and group as the plugin's.
+static cvar_t hl2_refract_shaderpolicy = CVARFD("hl2_refract", "2", CVAR_SHADERSYSTEM,
+	"How Source's Refract materials (glass, windows) are drawn.\n0: no framebuffer copy -- what is behind the pane tinted by $refracttint (and its tint texture), plus its $envmap reflection: Source's look without the warp.\n1: Source's refraction, which copies the framebuffer once per batch.\n2: dithered flat (default) -- the pane keeps its own texture, $alpha sets the coverage, and it becomes opaque geometry that writes depth. A pane with no texture of its own draws as 0.");
+static cvar_t hl2_translucent_shaderpolicy = CVARFD("hl2_translucent", "1", CVAR_SHADERSYSTEM,
+	"$translucent world materials (windows, grates, railings).\n0: draw them OPAQUE -- they keep their texture and lightmap but stop being sorted, which is what they actually cost on a map with a lot of glazing.\n1: as the material author wrote them (default).");
+static cvar_t hl2_animated_shaderpolicy = CVARFD("hl2_animated", "0", CVAR_SHADERSYSTEM,
+	"Source's AnimatedTexture proxy -- materials whose frames all live in one VTF (smoke, fire, screens, water).\n0: draw frame 0, which is what shipped before and what every one of these materials has always done (default).\n1: cycle them at the rate the material asks for. 3,342 materials across 741 maps carry the proxy, so this moves a large part of the library onto a separate GLSL 130 shader (vmt/animated) that nothing has exercised before -- which is why it is not on by default.");
+static cvar_t hl2_envmap_shaderpolicy = CVARFD("hl2_envmap", "1", CVAR_SHADERSYSTEM,
+	"Source $envmap reflections on world and model materials, INCLUDING named skybox cubemaps.\n0: no reflections at all; env-mapped surfaces draw as plain diffuse+lightmap.\n1: normal (default). See also hl2_cubemaps, which leaves the shader path alone and only controls the map's own baked env_cubemaps.");
+static cvar_t hl2_bumpmap_shaderpolicy = CVARFD("hl2_bumpmap", "1", CVAR_SHADERSYSTEM,
+	"Load $bumpmap/$normalmap from Source materials.\n0: no normal maps -- flat lighting, and it also drops the per-pixel work that reads them.\n1: normal (default).");
 cvar_t r_waterstyle							= CVARFD ("r_waterstyle", "1", CVAR_ARCHIVE|CVAR_SHADERSYSTEM, "Changes how water, and teleporters are drawn. Possible values are:\n0: fastturb-style block colour.\n1: regular q1-style water.\n2: refraction(ripply and transparent)\n3: refraction with reflection at an angle\n4: ripplemapped without reflections (requires particle effects)\n5: ripples+reflections");
 cvar_t r_slimestyle							= CVARFD ("r_slimestyle", "", CVAR_ARCHIVE|CVAR_SHADERSYSTEM, "See r_waterstyle, but affects only slime. If empty, defers to r_waterstyle.");
 cvar_t r_lavastyle							= CVARFD ("r_lavastyle", "1", CVAR_ARCHIVE|CVAR_SHADERSYSTEM, "See r_waterstyle, but affects only lava. If empty, defers to r_waterstyle.");
@@ -924,6 +1009,9 @@ void GLRenderer_Init(void)
 	Cvar_Register (&r_lodscale, GRAPHICALNICETIES);
 	Cvar_Register (&r_lodbias, GRAPHICALNICETIES);
 	Cvar_Register (&r_model_mincoverage, GRAPHICALNICETIES);	//nettest Patch 100
+	Cvar_Register (&r_batchsort, GRAPHICALNICETIES);	//FTESurf Patch 831
+	Cvar_Register (&r_multidraw, GRAPHICALNICETIES);	//FTESurf Patch 831
+	Cvar_Register (&r_instancing, GRAPHICALNICETIES);	//FTESurf Patch 831
 
 	Cvar_Register (&gl_motionblur, GLRENDEREROPTIONS);
 	Cvar_Register (&gl_motionblurscale, GLRENDEREROPTIONS);
@@ -1425,6 +1513,11 @@ void Renderer_Init(void)
 	Cvar_Register (&hl2_water_shaderpolicy, GRAPHICALNICETIES);
 	Cvar_Register (&hl2_dither_alpha_shaderpolicy, GRAPHICALNICETIES);
 	Cvar_Register (&hl2_dither_force_shaderpolicy, GRAPHICALNICETIES);
+	Cvar_Register (&hl2_refract_shaderpolicy, "Map Cvar Options");
+	Cvar_Register (&hl2_translucent_shaderpolicy, "Map Cvar Options");
+	Cvar_Register (&hl2_animated_shaderpolicy, "Map Cvar Options");
+	Cvar_Register (&hl2_envmap_shaderpolicy, "Map Cvar Options");
+	Cvar_Register (&hl2_bumpmap_shaderpolicy, "Map Cvar Options");
 	Cvar_Register (&r_lavastyle, GRAPHICALNICETIES);
 	Cvar_Register (&r_slimestyle, GRAPHICALNICETIES);
 	Cvar_Register (&r_telestyle, GRAPHICALNICETIES);
@@ -1435,6 +1528,14 @@ void Renderer_Init(void)
 	Cvar_Register (&gl_line_width, GRAPHICALNICETIES);
 	Cvar_Register (&gl_2dline_width, GRAPHICALNICETIES);
 	Cvar_Register (&r_refract_fbo, GRAPHICALNICETIES);
+	Cvar_Register (&r_nestedents, GRAPHICALNICETIES);	//FTESurf Patch 850
+	Cvar_Register (&r_skyroomneed, GRAPHICALNICETIES);
+	Cvar_Register (&r_waterskyroom, GRAPHICALNICETIES);	//FTESurf Patch 868
+	Cvar_Register (&r_waterforcereflectentities, GRAPHICALNICETIES);
+	Cvar_Register (&r_capturelog, GRAPHICALNICETIES);	//FTESurf Patch 879
+	Cvar_Register (&r_waterviews, GRAPHICALNICETIES);
+	Cvar_Register (&r_nearestsort, GRAPHICALNICETIES);
+	Cmd_AddCommandD("r_viewstats", R_ViewStats_f, "FTESurf Patch 850: per top-level view since the last call -- views by depth, 3D skies drawn and skipped, entities a nested view passed over, 3D skies from the sky camera, screen copies and their megapixels.");
 	Cvar_Register (&r_refractreflect_scale, GRAPHICALNICETIES);
 	Cvar_Register (&r_postprocshader, GRAPHICALNICETIES);
 	Cvar_Register (&r_colourcorrection, GRAPHICALNICETIES);	//FTESurf Patch 288
@@ -1964,6 +2065,7 @@ void R_ShutdownRenderer(qboolean devicetoo)
 #endif
 
 	P_Shutdown();
+	V_WorldFreed(true);	//FTESurf Patch 883: cl.worldmodel dangles from here to the reload
 	Mod_Shutdown(false);
 
 	IN_Shutdown();
@@ -2463,6 +2565,7 @@ TRACE(("dbg: R_ApplyRenderer: reloading ALL models\n"));
 		else
 #endif
 			cl.worldmodel = cl.model_precache[wmidx];
+		V_WorldFreed(false);
 
 		if (cl.worldmodel && cl.worldmodel->loadstate == MLS_LOADING)
 			COM_WorkerPartialSync(cl.worldmodel, &cl.worldmodel->loadstate, MLS_LOADING);
@@ -2494,6 +2597,7 @@ TRACE(("dbg: R_ApplyRenderer: efrags\n"));
 		Skin_FlushPlayers();
 
 	}
+	V_WorldFreed(false);	//no world, or a Quake 3 one, or reloaded above
 
 #ifdef SKELETALOBJECTS
 	skel_reload();

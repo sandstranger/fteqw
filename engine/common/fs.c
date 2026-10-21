@@ -231,6 +231,7 @@ qboolean fs_readonly;
 static searchpath_t *fs_allowfileuri;
 int waitingformanifest;
 static unsigned int fs_restarts;
+static unsigned int fs_listgen = 1;	//FTESurf Patch 846: see FS_ListGeneration
 void *fs_thread_mutex;
 float fs_accessed_time;	//timestamp of read (does not include flocates, which should normally happen via a cache).
 
@@ -2135,6 +2136,21 @@ static void FS_FlushFSHashReally(qboolean domutexes)
 	}
 }
 
+//FTESurf Patch 889: one of Momentum's mount/<game>_placeholder.vpk stand-ins (FS_Addon_AutoSourceBase,
+//or an fs_addons.txt dir holding them, as the lobbies do).  They stay below every other path, and
+//their hash depth is offset so a pack mounted later above them (a map's own pakfile) can still be
+//inserted incrementally at the tail's depth instead of leaving the hash stale.
+#define FS_STANDIN_DEPTH 0x100000
+static qboolean FS_IsStandInPack(const char *logicalpath, unsigned int flags)
+{
+	size_t l = strlen(logicalpath), s = strlen("_placeholder.vpk");
+	return (flags & SPF_ADDON) && !(flags & SPF_ISDIR) && l > s && !Q_strcasecmp(logicalpath + l - s, "_placeholder.vpk");
+}
+static int FS_HashDepth(const searchpath_t *sp, int depth)
+{
+	return FS_IsStandInPack(sp->logicalpath, sp->flags) ? FS_STANDIN_DEPTH + depth : depth;
+}
+
 static void QDECL FS_AddFileHashUnsafe(int depth, const char *fname, fsbucket_t *filehandle, void *pathhandle)
 {
 	//threading stuff is fucked.
@@ -2272,13 +2288,14 @@ static void FS_RebuildFSHash(qboolean domutex)
 	{
 		for (search = com_searchpaths ; search ; search = search->next)
 		{
-			search->handle->BuildHash(search->handle, depth++, FS_AddFileHash);
+			search->handle->BuildHash(search->handle, FS_HashDepth(search, depth++), FS_AddFileHash);
 		}
 	}
 	fs_hash_rebuilding = false;
 
 	com_fschanged = false;
 	com_fsneedreload = false;
+	fs_listgen++;	//also where an external change found by PollChanges lands
 
 	if (domutex)
 		Sys_UnlockMutex(fs_thread_mutex);
@@ -2295,6 +2312,10 @@ static void FS_RebuildFSHash_Update(const char *fname)
 	fsbucket_t *old;
 	void *filehandle = NULL;
 
+	//before the stale return, so a map landing while stale still counts. maps/ only: QC
+	//fclose comes through here for every data file it writes (pr_bgcmd.c)
+	if (!Q_strncasecmp(fname, "maps/", 5))
+		fs_listgen++;
 	if (com_fschanged)
 		return;
 
@@ -2317,6 +2338,7 @@ static void FS_RebuildFSHash_Update(const char *fname)
 			if (search->handle->FindFile(search->handle, &loc, fname, NULL))
 			{
 				filehandle = loc.fhandle;
+				depth = FS_HashDepth(search, depth);	//P889
 				break;
 			}
 			depth++;
@@ -2354,6 +2376,7 @@ void FS_FlushFSHashFull(void)
 {	//any calls to this are typically a bug...
 	//that said, figuring out if the file was actually within quake's filesystem isn't easy.
 	com_fschanged = true;
+	fs_listgen++;
 
 	//for safety we would need to sync with all threads, so lets just not bother.
 	//FS_FlushFSHashReally(true);
@@ -4713,8 +4736,10 @@ static searchpath_t *FS_AddPathHandle(searchpath_t **oldpaths, const char *purep
 		int depth = 1;
 		searchpath_t *s;
 		//add at end. pureness will reorder if needed.
+		//FTESurf Patch 889: but above the stand-in packs, unless this is one.
+		qboolean standin = FS_IsStandInPack(logicalpath, flags);
 		link = &com_searchpaths;
-		while(*link)
+		while(*link && (standin || !FS_IsStandInPack((*link)->logicalpath, (*link)->flags)))
 		{
 			link = &(*link)->next;
 		}
@@ -4729,6 +4754,9 @@ static searchpath_t *FS_AddPathHandle(searchpath_t **oldpaths, const char *purep
 			for (s = com_searchpaths ; s ; s = s->next)
 				depth++;
 		}
+		if (standin)
+			depth += FS_STANDIN_DEPTH;	//P889: see FS_HashDepth
+		search->next = *link;	//P889: non-NULL only above a stand-in
 		*link = search;
 
 		/* ftesurf (P196): do not write into the name hash while it is known to be stale.
@@ -4781,6 +4809,7 @@ static searchpath_t *FS_AddPathHandle(searchpath_t **oldpaths, const char *purep
 
 		com_fschanged = true;	//depth values are screwy
 	}
+	fs_listgen++;
 
 	return search;
 }
@@ -4788,6 +4817,16 @@ static searchpath_t *FS_AddPathHandle(searchpath_t **oldpaths, const char *purep
 static void COM_RefreshFSCache_f(void)
 {
 	com_fschanged=true;
+	fs_listgen++;
+}
+
+/*FTESurf Patch 846: changes whenever the set of map files may have: a hash rebuild (which is
+  also where PollChanges' external changes land), a file under maps/ written or removed, a
+  path mounted, a full flush. Equality says nothing changed that this engine has noticed; a
+  file another program drops in shows after the next rebuild.*/
+unsigned int FS_ListGeneration(void)
+{
+	return fs_listgen + fs_restarts;
 }
 
 //optionally purges the cache and rebuilds it
@@ -9456,9 +9495,9 @@ void FS_ClearPreferHint(void)
 
 #define FS_MOMENTUM_BASE_SPEC "steam:Momentum Mod Playtest/mount"
 
-//P679: mount ONLY Momentum's shared HL2 pack, never its other-game placeholder
-//VPKs. Keep it private and below the configured games; no persistent-list rewrite.
-static qboolean FS_Addon_MountSourceBase(const char *syspath)
+//P679: one pack out of Momentum's mount/ dir, private and below the configured games;
+//no persistent-list rewrite.  Mounting the whole dir would load every placeholder.
+static qboolean FS_Addon_MountMomentumPack(const char *syspath, const char *pakname)
 {
 	char pakpath[MAX_OSPATH];
 	searchpath_t *s, *oldpaths = NULL;
@@ -9473,7 +9512,7 @@ static qboolean FS_Addon_MountSourceBase(const char *syspath)
 	if (i == countof(searchpathformats))
 		return false;	//plugin registration triggers a searchpath rebuild later
 
-	Q_snprintfz(pakpath, sizeof(pakpath), "%s/hl2_dir.vpk", syspath);
+	Q_snprintfz(pakpath, sizeof(pakpath), "%s/%s", syspath, pakname);
 	for (s = com_searchpaths; s; s = s->next)
 		if (!Q_strcasecmp(s->logicalpath, pakpath))
 			return true;
@@ -9487,20 +9526,49 @@ static qboolean FS_Addon_MountSourceBase(const char *syspath)
 		return false;
 	}
 	//The VPK loader opens its numbered fragments through this temporary parent.
-	pak = FS_OpenPackByExtension(file, parent, "hl2_dir.vpk", pakpath, "");
+	pak = FS_OpenPackByExtension(file, parent, pakname, pakpath, "");
 	parent->ClosePath(parent);
 	if (!pak)
 		return false;
-	FS_AddPathHandle(&oldpaths, FS_MOMENTUM_BASE_SPEC "/hl2_dir.vpk", pakpath, pak, "",
+	FS_AddPathHandle(&oldpaths, va(FS_MOMENTUM_BASE_SPEC "/%s", pakname), pakpath, pak, "",
 		SPF_ADDON|SPF_COPYPROTECTED|SPF_PRIVATE, 0);
-	Con_DPrintf("fs_load: automatic Source base pack \"%s\"\n", pakpath);
+	Con_DPrintf("fs_load: automatic Source pack \"%s\"\n", pakpath);
 	return true;
 }
+static qboolean FS_Addon_MountSourceBase(const char *syspath)
+{
+	return FS_Addon_MountMomentumPack(syspath, "hl2_dir.vpk");
+}
+
+/*FTESurf Patch 889: Momentum's stand-ins for a game the player does not have: that game's prop
+models with its own .phy, drawn as a grey hull (momentum/materials/models/placeholder).  For the 84
+models the lobbies could not load, .phy bytes and .mdl hull bounds equal the real game's.  Momentum
+mounts one only when its appid fails to mount (gameinfo.txt "fallback"), in that game's slot; ours
+all sit below every other path (FS_AddPathHandle), so where two stand-ins share a model (cstrike and
+csgo: 616 .phy, 614 differ) the earlier one in this list wins, not the game's own slot.
+"Installed" is the game's own content pack, not its folder: an uninstall leaves cfg/ and custom/.*/
+static cvar_t fs_standins = CVARFD("fs_standins", "1", CVAR_ARCHIVE, "ftesurf (P889): Momentum's stand-in packs (mount/<game>_placeholder.vpk: TF2, CS:S, CS:GO and Portal 2 prop hulls, drawn grey) below every other path. 1 = for each of those games whose content pack is not installed; 2 = always; 0 = never. Takes effect at fs_restart.");
+static const struct {const char *pak, *game, *probe;} fs_standin[] =
+{	//Momentum's gameinfo.txt order; csgo's probe is P679's pak01_dir.vpk over both layouts
+	{"tf_placeholder.vpk",		"Team Fortress 2/tf",					"tf2_misc_dir.vpk"},
+	{"cstrike_placeholder.vpk",	"Counter-Strike Source/cstrike",		"cstrike_pak_dir.vpk"},
+	{"csgo_placeholder.vpk",	"Counter-Strike Global Offensive/csgo",	""},
+	{"portal2_placeholder.vpk",	"Portal 2/portal2",						"pak01_dir.vpk"},
+};
 static void FS_Addon_AutoSourceBase(void)
 {
-	char syspath[MAX_OSPATH];
-	if (FS_Addon_ResolveEx(FS_MOMENTUM_BASE_SPEC, syspath, sizeof(syspath), true))
-		FS_Addon_MountSourceBase(syspath);
+	char syspath[MAX_OSPATH], gamepath[MAX_OSPATH], game[MAX_OSPATH], probe[MAX_QPATH];
+	int i;
+	if (!FS_Addon_ResolveEx(FS_MOMENTUM_BASE_SPEC, syspath, sizeof(syspath), true))
+		return;
+	FS_Addon_MountSourceBase(syspath);
+	for (i = 0; i < countof(fs_standin) && fs_standins.ival; i++)
+	{
+		Q_strncpyz(game, fs_standin[i].game, sizeof(game));
+		Q_strncpyz(probe, fs_standin[i].probe, sizeof(probe));
+		if (fs_standins.ival == 2 || !Sys_SteamHasFile(gamepath, sizeof(gamepath), game, probe))
+			FS_Addon_MountMomentumPack(syspath, fs_standin[i].pak);
+	}
 }
 
 static qboolean FS_Addon_Mount(const char *arg, unsigned int loadstuff)
@@ -9671,6 +9739,113 @@ static void FS_Addon_MountHD(const char *spec, unsigned int loadstuff)
 		Con_DPrintf("fs_load: mounted HD pack \"%s\"\n", hdspec);
 }
 
+/*
+FTESurf Patch 875: a Source game's LOOSE files sink below every pack, as Momentum mounts them.
+Momentum's gameinfo mounts cstrike_pak_dir.vpk and cstrike/download, never cstrike's loose
+materials; ours put the whole cstrike dir above HL2 and Momentum's mount/hl2_dir.vpk, so Lex's
+community-pack cstrike/materials/dev/water_normal.vtf (1024^2, one frame) replaced HL2's animated
+256^2 one on 835 of 1,926 maps.  Census of his mounts: the 5 dev/water*.vtf are the only files
+in cstrike's loose dirs that a lower pack also has (plus 10 hl2 scripts/ files nothing reads yet).
+A loose dir is a Source game's when one of its own *_dir.vpk is mounted; the packs keep their
+order.  Boot and fs_restart only: FS_RemountAddons runs at the end of FS_ReloadPackFilesFlags,
+after COM_WorkerFullSync, so no loader walks the list.  Never after an automount: a game mounted
+mid-session only appends, so no winner a loaded model or the P197 cache relied on moves.
+*/
+static cvar_t fs_sourceloose = CVARFD("fs_sourceloose", "1", CVAR_ARCHIVE, "ftesurf (P875): 1 = a mounted Source game's loose files (cstrike/materials and the like) rank below every pack, as Momentum mounts them; 0 = above them, the order before. Takes effect at fs_restart.");
+static qboolean FS_Addon_IsSourceLoose(const searchpath_t *sp)
+{
+	const searchpath_t *s;
+	const char *q;
+	size_t len = strlen(sp->logicalpath), l2;
+	while (len && (sp->logicalpath[len-1] == '/' || sp->logicalpath[len-1] == '\\'))
+		len--;	//an absolute fs_addons.txt line may end in a separator
+	if ((sp->flags & (SPF_ADDON|SPF_ISDIR)) != (SPF_ADDON|SPF_ISDIR) || !len)
+		return false;
+	for (s = com_searchpaths; s; s = s->next)
+	{
+		if (s == sp || (s->flags & SPF_ISDIR) || !(s->flags & SPF_ADDON))
+			continue;
+		q = s->logicalpath + len;
+		l2 = strlen(s->logicalpath);
+		if (l2 <= len + 8 || Q_strncasecmp(s->logicalpath, sp->logicalpath, len) || (*q != '/' && *q != '\\'))
+			continue;
+		while (*q == '/' || *q == '\\')
+			q++;	//"<dir>/x_dir.vpk" or "<dir>//x_dir.vpk", never deeper
+		if (!strchr(q, '/') && !strchr(q, '\\') && !Q_strcasecmp(s->logicalpath + l2 - 8, "_dir.vpk"))
+			return true;
+	}
+	return false;
+}
+static void FS_Addon_SinkSourceLoose(void)
+{
+	searchpath_t *sp, **link, *sunk = NULL, **tail = &sunk;
+	qboolean loose = false;
+	if (!fs_sourceloose.ival)
+		return;
+	for (sp = com_searchpaths; sp; sp = sp->next)	//already in order: no rehash
+	{
+		if (FS_Addon_IsSourceLoose(sp))
+			loose = true;
+		else if (loose)
+			break;
+	}
+	if (!sp)
+		return;
+	for (link = &com_searchpaths; *link; )
+	{
+		sp = *link;
+		if (FS_Addon_IsSourceLoose(sp))
+		{
+			*link = sp->next;
+			sp->next = NULL;
+			*tail = sp;
+			tail = &sp->next;
+			Con_DPrintf("fs_load: \"%s\" loose files rank below every pack\n", sp->logicalpath);
+		}
+		else
+			link = &sp->next;
+	}
+	if (!sunk)
+		return;
+	*link = sunk;
+	com_fschanged = true;	//depths moved; the next lookup rebuilds the hash
+	fs_listgen++;
+}
+//FTESurf Patch 889: the stand-ins back to the very end, below the loose dirs P875 just sank.
+//Same window as FS_Addon_SinkSourceLoose: boot and fs_restart only.
+static void FS_Addon_SinkStandIns(void)
+{
+	searchpath_t *sp, **link, *sunk = NULL, **tail = &sunk;
+	qboolean seen = false;
+	for (sp = com_searchpaths; sp; sp = sp->next)	//already last: no rehash
+	{
+		if (FS_IsStandInPack(sp->logicalpath, sp->flags))
+			seen = true;
+		else if (seen)
+			break;
+	}
+	if (!sp)
+		return;
+	for (link = &com_searchpaths; *link; )
+	{
+		sp = *link;
+		if (FS_IsStandInPack(sp->logicalpath, sp->flags))
+		{
+			*link = sp->next;
+			sp->next = NULL;
+			*tail = sp;
+			tail = &sp->next;
+		}
+		else
+			link = &sp->next;
+	}
+	if (!sunk)
+		return;
+	*link = sunk;
+	com_fschanged = true;
+	fs_listgen++;
+}
+
 //(re)mount every game listed in <gamedir>/fs_addons.txt.  Called at the end of
 //each searchpath rebuild so addon games survive fs_restart / gamedir changes.
 static void FS_RemountAddons(unsigned int loadstuff)
@@ -9705,6 +9880,8 @@ static void FS_RemountAddons(unsigned int loadstuff)
 	if (steamfails)
 		FS_SteamHint();
 	FS_Addon_AutoSourceBase();	//below user-ordered games, before any map asset loads
+	FS_Addon_SinkSourceLoose();	//FTESurf Patch 875
+	FS_Addon_SinkStandIns();	//FTESurf Patch 889
 }
 
 //=================================================================
@@ -11709,6 +11886,8 @@ void COM_InitFilesystem (void)
 	Cvar_Register(&fs_maploadhash, "Filesystem");	//ftesurf (P180)
 	Cvar_Register(&fs_mapmaterials, "Filesystem");	//ftesurf (P765)
 	Cvar_Register(&fs_hdmodels, "Filesystem");	//nettest: Half-Life HD model pack preference
+	Cvar_Register(&fs_sourceloose, "Filesystem");	//FTESurf Patch 875
+	Cvar_Register(&fs_standins, "Filesystem");		//FTESurf Patch 889
 	Cvar_Register(&fs_hidesyspaths, "Filesystem");
 	Cvar_Register(&fs_gamename, "Filesystem");
 #ifdef PACKAGEMANAGER

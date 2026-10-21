@@ -1660,6 +1660,12 @@ static void Shader_Wireframe (parsestate_t *ps, const char **ptr)
 	ps->s->wireframe = true;
 }
 
+//FTESurf Patch 868: Source water without $reflectentities -- its reflection draws only the world.
+static void Shader_ReflectNoEntities (parsestate_t *ps, const char **ptr)
+{
+	ps->s->reflectnoents = true;
+}
+
 #if defined(GLQUAKE) || defined(D3DQUAKE)
 static qboolean Shader_ParseProgramCvar(char *script, char **cvarnames, int *cvartypes, int cvartype)
 {
@@ -1837,7 +1843,8 @@ static struct
 	{"FOG", PERMUTATION_FOG},
 	{"FRAMEBLEND", PERMUTATION_FRAMEBLEND},
 	{"LIGHTSTYLED", PERMUTATION_LIGHTSTYLES},
-	{"VC", PERMUTATION_VC}	//nettest: baked static-prop per-vertex colour multiplier
+	{"VC", PERMUTATION_VC},	//nettest: baked static-prop per-vertex colour multiplier
+	{"INSTANCED", PERMUTATION_INSTANCED}	//FTESurf Patch 831
 };
 #define MAXMODIFIERS 64
 
@@ -1991,8 +1998,9 @@ struct programpermu_s *Shader_LoadPermutation(program_t *prog, unsigned int p)
 		//Com_PermuOrFloatArgument (:1688).  Suppressing the sampler too would change numsamplers,
 		//hence the synthesised pass list and every texture binding index after it; leaving it
 		//declared but unused costs one ignored uniform and keeps the pass layout byte-identical.
-		//cl.worldmodel is NULL for 2D/menu//loading shaders, which want no deluxe modulation either.
-		if (r_deluxemapping && cl.worldmodel && cl.worldmodel->lightmaps.deluxemapping)
+		//No world for 2D/menu//loading shaders, which want no deluxe modulation either; during a renderer
+		//restart the answer is the world's from before the restart (V_WorldFreed).
+		if (r_deluxemapping && V_WorldHasDeluxe())	//Patch 883: not cl.worldmodel, which a restart leaves dangling
 			Q_strlcatfz(defines, &offset, sizeof(defines), "#define DELUXE\n");
 	}
 	permutationdefines[pn++] = defines;
@@ -3609,6 +3617,7 @@ static shaderkey_t shaderkeys[] =
 	{"affine",				Shader_Affine,				"fte"},	//some hardware is horribly slow, and can benefit from certain hints.
 	{"fullrate",			Shader_FullRate,			"fte"},	//blocks half-rate shading on this surface.
 	{"wireframe",			Shader_Wireframe,			"fte"},	//FTESurf Patch 780: Source's MATERIAL_VAR_WIREFRAME (GL only)
+	{"reflectnoentities",	Shader_ReflectNoEntities,	"fte"},	//FTESurf Patch 868: fte_reflectnoentities
 
 	{"bemode",				Shader_BEMode,				"fte"},
 

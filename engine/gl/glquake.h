@@ -782,6 +782,9 @@ void GLBudget_Pop(int prev);
 void GLBudget_Reset(void);		//the context went away with its queries
 
 extern void (APIENTRY *qglDrawBuffers)(GLsizei n, GLsizei *ids);	//gl2
+#ifndef GL_STATIC
+extern void (APIENTRY *qglBlendFuncSeparate)(GLenum srgb, GLenum drgb, GLenum sa, GLenum da);	//gl1.4, FTESurf Patch 871
+#endif
 
 extern GLenum (APIENTRY *qglGetGraphicsResetStatus) (void);
 
@@ -1109,6 +1112,10 @@ extern void (APIENTRY *qglDepthBoundsEXT) (GLclampd zmin, GLclampd zmax);
 
 extern void (APIENTRY *qglDrawRangeElements) (GLenum, GLuint, GLuint, GLsizei, GLenum, const GLvoid *);
 extern void (APIENTRY *qglMultiDrawElements) (GLenum mode, const GLsizei * count, GLenum type, const GLvoid * const * indices, GLsizei drawcount);
+extern void (APIENTRY *qglDrawElementsInstanced) (GLenum mode, GLsizei count, GLenum type, const GLvoid *indices, GLsizei instancecount);	//FTESurf Patch 831
+extern void (APIENTRY *qglTexBuffer) (GLenum target, GLenum internalformat, GLuint buffer);	//FTESurf Patch 831
+#define GL_TEXTURE_BUFFER_FTE			0x8C2A	//FTESurf Patch 831: GL_TEXTURE_BUFFER
+#define GL_MAX_TEXTURE_BUFFER_SIZE_FTE	0x8C2B
 extern void (APIENTRY *qglEnableClientState) (GLenum array);
 extern void (APIENTRY *qglVertexPointer) (GLint size, GLenum type, GLsizei stride, const GLvoid *pointer);
 

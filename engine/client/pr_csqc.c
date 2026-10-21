@@ -1695,6 +1695,8 @@ void QCBUILTIN PF_R_PolygonBegin(pubprogfuncs_t *prinst, struct globalvars_s *pr
 		beflags |= BEF_FORCETWOSIDED;
 	if (qcflags & DRAWFLAG_NODEPTHTEST)
 		beflags |= BEF_FORCENODEPTH;	//FTESurf Patch 274, see pr_common.h
+	if (qcflags & DRAWFLAG_UNDERBLEND)
+		beflags |= BEF_UNDERBLEND;	//FTESurf Patch 847
 
 	shader = PR_R_PolygonShader(shadername, twod);
 
@@ -1967,6 +1969,8 @@ void QCBUILTIN PF_R_AddTrisoup_Simple(pubprogfuncs_t *prinst, struct globalvars_
 		beflags |= BEF_LINES;
 	if (qcflags & DRAWFLAG_NODEPTHTEST)
 		beflags |= BEF_FORCENODEPTH;	//FTESurf Patch 274, as PF_R_PolygonBegin
+	if (qcflags & DRAWFLAG_UNDERBLEND)
+		beflags |= BEF_UNDERBLEND;	//FTESurf Patch 847
 
 	shader = PR_R_PolygonShader(shadername, twod);
 
@@ -2090,51 +2094,51 @@ static void cs_buildmatricies(void)
 	r_refdef.fovv_x = ofovvx,
 	r_refdef.fovv_y = ofovvy;
 }
+//FTESurf Patch 836: project()'s arithmetic, shared with lines_label, which must land where QC's
+//own project() would. The caller rebuilds the matrices first.
+static void CS_ProjectPoint(const float *in, float *out)
+{
+	float v[4], tempv[4];
+
+	v[0] = in[0];
+	v[1] = in[1];
+	v[2] = in[2];
+	v[3] = 1;
+
+	Matrix4x4_CM_Transform4(csqc_proj_matrix, v, tempv);
+
+	tempv[0] /= tempv[3];
+	tempv[1] /= tempv[3];
+	tempv[2] /= tempv[3];
+
+	if (csqc_isdarkplaces)
+	{	/*sigh*/
+		tempv[0] = -tempv[0]/tempv[2]/csqc_proj_frustum[0];
+		tempv[1] = tempv[1]/tempv[2]/csqc_proj_frustum[1];
+		out[0] = (1+tempv[0])/2;
+		out[1] = (1+tempv[1])/2;
+		out[2] = -tempv[2];
+
+		out[0] = out[0]*vid.width;
+		out[1] = out[1]*vid.height;
+	}
+	else
+	{
+		out[0] = (1+tempv[0])/2;
+		out[1] = 1-(1+tempv[1])/2;
+		out[2] = tempv[2];
+
+		out[0] = out[0]*r_refdef.vrect.width + r_refdef.vrect.x;
+		out[1] = out[1]*r_refdef.vrect.height + r_refdef.vrect.y;
+	}
+	if (tempv[3] < 0)
+		out[2] *= -1;
+}
 static void QCBUILTIN PF_cs_project (pubprogfuncs_t *prinst, struct globalvars_s *pr_globals)
 {
 	if (csqc_rebuildmatricies)
 		cs_buildmatricies();
-
-
-	{
-		float *in = G_VECTOR(OFS_PARM0);
-		float *out = G_VECTOR(OFS_RETURN);
-		float v[4], tempv[4];
-
-		v[0] = in[0];
-		v[1] = in[1];
-		v[2] = in[2];
-		v[3] = 1;
-
-		Matrix4x4_CM_Transform4(csqc_proj_matrix, v, tempv);
-
-		tempv[0] /= tempv[3];
-		tempv[1] /= tempv[3];
-		tempv[2] /= tempv[3];
-
-		if (csqc_isdarkplaces)
-		{	/*sigh*/
-			tempv[0] = -tempv[0]/tempv[2]/csqc_proj_frustum[0];
-			tempv[1] = tempv[1]/tempv[2]/csqc_proj_frustum[1];
-			out[0] = (1+tempv[0])/2;
-			out[1] = (1+tempv[1])/2;
-			out[2] = -tempv[2];
-
-			out[0] = out[0]*vid.width;
-			out[1] = out[1]*vid.height;
-		}
-		else
-		{
-			out[0] = (1+tempv[0])/2;
-			out[1] = 1-(1+tempv[1])/2;
-			out[2] = tempv[2];
-
-			out[0] = out[0]*r_refdef.vrect.width + r_refdef.vrect.x;
-			out[1] = out[1]*r_refdef.vrect.height + r_refdef.vrect.y;
-		}
-		if (tempv[3] < 0)
-			out[2] *= -1;
-	}
+	CS_ProjectPoint(G_VECTOR(OFS_PARM0), G_VECTOR(OFS_RETURN));
 }
 static void QCBUILTIN PF_cs_unproject (pubprogfuncs_t *prinst, struct globalvars_s *pr_globals)
 {
@@ -2403,6 +2407,10 @@ nogameaccess:
 
 	case VF_DRAWWORLD:
 		*r = !(r_refdef.flags&RDF_NOWORLDMODEL);
+		break;
+	case VF_RT_COVERAGE:	//FTESurf Patch 871: -1 while any other target is bound (screenshot_mega, a capture,
+						//CSQC's own): switching back from a coverage target returns to the screen, not to it
+		*r = (vid.framebuffer || (*r_refdef.rt_destcolour[0].texname && !r2d_coverage)) ? -1 : r2d_coverage;
 		break;
 	case VF_ENGINESBAR:
 		*r = r_refdef.drawsbar;
@@ -2715,6 +2723,11 @@ void QCBUILTIN PF_R_SetViewFlag(pubprogfuncs_t *prinst, struct globalvars_s *pr_
 
 	case VF_DRAWWORLD:
 		r_refdef.flags = (r_refdef.flags&~RDF_NOWORLDMODEL) | (*p?0:RDF_NOWORLDMODEL);
+		break;
+	case VF_RT_COVERAGE:	//FTESurf Patch 871: the 2D drawn before the switch keeps the blends it was queued with
+		if (R2D_Flush)
+			R2D_Flush();
+		r2d_coverage = !!*p;
 		break;
 	case VF_ENGINESBAR:
 		r_refdef.drawsbar = !!*p;
@@ -4406,6 +4419,7 @@ static void QCBUILTIN PF_cs_runplayerphysics (pubprogfuncs_t *prinst, struct glo
 	VectorCopy(ent->xv->gravitydir, pmove.gravitydir);
 
 	CL_SetSolidEntities();
+	pmove.momlimit = pmove.momslide = 0;	pmove.momcool = 0;	//FTESurf Patch 882: no trigger state here
 
 	while(msecs > 0)	//break up longer commands
 	{
@@ -7231,6 +7245,7 @@ static struct {
 	{"lines_arrays",		PF_cs_lines_arrays,		0},
 	{"lines_lod",			PF_cs_lines_lod,		0},
 	{"lines_draw",			PF_cs_lines_draw,		0},
+	{"lines_label",			PF_cs_lines_label,		0},	//FTESurf Patch 836
 	{"memnostrings",		PF_memnostrings,		0},	//FTESurf Patch 763
 
 	{"drawstring",				PF_CL_drawcolouredstring,		326},	// #326
@@ -7922,6 +7937,7 @@ static plugmaterialloaderfuncs_t csqcmaterialloader = {"csqc", CSQC_GenerateMate
 void CSQC_Shutdown(void)
 {
 	int i;
+	r2d_coverage = 0;	/*Patch 871: an aborted VM can leave it set inside its target*/
 	csqc_realkey = false;	/*Patch 625: no VM inherits a key press*/
 	csqc_pastevm++;	/*Patch 667: nor a question about the clipboard*/
 	CL_PasteDrop(CSQC_PasteGive);
@@ -9365,6 +9381,13 @@ qboolean CSQC_DrawView(void)
 		}
 	}
 
+	//FTESurf Patch 871: a view that errored out inside its target must not leave coverage on
+	if (r2d_coverage)
+	{
+		if (R2D_Flush)
+			R2D_Flush();
+		r2d_coverage = 0;
+	}
 	if (*r_refdef.rt_destcolour[0].texname)
 	{
 		if (R2D_Flush)
@@ -10060,13 +10083,30 @@ qboolean CSQC_Parse_SetAngles(int seat, vec3_t newangles, qboolean wasdelta)
      the delta landed; it now matches by value (CSQC_PredictAngleCorrect).
 
   3. The listen server.  With a local server active the SSQC touch functions
-     run in the same process and the hook is skipped outright, which is the
-     Patch 240 precedent: prediction must be honestly ignorant rather than
-     right twice.
+     run in the same process and the hook was skipped outright, as Patch 240's
+     precedent.  Patch 862 runs it there too (CSQC_PredictListenGated).
 ===========================================================================
 */
 extern cvar_t cl_predict_qchook;
 extern cvar_t cl_predict_angleexact, cl_predict_angledebug;	/*cl_pred.c, Patch 396*/
+extern cvar_t cl_predict_listen;	/*cl_pred.c, Patch 862*/
+
+/*FTESurf Patch 862: the trigger mirror (this hook and its carrier ring) also runs on a
+  listen server.  Patch 335 gated it off as Patch 240's double apply, but nothing it
+  writes reaches the server: of the shared pmove it writes origin, velocity, onground
+  and basevelocity, and SV_RunCmd reloads all four from the edict for every command
+  (sv_user.c; basevelocity from run_basevelocity or cleared), while CSQC's state is
+  its own VM.  The view snap goes through the same Patch 396 reconciliation as against
+  a remote server.  The warp-op pre-move hook keeps its gate: on, a local !r/!m would
+  take the server's impulse path instead of its stringcmd.*/
+static qboolean CSQC_PredictListenGated(void)
+{
+#ifdef HAVE_SERVER
+	return sv.state != ss_dead && !cl_predict_listen.ival;
+#else
+	return false;
+#endif
+}
 
 /*FTESurf Patch 396: a snap keeps its absolute target and command sequence, so a server
   setangle is matched by value.  ENGINE_PATCHES.md has the timing cases.*/
@@ -10667,10 +10707,8 @@ void CSQC_PredictSaveBaseVel(int seat, int sequence)
 	int slot;
 	if ((unsigned int)seat >= MAX_SPLITS || !cl_predict_qchook.ival)
 		return;
-#ifdef HAVE_SERVER
-	if (sv.state != ss_dead)
+	if (CSQC_PredictListenGated())
 		return;
-#endif
 	slot = (unsigned int)sequence & (PRED_BVEL_RING - 1);
 	VectorCopy(pred_bv_held[seat], pred_bvring[seat][slot].held);
 	pred_bvring[seat][slot].armed = pred_bv_armed[seat];
@@ -10683,10 +10721,8 @@ void CSQC_PredictConsumeBaseVel(int seat, int sequence, qboolean restoreprevious
 	int slot;
 	if (!csqcg.predmove_basevel || !cl_predict_qchook.ival)
 		return;
-#ifdef HAVE_SERVER
-	if (sv.state != ss_dead)
+	if (CSQC_PredictListenGated())
 		return;
-#endif
 	if ((unsigned int)seat >= MAX_SPLITS)
 		return;
 
@@ -10738,16 +10774,11 @@ void CSQC_PredictPlayerMove(int seat, const usercmd_t *cmd, const float *preorig
 		return;
 	if (!csqcg.predmove_org || !csqcg.predmove_vel || !csqcg.predmove_onground)
 		return;
-#ifdef HAVE_SERVER
-	/* Listen server: SSQC touches are the authority in this process, so the
-	   mirror must stay honestly ignorant rather than fire twice (the Patch 240
-	   precedent).  NOT sv.active: that field is never written anywhere in this
-	   tree -- every existing `if (sv.active)` on the client is dead code, which
-	   the p335a run proved by printing hook-alive on a live listen server.
-	   sv.state is the live one (sv_init.c:1820). */
-	if (sv.state != ss_dead)
+	/* Listen server: gated only at cl_predict_listen 0 (Patch 862, above).  NOT
+	   sv.active: that field is never written anywhere in this tree; sv.state is the
+	   live one (sv_init.c:1820). */
+	if (CSQC_PredictListenGated())
 		return;
-#endif
 	if ((unsigned int)seat >= MAX_SPLITS)
 		return;
 

@@ -40,6 +40,11 @@ Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
 //FTESurf Patch 799: a trace asking for the draw-only occluders too (VBSP_TraceVisual).  Only
 //CSQC's glare traces set it (cl_sprites.qc SPR_CONTENTS_VISUAL); Source leaves 0x400 unused.
 #define VBSP_CONTENTS_VISUAL 0x00000400u
+//FTESurf Patch 879: in Patch 509's occluder tree only, a brush that blocks light but not sight: an
+//OPAQUE-only brush with every side nodraw (toolsblocklight; vbsp textures.cpp:217-220). Narrower than
+//Source's CONTENTS_IGNORE_NODRAW_OPAQUE (bspflags.h:49,122), which skips one with ANY nodraw side; see
+//BACKLOG. World-light traces ask for it, water-visibility traces do not.
+#define VBSP_CONTENTS_LIGHTONLY 0x00000800u
 #ifdef HAVE_CLIENT
 #include "glquake.h"
 #endif
@@ -84,6 +89,7 @@ r_qrenderer_t qrenderer = QR_OPENGL;
 #define SURF_OFFNODE		SURF_DRAWBACKGROUND	//might as well just reuse that.
 
 static cvar_t *hl2_novis;
+static cvar_t *hl2_clipflags;	//FTESurf Patch 831
 static cvar_t *hl2_visdebug;	//Opt-in area/leaf-walk statistics, not visibility behavior.
 static cvar_t *hl2_pvscache;	//FTESurf Patch 273: memoise the headnode descent
 static cvar_t *hl2_displacement_scale;
@@ -94,6 +100,7 @@ static cvar_t *hl2_bumpstride;	//FTESurf Patch 268 D1: tag surfaces with their p
 static cvar_t *map_noareas;
 static cvar_t *map_autoopenportals;
 static cvar_t *hl2_areaportals;		//FTESurf Build 8
+static cvar_t *hl2_3dskyleaf;		//FTESurf Patch 880
 static cvar_t *hl2_contents_remap;
 cvar_t *hl2_propcollision;	//FTESurf Build 8: shared with mod_hl2.c, which picks the model's collision shape from it
 cvar_t *hl2_propcollision_nophy;	//FTESurf Patch 262: likewise -- "no .phy" means non-solid, not "use the render mesh"
@@ -172,7 +179,9 @@ extern volatile int phy_stat_tris_outward, phy_stat_tris_inverted;	//FTESurf Pat
 void Mod_PHY_ResetStats (void);
 qboolean Mod_PHY_ConvexPieces (model_t *mod, plugfsfuncs_t *phy_filefuncs,
                                plugmodfuncs_t *phy_modfuncs, vecV_t **xyz,
-                               index_t **idx, size_t **ledgestart, size_t *numledges);	//FTESurf Patch 764
+                               index_t **idx, size_t **ledgestart, size_t *numledges,
+                               int fixed, qboolean *wrapped);	//FTESurf Patch 764, 888
+extern volatile int phy_stat_unwrapped;	//FTESurf Patch 888
 cvar_t *hl2_phywinding;	//FTESurf Patch 317: read by Mod_LoadHL2Model in mod_hl2.c, registered here beside hl2_dispwinding
 /*FTESurf Patch 318 -- see the essay above VBSP_AddBrushBevels.  Up here because
   VBSP_LoadBrushes resets the counters and sits well above the generator. */
@@ -473,9 +482,12 @@ typedef struct vbspinfo_s
 	int				numbrushes;
 	q2cbrush_t		*brushes;
 	qboolean		*brushlightopaque;
+	qboolean		*brushvisopaque;	//FTESurf Patch 879: ...and hides what is behind it (VBSP_CONTENTS_LIGHTONLY)
 	model_t			*wl_trace_model;	//unregistered world-only light BIH; map-owned
 	model_t			*vis_trace_model;	//FTESurf Patch 799: draw-only occluders, built on first request
 	qboolean		vis_built;
+	qboolean		wl_tried;	//FTESurf Patch 879: the occluder tree was built, or asked for once
+	qboolean		wl_requested;	//...and the renderer has asked for it (logged once)
 	struct bihtransform_s *vis_tr;		//per prop, from its own entity (not staticprops[].transform)
 	qboolean		(*vis_basetrace)(struct model_s *model, int hulloverride, const framestate_t *framestate, const vec3_t axis[3], const vec3_t p1, const vec3_t p2, const vec3_t mins, const vec3_t maxs, qboolean capsule, unsigned int against, struct trace_s *trace);
 
@@ -490,6 +502,7 @@ typedef struct vbspinfo_s
 		float missingtile;	//FTESurf Patch 780: material did not resolve; world units per checker tile (0 = texinfo scale)
 	} *texinfo;
 
+	qbyte			*leafflags;			//FTESurf Patch 880: dleaf_t's flags (LEAF_FLAGS_SKY 0x01, SKY2D 0x04), [numleafs]
 	int				numareas;
 	int				floodvalid;
 	int				lastreportedarea;	//FTESurf Build 8: edge-detects the area print in VBSP_PrepareFrame
@@ -767,16 +780,23 @@ the six axial planes and the edge-cross-axis bevels, each at the ledge's own
 support so no side can cut it.  World space, so the bevel axes are the box's.
 These shapes are what a pin-7 recording replays on: any change to this builder or
 to Mod_PHY_ConvexPieces is a new PMSRC_VERSION, with this one kept for pin 7.
+Patch 888: a hull whose old indices wrapped also gets `fix`, the pieces read with
+each point array once, for mover 9; the old ones stay what pins 7/8 replay.
 */
-struct vbsp_phypieces_s
+struct vbsp_phypieceset_s
 {
-	model_t *m;
-	qboolean ok;
 	vecV_t *xyz;
 	index_t *idx;
 	size_t *ledgestart, numledges;
 };
+struct vbsp_phypieces_s
+{
+	model_t *m;
+	qboolean ok, wrapped;
+	struct vbsp_phypieceset_s old, fix;	//fix: only if wrapped; numledges 0 if unusable
+};
 static unsigned int vbsp_stat_phyprops, vbsp_stat_phypieces, vbsp_stat_phyrefused, vbsp_stat_phyplanes;
+static unsigned int vbsp_stat_phyfixprops, vbsp_stat_phyfixrefused;	//Patch 888
 static q2mapsurface_t vbsp_physurface = {{"phy_hull"}};
 
 static struct vbsp_phypieces_s *VBSP_PhyPieces(struct vbsp_phypieces_s *cache, size_t *count, model_t *m)
@@ -787,9 +807,17 @@ static struct vbsp_phypieces_s *VBSP_PhyPieces(struct vbsp_phypieces_s *cache, s
 			return &cache[j];
 	memset(&cache[*count], 0, sizeof(cache[*count]));
 	cache[*count].m = m;
-	cache[*count].ok = Mod_PHY_ConvexPieces(m, filefuncs, modfuncs, &cache[*count].xyz,
-	                                        &cache[*count].idx, &cache[*count].ledgestart,
-	                                        &cache[*count].numledges);
+	cache[*count].ok = Mod_PHY_ConvexPieces(m, filefuncs, modfuncs, &cache[*count].old.xyz,
+	                                        &cache[*count].old.idx, &cache[*count].old.ledgestart,
+	                                        &cache[*count].old.numledges, 0, &cache[*count].wrapped);
+	if (cache[*count].ok && cache[*count].wrapped)
+	{
+		struct vbsp_phypieceset_s *f = &cache[*count].fix;
+		qboolean dummy;
+		if (!Mod_PHY_ConvexPieces(m, filefuncs, modfuncs, &f->xyz, &f->idx, &f->ledgestart,
+		                          &f->numledges, 1, &dummy))
+			memset(f, 0, sizeof(*f));
+	}
 	return &cache[(*count)++];
 }
 
@@ -827,7 +855,8 @@ static void VBSP_PhyRotate(const struct bihtransform_s *trn, const float *m, vec
 }
 
 //False refuses the prop (a ledge not convex or degenerate): it keeps its triangles.
-static qboolean VBSP_PhyBrushes(model_t *mod, struct staticprop_s *sp, const struct vbsp_phypieces_s *pc)
+static qboolean VBSP_PhyBrushes(model_t *mod, struct staticprop_s *sp, const struct vbsp_phypieceset_s *pc,
+                                q2cbrush_t **outbrushes, unsigned int *outnum)
 {
 	const struct bihtransform_s *trn = &sp->transform;
 	size_t li, t, nb = 0;
@@ -974,8 +1003,8 @@ static qboolean VBSP_PhyBrushes(model_t *mod, struct staticprop_s *sp, const str
 	plugfuncs->Free(pl);
 	if (!ok || !nb)
 		return false;
-	sp->transform.phybrushes = brushes;
-	sp->transform.numphybrushes = nb;
+	*outbrushes = brushes;
+	*outnum = nb;
 	vbsp_stat_phypieces += nb;
 	return true;
 }
@@ -2095,6 +2124,7 @@ static qboolean VBSP_LoadBrushes (model_t *mod, qbyte *mod_base, vlump_t *l)
 
 	prv->brushes = plugfuncs->GMalloc(&mod->memgroup, sizeof(*out) * (count+1));
 	prv->brushlightopaque = plugfuncs->GMalloc(&mod->memgroup, sizeof(*prv->brushlightopaque) * (count+1));
+	prv->brushvisopaque = plugfuncs->GMalloc(&mod->memgroup, sizeof(*prv->brushvisopaque) * (count+1));
 
 	out = prv->brushes;
 
@@ -2111,6 +2141,15 @@ static qboolean VBSP_LoadBrushes (model_t *mod, qbyte *mod_base, vlump_t *l)
 		out->brushside = &prv->brushsides[LittleLong(in->firstside)];
 		out->numsides = LittleLong(in->numsides);
 		prv->brushlightopaque[i] = !!(LittleLong(in->contents) & VBSP_MASK_LIGHTOPAQUE);
+		{	//FTESurf Patch 879: SOLID or MOVEABLE, or CONTENTS_OPAQUE with a side that draws (SURF_NODRAW 0x80)
+			unsigned int c = LittleLong(in->contents);
+			int k;
+			qboolean vis = !!(c & (0x00000001u|0x00004000u));
+			if (!vis && (c & 0x00000080u))
+				for (k = 0; k < out->numsides && !vis; k++)
+					vis = !(out->brushside[k].surface->c.flags & 0x0080);
+			prv->brushvisopaque[i] = vis;
+		}
 		out->contents = VBSP_TranslateContentBits(prv, LittleLong(in->contents));
 		VBSP_FinalizeBrush(mod, out);
 	}
@@ -3006,6 +3045,7 @@ static qboolean VBSP_LoadLeafs (model_t *mod, qbyte *mod_base, vlump_t *l, int v
 	*/
 	clusterbound = prv->vis ? prv->vis->numclusters : count;
 
+	prv->leafflags = plugfuncs->GMalloc(&mod->memgroup, count);
 	if (!wide && ver == 19)
 	{
 		prv->leaflight = plugfuncs->GMalloc(&mod->memgroup, sizeof(*out) * count);
@@ -3027,6 +3067,7 @@ static qboolean VBSP_LoadLeafs (model_t *mod, qbyte *mod_base, vlump_t *l, int v
 			out->contents = VBSP_TranslateContentBits(prv, LittleLong(in->contents));
 			out->cluster = LittleLong(in->cluster);		//already signed; -1 = no cluster
 			out->area = LittleLong(in->areaflags) & 0x1ffff;	//low 17 bits; upper 15 are flags
+			prv->leafflags[i] = ((unsigned int)LittleLong(in->areaflags) >> 17) & 0xff;
 			out->firstleafbrush = LittleLong(in->firstleafbrush);
 			out->numleafbrushes = LittleLong(in->numleafbrushes);
 			out->firstmarksurface = mod->marksurfaces + LittleLong(in->firstleafface);
@@ -3045,6 +3086,7 @@ static qboolean VBSP_LoadLeafs (model_t *mod, qbyte *mod_base, vlump_t *l, int v
 			if (out->cluster == 0xffff)
 				out->cluster = -1;
 			out->area = (unsigned short)LittleShort (in->area) & 0x1ff;	//upper part is flags.
+			prv->leafflags[i] = (unsigned short)LittleShort (in->area) >> 9;
 			out->firstleafbrush = (unsigned short)LittleShort (in->firstleafbrush);
 			out->numleafbrushes = (unsigned short)LittleShort (in->numleafbrushes);
 			out->firstmarksurface = mod->marksurfaces + (unsigned short)LittleShort(in->firstleafface);
@@ -7567,16 +7609,16 @@ static qboolean VBSP_MissReason(model_t *mod, const char *name, char *out, size_
  * separate world-only tree. No prop shadow meshes or inline movers are present;
  * this is world occlusion, not Source's full light cache or VRAD shadow scene.
  */
-static void VBSP_BuildLightBIH(model_t *mod)
+static void VBSP_BuildOccluderBIH(model_t *mod, const char *why)
 {
 	vbspinfo_t *prv = mod->meshinfo;
 	cmodel_t *sub = &prv->cmodels[0];
 	struct bihleaf_s *leafs, *l;
 	struct bihnode_s *collisionnodes = mod->cnodes;
+	modelfuncs_t funcs = mod->funcs;	//FTESurf Patch 879: may be built late, after VBSP_TraceVisual took over
 	size_t i, j, count = sub->num_brushes;
+	double t0 = plugfuncs->GetSeconds();	//FTESurf Patch 879: a late build is a stall in the frame that asks
 
-	if (!prv->numworldlights)
-		return;
 	for (i = 0; i < prv->numdisplacements; i++)
 		count += prv->displacements[i].numindexes/3;
 	leafs = l = plugfuncs->Malloc(sizeof(*l)*(count ? count : 1));
@@ -7587,7 +7629,7 @@ static void VBSP_BuildLightBIH(model_t *mod)
 			continue;
 		l->type = BIH_BRUSH;
 		l->data.brush = b;
-		l->data.contents = FTECONTENTS_SOLID;
+		l->data.contents = prv->brushvisopaque[sub->firstbrush+i] ? FTECONTENTS_SOLID : VBSP_CONTENTS_LIGHTONLY;
 		VectorCopy(b->absmins, l->mins);
 		VectorCopy(b->absmaxs, l->maxs);
 		l++;
@@ -7621,9 +7663,18 @@ static void VBSP_BuildLightBIH(model_t *mod)
 	VectorCopy(mod->mins, prv->wl_trace_model->mins);
 	VectorCopy(mod->maxs, prv->wl_trace_model->maxs);
 	mod->cnodes = collisionnodes;	//movement tree and its contents are unchanged
-	Con_DPrintf("%s: worldlight occluders %u brushes/displacement triangles (no props or movers)\n",
-		mod->name, (unsigned)(l-leafs));
+	mod->funcs = funcs;
+	Con_DPrintf("%s: occluder tree built now, %s: %u brushes/displacement triangles (no props or movers), %.1f ms\n",
+		mod->name, why, (unsigned)(l-leafs), (plugfuncs->GetSeconds() - t0) * 1000);
 	plugfuncs->Free(leafs);
+}
+static void VBSP_BuildLightBIH(model_t *mod)
+{
+	vbspinfo_t *prv = mod->meshinfo;
+	if (!prv->numworldlights)
+		return;	//FTESurf Patch 879: otherwise the first VBSP_OccluderTrace builds it, client only
+	prv->wl_tried = true;
+	VBSP_BuildOccluderBIH(mod, "at load for the world lights");
 }
 
 /* FTESurf Patch 799: what a glare's depth query sees and the movement tree does not -- static
@@ -7945,6 +7996,7 @@ static void VBSP_BuildBIHMain(void *ctx, void *unusedp, size_t unuseda, size_t u
 	phypieces = 0;	//FTESurf Patch 764, sized as phyprobe is
 	phypiece = prv->numstaticprops ? plugfuncs->Malloc(sizeof(*phypiece)*prv->numstaticprops) : NULL;
 	vbsp_stat_phyprops = vbsp_stat_phypieces = vbsp_stat_phyrefused = vbsp_stat_phyplanes = 0;
+	vbsp_stat_phyfixprops = vbsp_stat_phyfixrefused = 0;	//Patch 888
 
 	bihleafs = sub->num_brushes;
 	if (hl2_dispcollision->ival)
@@ -8094,13 +8146,25 @@ static void VBSP_BuildBIHMain(void *ctx, void *unusedp, size_t unuseda, size_t u
 		//FTESurf Patch 764
 		prv->staticprops[i].transform.phybrushes = NULL;
 		prv->staticprops[i].transform.numphybrushes = 0;
+		prv->staticprops[i].transform.phyfixbrushes = NULL;	//Patch 888
+		prv->staticprops[i].transform.numphyfixbrushes = 0;
+		prv->staticprops[i].transform.phyfix = false;
 		if (hl2_propcollision->ival == 1 && phypiece)
 		{
 			struct vbsp_phypieces_s *pc = VBSP_PhyPieces(phypiece, &phypieces, l->data.mesh.model);
-			if (pc->ok && VBSP_PhyBrushes(mod, &prv->staticprops[i], pc))
+			struct bihtransform_s *trn = &prv->staticprops[i].transform;
+			if (pc->ok && VBSP_PhyBrushes(mod, &prv->staticprops[i], &pc->old, &trn->phybrushes, &trn->numphybrushes))
 				vbsp_stat_phyprops++;
 			else if (pc->ok)
 				vbsp_stat_phyrefused++;
+			if (pc->ok && pc->wrapped)
+			{	//Patch 888: refused or unusable leaves 0 brushes, and mover 9 traces the model's phyfixed tree
+				trn->phyfix = true;
+				if (pc->fix.numledges && VBSP_PhyBrushes(mod, &prv->staticprops[i], &pc->fix, &trn->phyfixbrushes, &trn->numphyfixbrushes))
+					vbsp_stat_phyfixprops++;
+				else
+					vbsp_stat_phyfixrefused++;
+			}
 		}
 
 		l->data.contents = ~0u; //yuck!
@@ -8126,9 +8190,12 @@ static void VBSP_BuildBIHMain(void *ctx, void *unusedp, size_t unuseda, size_t u
 	phyprobe = NULL;
 	for (i = 0; i < phypieces; i++)
 	{	//FTESurf Patch 764
-		plugfuncs->Free(phypiece[i].xyz);
-		plugfuncs->Free(phypiece[i].idx);
-		plugfuncs->Free(phypiece[i].ledgestart);
+		plugfuncs->Free(phypiece[i].old.xyz);
+		plugfuncs->Free(phypiece[i].old.idx);
+		plugfuncs->Free(phypiece[i].old.ledgestart);
+		plugfuncs->Free(phypiece[i].fix.xyz);	//Patch 888
+		plugfuncs->Free(phypiece[i].fix.idx);
+		plugfuncs->Free(phypiece[i].fix.ledgestart);
 	}
 	plugfuncs->Free(phypiece);
 	phypiece = NULL;
@@ -8148,10 +8215,11 @@ static void VBSP_BuildBIHMain(void *ctx, void *unusedp, size_t unuseda, size_t u
 	*/
 	if (prv->numstaticprops && hl2_propcollision->ival)
 		Con_DPrintf("%s: collision shapes -- %i .phy hull (%i tris), %i bbox, "
-			"%i render mesh (%i unusable of which %i jointed), %i models with no .phy\n",
+			"%i render mesh (%i unusable of which %i jointed), %i models with no .phy, "
+			"%i hulls unwrapped for mover 9\n",
 			mod->name, phy_stat_hull, phy_stat_tris, phy_stat_bbox,
 			phy_stat_rejected, phy_stat_rejected, phy_stat_jointed,
-			phy_stat_nofile);
+			phy_stat_nofile, phy_stat_unwrapped);	//Patch 888: the last
 
 	/*
 	FTESurf Patch 317.  The winding census for this map's .phy hulls, and the
@@ -8203,6 +8271,12 @@ static void VBSP_BuildBIHMain(void *ctx, void *unusedp, size_t unuseda, size_t u
 			mod->name, vbsp_stat_phyprops, vbsp_stat_phypieces, vbsp_stat_phyplanes,
 			(unsigned)((vbsp_stat_phypieces*sizeof(q2cbrush_t) + vbsp_stat_phyplanes*(sizeof(mplane_t)+sizeof(q2cbrushside_t)))/1024),
 			vbsp_stat_phyrefused ? va("; %u kept their triangles (a piece not convex or flat)", vbsp_stat_phyrefused) : "");
+	//FTESurf Patch 888
+	if (vbsp_stat_phyfixprops || vbsp_stat_phyfixrefused)
+		Con_Printf("%s: %u static props' .phy hulls overflowed 16-bit indices; at pm_sourceversion 9 %u trace "
+			"their pieces read unwrapped%s.\n",
+			mod->name, vbsp_stat_phyfixprops + vbsp_stat_phyfixrefused, vbsp_stat_phyfixprops,
+			vbsp_stat_phyfixrefused ? va(", %u their unwrapped triangles", vbsp_stat_phyfixrefused) : "");
 
 	/*
 	FTESurf Patch 262, and a real Con_Printf rather than a DPrintf: this is the
@@ -8718,7 +8792,9 @@ static int vbsp_emit_dropped = 0;
 				(void*)(s)->sbatch, (s)->sbatch?(int)(s)->sbatch->meshes:-1, (s)->sbatch?(int)((s)->sbatch->maxmeshes*R_MAX_RECURSE):0); \
 	} while(0)
 
-static void VBSP_RecursiveWorldNode (model_t *model, mnode_t *node)
+//FTESurf Patch 831: clipflags, one bit a frustum plane still to test. A node's box wholly in front
+//of a plane holds its children's, so they skip it (BoxOnPlaneSide was 4.7% of a surf_demise frame).
+static void VBSP_RecursiveWorldNode (model_t *model, mnode_t *node, unsigned int clipflags)
 {
 	int			c, side;
 	mplane_t	*plane;
@@ -8733,8 +8809,24 @@ static void VBSP_RecursiveWorldNode (model_t *model, mnode_t *node)
 
 	if (node->visframe != vbsp_nodesequence)
 		return;
-	if (VBSP_CullBox (node->minmaxs, node->minmaxs+3))
-		return;
+	if (clipflags)
+	{
+		int i;
+		for (i = 0; i < refdef->frustum_numplanes; i++)
+		{
+			if (!(clipflags & (1u<<i)))
+				continue;
+			switch (BOX_ON_PLANE_SIDE (node->minmaxs, node->minmaxs+3, &refdef->frustum[i]))
+			{
+			case 2:
+				return;
+			case 1:
+				if (hl2_clipflags->ival)
+					clipflags &= ~(1u<<i);
+				break;
+			}
+		}
+	}
 
 // if a leaf node, draw stuff
 	if (node->contents != -1)
@@ -8810,7 +8902,7 @@ static void VBSP_RecursiveWorldNode (model_t *model, mnode_t *node)
 	}
 
 // recurse down the children, front side first
-	VBSP_RecursiveWorldNode (model, node->children[side]);
+	VBSP_RecursiveWorldNode (model, node->children[side], clipflags);
 
 	// draw stuff
 	for ( c = node->numsurfaces, surf = model->surfaces + node->firstsurface; c ; c--, surf++)
@@ -8830,7 +8922,7 @@ static void VBSP_RecursiveWorldNode (model_t *model, mnode_t *node)
 
 
 // recurse down the back side
-	VBSP_RecursiveWorldNode (model, node->children[!side]);
+	VBSP_RecursiveWorldNode (model, node->children[!side], clipflags);
 }
 static qbyte *VBSP_MarkLeaves (model_t *model, int clusters[2])
 {
@@ -9163,6 +9255,21 @@ static void VBSP_PrepareFrame(model_t *mod, refdef_t *r_refdef, int area, int cl
 
 	refdef = r_refdef;
 
+	//FTESurf Patch 880: Source draws the 3D sky only where the eye's leaf has 3D sky in its PVS
+	//(viewrender.cpp:4595); a toolsskybox2d leaf shows the 2D skybox. The main view tests its eye, a
+	//portal view its exit (IsSkyboxVisibleFromExitPortal, :4840-4843); a water view keeps its outer
+	//view's answer, as Source's bDrawSkybox. Surf_SetupFrame clears it. surf_tendies: every spawn SKY2D.
+	if (r_refdef->capturekind < 1)
+	{
+		r_refdef->skyroom_noleafsky = false;	//per view: a second stereo eye shares the main view's refdef
+		if (hl2_3dskyleaf->ival && prv->leafflags)
+		{
+			int eyeleaf = VBSP_PointLeafnum(mod, r_refdef->recurse ? r_refdef->pvsorigin : r_refdef->vieworg);
+			if (eyeleaf >= 0 && eyeleaf < mod->numleafs && !(prv->leafflags[eyeleaf] & 0x01))
+				r_refdef->skyroom_noleafsky = true;
+		}
+	}
+
 	if (vis->buffersize < mod->pvsbytes)
 		vis->buffer = plugfuncs->Realloc(vis->buffer, vis->buffersize=mod->pvsbytes);
 	frustumvis = vis->buffer;
@@ -9268,7 +9375,7 @@ static void VBSP_PrepareFrame(model_t *mod, refdef_t *r_refdef, int area, int cl
 		areas[0] = 1;
 		areas[1] = area;
 		vbsp_surfsequence++;
-		VBSP_RecursiveWorldNode (mod, mod->nodes);
+		VBSP_RecursiveWorldNode (mod, mod->nodes, (1u<<refdef->frustum_numplanes)-1);
 		for (i = 0; i < prv->numdisplacements; i++)
 		{
 			disp = &prv->displacements[i];
@@ -9289,7 +9396,8 @@ static void VBSP_PrepareFrame(model_t *mod, refdef_t *r_refdef, int area, int cl
 
 
 
-	if (prv->numstaticprops)
+	//FTESurf Patch 868: a water reflection without $reflectentities draws only the world, as Source's.
+	if (prv->numstaticprops && !(r_refdef->flags & RDF_NOENTS))
 	{
 		struct staticprop_s *sent;
 		entity_t *src, *ent;
@@ -9485,8 +9593,18 @@ static void VBSP_PrepareFrame(model_t *mod, refdef_t *r_refdef, int area, int cl
 			static int blend_live = -1, illumpos_live = -1;	//FTESurf Patch 780: both change solved data
 			int wantblend = (hl2_lt_blend && hl2_lt_blend->ival) ? 1 : 0;
 			int wantillumpos = (hl2_lt_illumpos && hl2_lt_illumpos->ival) ? 1 : 0;
-			if (want != vbsp_vc_live || vbsp_vc_mod != mod || wantsign != dirsign_live || wantdir != bakeddir_live || wantwl != worldlight_live || wantfold != fold_live || wantcube != cubelight_live || wantmin != min_live || wantocclusion != occlusion_live || wantblend != blend_live || wantillumpos != illumpos_live)
+			//FTESurf Patch 894: the encode's two hud_gfx rows land in the same cache.  Looked
+			//up per frame, not cached: a gamedir change frees plugin-created cvars.
+			cvar_t *ltscale = cvarfuncs->GetNVFDG("hl2_lt_scale", "255", 0, "", "");
+			cvar_t *ltsrgb = cvarfuncs->GetNVFDG("hl2_lt_srgb_mag", "1", 0, "", "");
+			static float scale_live = -1, srgb_live = -1;
+			float wantscale, wantsrgb;
+			wantscale = ltscale ? ltscale->value : 255;
+			wantsrgb = ltsrgb ? ltsrgb->value : 1;
+			if (want != vbsp_vc_live || vbsp_vc_mod != mod || wantsign != dirsign_live || wantdir != bakeddir_live || wantwl != worldlight_live || wantfold != fold_live || wantcube != cubelight_live || wantmin != min_live || wantocclusion != occlusion_live || wantblend != blend_live || wantillumpos != illumpos_live || wantscale != scale_live || wantsrgb != srgb_live)
 			{
+				scale_live = wantscale;
+				srgb_live = wantsrgb;
 				blend_live = wantblend;
 				illumpos_live = wantillumpos;
 				occlusion_live = wantocclusion;
@@ -10621,8 +10739,48 @@ static qboolean VBSP_WorldLightVisible(model_t *mod, const vec3_t point, const s
 	if (wl->type == VWL_SURFACE)
 		VectorMA(end, 0.125f, wl->normal, end);
 	prv->wl_trace_model->funcs.NativeTrace(prv->wl_trace_model, 0, NULLFRAMESTATE,
-		NULL, point, end, zero, zero, false, FTECONTENTS_SOLID, &tr);
+		NULL, point, end, zero, zero, false, FTECONTENTS_SOLID|VBSP_CONTENTS_LIGHTONLY, &tr);
 	return !tr.startsolid && !tr.allsolid && tr.fraction == 1;
+}
+
+/* FTESurf Patch 879: the renderer's water-occlusion test (gl_backend.c GLBE_WaterSeen) through Patch 509's
+ * world-only tree: brushes and displacements, no props (a chain-link fence prop must not hide a pool), no
+ * movers (the engine traces brush entities itself) and not the all-nodraw light-only brushes (SOLID, not
+ * VBSP_CONTENTS_LIGHTONLY; narrower than Source's rule, see its #define). 1 blocked, 0 clear, -1 not one of
+ * our maps or no tree.
+ */
+static int QDECL VBSP_OccluderTrace(model_t *mod, const vec3_t start, const vec3_t end)
+{
+	vbspinfo_t *prv;
+	vec3_t zero = {0, 0, 0};
+	trace_t tr;
+	if (!mod || mod->loadstate != MLS_LOADED || mod->funcs.NativeTrace != VBSP_TraceVisual)
+		return -1;
+	prv = mod->meshinfo;
+	if (!prv)
+		return -1;
+	if (!prv->wl_tried && qrenderer != QR_NONE)
+	{	//built on the first trace that asks, on the main thread as the glare tree is (vis_built): a map
+		//with no capture water, and every renderer-less server, never pays (bhop_matches: 420,675 leaves,
+		//~26 MB kept)
+		prv->wl_tried = true;
+		prv->wl_requested = true;
+		VBSP_BuildOccluderBIH(mod, "on the first occlusion request");
+	}
+	else if (!prv->wl_requested)
+	{
+		prv->wl_requested = true;
+		Con_DPrintf("%s: occluder tree first requested: %s\n", mod->name,
+			prv->wl_trace_model ? "already built (at load for the world lights)" : "none (no renderer)");
+	}
+	if (!prv->wl_trace_model || !prv->wl_trace_model->funcs.NativeTrace)
+		return -1;
+	memset(&tr, 0, sizeof(tr));
+	prv->wl_trace_model->funcs.NativeTrace(prv->wl_trace_model, 0, NULLFRAMESTATE,
+		NULL, start, end, zero, zero, false, FTECONTENTS_SOLID, &tr);
+	if (tr.startsolid || tr.allsolid)
+		return 0;	//an eye in solid cannot tell
+	return tr.fraction < 1;
 }
 
 static void VBSP_AddWorldLightCube (model_t *mod, const vec3_t point, vec3_t cube[6], qboolean ignoresuppress, qboolean report)
@@ -12307,6 +12465,7 @@ qboolean VBSP_Init(void)
 	if (modfuncs && filefuncs && threadfuncs)
 	{
 		modfuncs->RegisterModelFormatMagic("Source (V)BSP", "VBSP",4, VBSP_LoadMap);
+		plugfuncs->ExportFunction("Mod_OccluderTrace", (funcptr_t)VBSP_OccluderTrace);	//FTESurf Patch 879; older engines decline it
 
 #define MAPOPTIONS "Map Cvar Options"
 
@@ -12340,6 +12499,7 @@ qboolean VBSP_Init(void)
 		*/
 		hl2_visdebug = cvarfuncs->GetNVFDG("hl2_visdebug", "0", 0, "Print Source area visibility and 300-frame leaf-walk statistics (also requires developer). Does not change visibility.", MAPOPTIONS);
 		hl2_novis = cvarfuncs->GetNVFDG("r_novis", "0", 0, "Draw every leaf, ignoring the PVS. Diagnostic: makes a vis problem visible by removing vis.", MAPOPTIONS);
+		hl2_clipflags = cvarfuncs->GetNVFDG("hl2_clipflags", "1", 0, "FTESurf Patch 831: the world walk stops testing a frustum plane below a node wholly in front of it. 0 tests every plane at every node (the A/B).", MAPOPTIONS);
 		hl2_pvscache = cvarfuncs->GetNVFDG("hl2_pvscache", "1", 0, "FTESurf (P273): reuse the answer to the whole-tree entity-visibility descent when the same node is asked about the same PVS. Exact, not approximate -- the test is a pure function of those two. Measured on surf_tensor2 it was 98% of the listen server's per-frame cost. 0 restores the old recompute-every-time behaviour, so a suspected culling bug is a one-command A/B.", MAPOPTIONS);
 		hl2_lumpretire = cvarfuncs->GetNVFDG("hl2_lumpretire", "1", CVAR_MAPLATCH, "FTESurf (P298): skip LZMA-decompressing the BSP lumps nothing in this configuration will read -- both lightmaps on a dedicated server, and the unused half of the LDR/HDR pair when drawing. Map load on this engine is single-threaded LZMA and almost nothing else, so this is most of it: 334 MB of the 350 MB surf_affliction expands is lightmap. 0 restores the old decompress-everything behaviour, which makes the whole patch a one-command A/B.", MAPOPTIONS);
 		/*
@@ -12557,6 +12717,7 @@ qboolean VBSP_Init(void)
 		have, kept so the difference can be seen rather than argued about.
 		*/
 		hl2_areaportals = cvarfuncs->GetNVFDG("hl2_areaportals", "1", CVAR_MAPLATCH, "Initial state of a Source map's areaportals.\n0: closed, and opened only by gamecode -- the Quake 2 rule, which seals off every area a Source map has because nothing closes or opens them.\n1: open, which is what Source itself initialises them to (default).", MAPOPTIONS);
+		hl2_3dskyleaf = cvarfuncs->GetNVFDG("hl2_3dskyleaf", "1", 0, "FTESurf Patch 880. 1: the 3D sky is drawn only from a leaf whose PVS holds 3D sky (LEAF_FLAGS_SKY) -- the main view's eye, a portal view's exit -- as Source (viewrender.cpp:4595, :4840); elsewhere the 2D skybox shows, as in Momentum. 0: wherever sky is visible, as before.", MAPOPTIONS);
 		/*
 		FTESurf Build 10 -- the price of Source water and Source glass.
 
@@ -12582,8 +12743,8 @@ qboolean VBSP_Init(void)
 		hl2_cubemaps stays MAPLATCH: it decides what VBSP_LoadCubemaps puts in
 		mod->envmaps while the BSP is being read, which no shader flush revisits.
 		*/
-		hl2_water = cvarfuncs->GetNVFDG("hl2_water", "3", CVAR_SHADERSYSTEM, "How Source water is drawn, and what it costs.\n0: flat translucent -- a $fogcolor sheet, no extra scene render, but it still blends and still sorts.\n1: live refraction with approximate baked-cubemap reflection -- one extra scene render per batch.\n2: live refraction and reflection -- two extra scene renders per batch.\n3: dithered flat (default) -- an ordered dither of $fogcolor. No blend, no sort, no render target; writes depth.\n4: budget animated -- translucent fog-coloured water with normal-map animation and approximate baked-cubemap reflection. No reflection, refraction, depth capture or screen copy; still blends/sorts and does not write depth. Not depth-correct or Source-exact.", MAPOPTIONS);
-		hl2_refract = cvarfuncs->GetNVFDG("hl2_refract", "2", CVAR_SHADERSYSTEM, "How Source's Refract materials (glass, windows) are drawn.\n0: plain translucency, with no framebuffer copy.\n1: Source's refraction, which copies the framebuffer once per batch.\n2: dithered flat (default) -- the pane keeps its own texture, $alpha sets the coverage, and it becomes opaque geometry that writes depth.", MAPOPTIONS);
+		hl2_water = cvarfuncs->GetNVFDG("hl2_water", "3", CVAR_SHADERSYSTEM, "How Source water is drawn, and what it costs.\n0: flat translucent -- a $fogcolor sheet, no extra scene render, but it still blends and still sorts.\n1: live refraction with approximate baked-cubemap reflection -- one extra scene render per batch.\n2: live refraction and reflection -- two extra scene renders per batch.\n3: dithered flat (default) -- an ordered dither of $fogcolor. No blend, no sort, no render target; writes depth.\n4: budget animated -- translucent fog-coloured water with normal-map animation and approximate baked-cubemap reflection. No reflection, refraction, depth capture or screen copy; still blends/sorts and does not write depth. Not depth-correct or Source-exact.\nAt 1 and 2 a material with $forcecheap (and an $envmap) draws as Source's cheap water instead: opaque $fogcolor to the cubemap by fresnel, its normal map's AnimatedTexture frames playing but not scrolled by $bumptransform (as Source's), no extra scene render (FTESurf Patch 879).", MAPOPTIONS);
+		hl2_refract = cvarfuncs->GetNVFDG("hl2_refract", "2", CVAR_SHADERSYSTEM, "How Source's Refract materials (glass, windows) are drawn.\n0: no framebuffer copy -- what is behind the pane tinted by $refracttint (and its tint texture), plus its $envmap reflection: Source's look without the warp.\n1: Source's refraction, which copies the framebuffer once per batch.\n2: dithered flat (default) -- the pane keeps its own texture, $alpha sets the coverage, and it becomes opaque geometry that writes depth. A pane with no texture of its own draws as 0.", MAPOPTIONS);
 		hl2_vertexcolor = cvarfuncs->GetNVFDG("hl2_vertexcolor", "1", CVAR_SHADERSYSTEM, "FTESurf Patch 232: $vertexcolor / $vertexalpha on LightmappedGeneric and WorldVertexTransition materials -- the per-vertex tint and opacity a mapper paints onto a DISPLACEMENT (every other surface carries white at alpha 1, so this cannot change them).\n0: ignore both keys, which is what every build before P232 did.\n1: draw what the material asks for (default). 41 transition materials in 20 maps and 494 LightmappedGeneric ones in 111 maps carry them; surf_rise's ivy is the reported case.", MAPOPTIONS);
 		hl2_bottommaterial = cvarfuncs->GetNVFDG("hl2_bottommaterial", "1", CVAR_SHADERSYSTEM, "FTESurf Patch 233: a water material's $bottommaterial -- the underside of the water -- when the map names one and does not ship it.\n0: leave it unresolved, which is what every build before P233 did; the underside draws with the default wall shader and the map reports a missing material.\n1: draw it as the water material that names it (default). surf_aesthetic's water/clear_beneath is 325 faces and surf_demise's water_tar_beneath 7; neither exists in any pack, in either spelling.", MAPOPTIONS);
 		hl2_missinggrid = cvarfuncs->GetNVFDG("hl2_missinggrid", "32", 0, "FTESurf Patch 780: the size, in world units, of one square of the missing-texture checker on a world face whose material did not resolve.\n0: scale it like the texture it stands in for, which is what every build before P780 did (a 1024 texture at 0.25 drew 128-unit squares).\n32 (default): one square per 32 units -- Hammer's grid -- whatever the face's texture scale. Takes effect on the next map load.", MAPOPTIONS);

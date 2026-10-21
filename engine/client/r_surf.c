@@ -2458,6 +2458,8 @@ void Surf_SetupFrame(void)
 
 	if (!cl.worldmodel || cl.worldmodel->loadstate!=MLS_LOADED)
 		r_refdef.flags |= RDF_NOWORLDMODEL;
+	if (r_refdef.capturekind < 1)
+		r_refdef.skyroom_noleafsky = false;	//FTESurf Patch 880: the hl2 plugin's PrepareFrame answers it per view
 
 	R_AnimateLight();
 
@@ -5078,6 +5080,13 @@ TRACE(("dbg: Surf_NewMap: tp\n"));
 	CL_InitDlights();
 #ifdef RTLIGHTS
 	Sh_PreGenerateLights();
+#endif
+#ifdef GLQUAKE
+	if (qrenderer == QR_OPENGL)
+	{
+		void GLBE_WaterViewsNewMap(void);
+		GLBE_WaterViewsNewMap();	//FTESurf Patch 879: the occluder tree now, not on the first frame with water
+	}
 #endif
 	P_LoadedCensus("Surf_NewMap end");	//FTESurf Patch 272
 }

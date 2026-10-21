@@ -2045,7 +2045,11 @@ void World_TouchAllLinks (world_t *w, wedict_t *ent)
 
 		if (solid == SOLID_BSPTRIGGER)
 		{
-			if (!World_ClipMoveToEntity(w, touch, touch->v->origin, touch->v->angles, ent->v->origin, ent->v->mins, ent->v->maxs, ent->v->origin, 0, false, (ent->xv->geomtype == GEOMTYPE_CAPSULE), MASK_WORLDSOLID).startsolid)
+			//FTESurf Patch 881: a Source trigger is its whole model, whatever its brushes'
+			//contents; surf_network2008_final's are GRATE|TRANSLUCENT (CLIP here) and never fired.
+			model_t *tmod = w->Get_CModel(w, touch->v->modelindex);
+			unsigned int tmask = (tmod && tmod->fromgame == fg_new) ? ~0u : MASK_WORLDSOLID;
+			if (!World_ClipMoveToEntity(w, touch, touch->v->origin, touch->v->angles, ent->v->origin, ent->v->mins, ent->v->maxs, ent->v->origin, 0, false, (ent->xv->geomtype == GEOMTYPE_CAPSULE), tmask).startsolid)
 				continue;
 		}
 
@@ -2729,6 +2733,7 @@ qboolean SV_AntiKnockBack(world_t *w, client_t *client)
 	pmove.jump_held = frame->pmjumpheld;
 	pmove.waterjumptime = frame->pmwaterjumptime;
 	pmove.onladder = frame->pmonladder;
+	pmove.momlimit = client->momlimit;	pmove.momslide = client->momslide;	pmove.momcool = client->momcool;	//FTESurf Patch 882
 
 	//stuff not regenerated properly, shouldn't really be changing much or not very significant.
 	pmove.world = w;
