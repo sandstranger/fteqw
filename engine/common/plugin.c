@@ -119,6 +119,7 @@ void Plug_RegisterBuiltin_(char *name, funcptr_t bi, int flags);
 #elif defined(__linux__)
 #include <dlfcn.h>
 #include <link.h>
+#include <elf.h>
 #include <fcntl.h>
 #include <sys/stat.h>
 #include <sys/sysmacros.h>
@@ -130,8 +131,56 @@ static void Plug_ArtifactWipe(void *data, size_t size)
 	volatile unsigned char *p = data;
 	while (size--) *p++ = 0;
 }
+
+#if defined(__ANDROID__)
+/* Bionic doesn't expose dlinfo(RTLD_DI_LINKMAP). Identify a loaded ELF image
+ * by the device/inode of its file, then use its program headers instead. */
+typedef struct plug_loaded_image_s
+{
+	dev_t device;
+	ino_t inode;
+	uintptr_t load_bias;
+	uintptr_t dynamic_address;
+	int found;
+} plug_loaded_image_t;
+
+static int Plug_FindLoadedImage(struct dl_phdr_info *info, size_t size, void *opaque)
+{
+	plug_loaded_image_t *search = opaque;
+	struct stat st;
+	unsigned int i;
+	int fd;
+
+	(void)size;
+	if (!info->dlpi_name || !*info->dlpi_name || !info->dlpi_phdr)
+		return 0;
+
+	fd = open(info->dlpi_name, O_RDONLY|O_CLOEXEC);
+	if (fd < 0)
+		return 0;
+	if (fstat(fd, &st) || st.st_dev != search->device || st.st_ino != search->inode)
+	{
+		close(fd);
+		return 0;
+	}
+	close(fd);
+
+	for (i = 0; i < info->dlpi_phnum; ++i)
+	{
+		const ElfW(Phdr) *phdr = &info->dlpi_phdr[i];
+		if (phdr->p_type != PT_DYNAMIC)
+			continue;
+
+		search->load_bias = (uintptr_t)info->dlpi_addr;
+		search->dynamic_address = (uintptr_t)info->dlpi_addr + (uintptr_t)phdr->p_vaddr;
+		search->found = 1;
+		return 1;
+	}
+	return 0;
+}
+#endif
 /* Loaded image object only. No filename-only fallback on lookup/identity error. */
-static int Plug_ImageFingerprint(dllhandle_t *module, unsigned char digest[32])
+static int Plug_ImageFingerprint(dllhandle_t *module, const char *module_path, unsigned char digest[32])
 {
 #if defined(_WIN32) || defined(__linux__)
 	unsigned char block[65536];
@@ -160,7 +209,12 @@ static int Plug_ImageFingerprint(dllhandle_t *module, unsigned char digest[32])
 	int file = -1;
 	FILE *maps = NULL;
 	struct stat before, after;
+#if !defined(__ANDROID__)
 	struct link_map *link = NULL;
+#endif
+#if defined(__ANDROID__)
+	plug_loaded_image_t loaded = {0};
+#endif
 	char row[2048], permissions[5];
 	unsigned long long start, end, offset, inode;
 	unsigned int device_major, device_minor;
@@ -169,11 +223,22 @@ static int Plug_ImageFingerprint(dllhandle_t *module, unsigned char digest[32])
 	ssize_t bytes;
 	if (module)
 	{
+#if defined(__ANDROID__)
+		if (!module_path || !*module_path) goto cleanup;
+		file = open(module_path,O_RDONLY|O_CLOEXEC);
+		if (file < 0 || fstat(file,&before)) goto cleanup;
+		loaded.device = before.st_dev;
+		loaded.inode = before.st_ino;
+		dl_iterate_phdr(Plug_FindLoadedImage,&loaded);
+		if (!loaded.found) goto cleanup;
+		address = loaded.dynamic_address;
+#else
 		if (dlinfo(module,RTLD_DI_LINKMAP,&link) || !link || !link->l_name || !*link->l_name) goto cleanup;
 		file = open(link->l_name,O_RDONLY|O_CLOEXEC);
 		if (file < 0 || fstat(file,&before)) goto cleanup;
-		maps = fopen("/proc/self/maps","re"); if (!maps) goto cleanup;
 		address = (uintptr_t)link->l_ld;
+#endif
+		maps = fopen("/proc/self/maps","re"); if (!maps) goto cleanup;
 		while (fgets(row,sizeof(row),maps))
 		{
 			if (sscanf(row,"%llx-%llx %4s %llx %x:%x %llu",&start,&end,permissions,&offset,&device_major,&device_minor,&inode) != 7) continue;
@@ -235,17 +300,46 @@ cleanup:
 	return 0;
 #endif
 }
-static int Plug_ImageContains(dllhandle_t *module, const void *code)
+static int Plug_ImageContains(dllhandle_t *module, const char *module_path, const void *code)
 {
 #ifdef _WIN32
 	MEMORY_BASIC_INFORMATION info;
 	return module && code && VirtualQuery(code,&info,sizeof(info)) == sizeof(info) &&
 		info.Type == MEM_IMAGE && info.AllocationBase == module;
 #elif defined(__linux__)
-	struct link_map *link = NULL;
 	Dl_info info;
-	return module && code && !dlinfo(module,RTLD_DI_LINKMAP,&link) && link && dladdr(code,&info) &&
-		info.dli_fbase == (void*)(uintptr_t)link->l_addr;
+	if (!module || !code || !dladdr(code,&info))
+		return 0;
+#if defined(__ANDROID__)
+	{
+		int fd;
+		struct stat target;
+		plug_loaded_image_t loaded = {0};
+		if (!module_path || !*module_path)
+			return 0;
+		fd = open(module_path,O_RDONLY|O_CLOEXEC);
+		if (fd < 0)
+			return 0;
+		if (fstat(fd,&target))
+		{
+			close(fd);
+			return 0;
+		}
+		close(fd);
+		if (!S_ISREG(target.st_mode))
+			return 0;
+		loaded.device = target.st_dev;
+		loaded.inode = target.st_ino;
+		dl_iterate_phdr(Plug_FindLoadedImage,&loaded);
+		return loaded.found && info.dli_fbase == (void*)loaded.load_bias;
+	}
+#else
+	{
+		struct link_map *link = NULL;
+		return !dlinfo(module,RTLD_DI_LINKMAP,&link) && link &&
+			info.dli_fbase == (void*)(uintptr_t)link->l_addr;
+	}
+#endif
 #else
 	return 0;
 #endif
@@ -313,7 +407,7 @@ uint64_t Plug_ArtifactFingerprint(void *module, const void *code, unsigned char 
 	if (!module)
 	{
 		if (code) return 0;
-		if (!engine_status) engine_status = Plug_ImageFingerprint(NULL,engine) ? 1 : -1;
+		if (!engine_status) engine_status = Plug_ImageFingerprint(NULL,NULL,engine) ? 1 : -1;
 		if (engine_status != 1) return 0;
 		if (digest) memcpy(digest,engine,32);
 		return 1;
@@ -322,7 +416,7 @@ uint64_t Plug_ArtifactFingerprint(void *module, const void *code, unsigned char 
 	for (plug = plugs; plug; plug = plug->next)
 		if (plug == module)
 		{
-			if (!plug->lib || !plug->artifact_epoch || (code && !Plug_ImageContains(plug->lib,code))) return 0;
+			if (!plug->lib || !plug->artifact_epoch || (code && !Plug_ImageContains(plug->lib,plug->filename,code))) return 0;
 			if (digest) memcpy(digest,plug->artifact,32);
 			return plug->artifact_epoch;
 		}
@@ -448,7 +542,7 @@ static plugin_t *Plug_Load(const char *file)
 	{
 		Con_DPrintf("Created plugin %s\n", file);
 		if (plug_artifact_epoch) ++plug_artifact_epoch;
-		if (plug_artifact_epoch && Plug_ImageFingerprint(newplug->lib,newplug->artifact))
+		if (plug_artifact_epoch && Plug_ImageFingerprint(newplug->lib,newplug->filename,newplug->artifact))
 			newplug->artifact_epoch = plug_artifact_epoch;
 
 		currentplug = newplug;
