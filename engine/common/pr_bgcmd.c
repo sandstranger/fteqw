@@ -9,6 +9,9 @@
 #include "sv_sql.h"
 #endif
 #include "fs.h"
+#ifndef CLIENTONLY
+#include "sv_held_file.h"
+#endif
 
 #include <ctype.h>
 
@@ -2892,6 +2895,32 @@ int PR_QCFile_From_VFS (pubprogfuncs_t *prinst, const char *name, vfsfile_t *f, 
 	else
 		return -1;
 }
+int PR_QCFile_From_WriteStream(pubprogfuncs_t *prinst, const char *name, vfsfile_t *f)
+{
+	int handle;
+	if (!prinst || !name || !f) return -1;
+	handle = PR_QCFile_From_VFS(prinst, name, f, true);
+	if (handle >= FIRST_QC_FILE_INDEX)
+		pf_fopen_files[handle - FIRST_QC_FILE_INDEX].accessmode = FRIK_FILE_WRITESTREAM;
+	return handle;
+}
+/* Native recorder fence: return only a currently VM-owned, named stream.
+ * The caller checks its own VFS subtype/ticket; no pointer saved before fclose
+ * may be dereferenced after the VM has released that stream. */
+vfsfile_t *PR_QCFile_StreamVFS(pubprogfuncs_t *prinst, int handle, const char *name)
+{
+	int i;
+	if (!prinst || !name || !*name || handle < FIRST_QC_FILE_INDEX)
+		return NULL;
+	i = handle - FIRST_QC_FILE_INDEX;
+	if (i >= MAX_QC_FILES)
+		return NULL;
+	if (pf_fopen_files[i].prinst != prinst || strcmp(pf_fopen_files[i].name, name))
+		return NULL;
+	if (pf_fopen_files[i].accessmode != FRIK_FILE_STREAM && pf_fopen_files[i].accessmode != FRIK_FILE_WRITESTREAM)
+		return NULL;
+	return pf_fopen_files[i].file;
+}
 int PR_QCFile_From_Buffer (pubprogfuncs_t *prinst, const char *name, void *buffer, size_t ofs, size_t len)
 {
 	int i;
@@ -3406,7 +3435,14 @@ void QCBUILTIN PF_fsize64 (pubprogfuncs_t *prinst, struct globalvars_s *pr_globa
 			VFS_FLUSH(pf_fopen_files[fnum].file);
 			if (prinst->callargc>1 && G_INT64(OFS_PARM1) >= 0)
 			{
-				if (!VFS_TRUNCATEOS(pf_fopen_files[fnum].file, G_INT64(OFS_PARM1)))
+				qboolean resized;
+#ifndef CLIENTONLY
+				int native = SV_HeldFileResize(pf_fopen_files[fnum].file, G_INT64(OFS_PARM1));
+				resized = native < 0 ? VFS_TRUNCATEOS(pf_fopen_files[fnum].file, G_INT64(OFS_PARM1)) : native != 0;
+#else
+				resized = VFS_TRUNCATEOS(pf_fopen_files[fnum].file, G_INT64(OFS_PARM1));
+#endif
+				if (!resized)
 					PF_Warningf(prinst, "PF_fsize: cannot truncate %s\n", pf_fopen_files[fnum].name);
 				G_INT64(OFS_RETURN) = VFS_GETLEN(pf_fopen_files[fnum].file);
 				return;
@@ -5875,8 +5911,10 @@ void QCBUILTIN PF_buf_loadfile  (pubprogfuncs_t *prinst, struct globalvars_s *pr
 	const char *fname = PR_GetStringOfs(prinst, OFS_PARM0);
 	size_t bufno = G_FLOAT(OFS_PARM1)-BUFSTRBASE;
 	vfsfile_t *file;
-	char line[8192];
+	char line[8192], readbuf[65536];
 	const char *fallback;
+	size_t linelen = 0;
+	int got, i;
 
 	G_FLOAT(OFS_RETURN) = 0;
 
@@ -5897,8 +5935,27 @@ void QCBUILTIN PF_buf_loadfile  (pubprogfuncs_t *prinst, struct globalvars_s *pr
 	if (!file)
 		return;
 
-	while(VFS_GETS(file, line, sizeof(line)))
+	// Keep VFS_GETS's line-size and CR/EOF rules without a backend read per byte.
+	while ((got = VFS_READ(file, readbuf, sizeof(readbuf))) > 0)
 	{
+		for (i = 0; i < got; i++)
+		{
+			if (readbuf[i] != '\n')
+			{
+				line[linelen++] = readbuf[i];
+				if (linelen < sizeof(line)-1)
+					continue;
+			}
+			if (linelen && line[linelen-1] == '\r')
+				linelen--;
+			line[linelen] = 0;
+			PF_bufstr_add_internal(bufno, line, true);
+			linelen = 0;
+		}
+	}
+	if (linelen)
+	{
+		line[linelen] = 0;
 		PF_bufstr_add_internal(bufno, line, true);
 	}
 	VFS_CLOSE(file);

@@ -61,7 +61,7 @@ typedef struct { int unused; } entity_t;
 typedef struct { entity_t *ent; unsigned flags; void (*buildmeshes)(void); realshader_t *shader; } batch_t;
 static entity_t r_worldentity;
 static float r_origin[3],vpn[3]={0,0,1},vright[3]={1,0,0},vup[3]={0,1,0};
-'''.replace('__SHADER__','typedef struct { unsigned tess,geom; } program_t; typedef struct { unsigned shaderbits; program_t *prog; } shaderpass_t; typedef struct realshader_s { int numdeforms; struct realshader_s *remapto; int numpasses; program_t *prog; shaderpass_t passes[SHADER_PASS_MAX]; } realshader_t; typedef realshader_t shader_t;').replace('typedef struct { int numdeforms; struct shader_s_unused *unused; void *remapto; } shader_t;', '')
+'''.replace('__SHADER__','typedef struct { unsigned tess,geom; const char *name; } program_t; typedef struct { unsigned shaderbits; program_t *prog; } shaderpass_t; typedef struct realshader_s { int numdeforms; struct realshader_s *remapto; int numpasses; program_t *prog; shaderpass_t passes[SHADER_PASS_MAX]; } realshader_t; typedef realshader_t shader_t;').replace('typedef struct { int numdeforms; struct shader_s_unused *unused; void *remapto; } shader_t;', '')
 # C fragment is inserted after the mesh/shader stubs, not parsed as a standalone header.
 fixtures = (HERE / 'blend_plane_fixtures.inc').read_text()
 tests=r'''
@@ -117,6 +117,43 @@ int main(void) {
  quad(bx,0,10);GLBE_BlendPlaneSort(f,2,&st);assert(st.moved==0&&f[0].mesh==&a);
  quad(bx,0,20);glblendplane_t p,q;assert(GLBE_BlendPlaneGeometry(&f[0],&p));assert(GLBE_BlendPlaneGeometry(&f[1],&q));
  assert(GLBE_BlendPlaneSide(&p,&q)==1&&GLBE_BlendPlaneSide(&q,&p)==-1);
+ // Patch 900: which brush-entity faces may join the proof, and when the combined proof is kept.
+ {
+  program_t lm={.name="vmt/lightmapped"},lmd={.name="vmt/lightmapped#ENVFROMBASE"},un={.name="vmt/unlit"},
+   ur={.name="vmt/unlitreflect"},lx={.name="vmt/lightmappedx"},rf={.name="vmt/refract"},
+   tq={.name="vmt/lightmapped",.tess=1},gq={.name="vmt/unlit",.geom=1},anon={0};
+  assert(GLBE_BlendProgramPlanar(NULL)&&GLBE_BlendProgramPlanar(&lm)&&GLBE_BlendProgramPlanar(&lmd)&&GLBE_BlendProgramPlanar(&un));
+  assert(!GLBE_BlendProgramPlanar(&ur)&&!GLBE_BlendProgramPlanar(&lx)&&!GLBE_BlendProgramPlanar(&rf));
+  assert(!GLBE_BlendProgramPlanar(&tq)&&!GLBE_BlendProgramPlanar(&gq)&&!GLBE_BlendProgramPlanar(&anon));
+  realshader_t gs={0};gs.remapto=&gs;gs.prog=&lm;gs.numpasses=2;gs.passes[1].prog=&un;assert(GLBE_BlendShaderPlanar(&gs));
+  gs.passes[1].prog=&rf;assert(!GLBE_BlendShaderPlanar(&gs));gs.passes[1].prog=NULL;assert(GLBE_BlendShaderPlanar(&gs));
+  gs.passes[0].shaderbits=SBITS_TESSELLATION;assert(!GLBE_BlendShaderPlanar(&gs));gs.passes[0].shaderbits=0;
+  gs.numdeforms=1;assert(!GLBE_BlendShaderPlanar(&gs));gs.numdeforms=0;
+  gs.prog=&rf;assert(!GLBE_BlendShaderPlanar(&gs));assert(!GLBE_BlendShaderPlanar(NULL));
+  float id[16]={1,0,0,0,0,1,0,0,0,0,1,0,0,0,0,1};assert(GLBE_BlendMatrixIdentity(id));
+  id[1]=-0.0f;assert(GLBE_BlendMatrixIdentity(id));id[12]=8;assert(!GLBE_BlendMatrixIdentity(id));
+  id[12]=0;id[0]=-1;assert(!GLBE_BlendMatrixIdentity(id));id[0]=1;id[10]=2;assert(!GLBE_BlendMatrixIdentity(id));
+  glblendplanestats_t w={.status=1,.pass=0},c={.status=1,.pass=0};
+  assert(GLBE_BlendKeepCombined(&w,&c));
+  c.pass=1;assert(!GLBE_BlendKeepCombined(&w,&c));w.pass=1;assert(GLBE_BlendKeepCombined(&w,&c));
+  c.overlapfull=1;assert(!GLBE_BlendKeepCombined(&w,&c));c.overlapfull=0;
+  c.status=-2;assert(!GLBE_BlendKeepCombined(&w,&c));c.status=0;assert(!GLBE_BlendKeepCombined(&w,&c));c.status=1;
+  w.status=0;w.pass=0;c.pass=2;c.overlapfull=1;assert(GLBE_BlendKeepCombined(&w,&c)); // no world order to protect
+  w.status=-3;assert(GLBE_BlendKeepCombined(&w,&c));c.status=-1;assert(!GLBE_BlendKeepCombined(&w,&c));
+ }
+ // Patch 900: a world pane between two brush-entity panes, the entity pair reversed by its baseline.
+ // Planar entity faces join the proof; without the flag they stay unadmitted and nothing moves.
+ {
+  entity_t brush;batch_t eb={.ent=&brush,.shader=&sh};float cx[4][3];quad(cx,0,30);
+  mesh_t c=a;c.xyz_array=cx;
+  glblendface_t e[3]={face(&eb,&c,0),face(&b,&z,1),face(&eb,&a,2)};
+  e[0].depth=5;e[2].depth=25;e[0].planar=e[2].planar=1;
+  qsort(e,3,sizeof(*e),GLBE_BlendFaceCompare);assert(e[0].mesh==&a&&e[2].mesh==&c);
+  GLBE_BlendPlaneSort(e,3,&st);
+  assert(st.status==1&&st.admitted==3&&e[0].mesh==&c&&e[1].mesh==&z&&e[2].mesh==&a);
+  e[0]=face(&eb,&a,0);e[1]=face(&b,&z,1);e[2]=face(&eb,&c,2);
+  GLBE_BlendPlaneSort(e,3,&st);assert(st.admitted==1&&st.moved==0&&e[0].mesh==&a&&e[2].mesh==&c);
+ }
  // Intersecting vertical pane straddles the other plane: no strict proof.
  bx[0][2]=bx[1][2]=5;bx[2][2]=bx[3][2]=15;bx[0][1]=bx[1][1]=bx[2][1]=bx[3][1]=1;
  assert(GLBE_BlendPlaneGeometry(&f[1],&q));assert(GLBE_BlendPlaneSide(&q,&p)==0&&GLBE_BlendPlaneSide(&p,&q)==0);

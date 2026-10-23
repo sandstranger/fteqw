@@ -68,6 +68,7 @@ cvar_t con_completionenter	= CVARD("con_completionenter", "0", "What ENTER does 
 //nettest: PgUp/PgDn page a whole console window. The mouse wheel is deliberately NOT affected.
 cvar_t con_pagelines		= CVARD("con_pagelines", "0", "How many lines PgUp/PgDn scroll the console by. 0 = one full console window minus con_pageoverlap. Set to 2 for the old fixed step. Does not affect the mouse wheel.");
 cvar_t con_pageoverlap		= CVARD("con_pageoverlap", "2", "Rows of context kept on screen when PgUp/PgDn scroll a full window. One of them is eaten by the ^^^^ backscroll marker row.");
+cvar_t in_altenter			= CVARFD("in_altenter", "1", CVAR_ARCHIVE, "FTESurf Patch 898: ALT+ENTER runs fullscreen_toggle (windowed <-> borderless) anywhere -- game, menus, console -- unless ALT+ENTER is bound to something other than ENTER's own bind. 0 leaves ALT+ENTER to the binds.");
 
 static int KeyModifier (unsigned int shift, unsigned int alt, unsigned int ctrl, unsigned int devbit)
 {
@@ -3685,6 +3686,93 @@ void Key_Bind_c(int argn, const char *partial, struct xcommandargcompletioncb_s 
 		}
 	}
 }
+typedef struct
+{
+	int keynum, modifier, bindmap;
+	const char *binding;
+	char name[64];
+} keybindlistrow_t;
+
+static int Key_BindListCompare (const void *left, const void *right)
+{
+	const keybindlistrow_t *a = left, *b = right;
+	int order = a->bindmap - b->bindmap;
+	if (!order)
+		order = Q_strcasecmp(a->name, b->name);
+	if (!order)
+		order = a->keynum - b->keynum;
+	if (!order)
+		order = a->modifier - b->modifier;
+	return order;
+}
+
+static void Key_BindList_f (void)
+{
+	keybindlistrow_t *rows, *row;
+	char *quoted;
+	const char *base, *binding;
+	size_t quotesize = 3, needed;
+	int key, modifier, count = 0, i, map = -1;
+
+	if (Cmd_IsInsecure())
+	{
+		Con_Printf("bindlist is available only from the local console.\n");
+		return;
+	}
+	if (Cmd_Argc() != 1)
+	{
+		Con_Printf("Usage: bindlist\n");
+		return;
+	}
+	rows = Z_Malloc(sizeof(*rows) * K_MAX * KEY_MODIFIERSTATES);
+	for (key = 0; key < K_MAX; key++)
+	{
+		base = keybindings[key][0];
+		for (modifier = 0; modifier < KEY_MODIFIERSTATES; modifier++)
+		{
+			binding = keybindings[key][modifier];
+			if (!binding || !*binding)
+				continue;
+			// Match config saving: inherited modifier copies are not extra binds.
+			if (modifier && modifier < KEY_MODIFIER_ALTBINDMAP && base &&
+				!strcmp(base, binding) && bindcmdlevel[key][modifier] == bindcmdlevel[key][0])
+				continue;
+			row = &rows[count++];
+			row->keynum = key;
+			row->modifier = modifier;
+			row->bindmap = (modifier & KEY_MODIFIER_ALTBINDMAP) ? (modifier & ~KEY_MODIFIER_ALTBINDMAP) + 1 : 0;
+			row->binding = binding;
+			Q_strncpyz(row->name, Key_KeynumToString(key, row->bindmap ? 0 : modifier), sizeof(row->name));
+			needed = strlen(binding) * 2 + 3;
+			if (needed > quotesize)
+				quotesize = needed;
+		}
+	}
+	qsort(rows, count, sizeof(*rows), Key_BindListCompare);
+	quoted = Z_Malloc(quotesize);
+	for (i = 0; i < count; i++)
+	{
+		row = &rows[i];
+		if (map != row->bindmap)
+		{
+			map = row->bindmap;
+			if (map)
+				Con_Printf("\nBindmap %i\n", map);
+			else
+				Con_Printf("\nBase bindings (inherited modifiers collapsed)\n");
+			Con_Printf("%-24s %s\n", "Key", "Command");
+		}
+		COM_QuotedString(row->binding, quoted, quotesize, false);
+		Con_Printf("%-24s %s", row->name, quoted);
+		if (bindcmdlevel[row->keynum][row->modifier] != RESTRICT_LOCAL)
+			Con_Printf("  (level %i)", bindcmdlevel[row->keynum][row->modifier]);
+		Con_Printf("\n");
+	}
+	Con_Printf("%i bound key entries.\n", count);
+	Z_Free(quoted);
+	Z_Free(rows);
+}
+
 /*
 ===================
 Key_Bind_f
@@ -3946,6 +4034,7 @@ void Key_Init (void)
 // register our functions
 //
 	Cmd_AddCommandAD ("bind",Key_Bind_f, Key_Bind_c, "Changes the action associated with each keyboard button. Use eg \"bind ctrl+shift+alt+k kill\" for special modifiers (should be used only after more basic modifiers).");
+	Cmd_AddCommandD ("bindlist", Key_BindList_f, "Lists currently bound keys alphabetically, including modifier overrides and alternate bindmaps. Does not change any bindings.");
 	Cmd_AddCommand ("in_bind",Key_Bind_f);
 	Cmd_AddCommand ("bindlevel",Key_Bind_f);
 	Cmd_AddCommandAD ("unbind",Key_Unbind_f, Key_Bind_c, NULL);
@@ -3960,6 +4049,7 @@ void Key_Init (void)
 	Cvar_Register (&con_completionenter, "Console controls");	//FTESurf Patch 226
 	Cvar_Register (&con_pagelines, "Console controls");
 	Cvar_Register (&con_pageoverlap, "Console controls");
+	Cvar_Register (&in_altenter, "Console controls");
 }
 
 qboolean Key_MouseShouldBeFree(void)
@@ -4049,6 +4139,37 @@ void Key_Event (unsigned int devid, int key, unsigned int unicode, qboolean down
 			if (!Key_Dest_Has(kdm_console))	//don't toggle it when the console is already down. this allows typing blind to not care if its already active.
 				Con_ToggleConsole_Force();
 			return;
+		}
+	}
+
+	//FTESurf Patch 898: ALT+ENTER toggles fullscreen before CSQC, the menus or the console see it.
+	//`bind enter say` fills every modifier slot, so only an ALT+ENTER bind that differs from ENTER's
+	//counts as the user's own. The toggle's window rebuild (and any focus change) clears keydown[] with
+	//ALT still held, so on Windows the thread's key state is asked too -- nothing synthetic, nothing to stick.
+	if (key == K_ENTER && in_altenter.ival)
+	{
+		qboolean alt = !!(modifierstate & KEY_MODIFIER_ALT);
+#ifdef _WIN32
+		if (!alt)
+		{
+			qboolean INS_AltHeld (void);
+			alt = INS_AltHeld();
+			if (alt)
+				modifierstate |= KEY_MODIFIER_ALT;	//so a player's own ALT+ENTER bind is the one that runs
+		}
+#endif
+		if (alt)
+		{
+			const char *ab = keybindings[K_ENTER][KEY_MODIFIER_ALT], *pb = keybindings[K_ENTER][0];
+			if (!ab || !*ab || (pb && !strcmp(ab, pb)))
+			{
+				if (down && !wasdown)
+				{
+					Con_DPrintf("ALT+ENTER: fullscreen_toggle\n");
+					Cbuf_AddText("fullscreen_toggle\n", RESTRICT_LOCAL);
+				}
+				return;
+			}
 		}
 	}
 

@@ -382,6 +382,8 @@ void QCBUILTIN PF_strreplace (pubprogfuncs_t *prinst, struct globalvars_s *pr_gl
 void QCBUILTIN PF_strireplace (pubprogfuncs_t *prinst, struct globalvars_s *pr_globals);
 void QCBUILTIN PF_randomvector (pubprogfuncs_t *prinst, struct globalvars_s *pr_globals);
 int PR_QCFile_From_VFS (pubprogfuncs_t *prinst, const char *name, vfsfile_t *f, qboolean write);
+int PR_QCFile_From_WriteStream(pubprogfuncs_t *prinst, const char *name, vfsfile_t *f);
+vfsfile_t *PR_QCFile_StreamVFS(pubprogfuncs_t *prinst, int handle, const char *name);
 int PR_QCFile_From_Buffer (pubprogfuncs_t *prinst, const char *name, void *buffer, size_t offset, size_t len);
 void QCBUILTIN PF_fopen (pubprogfuncs_t *prinst, struct globalvars_s *pr_globals);
 
@@ -1195,6 +1197,7 @@ enum
 	globalfunction(CSQC_Parse_SetAngles,	"float(vector angles, float isdelta)")	\
 	globalfunction(CSQC_PredictPlayerPreMove, "void(float seat, float cmdsequence, float seconds, float offsetseconds)")/*optional pre-input boundary, called again on replay*/ \
 	globalfunction(CSQC_PredictPlayerMove,	"void(float seat, float cmdsequence, float msec)")/*FTESurf Patch 335: per-predicted-usercmd trigger hook*/	\
+	globalfunction(CSQC_PredictGroundVelocity, "vector(float seat, float cmdsequence, float groundent)")/*P924: pre-move ground carrier*/ \
 	globalfunction(CSQC_PlayerInfoChanged,	"void(float playernum)")	\
 	globalfunction(CSQC_ServerInfoChanged,	"void()")	\
 	globalfunction(CSQC_InputEvent,			"float(float evtype, float scanx, float chary, float devid)")	\
@@ -1289,12 +1292,14 @@ enum
 	globalfloat (predinput_sequence_hi)       /*P675: read-only exact sequence high 16 bits*/ \
 	globalfloat (predinput_held)              /*P754: nonzero lets the replay run through PM_NONE*/ \
 	\
+	globalfloat (predmove_offset)			/*P924: seconds into this logical input; split continuation, not a new replay (ro)*/ \
 	globalvector(predmove_org0)				/*FTESurf P335: origin at the START of the predicted command (ro)*/ \
 	globalvector(predmove_org)				/*FTESurf P335: origin after PM_PlayerMove; QC may rewrite (rw)*/ \
 	globalvector(predmove_vel)				/*FTESurf P335: velocity after PM_PlayerMove; QC may rewrite (rw)*/ \
 	globalvector(predmove_basevel)			/*FTESurf P335: this command's net trigger_push write; the engine holds it across commands as the mirror of the server's .run_basevel and pays the Patch 249 cash-out (w)*/ \
 	globalfloat (predmove_bvfired)			/*FTESurf P337: set nonzero when a continuous push fired this command, even if the net vector cancelled to zero -- the server's armed flag is set unconditionally by the touch (w)*/ \
 	globalfloat (predmove_onground)			/*FTESurf P335: rw*/ \
+	globalfloat (predground_active)			/*P924: opt in to ground-carrier probes on this map*/ \
 	globalvector(predmove_mins)				/*FTESurf P335: player hull (ro)*/ \
 	globalvector(predmove_maxs)				/*FTESurf P335: player hull (ro)*/ \
 	globalfloat (predmove_pmtype)			/*FTESurf P335: pmove.pm_type of the command just run (ro)*/ \

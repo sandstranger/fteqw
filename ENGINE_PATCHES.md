@@ -1,5 +1,1051 @@
 # Engine patches (fteqw `fteqw64.exe`)
 
+## Patch 943 — Source weapon controls, cosmetic kick and varied Foley
+
+Problem: attacks were edge-only with no secondary modes; USP defaulted silenced,
+Scout non-draw sound events were discarded, footsteps cycled and close jump
+contacts could double. Owner wants FOV75 and harmless knife-contact feedback.
+
+Change: QC-only held/alt knife, unsilenced USP attach/detach, Glock three-bullet
+burst/cooldown, bare equip names and event-driven Scout bolt. Reuse packed byte
+weapon events; server remains authoritative and unarmed does not fire. Knife
+misses whoosh; player contact returns before damage and restores trace dimensions.
+Random authored foot variants coalesce contacts inside120ms. Exact critically
+damped shot punch surrounds ONLY main scene render; input/aim/body/sidecars stay
+unmodified. Default FOV75 if unset, no preference/binding overwrite. No native /
+evidence/collection/PvP change. Lighting comparison is separate, not claimed fixed.
+
+Verified: source and native socket controls, failures and limits in QC
+tools/p943-source-weapons.md. Baseline held knife1 vs candidate4; alternate2;
+USP authored silencer poses/events, Glock1 vs3both client/server, Scout Bolt
+actual cue, two-degree smooth pulse, quiet135.2u/s0new calls. Actual player tap
+thudded with both health100/dimensions2/1/target position unchanged. 100Hz/1000Hz
+analytic pulse states agree (not a sustained1000FPS claim). Final zero-warning
+build/provenance and delivery are recorded there; human ear/feel pending.
+
+## Patch 945 — bind verifier results to the loaded recording bytes
+
+Problem: a path and pre/post file hashes did not identify the buffer consumed
+by the native verifier. An unavailable binding must not become player guilt.
+
+Change: pm_verify hashes its complete loaded buffer before parsing and echoes
+an invocation challenge. The backend requires one timely matching report,
+successful process exit and unchanged source bytes; ambiguity becomes retryable
+ERROR without ticks/counts. No recording format, mover, collector, schema,
+retention, access, threshold or historical-verdict change.
+
+Verified: seven real-file/SQLite controls fail11 baseline subcases; corrected
+input/identity/source/finish/counts suites pass47 tests. Windows NoDeploy builds
+have0new warnings;60acted physics rows match the unchanged native reference in
+the same current fixture. Real dedicated CLI binds full LF/CRLF inputs (both
+4418tick PASS), the complete NUL-suffix input (REFUSE), and a retained REC15
+input (context REFUSE, not trajectory acceptance). Final committed builds,
+ARM qualification and deployment remain pending; no security-complete claim.
+
+## Patch 944 — personal Max Fog event and whole-run tracking
+
+Problem: Event27's Zoomathon Max Fog entry was a finish-only label, without a
+fog mode or a way to distinguish a whole-fog finish from a late toggle.
+
+Change: targeted native gamecode fog locks for one player, explicit Story mode
+metadata, and a map/expiry/intent-scoped menu-to-CSQC request after active spawn.
+Fresh timer starts latch the mode; disabling clears that run's eligibility even
+if re-enabled. Full fresh lobby finishes snapshot an optional trusted fact;
+legacy/missing/partial/stage facts remain unknown. Additive Story schema and
+maxfog challenge support do not change the default gold criterion: one existing
+holder's legacy-credit policy awaits the owner. Ordinary launches/cancellation
+clear pending requests. No native pin/tag, body/input journal, reader, collector,
+movement or Build change; this is a server-reported mode, not pixel attestation.
+
+Verified: three VMs0warnings; real dedicated sockets render dense grey and restore
+authored air/sky/water fog; console fog0 is refused while locked. Actual walked
+full finishes POST whole/off-midrun/late-on facts1,0,0 to the stripped local sink.
+Wrong-map and expired launches prove explicit QC rejection with connected mode0.
+Backend51 tests include preserved legacy rows, duplicate completions, dated/full
+scope and immediate answer versus ladder agreement. Concurrent cron/gunicorn
+initializers serialize the additive column probe/ALTER; the old two-connection
+control raises duplicate-column while both protected imports preserve the row. Four pure transport tests
+prevent the old map-line rewrite from corrupting a cvar suffix. Native controls
+use synthetic OFFLINE fixtures, not online/ranked/physical-input acceptance.
+Delivery and owner visual acceptance are not yet claimed.
+
+## Patch 942 — unambiguous verifier output attribution
+
+Problem: repeated VERIFY results for one path were last-line-wins, so ambiguous
+output could select a terminal verdict and counts observation.
+
+Change: the backend parser latches duplicate results as retryable ERROR, with
+unknown ticks and unavailable counts. Unique companion paths stay independent;
+existing retry/recheck, review and historical-verdict policy remain unchanged.
+No native/QC/format/collector/schema/retention/threshold/access change or pin move.
+
+Verified: seven new real-file/SQLite controls produce17 failing baseline subcases;
+corrected identity/source/finish/counts suites run38 tests with zero failures.
+Runner invocation, ordinary retry recovery and an independent companion act.
+This proves output attribution only, not immutable engine-input bytes or hostile
+host change-and-restore detection. Sweep/board/ledger boundaries pass, reader864
+checks0failed and unchanged corpus floor419rec/283faulted files; three NoDeploy
+VMs0warnings. Two saved independent reports have no findings; the evidence child
+finished with a tool-profile failure, so its recovered written audit is not a
+clean-workflow claim. Delivered23Oct06:40:24UTC, verified06:40:27: guarded new
+runtime OPEN, predecessor CLOSED/drained,12lobbies healthy, native/readers/game
+processes unchanged and AI inactive. Actual scheduled route exits0; old CLOSED
+route refuses. Initial preflight backup timeout preceded every live mutation;
+existing whole-step API repaired the same snapshot, then reviewed continuation
+completed. No data restore, duplicate backup or implicit peer source deployment.
+QC tools/p942-verifier-output.md records bounded evidence and delivery state.
+
+## Patch 941 — subtler weapons, unarmed spawns and real-map CSS footsteps
+
+Problem: owner found P940 motion excessive; Axiom's truncated collision name
+selected concrete, Momentum scripts displaced CSS samples, and idle stopped.
+
+Change: QC-only bob/sway defaults0.2; unarmed spawn and reset of unsupported
+weapon state; wrap the raw idle pose clock. Resolve full contact-polygon names,
+reuse a polygon only while the new point remains on it, and read mounted CSS
+foot aliases through scoped search handles. No body/aim/evidence/native change.
+
+Verified: real dedicated Axiom emitted CSS metal2 from its full cubemap VMT;
+quiet walking added0calls, metadata reads stayed14, repeated same-face steps
+kept1surface scan. Turning control0.937459 ->0.187492 at scale1 ->0.2; idle
+pose1.30991 at age378.81s remained inside its12.5833s cycle. Final builds and
+spawn/respawn checks are recorded in QC tools/p941-source-polish.md. Lighting
+parity remains OPEN: supplied CSS/Momentum BSPs differ; matched camera requested.
+Human feel/ear acceptance pending. Reserved before P942; native pin/tag unchanged.
+Delivery23Oct06:39UTC: clean feature4682406d rebuilt all3VMs0warnings with exact
+hashes; guarded eight-file QW/CSQC dual Windows swap and all12empty-gated Pi swaps
+verified. Cold real client downloaded exact5b1500f1 CSQC, drew9-column/type14 board,
+0faults. Native/MENU/configs retained. QC tools/p941-delivery.md records limits.
+
+## Patch 940 — Source-style weapon motion and material footsteps
+
+Problem: weapon presentation lacked walking rock/turning sway, while texture
+name guesses alone could not follow mounted surface properties and sound aliases.
+
+Change: QC-only speed-scaled model bob and bounded facing lag, with reset gates
+and entity-local native-bob suppression; default viewmodel FOV70 preserves user
+choices. Resolve floor trace names through bounded cached VMT includes, surface
+inheritance and relevant sound-manifest aliases, alternating left/right WAVs.
+Keep quiet movement, safe missing-content fallback and explicit refresh. No camera,
+aim, movement, evidence/collection, native pin/tag, plugin ABI or Build change.
+
+Verified: three VMs0warnings; native dedicated-socket controls show nonzero model
+motion at260u/s, turning lag/settling and hide/re-enable reset, default70/override81.
+A metal-named floor's declaration selects wood/grating/glass/concrete WAVs; native
+trace-name control fixes empty world-entity texture lookup. Cyclic VMT fallback,
+mounted inheritance/left-right variants and unchanged metadata-read count on cache
+hits act;135.2u/s walking adds zero cues. Corrected an initial FILE_READNL misuse
+(the builtin returns a whole unadvanced file, not newline-preserving lines).
+Final FILE_READ rerun retains111profiles/67aliases and actual metal foot cues.
+Compatible server DAT is byte-identical. Ear/visual, actual warp/replay and precise
+CS:S parity remain unclaimed; owner check pending. Delivered23Oct04:50–04:54UTC:
+BOTH Windows CSQC pairs hash-verified without native/MENU replacement; existing
+empty-fleet guard promoted the same DAT to all12Pi lobbies. Real cold client
+fetched that exact hash and drew the board with0faults. QW remains byte-identical;
+installed-code four-material/quiet/cache/map-reset controls pass. Receipt in
+QC tools/p940-delivery.md.
+
+## Patch 939 — paste without a second confirmation
+
+Problem: the native confirmation interrupted every connected-game paste,
+contrary to the requested always-accept text-field behavior.
+
+Change: remove the extra modal question after the existing native real-device
+paste chord and one-per-press checks. Keep the bounded first-line filter and VM
+stamp. Outside either VM, service ready text before/between native input events
+after dispatch capabilities clear; retain the render-tail fallback. The menu
+receiver uses its own error boundary. The debugger's separate input entry keeps
+delivery disabled for its whole call, including a resume key. The central service
+also defers while the editor is modal, covering every renderer's screen tail.
+Erase/free the native queue before delivery. Teardown/disconnect cancel pending responses.
+MENU QC now keeps paste blobs in the existing bounded edit queue, at their
+positions among keys, with selection replacement and the same ASCII/length
+limits. This QC correction is MENU-only; its client/server DATs are unchanged.
+No automatic/background access or new command/cvar route is added. Intentionally,
+a qualifying paste gesture shares text with game UI without another approval;
+this does not claim protection from deceptive server UI. No evidence format,
+producer, physics, plugin ABI or Build change.
+
+Verified so far: exact old/new C manager controls use an in-memory ASCII provider,
+never the owner's OS clipboard. Old control acts with three prompts/accepted Y;
+new manager opens none and balances allocations/frees. Queue/filtering,
+length, callback/epoch, disconnect and teardown cases act. Review rejected two
+ordering gaps; do not treat scheduler adapters as real QC proof. Exact native
+manager/menu receivers plus scheduler/draft adapters show control wrong in6/6
+cases and subject correct6/6, with protected abort. Actual editor wrappers plus
+an explicit dispatcher shim retain the answer across a modeled resume and the
+normal entry delivers it; not a live debugger test. Actual MenuQC VM runs exact
+selected production queue/helpers/focused-edit code:10cases per arm, with old
+reversed edits ACTING and subject order, selection, ASCII filter, bounds, focus
+forget and full-last-slot coalescing correct. No OS clipboard calls. Three VMs
+compile with0warnings. Actual NoDeploy comparisons prove the MENU correction's
+server/client DATs identical. Full native/client/server/all-five-plugin rebuild
+after the input-header change has the exact same74-warning baseline multiset,
+zero NEW warnings. Two correction reviews closed the ordering/input-pump issues;
+one found a remaining modal render-tail route. A central-service guard fixes it.
+Exact manager C control compiled with TEXTEDITOR delivers early once while modal;
+subject zero, then clearing modal delivers exactly once, with all10allocations
+freed. Native code build passes with no new warnings; not a live debugger test.
+Source checks preserve native gesture predicates/budgets, journal and abort paths.
+Both independent guard follow-ups close the remaining P2 with no new defects.
+Clean5734db88/patch-939 Full compiled client/server/five plugins with the same
+74-warning baseline. Two ZIP packaging locks were preserved and completed by
+the supported serial route (3repeated baseline warnings,0new). All7PEs fresh;
+EXEs exact clean stamp, resource ZIPs valid.18native/local-MENU Windows targets
+verified23Oct03:33Z; QW/CSQC/backend/lobbies unchanged. Both review follow-ups
+closed all named issues. Real-device/full-widget/visual checks remain pending.
+
+## Patch 938 — cheaper live symbol and recording-context checks
+
+Problem: symbol and clock-interface validation repeatedly compared unrelated
+names; retaining lookup results would change live definition semantics.
+
+Change: reject unequal current-name prefixes inside the original forward
+lookups. Clock-interface validation skips unrelated prefixes but still checks
+every matching declaration and duplicate. Preserve the existing legacy inline
+fallback outside GNU compilers. No retained lookup state, ABI, recording format,
+admission rule, collection scope or movement change.
+
+Verified: 728 actual-qclib checks across both definition formats, including
+current storage/bindings and mutable names; zero warnings. The actual helper
+also compiles/runs as C90 with the GNU macro undefined (not an MSVC test).
+A bounded ARM source recording and unchanged-byte normal cold verification
+PASS; the incompatible-artifact control REFUSEs. All temporary state was
+restored. These are bounded code/runtime controls, not overall FPS, long-run
+coverage, actual VM-reload testing or deployment provenance.
+
+## Patch 937 — optional local altitude tone and A/D drums
+
+Problem: the requested height-following sine and A/D percussion had no local
+instrument, independent enable switches or volume control.
+
+Change: synthesize a bounded signed16 mono CSQC stream using the existing raw
+audio builtins. A small heap buffer, continuous phases, local noise generator,
+limited lookahead and one fading tail avoid assets, global RNG changes or
+stored catch-up beats. Pitch observes native body altitude, recentered on
+enable/warps; A/D observe only events declined by existing UI/input consumers.
+Release latches clear before UI dispatch. Reuse local-body/watch/rewind/movement
+ownership gates. Both effects default off, with shared volume and diagnostics.
+Independent review found an existing native raw-buffer leak newly exercised by
+stop/restart: EOF marked the slot free, but reuse discarded its retained data.
+The ended callback now frees/clears it before publishing the slot reusable,
+under the existing last-channel/mixer callback contract. No input, body, timer,
+evidence, reader, native ABI or Build change. The client needs the fixed native
+binary; engine pin/tag advances for this native audio-only change.
+
+Functional checks: three VMs compile with zero warnings. A real dedicated/socket
+fixture ACTS: default-off inputs create no stream; A hold/repeat produces one
+kick, release permits another, D produces a snare, real chat typing does not
+trigger beats, returning from chat leaves no stuck latch, an actual jump changes
+the captured height and corresponding pitch, and disable drains/quiesces. The
+native mixer queue is positive while only this test client is muted; no run or
+consent file is written. The final zero-warning build also passes the acted
+volume0 control (all twelve native checks pass). Input/frame review found no
+issue. Lifecycle review's leak is reproduced by the exact old C callbacks:
+4096 acted reuse cycles orphan4095 buffers after final purge; the new callbacks
+balance4096 allocations/frees, including repeated EOF and final purge. This
+isolated ownership unit is not a mixer-thread or heap/RSS measurement. Repaired
+the switch-off fixture to snapshot an ACTIVE stream and disable in the same
+command-buffer pass, then require exactly one fade block. Full NoDeploy build
+has0 VM warnings and0 NEW native warnings (same74 as P934 full baseline). Both
+PEs carry clean5fd6c6790/patch-937 stamps. Fixed-native real-socket fixture
+passes13 controls, including active exact-one fade and3 drain/restarts. Follow-up
+independent lifecycle review closes P1/P2 with no issue; input/frame review also
+found no issue. Delivered22Oct23:18UTC alongside P936: native5fd6c6790 in both
+Windows installs, compatible QC50e7d8f3 and backend3f97cf9c on12lobbies. Exact
+hashes, guarded worker/cold-client and preservation proof are in QC's
+tools/p936-p937-delivery.md; REC13/schema20/lobby native remain unchanged.
+Listening, latency/volume feel, concurrency/RSS and performance are not measured
+by these controls and remain unclaimed; ear/feel acceptance is owner-only.
+
+## Patch 936 — retain 64px Steam portrait detail (QC/backend)
+
+Problem: the game reduced the already-kept 64px Steam JPEG to 32px before
+uploading it; larger profile/friends pictures magnified that discarded detail.
+The browser profile also carries the site's 12-hex public handle, not the
+lobby's 8-hex picture mark.
+
+Change: an explicit size=64 avatar response uses the kept source JPEG, with
+no additional Steam request or on-disk migration. The default endpoint and
+legacy text copies stay 32px. Reuse one bounded codec; cap source reads at
+64KiB and the derived-response LRU at 64 entries. Game/menu readers validate
+64px bodies and use separate disk/texture namespaces, preserving old caches
+and the same relative corner radius. The 64px route/menu also accepts the
+site's already-public profile handle under the same visibility/ban policy.
+No recorder, evidence, authentication, schema, native ABI or physics change.
+
+Verified: six new API controls cover exact source detail, legacy responses,
+conditional identities, public-handle aliasing, size/image bounds and file
+replacement; ban/collision/linked-mode controls remain. Actual Windows 64px
+transport, native texture dimensions and screenshot quadrants pass before and
+after renderer restart. A 32px control draws successfully but fails exactly
+the three 64px expectations; a visible no-picture control makes no request.
+Initial harness failures were stale output/consent/source-filter assumptions,
+not passes; repaired only isolated test setup, preserving product guards.
+Final three-VM build has zero warnings; the menu also draws the real fixture
+with a native 64x64 texture. Destination provenance is recorded separately.
+Subjective real-account portrait appearance remains owner acceptance, not a
+pixel count or performance claim. No native rebuild or pin/tag/Build change.
+
+## Patch 935 - opt-in Source weapon/Foley presentation and fast cold saves
+
+Problem: walking/crouching could emit steps, short contacts could miss hop cues,
+weapons used the wrong presentation defaults and natural give aliases were
+missing. Sprites could appear over hands; environment sampling used the
+viewmodel's artificial origin. A large cold saved-run restore stalled for seconds.
+
+Change: quiet Foley at/below 135 u/s and while crouched, scale its gain, and
+publish a cosmetic jump-contact counter so held bhops do not depend on one
+rendered grounded frame. Fresh Foley/model defaults are off; explicit weapon
+selection opts models in. Add bounded mounted model draw/idle/shot events,
+sound-script resolution and independent 54-degree viewmodel FOV. Keep existing
+map-damage gates/no PvP. Weapon-marked alias surfaces use the opaque weapon pass;
+cubemap/fog samples use the eye rather than the viewmodel origin. Batch
+buf_loadfile backend reads while preserving its append, 8191-byte split, blank,
+NUL and legacy CR/EOF behavior. No file format, mover, restore-admission or
+qualification rule changes; existing client-specific slow-load workarounds stay.
+
+Verified: factory-reset defaults, natural give aliases, 135/crouch quiet controls,
+speed gain, sparse-contact and held-jump hop counters pass in a real dedicated
+fixture. Mounted draw events produce callbacks; no new full-combat/ammo claim.
+Native sprite-over-weapon and eye-sample controls act and distinguish old/new
+rendering. Three progs compile with zero warnings; edited native units add no
+warnings. Actual large-save cold restore: 18.05 -> .23 seconds to the same body
+acknowledgment (both include an explicit 100ms query delay); server load profile
+17.925780 -> .120870 seconds, saved clock and shadow recording restored. Actual
+native control/candidate C functions match on 160 boundary/short-read cases and
+all 137016 recording rows. Original files/private copies remain byte-identical.
+Raw player data/profiles stay private. Two independent follow-ups close the
+135.2-walk boundary and private-test exception findings; no native blocker.
+Published P937's raw-buffer ownership fix is integrated without changing these
+P935 code hunks. Actual delivered-cohort cold control17.92s ->.56s, same saved
+body/clock/checkpoints/shadow recorder and intact original/private input hashes.
+Delivered22Oct23:47Z: native3afdd0fa3/tag935 plus compatible21c087d1 to BOTH
+Windows installs/all12empty lobbies, preserving the already delivered P936/P937
+and writer13. ALL26Windows/native/plugin/progs hashes and live Pi DATs verified;
+all12original lobby native/HL2 cohorts unchanged. Fresh real-lobby download ACTS
+natural give/USP idle/draw callback, then actual jump ->contact1/hop-cue1.
+Configs preserved; player-data inventory preservation is metadata-only, not
+full-content hashing. Details/UTC/limits: FTESurf tools/p935-delivery.md.
+Human lighting/FOV/listening/load feel remains pending. No native/producer/
+consent promotion, release or Build bump. P935 reserved before P936/P937;
+highest-applied QC patch remains937. This delivery note moves no native pin/tag.
+
+## Patch 934 — sorted local-console bindlist (native client)
+
+Problem: the owner could query an individual bind but not list the active
+bindings in a readable order.
+
+Change: bindlist lists nonempty bindings alphabetically by key name, preserving
+modifier overrides, command execution levels and every alternate bindmap.
+Inherited modifier copies are collapsed using the same equality/level rule as
+config saving. Commands are quoted; the listing changes no binding. Reject
+insecure callers rather than exposing bindings through a server/QC request.
+No input dispatch, movement, recorder, server producer or permission change.
+
+Verified: Windows NoDeploy client/server/plugin build succeeds; keys.c emits
+no compiler warnings. Untouched ODE/mathlib dependency warnings remain explicit,
+not called a zero-total-warning build. Old native control creates/queries real
+synthetic fixtures but has no bindlist. New native shows seven sorted entries,
+Ctrl override, execution level30, quoted compound command and bindmap2. Saved
+binding directives are identical before/after; empty listing reports zero.
+Initial subject test expected level31, but the existing bindlevel clamps it to
+RESTRICT_MIN30; corrected the fixture expectation, not the product. Native
+clean-commit identity and destination hashes are recorded separately. No NanoPi
+native promotion: its independent producer qualification gate remains.
+
+## Patch 933 — fresh compact browser friends and text selection (QC/backend)
+
+Problem: the browser's Friends panel stayed hidden, cards used three lines,
+last-seen rows looked online, presence omitted stage/bonus, and text fields
+had no double-click select-all.
+
+Change: browser-open requests refresh and reveals Friends. Two-line 64px
+cards center around the picture, fade offline rows and reserve green map +
+activity text for live mutual friends. Name opens an in-menu public profile
+preview using the existing game API; location separately asks to join.
+Lobby activity comes from authoritative timer fields, is bounded and volatile,
+and remains subject to existing relationship, heartbeat and session expiry.
+No schema, ranked-run/evidence, signing or permission change. Old six-field
+snapshots remain readable. SUI recognizes a second close click within 400ms
+and keeps select-all through release; slow clicks and normal drag stay intact.
+
+Verified: three VMs compile at zero warnings. Social API controls exercise
+stage/bonus changes, hashes, omission, worker cache loss, map change, unaccepted
+adds, blocking, bad labels, bounded memory and rollback. Native offline UI
+control versus subject proves actual double-click selection and replacement,
+slow-click preservation and automatic panel opening. The two-row cache fixture
+is read, but offline-consent screenshots do not certify live card/profile/join
+appearance; owner acceptance is pending in lextest.md. Destination hashes and
+fleet/backend promotion status are recorded separately. No native rebuild.
+
+## Patch 932 — KSF playback across configured Momentum ports (QC/backend)
+
+**Problem:** imported times were shared across configured versions but recordings
+were hidden/refused; an admitted pair would stop in the next-frame fence, and
+warm lookup used the board folder rather than the actual source folder.
+**Change:** bounded explicit board/menu-manifest families, never suffix guesses.
+One policy for original/normalized KSF, retained source versus loaded-map lifetime,
+actual-source cache hints and existing scoped recording IDs. Native/Momentum
+fences, source hash/BSP identity, imported/unverified status, replay-serving and
+native evidence remain unchanged. No native binary/pin/tag or Build-number change.
+**Verified:** three VMs0 warnings. Actual dedicated subject/control/JSON-cache
+actors25 cases pass: genuine normalized source10.0000->11.0865 and original
+binary10.0000->11.0538 on Momentum Chateau; source/unverified labels retained.
+Exact-header control acts; unrelated/suffix/missing refuse, native mismatch keeps
+its existing frame stop, map change clears playback. Empty-list pre-board refusal
+becomes allowed after accepted family metadata; one replay GET publishes exact
+source bytes and warm row lookup does not refetch. Screenshot inspected. Backend
+import/variant/native-byte contrast and reader/codec units pass. Fixed-input
+419REC/136VIEW old/new both283faulting/284diagnostics, no differing fault lists;
+older405/120 absolute-count failure retained as a changed-dataset comparison.
+Two independent reviews plus raw-finding resolution PASS. P925/P928 transport
+identities/times retained; published929-931 integrated, functional policy hashes
+unchanged. Clean3a8 DAT/LNO delivery to both Windows installs and acting installed
+online/cache controls passed. Pi first delivered240440a4 at18:44UTC; a concurrent
+P933-only replacement was caught by a cold client. Integrated1fdb668a preserves
+both features and exact current P933 SSQC/native. Its actual non-preseeded lobby
+CSQC86096e49 download and unrelated raw fence act; same-bit dedicated normalized/
+raw wall-clock controls advance10->11.66/11.80 with native fence intact. Original
+combined frame/trace clock failure retained, not called all-green. Schema20
+backend measured/published19:08UTC; live both-map197row/Leacon21517 source/byte
+readbacks and public HTTPS board200 pass. No native/reader/eligibility promotion.
+Subsequent social backend changes must preserve this feature. Owner feel remains
+pending; delivery preservation/limits: tools/p928-ksf-ports.md in QC.
+
+## Patch 931 — basic CS:S knife, USP, Scout and Glock presentation
+
+**Problem:** no held weapons or idle/fire feedback, although map shooting uses
+SV_EntityDamage's existing button/breakable dispatcher. Save keys must not be
+stolen for selection, and presentation must not silently enable shared damage.
+
+**Change:** standard weapon/weaponframe stats carry validated knife/USP/Scout/
+Glock choice and single-press cadence. Knife reach80/capped25 damage; guns keep
+the existing long trace/damage cvar. Mounted client-only models use authored
+@sequence names and timing, correct right-hand mirroring, local fire/impact
+cues and mode/owner gates. surf_weapon selects without rebinding; cl_viewweapon
+hides and cl_viewweapon_left changes hand. No Valve assets are shipped; no new
+stat channel, PvP, ammo/ballistics claim, movement tuning, native pin or
+held-policy relaxation is introduced. Existing run_shoot/lobby_shoot gates remain unchanged.
+
+**Verified:** three VMs0 warnings; actual four model screenshots inspected,
+authored idle/fire frames and positive durations read back. USP one held press
+fires once; release/repress fires again; Scout rejects an early second press.
+Invalid choice and non-WALK selection leave the authoritative choice unchanged.
+Real bhop_badges *98: gate0 swipe leaves targetname empty; gate1 same swipe
+fires OnDamaged/upboost. At *100/200units, knife leaves default while USP changes
+it to sideboost. Original unprefixed-animation failure retained, not a pass.
+Human feel/listening, full CSS weapon behavior and fleet damage-policy choice
+remain separate. Native source/tag stays P924. tools/p931-css-weapons.md.
+
+## Patch 930 — updated 100-slot Story and Event lists (data)
+
+Problem: the old lists omitted newly requested maps and compressed Events to
+25 positions, so its level numbers did not match the owner's list.
+
+Change: preserve all 100 positions in both lists, with canonical roster names
+and bonus tracks. Facility is 43 (the first repeated 44); Story 59 stays empty
+pending clarification of the joined Monkeys2/Whoknows3 name. Existing Story
+medal targets follow the map; new maps have bronze finish only. Later bars
+are recomputed with the existing 65%/70% policy, excluding untimed maps.
+No native, evidence, backend-code or protocol change.
+
+Verified: surfd/test_story.py 45 tests, including exact slot/bonus anchors,
+local completion criteria and reachable gates. story_push.py --check verifies
+every selected map against the live roster. Fourteen selected Story/Event
+maps still lack timing zones; Voyager/Fiellu via spots and max-fog enforcement
+remain explicitly pending, not claimed functional. Momentum is preferred by
+canonical roster names, with KSF-only fallback, not by relabelling geometry.
+Promotion and its exact revision are recorded in tools/p930-story-lists.md.
+
+## Patch 929 — stable numbered lobby names (configuration)
+
+Problem: tier/mode names described initial rotations, not the map players chose.
+
+Change: rename the twelve configured servers Open Lobby #1 through #12. Keep
+ports, map pools, physics and cycle settings unchanged. No native code change.
+
+Verified: tools/test_lobby_names.py checks all twelve names and unique ports;
+base-to-subject diff contains only hostname substitutions. Existing QC baseline
+build (three VMs) has zero warnings. Initial test incorrectly expected per-lobby
+files to execute a map; corrected to check their actual lobby_maps contract.
+Live promotion/readback is recorded separately; this entry alone is not deploy
+or restart evidence.
+
+## Patch 927 — mounted CS:S local-body movement Foley
+
+**Problem:** movement was silent even with mounted CS:S content: no footsteps,
+landing or water-motion feedback. Camera/head-duck offsets must not manufacture
+body travel, and a stationary belt rider must not sound like walking.
+
+**Change (client QC):** observe native simorg and actual local velocity/ground,
+world water and ownership/mode gates. Bound sampling, distance/spacing-limit
+steps, infer common texture families, and play mounted CS:S/shared WAVs only
+when present. cl_game_sfx controls volume; gameaudio_info reports queued calls.
+No Valve assets ship. No inputs, movement, server damage, evidence/held policy,
+native source/tag pin or qcbuild change.
+
+**Verified:** three VMs0 warnings. Dedicated100fps dune walk ACTS in both arms:
+disabled159-unit walk emits0 calls; enabled152-unit walk emits a CSS concrete
+step. Idle adds none; a real jump/land adds one landing. Parc's real24-unit pool
+ACTS: entry1 and crouched-swim2 callbacks with mounted wade WAVs/depth2; original
+owned zone restored byte-for-byte and own processes stopped. This certifies
+queued effects and assets, NOT audible balance/output. Water exit, hard-fall
+voice and other materials remain explicit human checks. tools/p927-css-foley.md.
+
+## Patch 926 — rotated trigger prediction uses the server's brush geometry
+
+**Problem:** surf_me save9 changed the view before the map's teleport. The
+trigger mirror parsed brush angles but never assigned them to its probe edicts,
+and its broad phase used unrotated local mins/maxs. A rotated reset volume could
+therefore fire only on the client, applying its view snap before the body crossed.
+
+**Change (QC only):** retain authored trigger angles before linking the probe and
+use its engine-linked world absmin/absmax. No destination-angle rule, server
+movement, recorder, held coverage, format, pin or ranking policy changes.
+
+**Verified:** actual dedicated surf_me saved numeric pose/zero-input actor at
+100fps, normal extrapolation, correction threshold.25. Baseline ACTS: *32/tele4
+fires about.8s early, four4205..4257-unit mismatches, then a5352-unit real crossing
+correction. Subject: the same early point is outside, one actual teleport fires
+and its view-snap sequence matches the server acknowledgement exactly; none of
+those false-teleport/late-crossing errors remains. Both retain an unrelated
+sub-2-unit slope correction, not claimed fixed. Three VMs compile0 warnings.
+Owner feel and delivery remain separate. Native source/tag pin stays P924.
+Details: tools/p926-rotated-triggers.md.
+
+## Patch 924 — static Source conveyor ground carry
+
+**Problem:** func_conveyor spawned solid but never supplied ground velocity;
+surf_parc_colore and surf_classics lost their authored belt boosts. A post-move
+prediction arm also lagged the authoritative CheckMovingGround operation.
+**Change:** Arm static movedir*speed before the existing basevelocity/ride
+handoff. Query actual pre-move ground contact, reacquiring a missing ground
+edict after placement; never infer carry from a nearby bbox. Mirror Source
+command parts with a 32-part work bound, preserve EveryTick versus enter-only
+setspeed and once-only semantics, and isolate preview carrier state. An atomic
+owner/command-tagged stat seeds the native sub-tick phase. No additional mover
+version, evidence grammar or ranked-policy change. Dynamic conveyor inputs and
+material animation are not implemented.
+**Verified:** Isolated Full native/plugin build and subsequent three-prog builds
+have zero new warnings. Real dedicated parc567/classics2500 belt and step-off
+checks use normal extrapolation and .25-unit correction reporting. Three quiet
+parc actors and a restored actor contrast with seven extra corrections in the
+conveyor-only disabled control. Compiled setspeed handler proves later-part
+EveryTick, duplicate suppression and enter-only control; extracted native guard
+checks ordinary/carried inputs,32/33 boundaries and100000 float-bit cases.
+Independent two-lens review found two P1s; both fixed and rechecked OK. Jump and
+once-pad physical acceptance remain unconfirmed; a non-acting input/pad rig is
+not a pass. Published P923 integration review found no issues; its held checks
+remain first in both callbacks and no coverage/schema rule changed. The clean
+merged Full build has zero new warnings; both maps retain acting carry and no
+post-placement corrections above .25. Native selftests and reader864/0 pass.
+Byte-identical P923/P924 readers retain the same diagnostics on the current
+419REC/126VIEW corpus. Deployment is recorded separately in the QC feature note.
+Unpublished P921 reservation was renumbered forward to avoid a stale native
+minimum after P922/P923 shipped; its historical test artifacts retain P921.
+
+## Patch 923 — recording-relative counters and bounded held continuation
+
+**Problem:** A new attempt could inherit cumulative counter history belonging to
+another recording. Failed selected recordings needed nondestructive private
+recovery, while optional typed held evidence required explicit compatibility
+with the current Source mover rather than an obsolete compiled-kernel profile.
+**Change:** Declare recording-relative counters in ordinary REC14/native REC15;
+retain legacy clock/counter semantics. Join bounded typed context/initial,
+coverage, execution/clock/terminal evidence to one closed source, with explicit
+unsupported/malformed/failure routing. Preserve failed selected source privately
+using identity checks and no-replace recovery, retaining existing policy/expiry.
+Keep the detailed collector opt-in. Review only mover11 for the narrow native
+profile: unchanged fixed schemas, complete zero assist suffix and independent
+live/context/model water-state fences. No old/future version bypass, general
+world coverage, historical reclassification or human/device attestation.
+**Verified:** Full isolated Windows engine/plugin/QC build, no NEW warnings;
+real mover11 native15 cold PASS45ticks42rows after producer/client exit,19 acting
+altered-evidence controls; physical374/0 with25native moves, ledger164/0,
+input66/0. Targeted source review OK with notes. Reader864/0; unchanged captured
+405REC/120VIEW corpus,275existing faulting files/276diagnostics, zero increase.
+Earlier Windows/ARM retention/calendar/error-latch134/0 receipts retained as
+prior-artifact evidence only. A stale synthetic footer failed before correction;
+current fixture now uses the required zero park trailer, no decoder relaxation.
+Final clean artifact/ARM gates and guarded rollout are separate, not claimed by
+these implementation checks. Scope/limits: tools/p923-recording-continuation.md
+in the QC repository. No release or Build-number decision implied.
+
+## Patch 922 — Local filters, persistent scoreboard and quiet empty maps (QuakeC)
+
+**Problem:** Local hid the direction/Segmented row; TAB-up or another right-click
+closed a pinned board. Story repeated zero-player labels on empty maps.
+**Change:** Keep direction and Segmented on Local, retain explicit All/Clean and
+Practice presets without relabeling recordings. Right-click pins until Esc,
+including search focus; ordinary hold/release remains a peek. Hide known-zero
+Story population and its blank detail row, preserving positive/unavailable.
+No backend, evidence, movement or native binary change; engine pins unchanged.
+**Verified:** Three product VMs compile with zero warnings. Actual-client
+control/subject cases: 19 checks per arm in legacy and native-requested modes;
+all38 subject checks pass and the old source fails the expected pin/filter/zero
+controls. Both fixture modes used the legacy renderer (native-requested reports
+failed1/handle0), not a painted native-panel pass. Practice/Segmented clicks,
+ordinary peek/release, repeated right-click, Esc with search focus, cursor release
+and the real menu formatter's 0/1/3/unavailable controls acted. Local screenshots
+inspected. Human feel and native-panel visual acceptance remain pending.
+P921 test transport/captures predate the concurrent conveyors claim; product
+metadata was moved forward before publication, without relabeling old evidence.
+
+## Patch 920 — paused-run choice and count-in view lock (QuakeC)
+
+**Problem:** Paused runs offered only centred text/F2, with no clear No choice;
+mouse/native look could turn the view while the restored body counted in.
+**Change:** CSQC left details/1 Yes/2 No panel using the existing offer protocol.
+No is local dismissal, not discard. Latch answer repeats/releases and preserve
+F2. Pin native and outgoing view angles only during C, releasing on the resume
+event before a stale C key can overwrite the restored angle. No server claim,
+apply, recorder clock, evidence schema or movement change; engine pin unchanged.
+**Verified:** Three-prog build at zero warnings; actual dedicated-socket control
+turns 115.2 degrees during C, subject stays at 90 degrees then turns normally
+(107.5 degrees) after GO. No retains all three synthetic slot files byte-exact;
+repeat/release, fresh reconnect, Yes, post-offer F2 and vote-observer checks pass.
+Panel/dismissal/count screenshots inspected. Native keyboard-look is not owner
+physical-mouse feel; that and visual acceptance remain pending in lextest.md.
+
+## Patch 919 — predict EMPTY brush contents as nonsolid
+
+**Problem:** bhop_goldsrc2's decorative *93 illusionary explicitly has skin=-1.
+Snapshots encode negative-skin contents volumes as BSP; server AddEntityToPmove
+handled EMPTY as nonsolid, but the client's switch omitted EMPTY and collided.
+**Change:** Add only that missing client override, matching existing server
+behaviour. Do not make illusionaries solid or smooth over prediction errors.
+**Verified:** Actual old/client/server C-switch probe acts on the old mismatch and
+passes nine contents controls; five real trace checks at the authored sheet's
+bounds prove a solid control sticks while nonsolid body/eye traces pass. Native
+build and all prior selftests pass without new warnings. Owner save2 real-socket
+correction-count acceptance pending; no movement-version/evidence/server rule change.
+
+## Patch 918 — point-filter the missing diffuse texture
+
+**Problem:** The owner's missing-texture checker inherited global linear texture
+filtering and softened when used as the shared fallback.
+**Change:** Mark only no_texture's diffuse image IF_NEAREST, including its PNG
+replacement. Preserve mipmaps, ordinary assets, gloss/normal placeholders and
+all owner image bytes.
+**Verified:** Existing asset suite 8/8; extracted actual GL sampler function passes
+an acting linear control and 10 nearest/global-mode cases (nearest min/mag,
+anisotropy 1). Native client/server/plugins build passes without new warnings.
+In-game visual acceptance remains owner-only; no global texture setting changed.
+
+## Patch 917 — keep the ceiling eye limit in render space
+
+**Problem:** P916's eye offset belonged to the mover endpoint, but rendered feet
+were interpolated separately, producing a small vertical sawtooth under a roof.
+**Change:** Retain the clipped world-space eye limit, then apply it to the final
+interpolated/stair-smoothed feet. No temporal smoothing, physical movement,
+recorded state or mover-version change; unclipped/dead/noclip/old movers stay as before.
+**Verified:** Full isolated Windows client/server/plugin build, no new compiler
+warnings versus P916; all prior selftests plus 21 new real-roof/render-endpoint
+checks pass, including an acting old-expression drift, fixed absolute eye,
+normal eye below the roof and nonnegative bounds. Owner feel pending in lextest.md.
+
+## Patch 916 — Source ceiling eye clearance and water-lip assist
+
+**Problem:** The standing eye is above the collision hull and could enter a low
+roof. Source swimming was present, but its surface ledge-exit assist was missing.
+
+**Change:** Independently implement the public Source-derived Momentum rules:
+keep the eye 12 units below a ceiling (ground or air, no collision-hull change),
+and at waist-deep water probe 24 units forward, clear eye+8 headroom and a
+walkable landing. Reject backwards movement and descent faster than 180; apply
+Z 256 and a wall-normal XY 50 assist, carried for up to two seconds. Neither jump
+nor up is required for the lip check. The eye probe starts with a valid hull top
+so a roof between body and eye cannot hide behind a startsolid trace. Noclip is
+unchanged. Mover 11 gates both features; historical movers retain their rules.
+Carry timer/direction through prediction and save/record state. Require complete
+assist state for an exact v11 replay; accept old seeds without it as before.
+Reference: Momentum develop a299840b8571927efa275f5110a1a0192242016d,
+`CMomentumGameMovement::PlayerMove`, `CGameMovement::CheckWaterJump/WaterJump`.
+No claim of binary-identical CS:S behaviour or new verification eligibility.
+
+**Verified:** Full isolated Windows client/server/all-plugin build via
+`src/build.ps1 -Engine -Full -NoDeploy`, zero new warnings versus the baseline;
+all existing pm_selftest checks and 36 new real-trace/state checks pass, including
+actual upward/forward motion, grounded/air roofs, body/hull nonmutation, old
+mover/noclip controls, blocked/no/backwards ledges, held jump, state roundtrip,
+and malformed/nonfinite/partial state. The first state-text test incorrectly
+expected a bool instead of the writer's length; corrected the test, not product.
+`test_reccheck.py`: 852 checks, zero failed; unchanged reader sweep: 402 run files,
+271 existing faults. No increase is introduced by a Python reader change (none).
+Owner visual/feel acceptance and fleet rollout are not claimed by these checks.
+
+## Patch 915 — explicit disconnected-clock boundaries (QC, readers, native)
+
+**Problem:** A parked clean whole-main run lost disconnected time. Adding it to
+physical input ticks would invent movement history; separate rounding could also
+admit a resumed timer beyond the exact float32 integral domain. Completed clean
+nonPB stages depended on keeping the whole main recording to remain watchable.
+
+**Change:** REC13 declares parked-time boundaries separately from viewing and
+physical chronology, with matched sessions and closing counters. Preserve older
+formats; native structural support accepts ordinary zero-carry13 but explicitly
+refuses parked-time simulation rather than granting verification. QC uses UTC
+day/second stamps, exact restored-clock projection and nonconsuming refusal;
+carry both edge counters through ordinary and rewind saves. Retain completed
+clean stages independently with collision-safe attempt names. Private lobby
+retrieval uses existing proven-account identity, per-file ownership/content seals
+and the existing per-client event transport, not GUID namespace guesses or a new
+public download permission. No rank, certification, consent or upload grant.
+
+**Verified:** Reader864/0 and stable baseline corpus faults/hashes; native39
+structural controls retain ordinary45/45 and explicit parked-time refusal, with
+malformed old-admitted/new-refused arms. Real buffered/streamed lower-epoch parks
+land without physical-tick invention. Targeted old guard8/8 admits the actual
+16777216 counterexample; new26/26 refuses with every slot byte retained, accepts
+last-valid16777215, and preserves two parked edges through actual snapshot,
+state application and finish. Archive lane31 socket controls act writer, two
+equal-duration attempts, cancelled main, byte-exact selection/playback, positive
+PB, different full proven-key/same namespace denial, mutation/rename/stale/expiry
+and cleanup. Account proof is a synthetic already-proven fixture precondition;
+its existing remote cryptography and human visual acceptance are not claimed.
+Matching clean Windows/Linux artifacts and consumer-before-writer deployment
+remain separate qualification steps. No Build bump or release.
+
+## Patch 914 — run time continues while spectating or replaying (QC, readers)
+
+**Problem:** A held body stopped the run clock during spectating/replay. Simply
+adding elapsed time to mover ticks would falsify input chronology and saved data.
+
+**Change:** Track viewing duration on the server frame clock separately from
+physical input ticks, rounding accumulated time once. Version12 declares typed
+viewing edges and a closing equation; preserve legacy9/10/11 meanings. Carry time
+through warm/cold/streamed saves, rewind and stage exports; update replay, angle
+projection and census readers. Native parsing accepts supported zero-view12 and
+explicitly refuses positive viewing carry, with strict whole-token field bounds.
+No new native verification eligibility or physical-input history is invented.
+
+**Verified:** Actual held-body live stats advance with zero physical input and
+restore nonzero velocity. Repeated viewing, warm/cold buffered and streamed lower-
+epoch continuation, stage projection and kept-close controls act without new
+reader faults. Independent reviews close all reported findings. Parent merge
+preserves Story/resume deltas;3VM build has zero warnings, reader852/0,
+census7 and full surfd suite pass (Windows file-mode subchecks skipped). Same402REC/117pairedVIEW retain all per-file faults (275 faulty
+checks) with519 hashes stable at comparison boundaries. Windows native19 checks
+retain zero-view PASS45/45 and positive-view unsupported refusal; malformed old-
+pass/new-refuse controls act. Linux/native installation and matching backend/
+reader/writer rollout remain pending. No offline disconnected-time addition,
+Build bump or release. Existing positive-held simulation remains unsupported.
+
+## Patch 913 — automatic resume only for clean whole-main runs (QC)
+
+**Problem:** Automatic resume could park or consume practice, segmented, bonus
+or standalone-stage attempts; missing or invalid stored classification was not
+proof of a clean whole-main run.
+
+**Change:** Use the existing class/leg helpers at park, then nonmutating strict
+classification reads at offer, accept and expiry sweep. Require explicit valid
+integer-domain fields; reread before claiming or moving. Preserve ineligible and
+unknown slots, including expired ones, for explicit discard. Manual saves stay.
+
+**Verified:** Real walked recording parks; baseline14 assertions exposes seven
+expected gate failures, subject14/0. Eight stale offers refuse without moving or
+changing slot bytes; positive clean countdown acts, then fixture aborts safely.
+A focused actual out-of-domain classification control now refuses without
+mutation while valid clean remains accepted. Three VMs zero warnings; independent
+initial and numeric-closure reviews clean. This is the restrictive subset only:
+no offline elapsed-time addition or guessed cannot-beat-stage criterion. No
+native binary, Build or release change; matching deployment still pending.
+
+## Patch 912 — instant provisional Story tasks and live progression (QC, surfd)
+
+**Problem:** Story task updates depended on the upload reply, and a decorative
+best-medal toast could omit simultaneous task advances. First-time unresolved
+identity, stale authority and unrelated acknowledgements could erase the local
+preview. Occupancy confused unavailable snapshots with zero; later chapters
+needed steadily increasing trophy gates.
+
+**Change:** Publish completion-side facts before submission through the existing
+client/menu path, keeping the stage-fill guard intact. Evaluate all locally
+known Story/Events criteria, scoped to the current connection/profile; never
+invent rank, placement or server authority. Reconcile only exact contributing
+request-bound acknowledgements and a fresh matching request/catalogue generation.
+Missing/coalesced acknowledgements expire conservatively. Export criteria, show
+fresh map occupancy or unavailable, and use strictly increasing later-chapter
+requirements derived from prior available trophies. Reuse the existing early
+preload. Shared qcc.cfg raises the compiler declaration allocation to163840
+for ordinary and standalone harness builds; other limits and VM formats stay.
+CSQC already uses FTE32, and the combined client exceeded131072 definitions.
+
+**Verified:** Native actual finish updates both lists before a held12-second HTTP
+reply; unresolved first-time self previews then expires; rejection reconciles to
+authority. Exact-ack/new-contribution controls exercise stale-GET fences. Real
+non-clean submission returns204 without acknowledging a different completion;
+its missing old reply resolves conservatively by expiry, not a fabricated ack.
+Independent review/rechecks clean. Combined source builds all three VMs with
+zero warnings; Story44 tests and full surfd suite pass (Windows file-mode
+subchecks skipped). Exact combined-DAT native smoke loads131081 CSQC global
+definitions/184046 scalar slots on the existing client, acts in the local poll
+and Story/Players/HUD draws; those two header counts are distinct. No new VM
+load/range error; pre-existing optional menu notices retained. Existing preload
+acts before first click. Gate curve is strictly increasing, excludes own/future
+chapter capacity, and can reclose previously accessible later chapters without
+removing earned progress. Matching client/server/menu/backend deployment required;
+not deployed over the guarded app without approval. No native binary, Build or
+release change; no official award or verification bypass.
+
+## Patch 911 — startmarks and fresh stage resets (csprogs, qwprogs)
+
+**Problem:** Resets could not use a player's chosen point in a run's start box.
+Returning there after noclip could also leave a genuinely fresh stage carrying
+old attempt state; indiscriminate clearing would instead lose counters or taint.
+Explicit resets outside the start also failed to advance the attempt counter.
+
+**Change:** Add map/player-scoped startmarks, keyed to the actual start box, with
+standing-room checks and safe ordinary-start fallback. Only a reset to that
+run's first leg uses its mark; later legs retain their ordinary destination.
+Prepare and publish that same destination through the existing predicted warp
+interface. Register bindable startmark and mom_start_mark_set commands; whitelist
+set/clear/status as static forwarded commands. Reset fresh stage-attempt state
+while preserving attempt/fail counters and non-noclip provenance; an outside-start
+reset advances the attempt once, and the next normal frame retains it. Clear markers
+on map/zone replacement and disconnect. No recording/save format change.
+
+**Verified:** Native lifecycle controls 40/0; prepared/published reset controls
+13/0. Acting predicted-reset discriminator: 0 corrections against 1 with
+prediction disabled. Real WALK finish produces a clean 332-tick stage PB with
+matching REC/VIEW, still present after main cancellation. A successful real
+running-save/recorder restore retains load refusal through native departure;
+matched noclip-only control still qualifies. Bare client commands produce ten
+forwarded actions and ten corresponding server responses; four malformed/extra
+argument cases forward nothing, including quoted command text. Required server
+review/rechecks and bounded client routing review clean. Combined tree's three
+VMs compile with zero warnings; reader suite 820/0, runs corpus unchanged at
+402 files/275 existing faults, focused recordings zero faults. Optional legacy
+save-prefix sweep encountered a pre-existing access denial, not a reader pass.
+Does not archive every non-PB attempt. No native binary, Build or release change.
+
+## Patch 910 — spectator-to-recording handover (csprogs, qwprogs)
+
+**Problem:** Recorded runs refused to open while spectating. Simply dropping that
+refusal could borrow the wrong telemetry snapshot, and delayed spectator state
+could retake camera/column ownership after a rapid replay close.
+
+**Change:** Once a recording loads, restore the player's telemetry before replay
+borrows its snapshot. Retain a handover latch through replay close until server
+spectator release is acknowledged. A still-pending initial spectator request
+must enter first, so a pre-entry zero cannot masquerade as release acknowledgment.
+Failed opens leave spectating intact. Normalize the existing server handover's
+release reason to the already-valid leave value; no grammar relaxation.
+
+**Verified:** Independent native baseline/subject controls start with a real
+running recording and spectator target. Missing-file control preserves spectating.
+Supported packet-delay rapid-stop discriminator: old candidate reclaimed view in
+63/63 stale-state frames, fixed subject in 0/64, then safe acknowledged return.
+Pending-entry discriminator observes real zero spectator stat plus pending request,
+refuses without side effects, then opens the same recording after acknowledgment:
+9/9 checks. Three VM builds and combined board/handover build zero warnings; 820
+reader checks pass, focused native recordings have no structural faults. Required
+independent review/rechecks clean. Inclusive viewing-time clock remains separate,
+not implemented or verified by this patch. No native binary, Build or release.
+
+## Patch 909 — WOS-first boards and independent style filters (csprogs, menu, surfd reads)
+
+**Problem:** Map-load boards defaulted to all games; direction choices forced KSF,
+Segmented was a style/tab, abbreviations were unclear, and the manual KSF top-up
+button duplicated automated import operations. Expanded labels also needed a
+layout that did not steal switch clicks in narrow windows.
+
+**Change:** A new map and ordinary menu-board open start on WOS. Share a full-worded
+direction/query formatter between menu and client; source and segmentation remain
+independent. Existing clean/segmented Normal keys stay compatible. Accept the three
+segmented-direction query keys as exact read filters only: no run is relabelled,
+no submission eligibility or auto style detection is introduced. Remove both +100
+buttons, retain automation. Separate map title/filter summary, wrap measured controls
+and move table origin below them, preserving Segmented/refresh targets.
+
+**Verified:** All three QC targets build with zero warnings. Real-surfd fixture
+native smoke: 17/17 checks, all eight ranked style keys, explicit KSF selection,
+new-map WOS reset, menu WOS default, actual switch knob/label clicks at 640x480.
+Native narrow bounds: switch (48,156,150,26), refresh (508,156,84,26), disjoint;
+inspected narrow/wide screenshots. Board API regression suite exits 0, including
+exact-style isolation and unknown-key refusal. Independent review's narrow-window
+finding fixed and re-check clean. Backend live guarded-generation handoff needs
+separate operational approval; source validation is not deployment. No native
+binary, Build number or release change.
+
+## Patch 908 — do not probe absent catalogue maps twice (menu.dat)
+
+**Problem:** P781's automatic catalogue load froze the menu shortly after its
+first frame. Native map-size lookup already reported missing maps, then QC
+opened every missing file again, repeating expensive mounted-filesystem scans.
+This was not F2 patch-notes information gathering.
+
+**Change:** Only use the fopen existence fallback when mapfilekb is unavailable.
+Keep map/thumbnail preloading and Story ladder/progress prefetch unchanged.
+
+**Verified:** Isolated native causal probes: 2,314 maps, 363 download offers,
+365 NEW badges and 44 wrong-build maps unchanged. Same-client control/subject
+catalogue preload 2,066/853 ms; redundant fallback 1,193/0 ms. Final uninstrumented
+build: 859 ms. Forced-unavailable-capability control still finds four present
+maps through fopen. Three QC targets build with zero warnings; fresh read-only
+review found no blocker. These are fixture preload measurements, not total boot
+or owner-install performance. Ordinary native disconnect/slot-reuse/empty-name
+roster controls passed; the reported intermittent ghost was NOT reproduced/fixed.
+No native binary, Build number or release change.
+
+## Patch 907 — choose one release in F2's patch notes (menu.dat)
+
+**Problem:** The F2 notes page joined every published release into one long list.
+
+**Change:** A scrollable version list selects the installed release when present,
+otherwise the newest one. The reading pane wraps only that release. Selection
+resets its reading position and reuses the already permission-gated feed.
+
+**Verified:** Isolated QC build: all three progs, zero warnings. The existing
+`tools/p876notes.py` native client harness now selects an older release and back,
+checks scroll reset and no selection fetch, and retains the inactive-updater and
+no-permission negative controls: 20 checks passed. Inspected native screenshots of
+both releases. No recorder, engine binary, Build number or release change.
+
+## Patch 906 — the client does not predict a zone-tool box it cannot judge (csprogs)
+
+**Problem:** Patch 892 leaves a zone-tool box inert on the server behind a filter it does not evaluate, but
+the client's trigger mirror fails such a filter open and predicted the box: on surf_reverie, whose box covers
+the map behind filter_momentum_surface_collision, a client was pulled back 257 u every frame.
+
+**Change:** cl_triggers.qc's TF_KnownD mirrors the server's SV_FilterKnownD (missing, past depth 4, or a class
+it does not evaluate: not known), without filter_momentum_progress, which the server judges per player; a box
+whose filter is not known is demoted. Brush triggers are unchanged. The trig line's box count drops a demoted
+box, and a slot TG_ShapeBoxes already demoted is not demoted twice.
+
+**Verified:** FTESurf `cfg/test/p892tool.cfg`: surf_reverie's section 164 prederr lines before, 1 after (the
+arm's setpos); bhop_cloudburst's 7 boxes still predicted and its body arrives at bh7. The same maps on the
+0.1.28 exe with the release qwprogs and this csprogs: identical. A census of the 1,926 maps: 68 boxes on 14
+maps were the mispredicts; none the server makes active is newly demoted. Live 2026-10-21 on the lobbies
+and both installs (csprogs b4de829b), lobby smoke on the installed and the 0.1.28 client.
+
+## Patch 900 — r_blendsort 2 orders brush-entity panes by eye side, else whole at the box centre (client exe)
+
+**Problem (Lex, 21 Oct, bhop_eazy saves 14/15):** the room's three parallel window slabs broke up at an
+angle -- the front pane fine, rectangles of the two behind it in the wrong tint; turning ten degrees left
+cleared it. Not P878/P894/P895: the installed exe (P895) and its .prev (P879) draw the same frame, it is
+clean at r_blendsort 1 or 0, and r_nearestsort 0 changes nothing. The panes are func_wall *4/*5/*16,
+rendermode 2, renderamt 100, a plain LightmappedGeneric glass, drawn solid until Patch 844 (20 Oct).
+
+**Cause:** mode 2 (P685) sorted each face of a brush entity by that face's own centre. VBSP cuts a long
+face at the lightmap limit, so each 1,120-unit slab face arrives in three pieces (x = -384/112/608/736;
+*5 at -224/-96/400/896). r_blendtrace at save 14: *4's right piece (depth 645-663) drew before the
+middle and left pieces of *5 (139-406) that it covers, so the rear pane was blended over the front.
+None of these faces reached the plane refinement: it admitted world faces only, and no face drawn with
+a program.
+
+**Source:** draws every pane, back to front, but orders whole renderables: the leaf list walked backwards
+(viewrender.cpp:4323-4331), a leaf's translucent entities sorted by the centre of their render bounds
+along the view direction (clientleafsystem.cpp:1744-1795, per leaf at :1819); a brush entity is one
+`render->DrawBrushModelEx` call (c_baseentity.cpp:1953). That key is a depth along the view only, so
+Source swaps parallel panes at shallow angles too: from save 14's eye *16 (rear) is nearer than *5 by
+box centre below yaw 29, and *4/*5 swap for yaw 151-180 (review 1, from the trace's own centres).
+
+**Change:** GLBE_SubmitBlendedFaces gives every blend command of a brush entity (not the world, not a
+weapon/depthhack entity) its model's box-centre depth, and the comparator keeps one entity's faces
+together, farthest first -- the baseline. A brush entity at the identity transform whose programs only
+transform positions (vmt/lightmapped, vmt/unlit: `gl_Position = ftetransform()`, lightmapped.glsl:148,
+unlit.glsl:59) marks its faces planar: GLBE_BlendPlaneGeometry admits them, their back faces get the
+world's raster-empty cull, and the plane proof orders them by which side of each plane the eye is on.
+The world-only proof always runs first -- the old call, entity faces as barriers. The proof with entity
+faces runs on a copy and replaces it only if it ordered at a pass no higher than the world-only run with
+the overlap budget intact, or if the world-only run had no order to protect (review 2: the overlap budget
+is shared and spent farthest first, and a cycle or barrier escalates to pass 2, which drops pass 0's
+verdicts -- either can leave world panes worse while the status still says ordered). Moved or rotated
+entities and other programs keep the box centre. ALPHATRACE prints each face's own depth, entity number
+and planar flag (1 in the kept proof, 2 set aside), the world run's `overlapfull`, and an `entities`
+line with the combined run's status, pass, work and `kept`. r_blendsort's help says so.
+
+**Verified:** Lex's config (r_blendsort 2, r_renderscale 2), installed plugins. Order of the three slabs
+from save 14's eye (10.16 -415.95 64.03) by r_blendtrace; correct is *16, *5, *4 at every yaw, the eye
+being in front of all three planes:
+
+| yaw | installed f7523bbe (per face) | box centre only (b18b4178e) | this patch 0fe4a0c6 (79503b6fc) |
+|---|---|---|---|
+| 0 | | *5, *4, *16 -- wrong (*4/*16 tie 165.8) | *16, *5, *4; 8 admitted, status 1 |
+| 10 | | *5, *16, *4 -- wrong | *16, *5, *4; 8, status 1 |
+| 20 | | *5 475.7, *16 423.8, *4 226.9 -- wrong | *16, *5, *4; 9, status 1 |
+| 27 | | *5, *16, *4 -- wrong | *16, *5, *4; 9, status 1 |
+| 34.41 (save 14) | pieces interleaved -- wrong | *16, *5, *4 | *16, *5, *4; 9, status 1 |
+| 60 | | *16, *5, *4 | *16, *5, *4; 9, status 1 |
+| 151 | | *16, *4, *5 -- wrong | *16, *5, *4; 6, status 1 |
+| 170 | | *4 only in view | *4 only |
+
+Every row of this patch with two panes in view kept the entity proof (pass 0, work 484-1,176, overlap
+budget intact; the world-only run admitted nothing there); review 1's exe a4d6041a gave the same orders.
+A whole-pane swap is a uniform tint,
+so the box-centre build's "break-up gone" by eye could not see it; this patch's yaw-20 and -27 frames are
+a deeper blue there. surf_pantheon start (P895's view, hl2_refract 1): 19.00 screen copies (175.10 Mpx),
+admitted 0 -- unchanged. Dense scenes at spawn: surf_voyager's world proof admits 128 and stops on the
+face budget (status -1) in this build and the installed one alike; surf_joutsenlaulu's admits 101 and ends
+in a cycle at pass 2 (status -2, work 61,339). Neither has a planar entity pane in view, so the entity
+proof did not run there. tools/test_gl_blend_planes.py passes with new cases -- a world pane between two
+entity panes their baseline reverses, the program/shader/identity checks, and the keep rule; it fails with
+entity admission forced off or on, the keep rule always true, a prefix-only program match, and an
+always-identity matrix.
+tools/test_gl_blend_faces.py does not compile on the base (about 30 names it does not declare -- the GPU
+budget, the NEAREST sort), not repaired. Not found in a map: a world pane between entity panes (the
+unit case stands for it).
+
+**Also (Lex: "does Glass Dithered do anything?"):** hl2_refract 2 dithers only a Refract pane with its own
+texture; P859 draws the rest as 0. In the 1,926-map library's paks, 168 of 1,047 Refract VMTs (95 maps)
+have one, 879 (387 maps) do not -- surf_boreas's two ice materials among them, which is why Dithered
+looked like Translucent there. Where it applies it shows at r_renderscale 2: bhop_ceaseless's CYAN GLASS,
+crop mean RGB 4/27/169 and pixel-to-pixel 65.5 dithered, 4/5/71 and 7.0 translucent. The gfx_menu option
+now reads "Dithered if textured" (csprogs); the cvar's help already said so.
+
+## Patch 898 — ALT+ENTER switches windowed <-> borderless; Patch 903 — a redirect line stays quiet (client exe)
+
+**Problem:** Lex: "can you make alt+enter work for fullscreen swapping". Nothing handled it: the key went
+to the binds, and `bind enter say` fills every modifier slot, so ALT+ENTER opened chat. Patch 903: every
+HTTP 301/302/303 printed `<url>: 302 Found (<Location>)` with Con_Printf. The zone mirror answers a map's
+zone file with a presigned R2 URL, so a ~600-character signed address landed in the console after "FTESurf
+CSQC loaded" on every map load, and in the logs players paste.
+
+**Change:** keys.c Key_Event, after the shift+escape console block and before CSQC, the menus or the console
+see the key: ALT+ENTER queues `fullscreen_toggle` (Patch 268, windowed <-> borderless) on the press and
+swallows the repeat and the release, unless the ALT slot holds a bind that differs from ENTER's own (a
+`bind ALT+ENTER ...` of the player's wins). `in_altenter` (archived, default 1) turns it off; a
+Con_DPrintf names the action. httpclient.c: the redirect line is Con_DPrintf and stops at the `?`
+(`...json?...)`); in this tree Con_DPrintf reaches stdout at developer 1 and the log at log_developer 1,
+never the console.
+
+**Verified:** client built (m-rel, no new warnings in the two files). Overlay roots with the P898 progs and
+cfg, the install mounted read-only, conbridge sessions at 1280x720 (art898/arm898.py). ALT+ENTER by window
+messages to the client: "ALT+ENTER: fullscreen_toggle", "Setting fullscreen windowed OpenGL", the window
+1038x614 -> the monitor's 1536x961 (logical); again: "Setting windowed mode 1280*720", back to 1038x614;
+with `bind ALT+ENTER "echo ..."` the echo ran and the window stayed. Each switch reloads the renderer,
+~7 s on surf_dune, as F11 does. Redirects, the same P898 csprogs fetching surf_dune's zones after a map load: the
+installed exe printed the full signed address at developer 0 (2 lines carrying X-Amz-Signature in its
+log); this exe printed nothing at developer 0 and, at developer 1 + log_developer 1,
+`.../surf_dune.json: 302 Found (https://<account>.r2.cloudflarestorage.com/ftesurf-public/objects/zones/<sha256>.json?...)`,
+with no X-Amz anywhere in its log.
+
+**Review round 1:** the toggle rebuilds the window, and ClearAllStates runs three times on the way (the
+mode set's, the focus messages') and dropped the ALT still held, so a second ENTER ran ENTER's bind
+(`say`). The first fix re-pressed ALT after the mode set's clear only and measured no different from the
+control: the focus clears come after it. Now ClearAllStates itself re-presses ALT (queued behind its
+clear-all event) when this thread's key state still has it down, from an ALT+ENTER toggle until that ALT
+is released, for at most 30 s; a Con_DPrintf says so. Measured with ALT held in the client thread's key
+state (AttachThreadInput + SetKeyboardState from the arm, so no input reaches another window) and
+`bind enter "echo ..."`: the control and the first fix echoed on the second ENTER; this build printed
+"keys cleared, ALT held" three times per rebuild, toggled to borderless and back on the second ENTER, and
+never echoed. Left: a player who ALT+TABs away within 30 s of a toggle with ALT held and comes back by
+clicking can find ALT still down in the engine (this thread never saw the release) until ALT is pressed.
+
+**Review round 2:** that re-press is gone, because a synthetic ALT down can stick (ALT+ENTER, ALT+TAB away,
+ALT released elsewhere, click back: ENTER toggles instead of `say`, and every ALT chord misfires).
+ClearAllStates is upstream's again. When ENTER arrives, ALT counts as held if keydown[] has it or, on
+Windows, GetKeyState(VK_MENU) < 0 for the client thread (INS_AltHeld, in_win.c); a player's own ALT+ENTER
+bind then runs as before. One session, ALT driven through the thread's key state as above,
+`bind enter "echo ..."`: (a) ALT held, ENTER twice: borderless and back, no echo; (b) ALT+ENTER, ALT
+released, ENTER: the echo, no toggle; (c) ALT down, WM_KILLFOCUS, ALT up in the key state while
+unfocused, WM_SETFOCUS, ENTER: the echo, no toggle. (d) As (c) with the thread's key state left down --
+a thread Windows did not resync on the way back -- ENTER toggled: the query is only as current as
+GetKeyState, which this arm cannot show Windows refreshing on refocus. Nothing is pressed by the
+engine, so a stale read lasts until the next ALT message the thread sees.
+
 ## Patch 897 — play-time server prints stay off an offline player's console (qwprogs)
 
 **Problem:** server QC's `dprint` is builtin 25, which QW progs get as an unconditional print (pr_cmds.c,

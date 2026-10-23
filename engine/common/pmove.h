@@ -230,6 +230,8 @@ typedef struct
 	float		momcool;			//bhop cooldown, seconds (PMLIM_BHOP)
 	int			momslide;			//PMSLIDE_* bits, ACTIVE set while inside
 	int			landticks;			//ticks since the last landing; carried (pmsourcestate_t)
+	float		waterjumpremaining;	//P916: Source assist, seconds; not Quake teleport_time
+	vec2_t		waterjumpdir;		//fixed wall-normal XY push, carried across commands
 } playermove_t;
 
 //Patch 882: limitmovement spawnflags >> 13 (mom_triggers.h SF_LIMIT_*).
@@ -255,8 +257,9 @@ typedef struct
    Patch 764: version 7 traces a static prop's .phy hull as its convex pieces.
    Patch 813: version 8 recovers a surfer whose retrace hits the same face again at fraction 0.
    Patch 888: version 9 traces a .phy hull whose 16-bit indices wrapped as it really is.
-   Patch 882: version 10 honours momlimit/momcool/momslide (Momentum's limitmovement and slide triggers). */
-#define PMSRC_VERSION 10
+   Patch 882: version 10 honours momlimit/momcool/momslide (Momentum's limitmovement and slide triggers).
+   Patch 916: version 11 adds Source water-lip assist and ceiling eye clearance. */
+#define PMSRC_VERSION 11
 
 typedef struct {
 	//standard quakeworld
@@ -347,6 +350,8 @@ typedef struct {
 void PMSrc_SaveState(pmsourcestate_t *out);
 void PMSrc_LoadState(const pmsourcestate_t *in);
 void PMSrc_ReconcileHull(pmsourcestate_t *s, const vec3_t mins, const vec3_t maxs, float servereye);	//FTESurf Patch 754
+float PMSrc_UnclippedViewHeight(void);	//P917: current predicted posture, before roof clipping
+float PMSrc_ClipRenderEye(float rawheight, float worldlimit, float renderfeet);	//display only
 
 #define MOVEFLAG_VALID							0x80000000	//to signal that these are actually known. otherwise reserved.
 //#define MOVEFLAG_Q2AIRACCELERATE				0x00000001
