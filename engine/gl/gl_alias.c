@@ -3620,7 +3620,7 @@ static void BE_GenPolyBatches(batch_t **batches)
 			static int last_bad_sort_frame = -1;
 			if (last_bad_sort_frame != host_framecount)
 			{
-				Con_DPrintf("BE_GenPolyBatches: invalid shader sort %u (count %u); using opaque\\n",
+				Con_DPrintf("BE_GenPolyBatches: invalid shader sort %u (count %u); using opaque\n",
 					sort, (unsigned int)SHADER_SORT_COUNT);
 				last_bad_sort_frame = host_framecount;
 			}
