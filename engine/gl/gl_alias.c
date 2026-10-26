@@ -3613,6 +3613,20 @@ static void BE_GenPolyBatches(batch_t **batches)
 		if (b->flags & BEF_UNDERBLEND)
 			sort = SHADER_SORT_UNDERWATER;
 
+		// A malformed/uninitialised shader sort must never index beyond the batch list.
+		// Fall back to opaque so one bad material cannot crash the SDL render thread.
+		if (sort >= (unsigned int)SHADER_SORT_COUNT)
+		{
+			static int last_bad_sort_frame = -1;
+			if (last_bad_sort_frame != host_framecount)
+			{
+				Con_DPrintf("BE_GenPolyBatches: invalid shader sort %u (count %u); using opaque\n",
+					sort, (unsigned int)SHADER_SORT_COUNT);
+				last_bad_sort_frame = host_framecount;
+			}
+			sort = SHADER_SORT_OPAQUE;
+		}
+
 		b->next = batches[sort];
 		batches[sort] = b;
 	}
