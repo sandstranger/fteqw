@@ -884,6 +884,15 @@ qboolean GL_LoadTextureMips(texid_t tex, const struct pendingtextureinfo *mips)
 			}
 		}
 	}
+	if (nummips != levels)
+	{
+		// Do not advertise malformed/unuploaded mip levels to the sampler. Some
+		// mobile drivers (notably GLES implementations) return corrupted texels
+		// when GL_TEXTURE_MAX_LEVEL includes levels that were skipped above.
+		levels = nummips;
+		if (!sh_config.can_genmips || !qglGenerateMipmap || !mips->mip[0].data)
+			genlevels = levels;
+	}
 
 	//make sure the texture is complete even if the mips are not.
 	//note that some drivers will just ignore levels that are not valid.
