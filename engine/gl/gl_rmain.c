@@ -2731,6 +2731,16 @@ texid_t R_RenderPostProcess (texid_t sourcetex, texid_t sourcedepth, int type, s
 	{
 		r_refdef.flags &= ~type;
 
+		/*
+		 * A shader_t may exist even when its GLSL program failed to compile or
+		 * produced no usable passes on this driver. Do not allocate a destination
+		 * render target in that case: it would never be written, and the next
+		 * post-processing stage would sample stale/black pixels instead of the
+		 * original scene.
+		 */
+		if (!shader || !shader->prog || !shader->numpasses)
+			return sourcetex;
+
 		if (r_refdef.flags & RDF_ALLPOSTPROC)
 		{	//there's other post-processing passes that still need to be applied.
 			//thus we need to write this output to a texture.
@@ -2850,7 +2860,7 @@ void GLR_RenderView (void)
 		}
 		if (!r_waterwarp.value || r_projection.ival)
 			r_refdef.flags &= ~RDF_UNDERWATER;	//no warp at all
-		else if (r_waterwarp.value > 0 && uwpostproc && !r_uwnowarp)
+		else if (r_waterwarp.value > 0 && uwpostproc && uwpostproc->prog && uwpostproc->numpasses && !r_uwnowarp)
 			r_refdef.flags |= RDF_WATERWARP;	//try fullscreen warp instead if we can
 	}
 
