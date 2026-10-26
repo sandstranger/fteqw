@@ -1,5 +1,208 @@
 # Engine patches (fteqw `fteqw64.exe`)
 
+## Patch 1051 - goto_start goes to the start of the track you are on (csprogs, qwprogs)
+
+Problem: players report goto_start "just does reset and doesn't go to stage 1". Patch 848 sent it to `!m`
+only while the timer was RUNNING past the run's first segment, else `!r`. An idle timer resets run_t_seg to
+0, so goto_start read "stage 1" wherever you were while `!r` went to the latched leg (run_leg_seg, kept until
+the map changes): after a void, armed in a stage start, finished, or on a run begun at a later stage, it
+landed on that stage's start.
+
+Change (FTESurf main 528c5ebe; cl_warpop.qc, sv_player.qc, sv_main.qc, sh_defs.qc): goto_start decides from
+`!r`'s own latched leg, published as STAT_FS_LEGTRACK 185 / STAT_FS_LEGSEG 186. Where that leg is its
+track's first segment it is `!r` (startmark, save in the box, a standing `!s 1`); else `!m` or `!b N`,
+predicted as before. A client that cannot predict (spectating, replays) sends `cmd zone_start`, the same
+rule on the server with the player's own leg. reset is unchanged.
+
+Verified (rig, surf_kitsune, exe e28907a1): from the main start goto_start stays at `!r`'s spot, the same
+as the live client; armed at stage 3 it lands at the main start (0 u), where the live csprogs ad9f518c
+stays at stage 3. Two review rounds: a first cut chose from the timer's track and state, and sent a bhop
+player to the other track after a finish, skipped startmarks after a finish or void, and followed a
+spectated player's track; the leg stats remove all three. Deployed both installs and lobbies 1-12
+(qwprogs fa93d213, csprogs 9b926b67), smoke lobby 1 0 failures. Limits: a run begun at a later stage
+restarts from stage 1 on goto_start.
+
+## Patch 1050 - fail teleports get their destination: SetRemoteDestination, TriggerWithParameter (qwprogs, csprogs)
+
+Problem: Lex, 26 Oct: bhop_tealbox's and bhop_whitebox's fail triggers do not teleport the player. Those
+maps (and greenbox, greybox, peribox: 298 teleports on 5 maps) give their fail teleports no target;
+checkpoints set it at runtime with trigger_teleport's SetRemoteDestination, directly or through a
+logic_relay's TriggerWithParameter -> OnTriggerParameter whose rows carry an empty parameter that takes
+the relay's value. Momentum's shipped server.dll has all three names (the game-develop source snapshot
+predates them). This server had none of them and no value passthrough, so every touch printed
+"trigger_teleport: no destination ''" and the player stayed on the fail floor.
+
+Change (FTESurf main 528c5ebe; sv_entities.qc, sv_player.qc, sv_zones.qc, cl_triggers.qc): output rows
+with no parameter deliver the value they were fired with (COutputEvent::FireOutput), handed down
+SV_FireOutput -> SV_IODeliver (re-armed per target) -> SV_ApplyInput (consumed, cleared) and kept in a
+delayed row's timer. logic_relay TriggerWithParameter fires OnTriggerParameter behind Trigger's gates
+(SV_IORelayFire; the refire wait is OnTrigger's max delay, as logicrelay.cpp has it). trigger_teleport
+SetRemoteDestination sets the destination: from a player, that player's own (vbsp_tpdest, keyed by
+teleport name, read at the touch), so one player's checkpoint does not move another's fail teleport on a
+lobby; otherwise the map's .target. SV_TpDestReset on respawn and on the !r/!m/!s/!b warps that move,
+once the map has used SetRemoteDestination: the entries go and SV_TouchRelocate ends the player's
+touches, so the checkpoint they stand in writes its entry again, and an entry from an earlier run cannot
+send a fresh one forward (greenbox disables its checkpoints map-wide). The client records
+SetRemoteDestination as stateful, so a predicted teleport it aims at is left to the server.
+
+Verified (rig, exe e28907a1, developer 1): spawn, checkpoint 1's setter, drop onto a fail floor, then
+respawn and drop again. whitebox lands at cp1 (-672 -1088 65), after the respawn at the spawn; tealbox
+(through the relay) at tele_cp1 (2880 2000 33), then tele_spawn. A respawn while still standing in the
+start lands at the spawn on both (a build that cleared without relocating left the player on the floor,
+385 "no destination"). The live qwprogs d6497c53 leaves the player on the floor with 384 / 389 "no
+destination" lines. Four review rounds (no value leak, no change for maps without these inputs; then the
+stale entry across a restart, a reset stranded inside the start, a dropped relay refire, the respawn
+order). Deployed both installs and lobbies 1-12 (qwprogs fa93d213, csprogs 9b926b67), smoke lobby 1 0
+failures. Limits (BACKLOG): the relay's refire lockout is map-wide; saves and resume do not carry the
+destination; the client does not predict these teleports.
+
+## Patch 1049 - func_conveyor and func_illusionary ignore their angles, as Source (qwprogs, csprogs)
+
+From Patch 1048's review: CFuncConveyor's base is CFuncWall, whose Spawn zeroes the angles (direction is
+movedir, converted first), and CFuncIllusionary::Spawn zeroes them too (bmodels.cpp:308). 18 rotated solid
+conveyors on 6 maps (deathrun_forest 10) and 25 rotated illusionaries on 2 (bhop_shust_extension 21, surf_me
+4) now face as Source has them; our conveyor speed already came from movedir. ent_view's hull overlay draws
+func_wall, func_wall_toggle, func_conveyor and func_illusionary unrotated. Verified: both maps load with no QC
+error; lobby smoke 0 failures. The browser run viewer still applies map angles (BACKLOG).
+
+## Patch 1048 - func_wall ignores its angles, as Source (qwprogs)
+
+Problem: Lex, 26 Oct, bhop_goldsrc2: the sparking object on the wall is missing. It is func_wall *80, a
+14x16x22 panel with angles 0 90 0. CFuncWall::Spawn sets its angles to zero (bmodels.cpp:49), and
+CFuncWallToggle's is CFuncWall's first; ours kept them, so the brush model's absolute coordinates turned 90
+degrees about the world origin -- drawn and solid somewhere else.
+
+Fix (src/server/sv_entities.qc): func_wall (not the aliases that call it: func_lod, the button stand-ins)
+and func_wall_toggle zero their angles before setmodel. Library: 9 func_walls with non-zero angles on 2 maps
+(deathrun_forest 8, goldsrc2 1), 0 func_wall_toggles; their collision moves to where Source has it (beta).
+
+Verified (rig, goldsrc2 at the panel, qwprogs and csprogs swapped): the green/red panel is drawn on the wall
+with P1046's sparks coming off it; the deployed build shows bare wall there.
+
+## Patch 1047 - skeletal Source props skin on the GPU, and unbaked props instance (GL client)
+
+Problem: Lex, 26 Oct: surf_hourglass's save 3 view runs at 70-80 fps ("sounds like instancing issue?").
+r_budget: CPU-bound, 10.8 ms of 12.4 in draw calls, r_drawentities 0 gives 522 fps. R_GAlias_DrawBatch asked
+for GPU skinning only when the shader-level program had SKELETAL; the hl2 plugin's VertexLitGeneric puts its
+program in a pass, so every skeletal Source model (the map's 176 prop_dynamic, viewmodels) was skinned on
+the CPU every frame with no VBO, and P831's instancing refused every prop without baked VRAD colours.
+
+Change:
+- engine/gl/gl_alias.c R_GAlias_ShaderSkeletal: GPU skinning when every program the shader draws with has
+  SKELETAL (the rule GLBE_InstanceShader uses for INSTANCED, remapto followed).
+- engine/gl/gl_backend.c GLBE_SubmitInstancedRun: props with no bake join (they draw without VC and never
+  read the pool); a run never mixes baked and unbaked members, never takes a member with no VBO (a
+  CPU-skinned pose of its own), and joins only members whose bone matrices equal the first's (the bones are
+  one set of uniforms: an animating prop draws alone). A program that cannot take SKELETAL|INSTANCED turns off
+  skinned runs only (inst_broken_skel), not instancing for every prop.
+- engine/shaders/glsl/crepuscular_opaque.glsl skins (SKELETAL, FRAMEBLEND, as depthonly): GPU-skinned props
+  drew their sun-ray occluder in the rest pose. r_bishaders.h took only that entry -- regenerating the
+  header without a Vulkan toolchain drops every Vulkan blob.
+
+Verified (rig, Lex's r_renderscale 2, uncapped): hourglass s3 80 -> 407 fps (frame 12.49 -> 2.45 ms, GPU
+10.1 -> 1.1), r_instancing 2 "cannot join" 81 -> 0; props pixel-identical CPU against GPU skinned and
+instancing on against off (differences only in the animated water, the sky and the overlay).
+surf_imaginarium (153 animated prop_dynamic) 178 -> 191 fps, same picture; the knife and USP viewmodels
+identical. Three review rounds: CPU-skinned members in a run, the occluder pose, the compile-failure scope.
+Untested: SKELETAL|INSTANCED on a GPU other than this PC's RTX 2080 SUPER (a failure turns skinned runs off).
+
+## Patch 1046 - env_spark sparks as often as Source (csprogs)
+
+Problem: Lex, 26 Oct, bhop_goldsrc2: "spark is much lesser than momentum mod". cl_emit.qc read MaxDelay 0 as
+one burst every 3 s and any other value as one every MaxDelay, 4 + 3 x Magnitude particles a burst.
+
+Change (src/client/cl_emit.qc): CEnvSpark::SparkThink re-arms at 0.1 + random(0, MaxDelay) (EnvSpark.cpp:119),
+so the rate is 1 / (0.1 + MaxDelay/2) -- ten a second at 0 -- and a burst is FX_ElectricSpark's 2-4 x
+Magnitude^2 big and 16-32 x Magnitude small sparks (fx_sparks.cpp:332, 383), mean 3 M^2 + 24 M. Sparks have
+their own budget (EM_SPARK_BUDGET 1500 a second, all sparks in range, reported by emit_list): charged per
+spawn against the shared 2000, one Magnitude 5 spark (surf_nightmare) took 1950 of it.
+
+Verified (rig, goldsrc2 at the spark, csprogs swapped): a continuous shower where the deployed build shows a
+spark every few seconds. Two review rounds (the shared budget). Limit: a fixed beat, not Source's random
+interval.
+
+## Patch 1045 - a Refract whose normal map is not installed draws without warp (hl2 plugin)
+
+Problem: Lex, 26 Oct: surf_hourglass's water is "very inaccurate and bad". It is a Refract whose only texture
+is $normalmap water/tfwater001_normal (TF2's). Refract binds it as a pass map, so without TF2 the missing
+checker became the normals: at hl2_refract 1 the screen's left edge smeared into the water and the rocks drew
+ghosted.
+
+Fix (plugins/hl2/mat_vmt.c): after the fill, normalmapgone records a $normalmap the image search
+(VMT_OwnImageExists: its paths and extensions) cannot find, and an uninstalled $dudvmap is cleared; the Refract
+arms that bind the map treat it as none ($identitynormal, #NOWARP; mode 0 falls back to $dudvmap), while
+VMT_RefractBlend still reads the authored key, so the blend is as before. The underwater overlay keeps its tint
+and blur with REFRAMOUNT 0 and no REFRSINE ($identitynormal decodes to a small offset there). P1042 makes the
+map mount TF2 where it is installed.
+
+Verified (owned rig, Lex's saves 1 and 4, hl2_refract 1): without TF2 the old plugin streaks and ghosts and
+this one draws the water clean; with TF2 the ripples are unchanged. Four review rounds.
+
+## Patch 1044 - env_smokestack smoke drawn with its own numbers (csprogs)
+
+Problem: Lex, 26 Oct, bhop_orgrimmar: "particles not accurate to momentum mod, smoke blowing". A growing
+smokestack drew a colour-bucket block normalised to full brightness, 1.2-1.8 s, on a dot: the map's
+rendercolor 42 42 42, renderamt 100, 6 s columns came out as short white dots.
+
+Change (src/client/cl_emit.qc): a stack in particle/SmokeStack.vmt with EndSize > StartSize (651 of the
+library's 727 growing stacks) gets an r_part block per look (60 in the library, 5 at most on one map), from
+c_smokestack.cpp: life JetLength/Speed, StartSize to EndSize (each lerp ramp entry carries the size: the ramp
+sets it every frame), renderamt/255 times the cosine rise and squared fall, rendercolor scaled for the
+fallback texture's mid grey; QC places each puff on the ring of BaseSpread with +-SpreadSpeed along the jet's
+right and forward. emit_list reports the looks. Not drawn: env_particlelight (8 in the library).
+
+Verified (rig, orgrimmar near Lex's save 3, csprogs swapped): emit_list "1 smoke looks of its own, 1
+answering"; a grey column billows up from each brazier where the deployed build shows dots. Two review rounds
+(the first cut never grew: the ramp's size). Whether it matches Momentum's look waits on Lex.
+
+## Patch 1043 - bhop_goldsrc2's func_physbox removed until physics exists (cfg/maps entity fix)
+
+Lex, 26 Oct: "Disable these func_physboxes for now, we don't have the box3d plugin loaded." Its 39 are movable
+crates Source drops at spawn; here they hung frozen and solid where placed (24 in a closed pit under a
+teleport, 15 in the air over stage 8), none named or wired. cfg/maps/entfix_bhop_goldsrc2.cfg filters them
+(P890's applier on the real lump and the rig: 39 removed, nothing else; *entfile set). The other 642 solid
+movable physboxes on 75 maps are untouched. It removes solid entities: the physent digest moves and earlier
+goldsrc2 runs are refused (beta, Lex). One review round (consequences): no route opens.
+
+## Patch 1042 - mapdeps.py follows $normalmap and the flow maps (tools)
+
+tools/mapdeps.py's TEXKEYS lacked $normalmap and P990's $flowmap/$flow_noise_texture, which mat_vmt.c loads,
+so surf_hourglass (TF2 water normal map) got no dep line. Library, same disk, old against new tool: +26 lines
+on 25 maps, none removed. The install catalogue took those maps' rows through --update-map (digest-checked):
+surf_hourglass now mounts TF2 (rig: fs_automount_state 1, the normal map found in tf2_textures_dir.vpk).
+
+## Patch 1037 - response contexts on by default; context-filtered triggers are the server's (qwprogs, csprogs)
+
+Problem: Patch 1036 shipped behind vbsp_contexts 0, the fail-open that pins a player at bhop_tealbox's
+spawn and opens bhop_2shiny2shuckle's stage-2 door without flint and iron. Switching it on alone breaks
+prediction: the client mirror (cl_triggers.qc) failed filter_activator_context open, so it predicted
+triggers the server now refused. Live csprogs 0e222115 with contexts on, tealbox, walking inside the
+spawn teleport: 24 prederr lines (20-119 u) and 2516 refused client teleports in 3 reps; bhop_whitebox,
+2 of 2 crossings into setspeed *14 predicted a (0 260 300) launch the server did not give (vz 0.00).
+
+Change (FTESurf main 7b3074f1): vbsp_contexts is registered with default 1 beside its one read
+(SV_EntityIOBuild); a cfg's `set vbsp_contexts 0` is the kill switch. A process that ran Patch 1036's
+progs keeps the "" its unregistered cvar() read created, so the default lands on a restart. Client: at
+load a filter is judged twice, as if the server ignores contexts and as if it judges them; a slot that
+passes only the first way is skipped at touch time while serverinfo fs_contexts is not "0" (read per
+frame and at load; absent counts as on); one that fires rows of its own, or a trigger_multiple, is
+demoted. Per frame because fs_contexts is a fullserverinfo stufftext that can land after
+CSQC_WorldLoaded: a load-time read saw it absent on tealbox while the server had it on (2628 refused
+client teleports), the race Patch 285 measured for *csprogs. The client does not use STAT_FS_CTX.
+A mirror of the contexts themselves (seeded from STAT_FS_CTX, delay-0 rows replayed) was built and
+reviewed, not shipped: most writers are delayed rows, trigger_userinput, logic chains and save loads,
+which the client cannot see, and storing the rows overflowed TIO_MAX on 24 maps. BACKLOG has the list.
+
+Verified (shipping build qwprogs 6c7adb36, csprogs 8b8731c4; rig, exe 9d009302, sv_minping 60, 3 reps,
+server default): tealbox 0 prederr, 0 client teleports, 47 slots left to the server; whitebox *138 ->
+*14 the server reports vbsp_contexts 1, 0 client setspeed fires, 0 prederr; contexts 0: tealbox 0
+prederr with 2712 client teleports (both sides fail open), whitebox's wall-walk prederr (4 lines) the
+same as the old client's (4). Deployed both installs and lobbies 1-12 (restarted): all 12 report
+fs_contexts 1 by rcon serverinfo; pi_lobby_smoke lobby 1, 0 failures. Five review rounds (the mirror's
+8 findings, then the load-time rule, its read, the per-frame gate with N1 -- the first replay precedes
+Trig_Frame -- and the rebase). Limits: these triggers act one round trip late; servers older than
+Patch 1036 publish no key, so the client leaves those triggers to them too.
+
 ## Patch 1041 - props honour rendermode/renderamt and the Alpha input (qwprogs)
 
 Problem: Lex, 26 Oct: surf_hourglass's vortex sits on an opaque white square. The square is prop_dynamic

@@ -7612,12 +7612,14 @@ static size_t inst_bufsize, inst_bufused;	//bytes
 static float *inst_data;
 static size_t inst_cap;					//floats
 static qboolean inst_broken;			//a program had no INSTANCED permutation: off until a restart
+static qboolean inst_broken_skel;		//FTESurf Patch 1047: the same for a skinned run, which costs only those
 static int inst_report = -1;			//host_framecount whose runs print (r_instancing 2)
 static void GLBE_InstanceReset(void)
 {	//the context, and so its objects, are new (GLBE_Init)
 	inst_buf = inst_tex = 0;
 	inst_bufsize = inst_bufused = 0;
 	inst_broken = false;
+	inst_broken_skel = false;
 }
 extern int host_framecount;
 GLuint VertLightPool_Texture(void);
@@ -7676,6 +7678,9 @@ static int GLBE_SubmitInstancedRun(batch_t *first, int count, int *alone)
 	const float *proj, *cube;
 	vec3_t eye;
 	size_t bytes = (size_t)count*INST_TEXELS*16;
+	qboolean baked = false;
+	static float firstbones[256*12];	//the first member's pose: a run draws every member with it
+	int firstnb = 0;
 
 	if (inst_cap < (size_t)count*INST_TEXELS*4)
 	{
@@ -7689,6 +7694,23 @@ static int GLBE_SubmitInstancedRun(batch_t *first, int count, int *alone)
 	{
 		b->buildmeshes(b);
 		vc = (b->meshes == 1) ? R_GAlias_InstanceColours(b) : -1;
+		//FTESurf Patch 1047: the run's permutation is the first member's, VC or not, so a member with
+		//the other bake state cannot share it (vertlightbytes means something only after buildmeshes)
+		if (i == 0)
+		{
+			baked = !!b->ent->vertlightbytes;
+			firstnb = (b->vbo && b->vbo->bones) ? b->vbo->numbones : 0;
+			if (firstnb > 256 || (firstnb && inst_broken_skel))
+				vc = -1;
+			else if (firstnb)
+				memcpy(firstbones, b->vbo->bones, sizeof(float)*12*firstnb);
+		}
+		else if (vc >= 0 && !!b->ent->vertlightbytes != baked)
+			vc = -1;
+		else if (vc >= 0 && ((b->vbo && b->vbo->bones) ? b->vbo->numbones : 0) != firstnb)
+			vc = -1;
+		else if (vc >= 0 && firstnb && memcmp(b->vbo->bones, firstbones, sizeof(float)*12*firstnb))
+			vc = -1;	//posed otherwise (an animating prop_dynamic): the bones are one set of uniforms
 		if (vc < 0)
 		{
 			if (inst_report == host_framecount)
@@ -7758,8 +7780,12 @@ static int GLBE_SubmitInstancedRun(batch_t *first, int count, int *alone)
 	if (inst_report == host_framecount)
 		Con_Printf("r_instancing: %s x%i%s\n", first->shader->name, count, be_instancefailed?" -- NO INSTANCED PERMUTATION, drawn one by one":"");
 	if (be_instancefailed)
-	{	//drawn as the first prop alone: the program could not take the run. Off until a restart.
-		inst_broken = true;
+	{	//drawn as the first prop alone: the program could not take the run. Off until a restart --
+		//for skinned runs only when it was one (SKELETAL|INSTANCED is a combination P1047 added)
+		if (firstnb)
+			inst_broken_skel = true;
+		else
+			inst_broken = true;
 		return 1;
 	}
 	return count;
@@ -7777,8 +7803,8 @@ static void GLBE_SubmitMeshesSortRange(batch_t *sortlist, batch_t *end)
 	{	//one frame's report, every view of it
 		inst_report = host_framecount;
 		Cvar_ForceSet(&r_instancing, "1");
-		Con_Printf("r_instancing: gates: cvar %i broken %i mode %i (standard %i) DrawElementsInstanced %i TexBuffer %i fakeshadows %i lights %i\n",
-			r_instancing.ival, inst_broken, shaderstate.mode, BEM_STANDARD, qglDrawElementsInstanced!=NULL, qglTexBuffer!=NULL, r_fakeshadows, Sh_AnyLightToDraw());
+		Con_Printf("r_instancing: gates: cvar %i broken %i (skinned %i) mode %i (standard %i) DrawElementsInstanced %i TexBuffer %i fakeshadows %i lights %i\n",
+			r_instancing.ival, inst_broken, inst_broken_skel, shaderstate.mode, BEM_STANDARD, qglDrawElementsInstanced!=NULL, qglTexBuffer!=NULL, r_fakeshadows, Sh_AnyLightToDraw());
 	}
 	for (batch = sortlist; batch && batch != end; batch = batch->next)
 	{
