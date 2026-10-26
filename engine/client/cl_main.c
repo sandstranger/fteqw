@@ -488,20 +488,25 @@ void CL_MakeActive(char *gamename)
 	cl.stillloading = true;
 
 	//kill sounds left over from the last map.
+	SCR_LoadTimesStage("purge sounds");
 	S_Purge(true);
 
 	//kill models left over from the last map.
+	SCR_LoadTimesStage("purge models");
 	Mod_Purge(MP_MAPCHANGED);
 	P_LoadedCensus("CL_MakeActive after Mod_Purge");
 
 	//and reload shaders now if needed (this was blocked earlier)
+	SCR_LoadTimesStage("shader reload");
 	shader_reload_why = "CL_ParseServerData/ca_active";
 	Shader_DoReload();
 	P_LoadedCensus("CL_MakeActive after Shader_DoReload");
 
 	//and now free any textures that were not still needed.
+	SCR_LoadTimesStage("purge images");
 	Image_Purge();
 	P_LoadedCensus("CL_MakeActive after Image_Purge");
+	SCR_LoadTimesEnd();
 
 	SCR_EndLoadingPlaque();
 	CL_UpdateWindowTitle();
@@ -3164,6 +3169,10 @@ void CL_PakDownloads(int mode)
 		sep = strchr(pname, '/');
 		if (!sep || strchr(sep+1, '/'))
 			continue;	//don't try downloading weird ones here... paks inside paks is screwy stuff!
+		//FTESurf Patch 1015: a Source map's own pak (maps/<name>.bsp) is the map, which comes by its own route
+		//(cl_download_mapsrc); asked for here it was refused on every load ("Server permissions deny").
+		if (!Q_strcasecmp(COM_GetFileExtension(pname, NULL), ".bsp"))
+			continue;
 
 		if ((mode&3) != 2)
 		{
@@ -3251,9 +3260,12 @@ void CL_CheckServerInfo(void)
 	s = InfoBuf_ValueForKey(&cl.serverinfo, "allow_skybox");
 	if (!*s)
 		s = InfoBuf_ValueForKey(&cl.serverinfo, "allow_skyboxes");
-	if (!*s)
-		cls.allow_unmaskedskyboxes = (cl.worldmodel && cl.worldmodel->fromgame != fg_quake);
-	else cls.allow_unmaskedskyboxes = !!atoi(s);
+	if (*s)
+		cls.allow_unmaskedskyboxes = !!atoi(s);
+	else if (cl.worldmodel)
+		cls.allow_unmaskedskyboxes = (cl.worldmodel->fromgame != fg_quake);
+	else	//FTESurf Patch 1022: map type not known yet (a map change's serverinfo); flipping it here
+		cls.allow_unmaskedskyboxes = oldskyboxes;	//and back at CL_LoadModels re-parsed every shader
 
 	s = InfoBuf_ValueForKey(&cl.serverinfo, "fbskins");
 	if (*s)
@@ -3316,6 +3328,23 @@ void CL_CheckServerInfo(void)
 		movevars.edgefriction = *s?Q_atof(s):2;
 		if (!(movevars.flags&MOVEFLAG_VALID))
 			movevars.flags = (movevars.flags&~MOVEFLAG_QWEDGEBOX) | (*s?0:MOVEFLAG_QWEDGEBOX);
+		//FTESurf Patch 977: a remote server's live values (its QC publishes them on
+		//change) rather than the connect-time serverdata. A listen server writes the
+		//shared movevars itself, exactly, before every move. After the edge-box
+		//line above, which reads `s` as pm_edgefriction.
+#ifdef HAVE_SERVER
+		if (sv.state != ss_active)
+#endif
+		{
+			const char *v = InfoBuf_ValueForKey(&cl.serverinfo, "sv_accelerate");
+			if (*v) movevars.accelerate = Q_atof(v);
+			v = InfoBuf_ValueForKey(&cl.serverinfo, "sv_airaccelerate");
+			if (*v) movevars.airaccelerate = Q_atof(v);
+			v = InfoBuf_ValueForKey(&cl.serverinfo, "sv_friction");
+			if (*v) movevars.friction = Q_atof(v);
+			v = InfoBuf_ValueForKey(&cl.serverinfo, "sv_stopspeed");
+			if (*v) movevars.stopspeed = Q_atof(v);
+		}
 
 		//FTESurf: Counter-Strike: Source movement (engine/common/pm_source.c).
 		//The client MUST predict with byte-identical parameters or every ramp
@@ -3535,7 +3564,10 @@ void CL_CheckServerInfo(void)
 	if (oldteamplay != cl.teamplay)
 		Skin_FlushPlayers();
 	if (oldwatervis != cls.allow_watervis || oldskyboxes != cls.allow_unmaskedskyboxes)
+	{
+		shader_needreload_why = "watervis/skybox permission";
 		Shader_NeedReload(false);
+	}
 
 	CSQC_ServerInfoChanged();
 
@@ -4040,6 +4072,7 @@ void CL_Changing_f (void)
 		SCR_ImageName(mapname);
 	else
 		SCR_BeginLoadingPlaque();
+	SCR_LoadTimesBegin("server changing map");
 
 	S_StopAllSounds (true);
 	cl.intermissionmode = IM_NONE;
@@ -5541,8 +5574,18 @@ void CL_DownloadSize_f(void)
 	size = Cmd_Argv(2);
 	if (!strcmp(size, "e"))
 	{
-		Con_Printf(CON_ERROR"Download of \"%s\" failed. Not found.\n", rname);
-		CL_DownloadFailed(rname, NULL, DLFAIL_SERVERFILE);
+		//FTESurf Patch 1026: a file the game does without (a map's precached sound: bhop_ceaseless
+		//names plar/booster.wav and packs none) says so at developer 1; a required one is an error.
+		qboolean required = cls.download && !stricmp(cls.download->remotename, rname) && (cls.download->flags & (DLLF_REQUIRED|DLLF_VERBOSE));
+		//the not-found chunk usually lands first and has already failed (and freed) the download
+		for (dl = cl.faileddownloads; dl; dl = dl->next)
+			if (!strcmp(dl->rname, rname) && (dl->flags & (DLLF_REQUIRED|DLLF_VERBOSE)))
+				required = true;
+		dl = CL_DownloadFailed(rname, NULL, DLFAIL_SERVERFILE);
+		if (required || (dl->flags & (DLLF_REQUIRED|DLLF_VERBOSE)))
+			Con_Printf(CON_ERROR"Download of \"%s\" failed. Not found.\n", rname);
+		else
+			Con_DPrintf("Download of \"%s\" failed. Not found.\n", rname);
 	}
 	else if (!strcmp(size, "p"))
 	{

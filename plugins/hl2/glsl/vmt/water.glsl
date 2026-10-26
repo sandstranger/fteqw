@@ -1,5 +1,7 @@
 !!cvardf r_glsl_turbscale_reflect=1	//simpler scaler
 !!cvardf r_glsl_turbscale_refract=1	//simpler scaler
+//FTESurf Patch 1019: refraction offset falls off past this many units; 0 = Source's constant (own line: a trailing comment lands in the default)
+!!cvarf hl2_waterrefractfalloff=512
 !!cvarf hl2_waterdebug=0	//P867: 1 capture untinted 2 after fog and tint 3 reflection 4 fresnel 5 fog factor 6/7 normal 8/9 the bound maps
 !!permu REFLECTCUBEMASK
 !!samps diffuse normalmap
@@ -8,6 +10,7 @@
 !!samps =DEPTH refractdepth=2
 !!samps =REFLECTCUBEMASK reflectcube
 !!samps =ANIMBUMP bumpanim:2DArray=3
+!!samps =FLOW upper lower
 !!permu FOG
 
 #include "sys/defs.h"
@@ -89,6 +92,10 @@
 #ifndef BUMPSCROLL
 #define BUMPSCROLL 0.0,0.0
 #endif
+// Patch 990: $flowmap water (s_upper flow, s_lower noise), after Valve's Portal 2 flow (Vlachos,
+// SIGGRAPH 2010): two normal layers half an interval apart, each scrolled along the flow vector.
+// FLOWPARMS = worlduvscale, normaluvscale, uvscrolldistance, bumpstrength; FLOWTIME = timescale,
+// interval seconds, noise scale. Normal and noise follow world XY; the flowmap the face's UVs.
 
 // FTESurf Patch 867: Source's AnimatedTexture on $normalmap ($bumpframe at #ANIMBUMP
 // frames a second, whole frames, water.cpp:268) samples every layer from one frame.
@@ -106,12 +113,24 @@ varying vec4 tf;
 varying vec3 norm;
 varying vec3 eye;
 varying mat3 tangenttoworld;
+#ifdef FLOW
+varying vec2 wxy;
+#endif
+#ifdef SCREEN
+varying vec3 wpos;	//FTESurf Patch 1020: the reflection march starts here
+#endif
 
 #ifdef VERTEX_SHADER
 void main (void)
 {
 	tc = v_texcoord.st;
 	tf = ftetransform();
+#ifdef FLOW
+	wxy = (m_model * vec4(v_position.xyz, 1.0)).xy;
+#endif
+#ifdef SCREEN
+	wpos = (m_model * vec4(v_position.xyz, 1.0)).xyz;
+#endif
 	norm = normalize((m_model * vec4(v_normal, 0.0)).xyz);
 	eye = (m_model * vec4(e_eyepos - v_position.xyz, 0.0)).xyz;
 	// VBSP negates the texture V axis when building its T attribute.
@@ -127,6 +146,7 @@ void main (void)
 #ifdef FRAGMENT_SHADER
 #include "sys/fog.h"
 uniform float cvar_hl2_waterdebug;
+uniform float cvar_hl2_waterrefractfalloff;
 
 #ifdef DEPTH
 // The depth capture uses the same non-oblique projection as the surface.
@@ -162,7 +182,18 @@ void main (void)
 	ntc = btc + e_time * vec2(BUMPSCROLL);
 	// Source water_vs20 / watercheap_ps20b: decode RGB normally, without
 	// the old +4/256 Z/XY bias. A neutral normal must remain surface-normal.
+#ifdef FLOW
+	vec4 fl = vec4(FLOWPARMS);	// bare #FLOW gates the samplers: a 0 first value would not
+	vec3 ft = vec3(FLOWTIME);
+	vec2 flow = texture2D(s_upper, tc * fl.x).rg * 2.0 - 1.0;
+	vec2 nuv = vec2(wxy.x, -wxy.y) / fl.y;
+	float ti = (e_time * ft.x + texture2D(s_lower, vec2(wxy.x, -wxy.y) * ft.z).g) / (ft.y * 2.0);
+	vec4 nsample = mix(BUMPSAMPLE(nuv + floor(ti) * 0.311 + fract(ti) * fl.z * flow),
+	                   BUMPSAMPLE(nuv + floor(ti + 0.5) * 0.311 + 0.5 + fract(ti + 0.5) * fl.z * flow),
+	                   abs(2.0 * fract(ti) - 1.0));	//each layer weighs 0 at its own wrap
+#else
 	vec4 nsample = BUMPSAMPLE(ntc);
+#endif
 #ifdef MULTITEXTURE
 	// Source water_vs20 / watercheap_vs20 extra layers, including scale/axis swap;
 	// the alpha averages with them (water_ps2x_helper.h:42-45).
@@ -170,6 +201,9 @@ void main (void)
 	nsample = (nsample + BUMPSAMPLE(tc1 + e_time * vec2(SCROLL1)) + BUMPSAMPLE(btc.yx * 0.45 + e_time * vec2(SCROLL2))) / 3.0;
 #endif
 	n = nsample.xyz * 2.0 - 1.0;
+#ifdef FLOW
+	n.xy *= fl.w;
+#endif
 
 #ifdef RIPPLEMAP
 	n += texture2D(s_ripplemap, stc).rgb*3.0;
@@ -204,7 +238,11 @@ void main (void)
 
 
 	//refraction image (and water fog, if possible)
-	vec2 refractUV = stc + n.st * float(STRENGTH_REFR) * float(r_glsl_turbscale_refract) * distortion;
+	// FTESurf Patch 1019: Source's offset is constant on screen; past hl2_waterrefractfalloff units it is held to
+	// a fixed size on the plane instead. At bhop_ceaseless save 25 (1900 units, $refractamount 1) the constant one
+	// drew 16+ pixels of noise where Lex's Momentum shot is calm (fine-line energy 19.5 -> 14.1, Momentum 12.9).
+	float rfall = cvar_hl2_waterrefractfalloff > 0.0 ? min(1.0, cvar_hl2_waterrefractfalloff / max(tf.w, 1.0)) : 1.0;
+	vec2 refractUV = stc + n.st * float(STRENGTH_REFR) * float(r_glsl_turbscale_refract) * distortion * rfall;
 #ifdef DEPTH
 	// Reject foreground/above-water distortion instead of pulling pillars
 	// across the shoreline: keep a sample only if it lies beyond the plane on its
@@ -259,6 +297,36 @@ void main (void)
 	//Baked reflection is only an approximation. Preserve water body colour
 	//at the horizon; full Fresnel replacement is reserved for live reflection.
 	fres *= 0.65;
+#elif defined(SCREEN) && defined(DEPTH)
+	// FTESurf Patch 1020: no reflection render -- march the reflected ray through the view's depth copy, steps
+	// growing from 4 units; a hit samples the colour copy, a ray that leaves the screen or finds nothing the fog colour.
+	{
+		vec3 rd = reflect(-viewdir, worldnormal);
+		vec3 up = normalize(norm);
+		rd = normalize(rd + up * max(0.0, 0.05 - dot(rd, up)));	// a bumped normal never aims it under the plane
+		vec3 rp = wpos;
+		float rs = 4.0;
+		vec2 huv = vec2(-1.0);
+		for (int ri = 0; ri < 24; ri++)
+		{
+			rp += rd * rs;
+			rs *= 1.35;
+			vec4 rc4 = m_projection * (m_view * vec4(rp, 1.0));
+			if (rc4.w <= 1.0)
+				break;
+			vec2 ruv = rc4.xy / rc4.w * 0.5 + 0.5;
+			if (ruv.x < 0.0 || ruv.y < 0.0 || ruv.x > 1.0 || ruv.y > 1.0)
+				break;
+			float sd = eyeDepth(texture2D(s_refractdepth, ruv).r);
+			if (rc4.w > sd + 0.5)
+			{
+				if (rc4.w - sd < rs * 2.0)
+					huv = ruv;
+				break;
+			}
+		}
+		refl = (huv.x >= 0.0 ? texture2D(s_refract, huv).rgb : vec3(FOGTINT)) * vec3(TINT_REFL);
+	}
 #else
 	refl = texture2D(s_reflect, clamp(stc - n.st * float(STRENGTH_REFL) * float(r_glsl_turbscale_reflect) * distortion, 0.0, 1.0)).rgb * vec3(TINT_REFL);
 #endif

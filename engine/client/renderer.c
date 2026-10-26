@@ -237,6 +237,8 @@ cvar_t r_nestedents						= CVARD ("r_nestedents", "1", "1: a nested view (a wate
 cvar_t r_skyroomneed						= CVARD ("r_skyroomneed", "2", "Where the 3D sky is drawn only if the view has sky surfaces to show it through.\n1: water reflections and refractions (a refraction looks under the water; a cave's reflection has no sky).\n2: and the main view, which then shows what is behind a crack in the world instead of the 3D sky.\n0: every view of a map with sky draws it, as before Patch 850. Portal views always do: they inherit the near view's areas, so the far side's sky surfaces can be culled while the 3D sky still shows.");
 cvar_t r_refractreflect_scale				= CVARD ("r_refractreflect_scale", "0.5", "Use a different scale for refraction and reflection texturemaps. Because $reasons.");
 //FTESurf Patch 868: Source's water views (viewrender.cpp CAboveWaterView::CReflectionView::Setup, :5690-5700).
+cvar_t r_watertargetsize					= CVARD ("r_watertargetsize", "1024", "FTESurf Patch 1018: the largest a water reflection or refraction capture may be, in pixels per axis (r_refractreflect_scale of the frame, then this cap). Source's targets are 1024x1024 whatever the screen (baseclientrendertargets.h iWaterTextureSize); at r_renderscale 2 on a 1920x1200 screen the uncapped capture is 1920x1200. 0: no cap. Portals keep their full size.");
+cvar_t r_waterskyroomcapture				= CVARD ("r_waterskyroomcapture", "0", "FTESurf Patch 1018: whether water inside the 3D sky room renders its own reflection and refraction.\n0: no -- it samples the outer level's last water capture of each kind it reads (one frame old, as Source's skybox water samples the main view's: Source renders water targets for the eye's view only); when the same seat did not capture those kinds in its last two world views it captures its own. bhop_ceaseless looking over its start room: two sky-room scene renders a frame, about 1.1 ms of GPU.\n1: yes, as before Patch 1018.");
 cvar_t r_waterskyroom						= CVARD ("r_waterskyroom", "0", "Whether a water reflection or refraction draws the 3D sky.\n0: no -- the reflection shows the 2D skybox through its sky surfaces, as Source's does (viewrender.cpp: \"draw the 2d skybox in the reflection, instead of the 3d skybox\"), and the refraction looks under the water. Two exceptions, as in Source: with the eye under water the refraction (looking up out of it) keeps the 3D sky, and water seen through a portal draws it too.\n1: yes, as before Patch 868 (still subject to r_skyroomneed).");
 cvar_t r_waterviews						= CVARD ("r_waterviews", "1", "FTESurf Patch 879: how many water reflection/refraction captures a view renders.\n0: one for every water batch, as before.\n1: one pair, as Source (viewrender.cpp DrawWorldAndEntities: one fog volume per view), for the level water that most fills the screen on the eye's side of it (tops from above, undersides from in the water) and that the eye can see past the world; every level water facing the same way samples it, as every Source water material samples the same _rt_WaterReflection/_rt_WaterRefraction. Water facing the other way, sloped water and water on brush entities capture their own.\n2: one pair per plane: a plane's batches share a capture, other planes render their own.");
 cvar_t r_capturelog						= CVARD ("r_capturelog", "0", "FTESurf Patch 879: for this many top-level views (a frame's, or each eye/face/renderscene), print each view's water choice (and any plane rejected as hidden) and every water reflection/refraction capture and share (level, kind, shader, plane, the plane that placed it, meshes).");
@@ -502,6 +504,7 @@ moment they load a graded map.
 Not CVAR_ARCHIVE: saving a per-map generated shader name into config.cfg would
 apply one map's grade to the next one loaded.
 */
+cvar_t r_underwateroverlay					= CVARFD("r_underwateroverlay", "", 0, "Names the post-process drawn in place of the underwater warp while the eye is in a Source water volume.  Set by the hl2 plugin each frame from the volume's $underwateroverlay; \"none\" means that water has none and draws no warp, as Source does; empty leaves the engine's own warp.");	//FTESurf Patch 1013
 cvar_t r_colourcorrection					= CVARAD("r_colourcorrection", "", "r_colorcorrection", "Names the shader used by the colour-correction post-process stage.  Set by the hl2 plugin from a Source map's color_correction entities; setting it by hand is supported but it is overwritten at the next map load.  Switch the feature off with hl2_colourcorrection 0, which is what leaves this empty.");
 cvar_t r_wallcolour							= CVARAF ("r_wallcolour", "128 128 128",
 													  "r_wallcolor", CVAR_RENDERERCALLBACK|CVAR_SHADERSYSTEM);//FIXME: broken
@@ -654,7 +657,7 @@ cvar_t	r_stereo_separation					= CVARD("r_stereo_separation", "4", "How far apar
 cvar_t	r_stereo_convergence				= CVARD("r_stereo_convergence", "0", "Nudges the angle of each eye inwards when using stereoscopic rendering.");
 cvar_t	r_stereo_method						= CVARFD("r_stereo_method", "0", CVAR_ARCHIVE, "Value 0 = Off.\nValue 1 = Attempt hardware acceleration. Requires vid_restart.\nValue 2 = red/cyan.\nValue 3 = red/blue.\nValue 4=red/green.\nValue 5=eye strain.");
 
-cvar_t	r_xflip = CVAR("leftisright", "0");
+cvar_t	r_xflip = CVARAF("leftisright", "0", "r_mirrorworld", 0);	//Patch 982: Source's name too
 
 extern cvar_t r_dodgytgafiles;
 extern cvar_t r_dodgypcxfiles;
@@ -900,6 +903,7 @@ static cvar_t hl2_water_shaderpolicy = CVARFD("hl2_water", "3", CVAR_SHADERSYSTE
 	"Source water mode. 0: flat translucent, no captures. 1: live refraction with baked reflection. "
 	"2: live refraction/reflection. 3: depth-writing dither (default). "
 	"4: budget animated, translucent fog colour/normals/approximate baked reflection, no captures or screen copy. "
+	"5: screen-space (Patch 1020): refraction from a copy of the view, reflection marched through its depth; no extra scene render, reflects only what is on screen. "
 	"Budget water is not depth-correct or Source-exact. Changes rebuild materials without restarting the map.");
 static cvar_t hl2_dither_alpha_shaderpolicy = CVARFD("hl2_dither_alpha", "1", CVAR_SHADERSYSTEM,
 	"Coverage multiplier for dithered Source surfaces. Water keeps a readable minimum unless force is set.");
@@ -1531,6 +1535,8 @@ void Renderer_Init(void)
 	Cvar_Register (&r_nestedents, GRAPHICALNICETIES);	//FTESurf Patch 850
 	Cvar_Register (&r_skyroomneed, GRAPHICALNICETIES);
 	Cvar_Register (&r_waterskyroom, GRAPHICALNICETIES);	//FTESurf Patch 868
+	Cvar_Register (&r_waterskyroomcapture, GRAPHICALNICETIES);	//FTESurf Patch 1018
+	Cvar_Register (&r_watertargetsize, GRAPHICALNICETIES);
 	Cvar_Register (&r_waterforcereflectentities, GRAPHICALNICETIES);
 	Cvar_Register (&r_capturelog, GRAPHICALNICETIES);	//FTESurf Patch 879
 	Cvar_Register (&r_waterviews, GRAPHICALNICETIES);
@@ -1539,6 +1545,7 @@ void Renderer_Init(void)
 	Cvar_Register (&r_refractreflect_scale, GRAPHICALNICETIES);
 	Cvar_Register (&r_postprocshader, GRAPHICALNICETIES);
 	Cvar_Register (&r_colourcorrection, GRAPHICALNICETIES);	//FTESurf Patch 288
+	Cvar_Register (&r_underwateroverlay, GRAPHICALNICETIES);	//FTESurf Patch 1013
 	Cvar_Register (&r_fxaa, GRAPHICALNICETIES);
 	Cvar_Register (&r_graphics, GRAPHICALNICETIES);
 	Cvar_Register (&r_renderscale, GRAPHICALNICETIES);

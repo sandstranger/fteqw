@@ -5243,11 +5243,14 @@ qboolean FS_PathURLCache(const char *url, char *path, size_t pathsize)
 {
 	char tmp[MAX_QPATH];
 	char *o = tmp;
+	char *const e = tmp + sizeof(tmp) - 1;
 	const char *i = url;
 	strcpy(o, "downloads/");
 	o += strlen(o);
 	while(*i)
 	{
+		if (o >= e)
+			return false;
 		if (*i == ':' || *i == '?' || *i == '*' || *i == '&')
 		{
 			if (i[0] == ':' && i[1] == '/' && i[2] == '/')
@@ -5324,6 +5327,32 @@ COM_Gamedir
 Sets the gamedir and path to a different directory.
 ================
 */
+//FTESurf Patch 1022: the fields a search-path rebuild is built from.  Equal, a rebuild remounts
+//the same paths: every Steam addon's VPKs unmounted and read again (~6 s, 245k files on Lex's PC).
+static qboolean FS_StrSame(const char *a, const char *b)
+{
+	return !strcmp(a?a:"", b?b:"");
+}
+static qboolean FS_Manifest_SamePaths(ftemanifest_t *a, ftemanifest_t *b)
+{
+	size_t i;
+	if (!a || !b)
+		return false;
+	if (a->homedirtype != b->homedirtype || !FS_StrSame(a->basedir, b->basedir) ||
+		!FS_StrSame(a->installation, b->installation) || !FS_StrSame(a->mainconfig, b->mainconfig) ||
+		!FS_StrSame(a->defaultexec, b->defaultexec) || !FS_StrSame(a->defaultoverrides, b->defaultoverrides))
+		return false;
+	for (i = 0; i < countof(a->gamepath); i++)
+		if (a->gamepath[i].flags != b->gamepath[i].flags || !FS_StrSame(a->gamepath[i].path, b->gamepath[i].path))
+			return false;
+	for (i = 0; i < countof(a->package); i++)
+		if (a->package[i].type != b->package[i].type || !FS_StrSame(a->package[i].path, b->package[i].path) ||
+			!FS_StrSame(a->package[i].prefix, b->package[i].prefix) || !FS_StrSame(a->package[i].condition, b->package[i].condition) ||
+			a->package[i].crcknown != b->package[i].crcknown || a->package[i].crc != b->package[i].crc)
+			return false;
+	return true;
+}
+
 void COM_Gamedir (const char *dir, const struct gamepacks *packagespaths)
 {
 	ftemanifest_t *man;
@@ -5355,7 +5384,23 @@ void COM_Gamedir (const char *dir, const struct gamepacks *packagespaths)
 		FS_Manifest_ParseTokens(man);
 		packagespaths++;
 	}
-	FS_ChangeGame(man, cfg_reload_on_gamedir.ival, false);
+	//FTESurf Patch 1022: every serverdata asks for the gamedir it already has (cl_parse.c).  Not
+	//in pure mode (the temporary-pack flush above dropped com_purepaths, which only the rebuild
+	//restores), not with packages or a pending fs_changemod command (FS_ChangeGame runs that).
+	//The rebuild's shader rescan is still wanted: a new map's pak or automount can redefine a
+	//material the last map left live under the same name (R_LoadShader hands that one back).
+	if (man != fs_manifest && !packagespaths && !fs_puremode && !fs_loadedcommand &&
+		FS_Manifest_SamePaths(man, fs_manifest))
+	{
+		Con_DPrintf("gamedir \"%s\" unchanged, search paths kept\n", dir);
+		FS_Manifest_Free(man);
+#ifdef HAVE_CLIENT
+		shader_needreload_why = "map change (search paths kept)";
+		Shader_NeedReload(true);
+#endif
+	}
+	else
+		FS_ChangeGame(man, cfg_reload_on_gamedir.ival, false);
 
 #ifdef HAVE_SERVER
 	if (!*dir)
@@ -5668,6 +5713,26 @@ qboolean CL_ListFilesInPackage(searchpathfuncs_t *search, char *name, int (QDECL
 	return ret;
 }
 
+//FTESurf Patch 1022: a name in a server-pack list the filesystem could mount (a registered
+//archive extension).  A Source server lists only its map's .bsp, which nothing mounts.
+static qboolean FS_PureListMountable(const char *names)
+{
+	char nametok[MAX_QPATH], ext[16];
+	size_t i;
+	while (names)
+	{
+		names = COM_ParseOut(names, nametok, sizeof(nametok));
+		if (!*nametok)
+			continue;
+		COM_FileExtension(nametok, ext, sizeof(ext));
+		for (i = 0; i < countof(searchpathformats); i++)
+			if (searchpathformats[i].extension && searchpathformats[i].OpenNew &&
+				!Q_strcasecmp(ext, searchpathformats[i].extension))
+				return true;
+	}
+	return false;
+}
+
 void FS_PureMode(const char *gamedir, int puremode, char *purenamelist, char *purecrclist, char *refnamelist, char *refcrclist, int pureseed)
 {
 	ftemanifest_t *man;
@@ -5686,6 +5751,20 @@ void FS_PureMode(const char *gamedir, int puremode, char *purenamelist, char *pu
 				if ((!refnamelist && !fs_refnames) || !strcmp(fs_refnames?fs_refnames:"", refnamelist?refnamelist:""))
 					if ((!refcrclist && !fs_refcrcs) || !strcmp(fs_refcrcs?fs_refcrcs:"", refcrclist?refcrclist:""))
 						return;
+	}
+
+	//FTESurf Patch 1022: outside pure mode the lists only add packages from the download cache, so
+	//lists that name nothing mountable change no search path; a rebuild per map change cost ~6 s.
+	if (!gamedir && !puremode && !fs_puremode && !refnamelist && !refcrclist && !fs_refnames && !fs_refcrcs &&
+		!FS_PureListMountable(fs_purenames) && !FS_PureListMountable(purenamelist))
+	{
+		Z_Free(fs_purenames);
+		Z_Free(fs_purecrcs);
+		fs_purenames = purenamelist?Z_StrDup(purenamelist):NULL;
+		fs_purecrcs = purecrclist?Z_StrDup(purecrclist):NULL;
+		fs_pureseed = pureseed;
+		Con_DPrintf("server packs %s: nothing to mount, search paths kept\n", purenamelist?purenamelist:"(none)");
+		return;
 	}
 
 	Z_Free(fs_purenames);
@@ -12083,14 +12162,17 @@ static void FS_DBus_Poll(int iarg, void *vctx)
 	struct openfile_s *ctx = vctx;
 	DBusMessage *msg;
 	DBusMessageIter args, opts, dict, var, uris;
+	const char *msgpath;
+	qboolean connected;
 
-	dbus_connection_read_write(ctx->conn, 0);	//see if there's anything new, with no timeout so we don't lock up
+	connected = dbus_connection_read_write(ctx->conn, 0);
 	msg = dbus_connection_pop_message(ctx->conn);
 
 	if (msg)
 	{	//something came back!
+		msgpath = dbus_message_get_path(msg);
 		if (dbus_message_is_signal(msg, "org.freedesktop.portal.Request", "Response") &&
-			!strcmp(dbus_message_get_path(msg), ctx->replypath))
+			msgpath && !strcmp(msgpath, ctx->replypath))
 		{	//okay, this is the one we're interested in.
 			if (dbus_message_iter_init(msg, &args) && dbus_message_iter_get_arg_type(&args) == DBUS_TYPE_UINT32)
 			{
@@ -12136,101 +12218,90 @@ static void FS_DBus_Poll(int iarg, void *vctx)
 				}
 			}
 			dbus_message_unref(msg);
-
-			dbus_connection_close(ctx->conn);
-			Z_Free((char*)ctx->replypath);
-			return; //can stop requeing now
+			goto done;
 		}
 		dbus_message_unref(msg);
 	}
 
-	Cmd_AddTimer(0.2, FS_DBus_Poll, 0, ctx, sizeof(*ctx));
+	if (connected)
+	{
+		Cmd_AddTimer(0.2, FS_DBus_Poll, 0, ctx, sizeof(*ctx));
+		return;
+	}
+done:
+	dbus_connection_close(ctx->conn);
+	dbus_connection_unref(ctx->conn);
+	Z_Free(ctx->replypath);
 }
 void FS_OpenFilePicker_f(void)
 {
 	const char *parentwindow = "";
 	const char *title = "All Files";
-	DBusMessage *msg;
+	const char *replypath;
+	DBusMessage *msg = NULL;
 	DBusMessageIter args, opts;
-	struct openfile_s ctx;
+	struct openfile_s ctx = {NULL, NULL};
 	DBusError err;
-	DBusPendingCall *pending;
+	DBusPendingCall *pending = NULL;
 
-	// initialiset the errors
-	dbus_error_init(&err);
-
-	// connect to the system bus and check for errors
-	ctx.conn = dbus_bus_get_private(DBUS_BUS_SESSION, &err);
-	if (dbus_error_is_set(&err))
-	{
-		fprintf(stderr, "Connection Error (%s)\n", err.message);
-		dbus_error_free(&err);
-	}
-	if (!ctx.conn)
+	if (FS_RefuseInsecure())
 		return;
 
-	// request our name on the bus
-	dbus_bus_register(ctx.conn, &err);
+	dbus_error_init(&err);
+	ctx.conn = dbus_bus_get_private(DBUS_BUS_SESSION, &err);
+	if (!ctx.conn || dbus_error_is_set(&err))
+		goto done;
+	if (!dbus_bus_register(ctx.conn, &err))
+		goto done;
+
+	msg = dbus_message_new_method_call("org.freedesktop.portal.Desktop",
+				"/org/freedesktop/portal/desktop",
+				"org.freedesktop.portal.FileChooser", "OpenFile");
+	if (!msg)
+		goto done;
+	dbus_message_iter_init_append(msg, &args);
+	if (!dbus_message_iter_append_basic(&args, DBUS_TYPE_STRING, &parentwindow) ||
+		!dbus_message_iter_append_basic(&args, DBUS_TYPE_STRING, &title) ||
+		!dbus_message_iter_open_container(&args, DBUS_TYPE_ARRAY, "{sv}", &opts))
+		goto done;
+	if (!dbus_message_iter_close_container(&args, &opts))
+		goto done;
+
+	dbus_bus_add_match(ctx.conn, "type='signal',interface='org.freedesktop.portal.Request',member='Response'", &err);
+	if (dbus_error_is_set(&err))
+		goto done;
+	if (!dbus_connection_send_with_reply(ctx.conn, msg, &pending, -1) || !pending)
+		goto done;
+	dbus_message_unref(msg);
+	msg = NULL;
+	dbus_connection_flush(ctx.conn);
+	dbus_pending_call_block(pending);
+	msg = dbus_pending_call_steal_reply(pending);
+	if (msg)
+	if (dbus_message_get_type(msg) == DBUS_MESSAGE_TYPE_METHOD_RETURN)
+	if (dbus_message_iter_init(msg, &args))
+	if (dbus_message_iter_get_arg_type(&args) == DBUS_TYPE_OBJECT_PATH)
+	{
+		dbus_message_iter_get_basic(&args, &replypath);
+		ctx.replypath = Z_StrDup(replypath);
+	}
+
+done:
+	if (msg)
+		dbus_message_unref(msg);
+	if (pending)
+		dbus_pending_call_unref(pending);
 	if (dbus_error_is_set(&err))
 		dbus_error_free(&err);
-
-	// create a new method call and check for errors
-	msg = dbus_message_new_method_call(
-				"org.freedesktop.portal.Desktop", // target for the method call
-				"/org/freedesktop/portal/desktop", // object to call on
-				"org.freedesktop.portal.FileChooser", // interface to call on
-				"OpenFile"); // method name
-	if (msg)
-	{
-		dbus_message_iter_init_append(msg, &args);
-		dbus_message_iter_append_basic(&args, DBUS_TYPE_STRING, &parentwindow);
-		dbus_message_iter_append_basic(&args, DBUS_TYPE_STRING, &title);
-		dbus_message_iter_open_container(&args, DBUS_TYPE_ARRAY, "{sv}", &opts);
-		dbus_message_iter_close_container(&args, &opts);
-
-		//make sure we get the response (without getting any races)
-		dbus_bus_add_match(ctx.conn, "type='signal'"
-							/*",path='/org/freedesktop/portal/desktop/request/UNIQUE/TOKEN'"*/
-							",interface='org.freedesktop.portal.Request'"
-							",member='Response'", &err);
-
-		//now send our request
-		if (!dbus_connection_send_with_reply (ctx.conn, msg, &pending, -1) || !pending)
-		{
-			dbus_message_unref(msg);
-			msg = NULL;
-		}
-		else
-		{
-			dbus_message_unref(msg);
-			dbus_connection_flush(ctx.conn);
-			dbus_pending_call_block(pending);
-
-			//see if we got a reply
-			msg = dbus_pending_call_steal_reply(pending);
-			dbus_pending_call_unref(pending);
-		}
-	}
-	if (msg)
-	{	//read the object path from the response.
-		if (dbus_message_iter_init(msg, &args) && dbus_message_iter_get_arg_type(&args))
-		{
-			dbus_message_iter_get_basic(&args, &ctx.replypath);
-			ctx.replypath = Z_StrDup(ctx.replypath);
-		}
-
-		dbus_message_unref(msg);
-	}
-
-	if (dbus_error_is_set(&err))
-		dbus_error_free(&err);	//oops?
 	if (ctx.replypath)
-	{	//we sent a request, got a valid response... now we need the actual final result... which may take a while...
+	{
 		Cmd_AddTimer(0.2, FS_DBus_Poll, 0, &ctx, sizeof(ctx));
 		return;
 	}
-
-	Z_Free(ctx.replypath);
-	dbus_connection_close(ctx.conn);
+	if (ctx.conn)
+	{
+		dbus_connection_close(ctx.conn);
+		dbus_connection_unref(ctx.conn);
+	}
 }
 #endif

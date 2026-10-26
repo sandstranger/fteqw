@@ -71,8 +71,8 @@ void main ()
 //
 //Both arrive through the generic progargs the parser has already built -- they
 //are value defines rather than permutations, so they need no !!permu and an
-//unused one costs nothing.  $ignorez and $nocull need nothing here either: the
-//shared tail in mat_vmt.c emits nodepth and cull disable for them.
+//unused one costs nothing.  $nocull needs nothing here either: the shared tail in
+//mat_vmt.c emits cull disable for it ($ignorez is not honoured, see Patch 290).
 //
 //Opaque by default: hiding what is behind it is the entire point of an imposter,
 //and a blended one would have to sort.
@@ -86,7 +86,8 @@ void main ()
 
 void main ()
 {
-	vec4 imposter_f = vec4(textureCube(s_reflectcube, cubedir).rgb, float(ALPHA));
+	//Patch 1014: a func_areaportalwindow pane fades by its entity alpha (cl_portal.qc APW_Predraw)
+	vec4 imposter_f = vec4(textureCube(s_reflectcube, cubedir).rgb, float(ALPHA) * e_colourident.a);
 	imposter_f.rgb *= vec3(COLOR);
 	//FTESurf Patch 299: fog the colour, leave the alpha to the blender.
 	//fog4() multiplies by regularcolour.a, which on a Source material is a

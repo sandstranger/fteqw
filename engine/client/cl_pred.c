@@ -504,6 +504,7 @@ static void CL_PredictUsercmdPart (int pnum, int entnum, player_state_t *from, p
 {
 	int preflags = 0;
 	vec3_t preorigin;
+	qboolean preground;
 
 	// P924: match SV_RunCmdPart's one-Source-tick parts, including carried time.
 	// fs_tickparts confirms the progs declares input_cmd_later; old progs opt out.
@@ -627,6 +628,7 @@ static void CL_PredictUsercmdPart (int pnum, int entnum, player_state_t *from, p
 		CSQC_PredictConsumeBaseVel(pnum, u->sequence, !*carrier_cleared && offsetmsec == 0);
 	}
 	VectorCopy(pmove.origin, preorigin);
+	preground = pmove.onground;
 	PM_PlayerMove (cl.gamespeed);
 	if (cl_pred_localchain && pmove.portalcrossings)
 		CSQC_PredictPortalAngles(pnum, u);
@@ -640,7 +642,7 @@ static void CL_PredictUsercmdPart (int pnum, int entnum, player_state_t *from, p
 		if (preflags & PMPI_HOLD)
 			CSQC_PredictSaveBaseVel(pnum, u->sequence);
 		else
-			CSQC_PredictPlayerMove(pnum, u, preorigin, offsetmsec);
+			CSQC_PredictPlayerMove(pnum, u, preorigin, offsetmsec, preground);
 	}
 
 	to->waterjumptime = pmove.waterjumptime;
@@ -1588,7 +1590,21 @@ void CL_PredictMovePNum (int seat)
 				  promise is "a snap-back is a bug" has to be a NUMBER somebody
 				  can quote, not a vibe.  One line per acked command, gated on
 				  cl_prederror (units, 0 = off).*/
-				if (cl_prederror.value > 0)
+				/*FTESurf Patch 1040: not while noclipping within 0.3 s of a noclip speed change (P1029's
+				  Shift+wheel).  The server applies pm_noclipspeed at whichever command it runs next and the
+				  client re-predicts every unacked command at the new speed, so one or two commands in flight
+				  disagree by construction (5.2 or 10.4 units between 4x and 6x, measured, hosted game or not);
+				  only a per-command speed would remove it.  Noclip voids the run, and this line is for
+				  disagreements nobody has explained.*/
+				static float pt_ncspeed;
+				static double pt_ncchanged = -1;
+				if (movevars.noclipspeed != pt_ncspeed)
+				{
+					pt_ncspeed = movevars.noclipspeed;
+					pt_ncchanged = realtime;
+				}
+				if (cl_prederror.value > 0 &&
+					!((from.state->pm_type == PM_SPECTATOR || from.state->pm_type == PM_OLD_SPECTATOR) && realtime - pt_ncchanged < 0.3))
 				{
 					static int pt_err_lastseq[MAX_SPLITS];
 					vec3_t perr;

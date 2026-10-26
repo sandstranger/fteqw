@@ -812,7 +812,12 @@ static void CL_SendDownloadStartRequest(downloadlist_t *pending)
 					Q_strncpyz(wdl->localname, localname+8, sizeof(wdl->localname));
 			}
 			if (!(flags & DLLF_TEMPORARY))
-				Con_TPrintf ("Downloading %s to %s...\n", wdl->url, wdl->localname);
+			{
+				if (flags & (DLLF_REQUIRED|DLLF_VERBOSE))	//FTESurf Patch 1026: an optional file quietly
+					Con_TPrintf ("Downloading %s to %s...\n", wdl->url, wdl->localname);
+				else
+					Con_DPrintf ("Downloading %s to %s...\n", wdl->url, wdl->localname);
+			}
 			wdl->qdownload.flags = flags;
 
 			CL_DisenqueDownload(filename);
@@ -831,7 +836,12 @@ static void CL_SendDownloadStartRequest(downloadlist_t *pending)
 	Q_strncpyz(dl->remotename, filename, sizeof(dl->remotename));
 	Q_strncpyz(dl->localname, localname, sizeof(dl->localname));
 	if (!(flags & DLLF_TEMPORARY))
-		Con_TPrintf ("Downloading %s...\n", dl->localname);
+	{
+		if (flags & (DLLF_REQUIRED|DLLF_VERBOSE))	//FTESurf Patch 1026
+			Con_TPrintf ("Downloading %s...\n", dl->localname);
+		else
+			Con_DPrintf ("Downloading %s...\n", dl->localname);
+	}
 
 	// download to a temp name, and only rename
 	// to the real name when done, so if interrupted
@@ -851,7 +861,7 @@ static void CL_SendDownloadStartRequest(downloadlist_t *pending)
 	dl->method = DL_QWPENDING;
 	dl->percent = 0;
 	dl->sizeunknown = true;
-	dl->flags = flags&DLLF_OVERWRITE;
+	dl->flags = flags&(DLLF_OVERWRITE|DLLF_REQUIRED|DLLF_VERBOSE);	//FTESurf Patch 1026: the failure lines read these
 
 	CL_DisenqueDownload(filename);
 
@@ -989,6 +999,7 @@ Returns true if the file exists, returns false if it triggered a download.
 
 qboolean	CL_CheckOrEnqueDownloadFile (const char *filename, const char *localname, unsigned int flags)
 {	//returns false if we don't have the file yet.
+	char fname[MAX_OSPATH];	//FTESurf Patch 1015: filename may point here past the web block
 	COM_AssertMainThread("CL_CheckOrEnqueDownloadFile");
 	if (flags & DLLF_NONGAME)
 	{
@@ -1034,7 +1045,13 @@ qboolean	CL_CheckOrEnqueDownloadFile (const char *filename, const char *localnam
 
 	if (flags & DLLF_ALLOWWEB)
 	{
+		//FTESurf Patch 1015: the url is built in weburl from a copy, not with va(): va() has two buffers,
+		//filename and localname already hold both, and a third call wrote over filename while reading it
+		//("https://play.proto.bar/play.proto.bar/less.bsp" for maps/bhop_ceaseless.bsp).
+		static char weburl[MAX_OSPATH*2];
 		const char *dlURL = InfoBuf_ValueForKey(&cl.serverinfo, "sv_dlURL");
+		Q_strncpyz(fname, filename, sizeof(fname));
+		filename = fname;
 		if (!*dlURL)
 			dlURL = cls.downloadurl;
 		if (!*dlURL)
@@ -1044,7 +1061,8 @@ qboolean	CL_CheckOrEnqueDownloadFile (const char *filename, const char *localnam
 		flags &= ~(DLLF_TRYWEB|DLLF_ALLOWWEB);
 		if (*dlURL && (flags & DLLF_NONGAME) && !strncmp(filename, "package/", 8))
 		{	//filename is something like: package/GAMEDIR/foo.pk3
-			filename = va("%s%s%s", dlURL, ((dlURL[strlen(dlURL)-1]=='/')?"":"/"), filename+8);
+			Q_snprintfz(weburl, sizeof(weburl), "%s%s%s", dlURL, ((dlURL[strlen(dlURL)-1]=='/')?"":"/"), filename+8);
+			filename = weburl;
 			flags |= DLLF_TRYWEB|DLLF_ALLOWWEB;
 		}
 		else if (*dlURL)
@@ -1053,7 +1071,8 @@ qboolean	CL_CheckOrEnqueDownloadFile (const char *filename, const char *localnam
 			if (!strncmp(filename, "pics/../", 8))
 				filename += 8;
 #endif
-			filename = va("%s%s%s/%s", dlURL, ((dlURL[strlen(dlURL)-1]=='/')?"":"/"), FS_GetGamedir(true), filename);
+			Q_snprintfz(weburl, sizeof(weburl), "%s%s%s/%s", dlURL, ((dlURL[strlen(dlURL)-1]=='/')?"":"/"), FS_GetGamedir(true), filename);
+			filename = weburl;
 			flags |= DLLF_TRYWEB|DLLF_ALLOWWEB;
 		}
 		else if (*cl_download_mapsrc.string &&
@@ -1067,11 +1086,12 @@ qboolean	CL_CheckOrEnqueDownloadFile (const char *filename, const char *localnam
 			if (strncmp(cl_download_mapsrc.string, "http://", 7) && strncmp(cl_download_mapsrc.string, "https://", 8))
 			{
 				Con_Printf("%s: Scheme not specified, assuming https.\n", cl_download_mapsrc.name);
-				filename = va("https://%s/%s", cl_download_mapsrc.string, filename+5);
+				Q_snprintfz(weburl, sizeof(weburl), "https://%s/%s", cl_download_mapsrc.string, filename+5);
 			}
 			else
 #endif
-				filename = va("%s%s", cl_download_mapsrc.string, filename+5);
+				Q_snprintfz(weburl, sizeof(weburl), "%s%s", cl_download_mapsrc.string, filename+5);
+			filename = weburl;
 			flags |= DLLF_TRYWEB|DLLF_ALLOWWEB;
 		}
 	}
@@ -2358,6 +2378,7 @@ downloadlist_t *CL_DownloadFailed(const char *name, qdownload_t *qdl, enum dlfai
 	//don't do this if we're just marking the file as unavailable for download.
 	if (qdl && (!stricmp(qdl->remotename, name) || !*name))
 	{
+		failed->flags |= qdl->flags & (DLLF_REQUIRED|DLLF_VERBOSE);	//FTESurf Patch 1026
 		DL_Abort(qdl, QDL_FAILED);
 	}
 
@@ -2691,6 +2712,11 @@ static void CL_ParseChunkedDownload(qdownload_t *dl)
 		if (flag < 0)
 		{
 			enum dlfailreason_e failreason;
+			if (flag == DLERR_REDIRECTFILE && !dl)
+			{
+				Con_DPrintf("ignoring redirect to \"%s\": not downloading\n", svname);	//FTESurf Patch 1026: read dl unchecked
+				return;
+			}
 			if (flag == DLERR_REDIRECTFILE)
 			{
 				failreason = DLFAIL_REDIRECTED;
@@ -2749,7 +2775,10 @@ static void CL_ParseChunkedDownload(qdownload_t *dl)
 			}
 			else //if (flag == DLERR_FILENOTFOUND)
 			{
-				Con_Printf("Couldn't find file \"%s\" on the server\n", svname);
+				if (!dl || stricmp(dl->remotename, svname) || (dl->flags & (DLLF_REQUIRED|DLLF_VERBOSE)))	//FTESurf Patch 1026, as CL_DownloadSize_f
+					Con_Printf("Couldn't find file \"%s\" on the server\n", svname);
+				else
+					Con_DPrintf("Couldn't find file \"%s\" on the server\n", svname);
 				failreason = DLFAIL_SERVERFILE;
 			}
 
@@ -3684,6 +3713,7 @@ static void CLQW_ParseServerData (void)
 	}
 
 	Con_DPrintf ("Serverdata packet %s.\n", cls.demoplayback?"read":"received");
+	SCR_LoadTimesBegin("serverdata, old map cleared");	//FTESurf Patch 1022
 //
 // wipe the client_state_t struct
 //
@@ -4015,6 +4045,7 @@ static void CLQ2_ParseServerData (void)
 	cls.demohadkeyframe = true;	//assume that it did, so this stuff all gets recorded.
 
 	Con_DPrintf ("Serverdata packet %s.\n", cls.demoplayback?"read":"received");
+	SCR_LoadTimesBegin("serverdata, old map cleared");	//FTESurf Patch 1022
 //
 // wipe the client_state_t struct
 //
@@ -4434,6 +4465,7 @@ static void CLNQ_ParseServerData(void)		//Doesn't change gamedir - use with caut
 	char	*str = NULL;
 	int gametype;
 	Con_DPrintf ("Serverdata packet %s.\n", cls.demoplayback?"read":"received");
+	SCR_LoadTimesBegin("serverdata, old map cleared");	//FTESurf Patch 1022
 	SCR_SetLoadingStage(LS_CLIENT);
 	CL_ClearState (true);
 #ifdef QUAKEHUD
@@ -5667,7 +5699,7 @@ static void CL_ParseStaticProt (int baselinetype)
 
 	VectorCopy (es.origin, ent->origin);
 	VectorCopy (es.angles, ent->angles);
-	if (ent->model && ent->model->type == mod_alias)
+	if (ent->model && ent->model->type == mod_alias && !(ent->model->engineflags & MDLF_SOURCEPITCH))	//FTESurf Patch 1027
 		AngleVectorsMesh(es.angles, ent->axis[0], ent->axis[1], ent->axis[2]);
 	else
 		AngleVectors(es.angles, ent->axis[0], ent->axis[1], ent->axis[2]);

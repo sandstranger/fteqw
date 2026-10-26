@@ -25,6 +25,8 @@ extern cvar_t r_multidraw;	//FTESurf Patch 831
 extern cvar_t r_instancing;	//FTESurf Patch 831
 extern cvar_t r_skyroomneed;	//FTESurf Patch 850
 extern cvar_t r_waterskyroom, r_waterforcereflectentities;	//FTESurf Patch 868
+extern cvar_t r_waterskyroomcapture;	//FTESurf Patch 1018
+extern int r_skyroomlevel;
 int r_capturenoents;	//FTESurf Patch 868: the reflection capture being rendered draws only the world
 int r_noentsfirstvisedict;	//...and the firstvisedict it replaced, for a 3D sky drawn inside it
 extern unsigned int r_vs_skydrawn, r_vs_skyskipped;
@@ -245,6 +247,8 @@ static struct {
 		polyoffset_t polyoffset; //mode-specific polygon offsets...
 
 		texid_t temptexture; //$current
+		texid_t tex_watercolour[R_MAX_RECURSE];	//FTESurf Patch 1020: screen water's copies of each level's view
+		texid_t tex_waterdepth[R_MAX_RECURSE];
 		texid_t fogtexture;
 		texid_t normalisationcubemap;
 		float fogfar;
@@ -298,6 +302,73 @@ static struct {
 	int maxwbatches;
 	batch_t *wbatches;
 } shaderstate;
+//FTESurf Patch 1018: water in the 3D sky room samples the outer view's targets (Source's skybox water samples
+//the main view's; it renders targets for the eye's view only) -- when that view captured water this frame or
+//the last; otherwise it captures its own, as before, rather than sample nothing.
+//Stamps are per level and per kind (reflection, refraction, refraction depth): the seat's world-view count + 1
+//when that kind was last captured there (0 = never); a kind counts while the same seat captured it in this
+//world view or its last, and its target exists (a resize frees them).
+enum {BE_CAPREFL, BE_CAPREFR, BE_CAPDEPTH, BE_CAPKINDS};
+static int be_capstamp[R_MAX_RECURSE][BE_CAPKINDS], be_capseat[R_MAX_RECURSE][BE_CAPKINDS];
+static int be_seatviews[MAX_SPLITS];	//world-drawing top-level views begun, per seat
+static int BE_Seat(void)
+{
+	if (r_refdef.playerview && r_refdef.playerview >= cl.playerview && r_refdef.playerview < cl.playerview + MAX_SPLITS)
+		return r_refdef.playerview - cl.playerview;
+	return 0;
+}
+static void BE_StampCapture(int kind)
+{
+	int seat = BE_Seat();
+	be_capstamp[r_refdef.recurse][kind] = be_seatviews[seat] + 1;
+	be_capseat[r_refdef.recurse][kind] = seat;
+}
+static qboolean BE_CaptureFresh(int level, int kind, texid_t target)
+{
+	int seat = BE_Seat();
+	return be_capstamp[level][kind] && be_capseat[level][kind] == seat && be_capstamp[level][kind] >= be_seatviews[seat] &&
+		TEXVALID(target);
+}
+static qboolean BE_SkyroomSharesWater(unsigned int shaderflags)
+{
+	int l = r_refdef.recurse - 1;
+	if (!r_refdef.recurse || r_refdef.recurse != r_skyroomlevel || r_waterskyroomcapture.ival ||
+		(shaderflags & (SHADER_HASPORTAL|SHADER_HASRIPPLEMAP)))
+		return false;
+	if ((shaderflags & SHADER_HASREFLECT) && !BE_CaptureFresh(l, BE_CAPREFL, shaderstate.tex_reflection[l]))
+		return false;
+	if ((shaderflags & SHADER_HASREFRACT) && !BE_CaptureFresh(l, BE_CAPREFR, shaderstate.tex_refraction[l]))
+		return false;
+	if ((shaderflags & SHADER_HASREFRACTDEPTH) && !BE_CaptureFresh(l, BE_CAPDEPTH, shaderstate.tex_refractiondepth[l]))
+		return false;
+	return true;
+}
+//FTESurf Patch 1018: a water capture's size -- the frame at its scale, then r_watertargetsize per axis
+extern cvar_t r_watertargetsize;
+static void BE_WaterCaptureRect(float scale, qboolean portal)
+{
+	float cw = 1, ch = 1;
+	int pw = max(1, vid.fbpwidth * scale), ph = max(1, vid.fbpheight * scale);
+	if (!portal && r_watertargetsize.ival > 0)
+	{
+		if (pw > r_watertargetsize.ival)
+			cw = (float)r_watertargetsize.ival / pw, pw = r_watertargetsize.ival;
+		if (ph > r_watertargetsize.ival)
+			ch = (float)r_watertargetsize.ival / ph, ph = r_watertargetsize.ival;
+	}
+	r_refdef.vrect.x = 0;
+	r_refdef.vrect.y = 0;
+	r_refdef.vrect.width = max(1, vid.fbvwidth * scale * cw);
+	r_refdef.vrect.height = max(1, vid.fbvheight * scale * ch);
+	r_refdef.pxrect.x = 0;
+	r_refdef.pxrect.y = 0;
+	r_refdef.pxrect.width = pw;
+	r_refdef.pxrect.height = ph;
+}
+static int BE_WaterTargetLevel(void)
+{
+	return BE_SkyroomSharesWater(shaderstate.curshader ? shaderstate.curshader->flags : 0) ? r_refdef.recurse - 1 : r_refdef.recurse;
+}
 
 static texnums_t r_nulltexnums;	//nettest: zeroed fallback for shaderstate.curtexnums when a shader is registered-but-not-yet-generated (defaulttextures==NULL, e.g. a Source prop's GLSL material on first frame). TEXLOADED() on all-zero texids is false, so every downstream deref (BE_RenderMeshProgram/DrawPass) safely binds nothing instead of NULL-faulting.
 
@@ -1393,6 +1464,20 @@ static int be_currentw, be_currenth;
 static GLenum be_currentfmt;
 static qboolean be_nopanedepth;	//FTESurf Patch 878: a world or brush pane drawn now writes no depth (GLBE_SubmitNearest)
 static qboolean be_flatcopied;	//FTESurf Patch 895: this top-level view has copied the screen for a world/brush pane
+static qboolean be_watercopied[R_MAX_RECURSE], be_depthcopied[R_MAX_RECURSE];	//FTESurf Patch 1020: per level, per view
+//FTESurf Patch 1020: a shader that reads $currentdepth is screen-space water: all of a view's water shares one copy
+//of the colour and one of the depth, taken by the first batch (sorted underwater: after the opaque world)
+static qboolean GLBE_ScreenWater(void)
+{
+	const shader_t *sh = shaderstate.curshader;
+	int i;
+	if (!sh || !(sh->flags & SHADER_HASCURRENTRENDER))
+		return false;
+	for (i = 0; i < sh->numpasses; i++)
+		if (sh->passes[i].texgen == T_GEN_CURRENTDEPTH)
+			return true;
+	return false;
+}
 extern unsigned int r_vs_copies;
 extern double r_vs_copypixels;
 extern cvar_t r_nearestsort;
@@ -1515,6 +1600,67 @@ static void T_Gen_CurrentRender(int tmu, qboolean pane)
 	qglTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
 	qglTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
 	qglTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+}
+
+//FTESurf Patch 1020: screen water's copies of the view it is drawn in -- the viewport's rectangle of the bound
+//framebuffer, so a sky room, a portal or a capture copies its own camera at its own size -- once per view and
+//level (be_*copied, reset by GLBE_DrawWorld). The first copy after an allocation is checked for a GL error; a
+//refused depth copy says so and binds white (depth 1 reads as far: the water draws deep) until the next
+//reallocation or map.
+static qboolean be_waterdepthfailed;
+static void T_Gen_ScreenWater(int tmu, qboolean depth)
+{
+	int lvl = min(r_refdef.recurse, R_MAX_RECURSE-1);
+	texid_t *tex = depth ? &shaderstate.tex_waterdepth[lvl] : &shaderstate.tex_watercolour[lvl];
+	qboolean *done = depth ? &be_depthcopied[lvl] : &be_watercopied[lvl];
+	int x = r_refdef.pxrect.x, y = r_refdef.pxrect.maxheight - (r_refdef.pxrect.y + r_refdef.pxrect.height);
+	int w = max(1, r_refdef.pxrect.width), h = max(1, r_refdef.pxrect.height);
+	qboolean check = false;
+	if (depth && be_waterdepthfailed)
+	{
+		GL_MTBind(tmu, GL_TEXTURE_2D, r_whiteimage);
+		return;
+	}
+	if (!TEXVALID(*tex))
+	{
+		TEXASSIGN(*tex, Image_CreateTexture(depth ? "***$waterdepth***" : "***$watercolour***", NULL, 0));
+		qglGenTextures(1, &(*tex)->num);
+		(*tex)->width = (*tex)->height = 0;
+	}
+	GL_MTBind(tmu, GL_TEXTURE_2D, *tex);
+	if (*done)
+		return;
+	*done = true;
+	if ((*tex)->width != w || (*tex)->height != h)
+	{
+		while (qglGetError() != GL_NO_ERROR)
+			;
+		check = true;
+		(*tex)->width = w;
+		(*tex)->height = h;
+		if (depth)
+			qglTexImage2D(GL_TEXTURE_2D, 0, GL_DEPTH_COMPONENT24_ARB, w, h, 0, GL_DEPTH_COMPONENT, GL_UNSIGNED_INT, NULL);
+		else
+			qglTexImage2D(GL_TEXTURE_2D, 0, (vid.flags&VID_FP16) ? GL_RGBA16F : ((vid.flags&VID_SRGB_FB) ? GL_SRGB8_EXT : GL_RGB),
+				w, h, 0, GL_RGBA, GL_UNSIGNED_BYTE, NULL);
+		qglTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, depth ? GL_NEAREST : GL_LINEAR);
+		qglTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, depth ? GL_NEAREST : GL_LINEAR);
+		qglTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+		qglTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+	}
+	qglCopyTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, x, y, w, h);
+	if (!shaderstate.force2d)
+		r_vs_copies++, r_vs_copypixels += (double)w * h;
+	if (check && qglGetError() != GL_NO_ERROR)
+	{
+		(*tex)->width = (*tex)->height = 0;	//allocate (and check) again next time
+		if (depth)
+		{
+			be_waterdepthfailed = true;
+			Con_Printf(CON_WARNING "$currentdepth: this framebuffer's depth cannot be copied; screen-space water draws as deep\n");
+			GL_MTBind(tmu, GL_TEXTURE_2D, r_whiteimage);
+		}
+	}
 }
 
 static void Shader_BindTextureForPass(int tmu, const shaderpass_t *pass)
@@ -1657,7 +1803,13 @@ static void Shader_BindTextureForPass(int tmu, const shaderpass_t *pass)
 #endif
 
 	case T_GEN_CURRENTRENDER:
-		T_Gen_CurrentRender(tmu, true);
+		if (!shaderstate.force2d && GLBE_ScreenWater())
+			T_Gen_ScreenWater(tmu, false);	//FTESurf Patch 1020
+		else
+			T_Gen_CurrentRender(tmu, true);
+		return;
+	case T_GEN_CURRENTDEPTH:
+		T_Gen_ScreenWater(tmu, true);
 		return;
 
 	case T_GEN_SOURCECOLOUR:
@@ -1667,7 +1819,7 @@ static void Shader_BindTextureForPass(int tmu, const shaderpass_t *pass)
 		t = shaderstate.tex_sourcedepth;
 		break;
 	case T_GEN_REFLECTION:
-		t = shaderstate.tex_reflection[r_refdef.recurse];
+		t = shaderstate.tex_reflection[BE_WaterTargetLevel()];
 		break;
 	case T_GEN_REFRACTION:
 		/* FTESurf Patch 210: a portal must read the texture the portal was
@@ -1693,10 +1845,10 @@ static void Shader_BindTextureForPass(int tmu, const shaderpass_t *pass)
 			T_Gen_CurrentRender(tmu, false);
 			return;
 		}
-		t = shaderstate.tex_refraction[r_refdef.recurse];
+		t = shaderstate.tex_refraction[BE_WaterTargetLevel()];
 		break;
 	case T_GEN_REFRACTIONDEPTH:
-		t = shaderstate.tex_refractiondepth[r_refdef.recurse];
+		t = shaderstate.tex_refractiondepth[BE_WaterTargetLevel()];
 		break;
 	case T_GEN_RIPPLEMAP:
 		t = shaderstate.tex_ripplemap[r_refdef.recurse];
@@ -1843,6 +1995,16 @@ void GLBE_DestroyFBOs(void)
 
 	for (i = 0; i < R_MAX_RECURSE; i++)
 	{
+		if (shaderstate.tex_watercolour[i])	//FTESurf Patch 1020
+		{
+			Image_DestroyTexture(shaderstate.tex_watercolour[i]);
+			shaderstate.tex_watercolour[i] = r_nulltex;
+		}
+		if (shaderstate.tex_waterdepth[i])
+		{
+			Image_DestroyTexture(shaderstate.tex_waterdepth[i]);
+			shaderstate.tex_waterdepth[i] = r_nulltex;
+		}
 		GLBE_FBO_Destroy(&shaderstate.fbo_reflectrefrac[i]);
 		if (shaderstate.tex_reflection[i])
 		{
@@ -3426,6 +3588,11 @@ static void BE_SendPassBlendDepthMask(unsigned int sbits)
 			if ((sbits & SBITS_BLEND_BITS) == (SBITS_SRCBLEND_ONE| SBITS_DSTBLEND_ZERO) || !(sbits & SBITS_BLEND_BITS) || (sbits & SBITS_ATEST_GE128)) 	/*if transparency is forced, clear alpha test bits*/
 				sbits = (sbits & ~(SBITS_BLEND_BITS|SBITS_ATEST_BITS))
 							| (SBITS_SRCBLEND_SRC_ALPHA | SBITS_DSTBLEND_ONE_MINUS_SRC_ALPHA | SBITS_ATEST_GT0);
+			//FTESurf Patch 1014: a fading brush entity (a func_areaportalwindow pane, func_lod) keeps no depth,
+			//or the particles and glass behind it fail the depth test until it stops drawing, then pop in.
+			if (shaderstate.curentity && shaderstate.curentity != &r_worldentity &&	//world batches: sprites, csqc polys
+				shaderstate.curentity->model && shaderstate.curentity->model->type == mod_brush)
+				sbits &= ~SBITS_MISC_DEPTHWRITE;
 		}
 
 		if (shaderstate.flags & BEF_FORCENODEPTH) 	/*EF_NODEPTHTEST dp extension*/
@@ -4653,7 +4820,7 @@ static void BE_RenderMeshProgram(const shader_t *shader, const shaderpass_t *pas
 	  (1-f)*fogcolour lift from a negative fogstart.  Fixing only the
 	  fixed-function path would leave the bug alive wherever there is a program,
 	  i.e. exactly where the renderer is going.*/
-	if (r_refdef.globalfog.density && !shaderstate.force2d)
+	if (r_refdef.globalfog.density && !shaderstate.force2d && !shaderstate.curshader->materialnofog)
 		perm |= PERMUTATION_FOG;
 //	if (TEXLOADED(shaderstate.curtexnums->bump) && shaderstate.curbatch->lightmap[0] >= 0 && lightmap[shaderstate.curbatch->lightmap[0]]->hasdeluxe)
 //		perm |= PERMUTATION_DELUXE;
@@ -5593,6 +5760,8 @@ static qboolean BE_ProglessFogBegin(void)
 		return false;
 	if (shaderstate.curshader->prog)
 		return false;	//has a program; PERMUTATION_FOG already covers it.
+	if (shaderstate.curshader->materialnofog)
+		return false;	//authored no-fog policy also applies without a program.
 	if (shaderstate.curshader->flags & SHADER_SKY)
 		return false;	//sky is not at a distance.
 	if (!qglFogi || !qglFogf || !qglFogfv)
@@ -6626,6 +6795,8 @@ void GLBE_WaterViewsNewMap(void)
 	double t0;
 	for (i = 0; i < MAX_SPLITS; i++)
 		be_waterlastvalid[i] = false;	//planes of the old map
+	memset(be_capstamp, 0, sizeof(be_capstamp));	//FTESurf Patch 1018: the old map's captures
+	be_waterdepthfailed = false;	//FTESurf Patch 1020: a refused depth copy is tried again
 #ifdef PLUGINS
 	be_occluderasked = false;
 	if (!r_waterviews.ival || !cl.worldmodel || cl.worldmodel->loadstate != MLS_LOADED)
@@ -7068,6 +7239,12 @@ static qboolean GLBE_GenerateBatchTextures(batch_t *batch, shader_t *bs)
 	//(BEM_DEPTHDARK is used when lightmap scale is 0, but still shows any emissive stuff)
 	if (shaderstate.mode != BEM_STANDARD && shaderstate.mode != BEM_DEPTHDARK)
 		return false;
+	//FTESurf Patch 1018: water in the 3D sky room draws with the outer view's targets (BE_SkyroomSharesWater)
+	if (BE_SkyroomSharesWater(bs->flags))
+	{
+		GLBE_CaptureLog(batch, bs, "skyshare", batch);
+		return true;
+	}
 
 	/* FTESurf Patch 210: the budget applies here too.
 
@@ -7156,14 +7333,7 @@ static qboolean GLBE_GenerateBatchTextures(batch_t *batch, shader_t *bs)
 				qglGenTextures(1, &shaderstate.tex_reflection[r_refdef.recurse]->num);
 		}
 
-		r_refdef.vrect.x = 0;
-		r_refdef.vrect.y = 0;
-		r_refdef.vrect.width = max(1, vid.fbvwidth * renderscale);
-		r_refdef.vrect.height = max(1, vid.fbvheight * renderscale);
-		r_refdef.pxrect.x = 0;
-		r_refdef.pxrect.y = 0;
-		r_refdef.pxrect.width = max(1, vid.fbpwidth * renderscale);
-		r_refdef.pxrect.height = max(1, vid.fbpheight * renderscale);
+		BE_WaterCaptureRect(renderscale, false);
 		if (shaderstate.tex_reflection[r_refdef.recurse]->width!=r_refdef.pxrect.width || shaderstate.tex_reflection[r_refdef.recurse]->height!=r_refdef.pxrect.height)
 		{
 			shaderstate.tex_reflection[r_refdef.recurse]->width = r_refdef.pxrect.width;
@@ -7188,6 +7358,7 @@ static qboolean GLBE_GenerateBatchTextures(batch_t *batch, shader_t *bs)
 		qglClearColor(0, 0, 0, 1);
 		qglClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
 		GLBE_CaptureLog(batch, cs, "reflect", cb);
+		BE_StampCapture(BE_CAPREFL);
 		be_watercapture++;
 		r_capturenoents = cs->reflectnoents && !r_waterforcereflectentities.ival;	//Patch 868
 		r_capturemergevis = cb != batch;
@@ -7208,14 +7379,7 @@ static qboolean GLBE_GenerateBatchTextures(batch_t *batch, shader_t *bs)
 			float renderscale = min(1, cs->portalfboscale);
 			vrect_t ovrect = r_refdef.vrect;
 			pxrect_t oprect = r_refdef.pxrect;
-			r_refdef.vrect.x = 0;
-			r_refdef.vrect.y = 0;
-			r_refdef.vrect.width = max(1, vid.fbvwidth * renderscale);
-			r_refdef.vrect.height = max(1, vid.fbvheight * renderscale);
-			r_refdef.pxrect.x = 0;
-			r_refdef.pxrect.y = 0;
-			r_refdef.pxrect.width = max(1, vid.fbpwidth * renderscale);
-			r_refdef.pxrect.height = max(1, vid.fbpheight * renderscale);
+			BE_WaterCaptureRect(renderscale, (cf & SHADER_HASPORTAL) != 0);
 
 			if (!shaderstate.tex_refraction[r_refdef.recurse])
 			{
@@ -7327,6 +7491,9 @@ static qboolean GLBE_GenerateBatchTextures(batch_t *batch, shader_t *bs)
 			else
 			{
 				GLBE_CaptureLog(batch, cs, (cf & SHADER_HASREFRACTDEPTH)?"refract+depth":"refract", cb);
+				BE_StampCapture(BE_CAPREFR);
+				if (cf & SHADER_HASREFRACTDEPTH)
+					BE_StampCapture(BE_CAPDEPTH);
 				be_watercapture++;
 				GLR_DrawPortal(cb, cl.worldmodel->batches, NULL, ((cf & SHADER_HASREFRACTDEPTH)?3:2));	//fixme
 				be_watercapture--;
@@ -7339,7 +7506,7 @@ static qboolean GLBE_GenerateBatchTextures(batch_t *batch, shader_t *bs)
 		}
 		else
 		{
-			GLBE_CaptureLog(batch, cs, "refractcopy", cb);
+			GLBE_CaptureLog(batch, cs, "refractcopy", cb);	//writes no target: no stamp
 			be_watercapture++;	//a portal never gets here: it forces the FBO branch
 			GLR_DrawPortal(cb, cl.worldmodel->batches, NULL, 3);
 			be_watercapture--;
@@ -10125,10 +10292,14 @@ void GLBE_DrawWorld (batch_t **worldbatches)
 
 	TRACE(("GLBE_DrawWorld: %p\n", worldbatches));
 
+	if (r_refdef.recurse < R_MAX_RECURSE)	//FTESurf Patch 1020: this view's screen water copies afresh
+		be_watercopied[r_refdef.recurse] = be_depthcopied[r_refdef.recurse] = false;
 	//reset batches if we needed more mem, to avoid allocations mid-frame.
 	if (!r_refdef.recurse)
 	{
 		be_flatcopied = false;	//FTESurf Patch 895: each top-level view copies once for its world/brush panes
+		if (worldbatches)
+			be_seatviews[BE_Seat()]++;	//FTESurf Patch 1018: what a capture stamp is counted against
 		if (shaderstate.wbatch + 50 > shaderstate.maxwbatches)
 		{
 			int newm = shaderstate.wbatch + 100;

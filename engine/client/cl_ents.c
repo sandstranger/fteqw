@@ -2446,7 +2446,7 @@ void CL_RotateAroundTag(entity_t *ent, int entnum, int parenttagent, int parentt
 			model = cl.model_precache[ps->modelindex];
 		else
 			model = NULL;
-		if (model && model->type == mod_alias)
+		if (model && model->type == mod_alias && !(model->engineflags & MDLF_SOURCEPITCH))	//FTESurf Patch 1027
 			AngleVectorsMesh(ang, axis[0], axis[1], axis[2]);
 		else
 			AngleVectors(ang, axis[0], axis[1], axis[2]);
@@ -3590,7 +3590,11 @@ void CLQ1_AddVisibleHulls(void)
 		//nettest Patch 64: these are SOLID_PHYSICS_TRIMESH/BOX (alias) props — build the viz
 		//basis with r_meshpitch (AngleVectorsMesh) like the collision + render, so the debug
 		//lines land on the actual collision surface when the prop is pitched/rolled.
-		AngleVectorsMesh(e->v->angles, axis[0], axis[1], axis[2]);
+		//FTESurf Patch 1027: a Source model is drawn, and pmove collides it, with Source's pitch.
+		if (mod->engineflags & MDLF_SOURCEPITCH)
+			AngleVectors(e->v->angles, axis[0], axis[1], axis[2]);
+		else
+			AngleVectorsMesh(e->v->angles, axis[0], axis[1], axis[2]);
 		VectorNegate(axis[1], axis[1]);
 
 		if (showdecomp && mod->numhulls > 0)
@@ -5808,7 +5812,7 @@ void CL_LinkStaticEntities(void *pvs, int *areas)
 			stat->ent.model = clmodel;
 
 			//figure out the correct axis for the model
-			if (clmodel && clmodel->type == mod_alias && (cls.protocol == CP_QUAKEWORLD || cls.protocol == CP_NETQUAKE))
+			if (clmodel && clmodel->type == mod_alias && !(clmodel->engineflags & MDLF_SOURCEPITCH) && (cls.protocol == CP_QUAKEWORLD || cls.protocol == CP_NETQUAKE))
 			{	//q2 is fixed, but q1 pitches the wrong way, and hexen2 rolls the wrong way too.
 				AngleVectorsMesh(stat->state.angles, stat->ent.axis[0], stat->ent.axis[1], stat->ent.axis[2]);
 			}
@@ -6852,7 +6856,10 @@ void CL_LinkPacketEntities (void)
 		}
 
 		VectorCopy(angles, ent->angles);
-		if (model->type == mod_alias)
+		//FTESurf Patch 1027: a Source model takes the map's pitch as Source does, nose-down
+		//(bhop_ceaseless's spider, "45 0 0", hung upside down).  Draw only: pmove already sees
+		//Source's pitch, its physent (CL_SetSolidEntities) and pmovetst.c flipping it once each.
+		if (model && model->type == mod_alias && !(model->engineflags & MDLF_SOURCEPITCH))	//portals have no model
 			AngleVectorsMesh(angles, ent->axis[0], ent->axis[1], ent->axis[2]);
 		else
 			AngleVectors(angles, ent->axis[0], ent->axis[1], ent->axis[2]);

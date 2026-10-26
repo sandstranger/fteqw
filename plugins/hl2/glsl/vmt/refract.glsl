@@ -3,7 +3,9 @@
 !!permu FRAMEBLEND
 !!permu SKELETAL
 !!permu REFLECTCUBEMASK
-!!samps refraction=0 bump=1 tint=2
+!!samps refraction=0 tint=2
+!!samps !ANIMBUMP bump=1
+!!samps =ANIMBUMP bumpanim:2DArray=1
 !!samps =REFLECTCUBEMASK reflectcube
 
 #include "sys/defs.h"
@@ -23,6 +25,7 @@
 #ifndef SCROLL
 #define SCROLL 0.0,0.0
 #endif
+//Patch 990: Source's Sine proxy on $refractamount (min, max, period), proxies.cpp CSineProxy
 #ifndef ENVTINT
 #define ENVTINT 1.0,1.0,1.0
 #endif
@@ -58,7 +61,15 @@ void main()
 #include "sys/fog.h"
 void main()
 {
+#ifdef ANIMBUMP
+	// Patch 990: AnimatedTexture frames, whole frames at ANIMBUMP a second (vmt/refractanim, GLSL 130).
+	int bumplayers = textureSize(s_bumpanim, 0).z;
+	vec4 nrm = vec4(0.5, 0.5, 1.0, 1.0);	// flat while the array is absent: an incomplete texture reads 0 = full warp
+	if (bumplayers > 0)
+		nrm = texture2D(s_bumpanim, vec3(tex_c, floor(mod(e_time * float(ANIMBUMP), float(bumplayers)))));
+#else
 	vec4 nrm = texture2D(s_bump, tex_c);
+#endif
 #ifdef ALPHATEST
 	if (nrm.a < 0.5)
 		discard;
@@ -69,7 +80,13 @@ void main()
 #ifdef NOWARP
 	vec2 rc = sc;	// no $normalmap: Source's DX9 Refract has nothing to warp by
 #else
-	vec2 rc = sc + tn.xy * (nrm.a * float(REFRAMOUNT));
+#ifdef REFRSINE
+	vec3 rs = vec3(REFRSINE);
+	float amount = mix(rs.x, rs.y, sin(6.2831853 * e_time / rs.z) * 0.5 + 0.5);
+#else
+	float amount = float(REFRAMOUNT);
+#endif
+	vec2 rc = sc + tn.xy * (nrm.a * amount);
 #endif
 #ifdef BLUR
 	// refract_ps20b's BLUR 1: nine taps from four bilinear ones, 1/512 apart.

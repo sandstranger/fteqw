@@ -106,6 +106,11 @@ cvar_t r_sky_forcedepth						= CVARFD ("r_sky_forcedepth", "2", CVAR_ARCHIVE, "W
 //and at some angles that is under one depth step, so the mask won and the real sky showed through.
 cvar_t r_sky_forcedepth_push				= CVARFD ("r_sky_forcedepth_push", "4", CVAR_ARCHIVE,"Pushes r_sky_forcedepth's sky mask this many depth steps away from the eye, so a surface just in front of a sky brush still beats it; the level far behind the sky stays masked. GL only, and only where the sky itself writes no depth (e.g. Source/Half-Life maps with a skyname). 0: the mask is written at the brush, as before Patch 768.");
 
+//Patch 990: Source draws a sky face as a hole, so a prop poking through one is still drawn
+//(bhop_ceaseless's spawn roof rises 100 units past its sky ceiling). The mask keeps hiding what is
+//far behind the sky (Patch 296) but is written this many times farther from the eye than the face.
+cvar_t r_sky_forcedepth_scale				= CVARFD ("r_sky_forcedepth_scale", "2", CVAR_ARCHIVE, "Writes r_sky_forcedepth's sky mask this many times farther from the eye than the sky surface, on the same pixels, so a model poking through a sky brush (as Source draws it) is not cut off while the level far behind the sky stays hidden. Source maps only. 1: the mask is written at the sky surface, as before Patch 990.");
+
 static shader_t *forcedsky;
 static shader_t *skyboxface;
 static shader_t *skygridface;
@@ -404,9 +409,11 @@ static qboolean R_SkyCameraOrigin(vec3_t out)
 	return have;
 }
 
+int r_skyroomlevel = -1;	//FTESurf Patch 1018: the recursion level the 3D sky room is drawing at, else -1
 qboolean R_DrawSkyroom(shader_t *skyshader)
 {
 	float vmat[16];
+	int oldskyroomlevel;
 	refdef_t oldrefdef;
 	int oldarea = r_viewarea, oldcluster[2] = {r_viewcluster,r_viewcluster2};
 //	extern cvar_t r_ignoreentpvs; //legacy value is 1...
@@ -421,6 +428,8 @@ qboolean R_DrawSkyroom(shader_t *skyshader)
 
 	oldrefdef = r_refdef;
 	r_refdef.recurse+=1;
+	oldskyroomlevel = r_skyroomlevel;
+	r_skyroomlevel = r_refdef.recurse;	//FTESurf Patch 1018: its water samples the outer view's targets
 	{	//FTESurf Patch 850: the sky room's own props, not again the outer views' (R_RenderScene_Internal)
 		extern cvar_t r_nestedents;
 		extern int r_visdynamic;
@@ -601,6 +610,7 @@ qboolean R_DrawSkyroom(shader_t *skyshader)
 	r_viewcluster = oldcluster[0];
 	r_viewcluster2 = oldcluster[1];
 	r_refdef = oldrefdef;
+	r_skyroomlevel = oldskyroomlevel;
 
 	/*broken stuff*/
 	AngleVectors (r_refdef.viewangles, vpn, vright, vup);
@@ -1206,7 +1216,26 @@ static void GL_SkyForceDepth(batch_t *batch)
 	if ((r_sky_forcedepth.ival || !cls.allow_unmaskedskyboxes) && batch->texture)	//allow a little extra fps.
 	{
 		BE_SelectMode(BEM_DEPTHONLY);
-		BE_DrawMesh_List(batch->shader, batch->meshes-batch->firstmesh, batch->mesh+batch->firstmesh, batch->vbo, NULL, batch->flags|BEF_SKYDEPTH);
+		if (r_sky_forcedepth_scale.value > 1 && batch->ent == &r_worldentity &&
+		    r_worldentity.model && (r_worldentity.model->engineflags & MDLF_SOURCEBSP))	//other maps clip at the sky
+		{	//Patch 990: scaled about the eye, each point stays on its own ray (R_DrawSkyMesh's trick)
+			static entity_t pushent;
+			batch_t b = *batch;
+			float k = r_sky_forcedepth_scale.value;
+			pushent = r_worldentity;
+			VectorScale(r_worldentity.axis[0], k, pushent.axis[0]);
+			VectorScale(r_worldentity.axis[1], k, pushent.axis[1]);
+			VectorScale(r_worldentity.axis[2], k, pushent.axis[2]);
+			VectorScale(r_refdef.vieworg, 1-k, pushent.origin);
+			VectorMA(pushent.origin, k, r_worldentity.origin, pushent.origin);
+			pushent.scale = 1;
+			b.ent = &pushent;
+			b.flags |= BEF_SKYDEPTH;
+			BE_SelectEntity(&pushent);	//the submit reselects only a different pointer, and this one is reused
+			BE_SubmitBatch(&b);
+		}
+		else
+			BE_DrawMesh_List(batch->shader, batch->meshes-batch->firstmesh, batch->mesh+batch->firstmesh, batch->vbo, NULL, batch->flags|BEF_SKYDEPTH);
 		BE_SelectMode(BEM_STANDARD);	/*skys only render in standard mode anyway, so this is safe*/
 	}
 }
@@ -1725,6 +1754,7 @@ void R_Sky_Register(void)
 	Cvar_Register (&r_skyfog,				groupname);
 	Cvar_Register (&r_sky_forcedepth,	groupname);
 	Cvar_Register (&r_sky_forcedepth_push,	groupname);	//FTESurf Patch 768
+	Cvar_Register (&r_sky_forcedepth_scale,	groupname);	//Patch 990
 	Cvar_Register (&r_skyboxname,			groupname);
 	Cvar_Register (&r_skybox_default,		groupname);	//FTESurf Patch 211
 	Cvar_Register (&r_skybox_orientation,	groupname);

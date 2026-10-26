@@ -35,8 +35,12 @@ was reachable from a cvar.  Now:
 
   hl2_imposter 0  WindowImposter draws nodraw -- whatever is behind it shows
                   through, which on a fake-sky slab is the map's REAL sky
-               1  Source's behaviour: the $envmap cubemap, sampled by view
-                  direction, opaque  (DEFAULT)  -- FTESurf Patch 263
+               1  the $envmap cubemap, sampled by view direction, opaque
+                  and writing depth  (DEFAULT)  -- FTESurf Patch 263
+               2  as 1, blended with no depth writes like Source's
+                  windowimposter_dx90.cpp, ahead of other blended surfaces;
+                  blended content behind an imposter then shows through it
+                  -- FTESurf Patch 1033
 
 BUILD 12: WHY DITHER IS THE CHEAP ONE, not a compromise.  Mode 0 removed the
 render target but left a BLENDED surface, and a blend is not free: it cannot
@@ -91,6 +95,7 @@ cvar_t *hl2_additivefog;	//FTESurf Patch 300, additive materials onto a program 
 //How many of each this map actually loaded, for the census mod_vbsp.c prints.
 int vmt_stat_water, vmt_stat_refract, vmt_stat_translucent;
 int vmt_stat_imposter;	//FTESurf Patch 263
+int vmt_stat_flowwater;	//Patch 990: Water materials drawn with their $flowmap
 int vmt_stat_hdrenvmap;	//FTESurf Patch 264, $envmap resolved via the .hdr.vtf fallback
 int vmt_stat_ignorez;	//FTESurf Patch 290, $ignorez materials that could not be honoured
 int vmt_stat_addprog;	//FTESurf Patch 300, additive materials moved from a pass onto vmt/unlit
@@ -538,6 +543,7 @@ void Mat_VMT_ResetStats(void)
 	//FTESurf Patch 263
 	vmt_stat_imposter = 0;
 	vmt_stat_hdrenvmap = 0;	//FTESurf Patch 264
+	vmt_stat_flowwater = 0;
 	vmt_stat_ignorez = 0;	//FTESurf Patch 290
 	vmt_stat_addprog = vmt_stat_addpass = 0;	//FTESurf Patch 300
 	vmt_stat_unknown = 0;
@@ -853,6 +859,7 @@ typedef struct
 	points at something other than the base texture.
 	*/
 	float animrate;
+	float spriterate;	//FTESurf Patch 1035: an env_sprite's own framerate, from a "ftesurf/spranim/<rate>/" name (Shader_LoadVMT); 0 = none, -1 = still
 	char animvar[64];
 	char animpass;	//the program went into a pass, so progblendfunc must not also be emitted
 	/*
@@ -877,6 +884,24 @@ typedef struct
 	float tex2scrollrate;
 	float tex2scrollangle;
 	char  tex2scrollvar[64];
+	//Patch 990: $detail for vmt/unlitreflect#BASE (mode 9 only), with its own scroll slot so a
+	//$detailtexturetransform TextureScroll no longer takes the base's (bhop_ceaseless's rain).
+	char  detail[MAX_QPATH];
+	float detailscale;
+	int   detailblendmode;
+	float detailblendfactor;
+	qboolean detailblendfactor_set;
+	float detscrollrate;
+	float detscrollangle;
+	//Patch 990: Sine -> $refractamount, as min, max, period (VMT_ResolveProxies).
+	float refrsine[3];
+	qboolean refrsine_set;
+	//Patch 990: $flowmap water -- worlduvscale, normaluvscale, uvscrolldistance, bumpstrength,
+	//timescale, timeintervalinseconds, noise_scale (water.glsl FLOW/FLOWTIME).
+	char  flowmap[MAX_QPATH];
+	char  flownoise[MAX_QPATH];
+	float flow[7];
+	qboolean flow_set[7];
 
 	float proxalpha;	//alpha falls by this much per world unit of eye distance
 	float proxalphabase;	//...starting from this, before the fade
@@ -997,6 +1022,7 @@ typedef struct
 	between the two exists -- see VMT_BottomRecord.
 	*/
 	char bottommaterial[MAX_QPATH];
+	char underwateroverlay[MAX_QPATH];	//FTESurf Patch 1013: see Mat_VMT_UnderwaterOverlay
 
 	/*
 	FTESurf: the material's proxy graph, as parsed, before it is resolved into
@@ -1291,6 +1317,62 @@ static qboolean VMT_ScrollsBase(const char *var)
 	return false;
 }
 
+//FTESurf Patch 1035: flipbooks synthesized at an env_sprite's own rate, for hl2_spranim.  The command
+//existing is also what cl_sprites.qc tests before asking for such a name (see VBSP_Init).
+#define VMT_SPRANIM_LIST 32
+static struct { char name[MAX_QPATH]; float rate; } vmt_spranim[VMT_SPRANIM_LIST];
+static int vmt_spranim_n;
+void Mat_VMT_SprAnim_f(void)
+{
+	int i;
+	Con_Printf("%i env_sprite flipbook shader(s) at their own framerate\n", vmt_spranim_n);
+	for (i = 0; i < vmt_spranim_n && i < VMT_SPRANIM_LIST; i++)
+		Con_Printf("  %s at %g\n", vmt_spranim[i].name, vmt_spranim[i].rate);
+}
+
+//FTESurf: frame count of a VTF basetexture (numframes = VTF header offset 24, little-endian
+//uint16).  Peeked so the Sprite-animation synthesis fires only on a real flipbook and leaves
+//every single-frame sprite on its existing path.  0 when the file is missing or too short.
+static int VMT_VTFFrames(const char *basetex)
+{
+	char path[MAX_QPATH];
+	qbyte *file;
+	size_t sz = 0;
+	int n = 0;
+	Q_snprintfz(path, sizeof(path), "%s%s.vtf",
+		Q_strncasecmp(basetex, "materials/", 10) ? "materials/" : "", basetex);
+	file = fsfuncs->LoadFile(path, &sz);
+	if (file)
+	{
+		if (sz >= 26 && file[0]=='V' && file[1]=='T' && file[2]=='F' && file[3]==0)
+			n = file[24] | (file[25] << 8);
+		plugfuncs->Free(file);
+	}
+	return n;
+}
+
+//Patch 990: the $flow_* keys water.glsl reads, in FLOW/FLOWTIME order; -1 for any other.
+static int VMT_FlowKey(const char *k)
+{
+	static const char *names[7] = {"worlduvscale", "normaluvscale", "uvscrolldistance", "bumpstrength",
+		"timescale", "timeintervalinseconds", "noise_scale"};
+	int i;
+	for (i = 0; i < 7; i++)
+		if (!Q_strcasecmp(k, names[i]))
+			return i;
+	return -1;
+}
+
+//Patch 990: a scroll on $detailtexturetransform.
+static qboolean VMT_ScrollsDetail(const char *var)
+{
+	const char *s;
+	for (s = var; *s; s++)
+		if (!Q_strncasecmp(s, "detailtexturetransform", 22))
+			return true;
+	return false;
+}
+
 //FTESurf Patch 878: ITexture::IsTranslucent -- the VTF says it has 1- or 8-bit alpha.
 static qboolean VMT_TextureHasAlpha(const char *name)
 {
@@ -1347,21 +1429,21 @@ static qboolean VMT_ScrollsBump(const char *var, qboolean want2)
 //its spelling here) -- vmt/water samples every frame from a 2D array.  Only when the
 //VTF that resolves really has frames: img_vtf.c makes a 2D array of numframes > 1 only,
 //and a single-frame map bound to the array sampler reads zero (a whole-screen mirror).
-static qboolean VMT_WaterAnimBump(const vmtstate_t *st)
+static qboolean VMT_AnimBump(const vmtstate_t *st, const char *nm)
 {
 	const char *s;
 	char path[MAX_QPATH];
 	unsigned char hdr[26];
 	vfsfile_t *f;
 	qboolean frames = false;
-	if (!hl2_animated || !hl2_animated->ival || st->animrate <= 0 || !*st->normalmap)
+	if (!hl2_animated || !hl2_animated->ival || st->animrate <= 0 || !*nm)
 		return false;
 	for (s = st->animvar; *s; s++)
 		if (!Q_strncasecmp(s, "normalmap", 9) || !Q_strncasecmp(s, "bumpmap", 7))
 			break;
 	if (!*s)
 		return false;
-	Q_snprintfz(path, sizeof(path), "%s%s.vtf", strcmp(st->normalmap, "materials/")?"materials/":"", st->normalmap);
+	Q_snprintfz(path, sizeof(path), "%s%s.vtf", strcmp(nm, "materials/")?"materials/":"", nm);
 	f = fsfuncs->OpenVFS(path, "rb", FS_GAME);
 	if (f)
 	{
@@ -1371,6 +1453,7 @@ static qboolean VMT_WaterAnimBump(const vmtstate_t *st)
 	}
 	return frames;
 }
+#define VMT_WaterAnimBump(st) VMT_AnimBump(st, (st)->normalmap)	//Patch 990: Refract passes its own key
 
 //The keys inside one `TextureScroll { }` proxy.  A sub-block here would be an
 //arithmetic proxy feeding a value in; we do not evaluate those, so it is
@@ -1423,6 +1506,11 @@ static char *VMT_ParseTextureScroll(const char *fname, vmtstate_t *st, char *lin
 			Q_strlcpy(st->tex2scrollvar, var, sizeof(st->tex2scrollvar));
 			st->tex2scrollrate = rate;
 			st->tex2scrollangle = angle;
+		}
+		else if (VMT_ScrollsDetail(var))
+		{	//Patch 990: the detail's own slot; listed last, it used to evict the base scroll
+			st->detscrollrate = rate;
+			st->detscrollangle = angle;
 		}
 		//FTESurf Patch 859: nothing reads a $bumptransform2 scroll, so it never takes
 		//the slot from one already there (surf_agony's waterfall_blood lists it last).
@@ -1724,6 +1812,16 @@ static void VMT_ResolveProxies(vmtstate_t *st)
 		VMT_ProxDistFade(st, st->prox[i].result, &st->proxalpha, &st->proxalphabase);
 	if (st->proxalpha == 0)
 		VMT_ProxDistFade(st, "$alpha", &st->proxalpha, &st->proxalphabase);
+
+	//---- $refractamount (Patch 990): a Sine between two numbers, evaluated in refract.glsl.
+	i = VMT_FindProx(st, "$refractamount", -1);
+	if (i >= 0 && st->prox[i].kind == VMTPRX_SINE && st->prox[i].c > 0 &&
+	    VMT_ProxValue(st, st->prox[i].src1, &st->refrsine[0]) &&
+	    VMT_ProxValue(st, st->prox[i].src2, &st->refrsine[1]))
+	{
+		st->refrsine[2] = st->prox[i].c;
+		st->refrsine_set = true;
+	}
 
 	//---- $frame
 	i = VMT_FindProx(st, "$frame", -1);
@@ -2121,7 +2219,7 @@ static char *VMT_ParseBlock(const char *fname, vmtstate_t *st, char *line)
 		else if (!Q_strcasecmp(key, "$selfillumtint"))
 			;	//nettest: recognised-but-ignored Source key; silenced (was per-field developer-1 spam)
 		else if (!Q_strcasecmp(key, "$nofog"))
-			st->nofog = 1;
+			st->nofog = !!atoi(value);
 		else if (!Q_strcasecmp(key, "$wireframe"))
 			st->wireframe = !!atoi(value);	//FTESurf Patch 780
 		else if (!Q_strcasecmp(key, "$nomip"))
@@ -2129,15 +2227,18 @@ static char *VMT_ParseBlock(const char *fname, vmtstate_t *st, char *line)
 		else if (!Q_strcasecmp(key, "$nodecal"))
 			;	//nettest: recognised-but-ignored Source key; silenced (was per-field developer-1 spam)
 		else if (!Q_strcasecmp(key, "$detail"))
-			;	//nettest: recognised-but-ignored Source key; silenced (was per-field developer-1 spam)
+			Q_strlcpy(st->detail, value, sizeof(st->detail));	//Patch 990
 		else if (!Q_strcasecmp(key, "$detailscale"))
-			;	//nettest: recognised-but-ignored Source key; silenced (was per-field developer-1 spam)
+			VMT_ParseVec3(value, &st->detailscale, 1);	//"[2 2]" too: the first
 		else if (!Q_strcasecmp(key, "$detailtint"))
 			;	//nettest: recognised-but-ignored Source key; silenced (was per-field developer-1 spam)
 		else if (!Q_strcasecmp(key, "$detailblendfactor"))
-			;	//nettest: recognised-but-ignored Source key; silenced (was per-field developer-1 spam)
+		{
+			st->detailblendfactor = atof(value);
+			st->detailblendfactor_set = true;
+		}
 		else if (!Q_strcasecmp(key, "$detailblendmode"))
-			;	//nettest: recognised-but-ignored Source key; silenced (was per-field developer-1 spam)
+			st->detailblendmode = atoi(value);
 
 		else if (!Q_strcasecmp(key, "$surfaceprop2"))
 			;	//nettest: recognised-but-ignored Source key; silenced (was per-field developer-1 spam)
@@ -2161,6 +2262,18 @@ static char *VMT_ParseBlock(const char *fname, vmtstate_t *st, char *line)
 		{	st->emisstrength = atof(value); st->emisstrength_set = true; }
 		else if (!Q_strcasecmp(key, "$emissiveblendscrollvector"))
 		{	VMT_ParseVec3(value, st->emisscroll, 2); st->emisscroll_set = true; }
+
+		//Patch 990: flowmap water
+		else if (!Q_strcasecmp(key, "$flowmap"))
+			Q_strlcpy(st->flowmap, value, sizeof(st->flowmap));
+		else if (!Q_strcasecmp(key, "$flow_noise_texture"))
+			Q_strlcpy(st->flownoise, value, sizeof(st->flownoise));
+		else if (!Q_strncasecmp(key, "$flow_", 6) && VMT_FlowKey(key+6) >= 0)
+		{
+			int fk = VMT_FlowKey(key+6);
+			st->flow[fk] = atof(value);
+			st->flow_set[fk] = true;
+		}
 
 		//water/reflection stuff
 		else if (!Q_strcasecmp(key, "$REFRACTTINTTEXTURE"))
@@ -2251,7 +2364,7 @@ static char *VMT_ParseBlock(const char *fname, vmtstate_t *st, char *line)
 		else if (!Q_strcasecmp(key, "$abovewater"))
 			st->water_below = !atoi(value);
 		else if (!Q_strcasecmp(key, "$underwateroverlay"))
-			;	//nettest: recognised-but-ignored Source key; silenced (was per-field developer-1 spam)
+			Q_strlcpy(st->underwateroverlay, value, sizeof(st->underwateroverlay));	//FTESurf Patch 1013
 		else if (!Q_strcasecmp(key, "$reflectentities"))
 			st->water_reflectents = !!atoi(value);	//FTESurf Patch 868
 		else if (!Q_strcasecmp(key, "$scale"))
@@ -2425,6 +2538,31 @@ static void VMT_AddVertexColourArgs(char *progargs, size_t progargssize)
 	Q_strlcat(progargs, "#VERTEXALPHA", progargssize);
 }
 
+//FTESurf Patch 1039: whether the engine's image search (image.c tex_path/tex_extensions) would find
+//materials/<name> -- as named, under textures/ or override/, in any extension it tries.
+static qboolean VMT_OwnImageExists(const char *name)
+{
+	static const char *pre[] = {"", "textures/", "override/"};
+	static const char *ext[] = {".vtf", ".dds", ".ktx", ".tga", ".png", ".jpg", ".pcx", ""};
+	size_t i, j;
+	for (i = 0; i < countof(pre); i++)
+		for (j = 0; j < countof(ext); j++)
+			if (fsfuncs->LocateFile(va("%smaterials/%s%s", pre[i], name, ext[j]), FSLF_IFFOUND, NULL))
+				return true;
+	return fsfuncs->LocateFile(va("dds/materials/%s.dds", name), FSLF_IFFOUND, NULL);	//image.c's dds/ tree
+}
+
+//FTESurf Patch 1039: the base texture as a shader image name -- $whiteimage when the material has
+//none (Source binds TEXTURE_WHITE, so $color/$color2 alone give a flat colour).
+static const char *VMT_BaseImage(const vmtstate_t *st)
+{
+	static char img[MAX_QPATH+16];
+	if (st->nobasetex)
+		return "$whiteimage";
+	Q_snprintfz(img, sizeof(img), "%s%s.vtf", strcmp(st->tex[0].name, "materials/")?"materials/":"", st->tex[0].name);
+	return img;
+}
+
 static void Shader_GenerateFromVMT(parsestate_t *ps, vmtstate_t *st, const char *shortname, void (*LoadMaterialString)(parsestate_t *ps, const char *script))
 {
 	size_t offset = 0;
@@ -2458,7 +2596,7 @@ static void Shader_GenerateFromVMT(parsestate_t *ps, vmtstate_t *st, const char 
 	fte_wireframe turning its triangles into lines.  It was the unknown-class
 	fallback: the material's own name as a texture, i.e. the missing checker.
 	surf_666's spawn is dev_nyro/blends/wire_white, {73 73 73} on 8 displacements.
-	Unlit, not vertex-lit; nofog reaches only the program arms, so the plain pass fogs.
+	Unlit, not vertex-lit; the common material policy below also carries no-fog to plain passes.
 	*/
 	if (!Q_strcasecmp(st->type, "Wireframe") || !Q_strcasecmp(st->type, "Wireframe_DX9") || !Q_strcasecmp(st->type, "Wireframe_DX8"))
 	{
@@ -2538,6 +2676,11 @@ static void Shader_GenerateFromVMT(parsestate_t *ps, vmtstate_t *st, const char 
 		that was never a texture.
 		*/
 		if (*st->envmap)
+			st->nobasetex = 1;
+		//FTESurf Patch 1039: and a material with no $basetexture and no texture of its own name is a
+		//flat colour in Source, not a missing picture -- surf_bossfight's VertexLitGeneric { $color2 }
+		//window frame and lamp drew the checker.
+		else if (!VMT_OwnImageExists(st->tex[0].name))
 			st->nobasetex = 1;
 	}
 
@@ -2755,6 +2898,9 @@ static void Shader_GenerateFromVMT(parsestate_t *ps, vmtstate_t *st, const char 
 			c[0] *= st->alphaval; c[1] *= st->alphaval; c[2] *= st->alphaval;
 			havecolour = true;
 			havealpha = false;
+			//Patch 990: unlitreflect's reflection is not scaled by $color, so it takes the fold here
+			Q_snprintfz(t, sizeof(t), "#ADDALPHA=%f", st->alphaval);
+			Q_strlcat(progargs, t, sizeof(progargs));
 		}
 
 		if (havecolour)
@@ -2914,6 +3060,30 @@ static void Shader_GenerateFromVMT(parsestate_t *ps, vmtstate_t *st, const char 
 
 	Q_strlcatfz(script, &offset, sizeof(script), "\n");
 
+	/*
+	FTESurf: an env_sprite drives a flipbook from the ENTITY's framerate and carries no
+	AnimatedTexture proxy (exit1.vmt is a bare "Sprite" + $basetexture, a 25-frame VTF).
+	Give a multi-frame Sprite the same proxy the world path uses so the shared vmt/animated
+	dispatch below cycles it.  Narrowed to real flipbooks by the frame peek so single-frame
+	sprites keep their path.  The rate is the env_sprite's own framerate when cl_sprites.qc names
+	it (Patch 1035, "ftesurf/spranim/<rate>/" via Shader_LoadVMT), else Source's default 10.
+	*/
+	if (hl2_animated && hl2_animated->ival && !Q_strcasecmp(st->type, "Sprite") && st->spriterate >= 0 &&
+	    *st->tex[0].name && st->animrate <= 0 && VMT_VTFFrames(st->tex[0].name) > 1)
+	{
+		Q_strlcpy(st->animvar, "$basetexture", sizeof(st->animvar));
+		st->animrate = (st->spriterate > 0) ? st->spriterate : 10;
+		if (st->spriterate > 0)
+		{
+			if (vmt_spranim_n < VMT_SPRANIM_LIST)
+			{
+				Q_strlcpy(vmt_spranim[vmt_spranim_n].name, shortname, sizeof(vmt_spranim[0].name));
+				vmt_spranim[vmt_spranim_n].rate = st->spriterate;
+			}
+			vmt_spranim_n++;
+		}
+	}
+
 	if (st->nodraw)
 	{
 		Q_strlcatfz(script, &offset, sizeof(script), "\tsurfaceparm nodraw\n");
@@ -2948,6 +3118,7 @@ static void Shader_GenerateFromVMT(parsestate_t *ps, vmtstate_t *st, const char 
 	else if (hl2_animated && hl2_animated->ival && st->animrate > 0 &&
 	         VMT_ScrollsBase(st->animvar) && *st->tex[0].name &&
 	         (!Q_strcasecmp(st->type, "LightmappedGeneric") || !Q_strcasecmp(st->type, "UnlitGeneric") ||
+	          !Q_strcasecmp(st->type, "Sprite") ||	//FTESurf: env_sprite flipbooks (exit1 etc.)
 	          /*
 	          A WorldVertexTransition with no $basetexture2 is a lightmapped
 	          material wearing the wrong type name -- Patch 187 already draws it
@@ -2975,7 +3146,7 @@ static void Shader_GenerateFromVMT(parsestate_t *ps, vmtstate_t *st, const char 
 		"the flipbook is too dim", not as a lighting bug, and it is exactly the
 		class of thing a screenshot of the smoke could never show.
 		*/
-		qboolean animunlit = !Q_strcasecmp(st->type, "UnlitGeneric");
+		qboolean animunlit = !Q_strcasecmp(st->type, "UnlitGeneric") || !Q_strcasecmp(st->type, "Sprite");	//FTESurf: a sprite is unlit -- keep it off the lightmap (the lit path binds s_lightmap it has no coords for)
 		Q_snprintfz(anim, sizeof(anim), "#ANIMRATE=%f", st->animrate);
 		Q_strlcat(progargs, anim, sizeof(progargs));
 		if (animunlit)
@@ -3108,11 +3279,53 @@ static void Shader_GenerateFromVMT(parsestate_t *ps, vmtstate_t *st, const char 
 			VMT_AddVertexColourArgs(progargs, sizeof(progargs));
 		Q_strlcpy(st->type, "vmt/unlit", sizeof(st->type));
 		Q_strlcatfz(script, &offset, sizeof(script),	"\tprogram \"%s%s\"\n", st->type, progargs);
-		Q_strlcatfz(script, &offset, sizeof(script),	"\tdiffusemap \"%s%s.vtf\"\n", strcmp(st->tex[0].name, "materials/")?"materials/":"", st->tex[0].name);
+		Q_strlcatfz(script, &offset, sizeof(script),	"\tdiffusemap \"%s\"\n", VMT_BaseImage(st));
 		//The blend itself still comes from the shared tail: st->additive makes it
 		//write `progblendfunc add` (:3913), which is the top-level spelling and the
 		//only pass-state directive a program with no pass block can use.
 		vmt_stat_addprog++;
+	}
+	//Patch 990: base + $envmap, which the pass below has never drawn (bhop_ceaseless's labels and logos).
+	else if (!Q_strcasecmp(st->type, "UnlitGeneric") && *st->envmap && !*st->hdrbasetex && !*st->hdrcompressedtex)
+	{
+		char extra[256] = "";
+		size_t eoff = 0;
+		qboolean detmask = *st->detail && st->detailblendmode == 9;
+		if (st->vertexcolor)	//each on its own, as Source keys them ($vertexcolor alone no longer brings alpha)
+			Q_strlcat(progargs, "#VERTEXCOL", sizeof(progargs));
+		if (st->vertexalpha)
+			Q_strlcat(progargs, "#VERTEXALPHA", sizeof(progargs));
+		if (!strcmp(st->envmap, "env_cubemap") && hl2_envcubemap && hl2_envcubemap->ival)
+			st->wantenvcube = true;
+		if (st->envfrombase)
+		{	//base alpha is the mask, so Source drops the alpha test (vertexlitgeneric_dx9_helper.cpp:328-330);
+			//#MASK leaves the name too, or the depth and rtlight overrides still discard (gl_shader.c:6083)
+			char *m = strstr(progargs, "#MASK=");
+			char *e = m ? strstr(m, "#MASKLT") : NULL;
+			if (e)
+				memmove(m, e + 7, strlen(e + 7) + 1);
+			Q_strlcatfz(extra, &eoff, sizeof(extra), "#ENVFROMBASE");
+			st->alphatest = 0;
+		}
+		else if (*st->envmapmask)
+			Q_strlcatfz(extra, &eoff, sizeof(extra), "#ENVFROMMASK");
+		if (detmask)
+		{
+			Q_strlcatfz(extra, &eoff, sizeof(extra), "#DETAILMASK#DETAILSCALE=%f", st->detailscale > 0 ? st->detailscale : 4.0f);
+			if (st->detailblendfactor_set)
+				Q_strlcatfz(extra, &eoff, sizeof(extra), "#DETAILBLEND=%f", st->detailblendfactor);
+			if (st->detscrollrate != 0)
+			{
+				double a = st->detscrollangle * (3.14159265358979323846/180.0);
+				Q_strlcatfz(extra, &eoff, sizeof(extra), "#DETAILSCROLL=%f,%f", st->detscrollrate*cos(a), st->detscrollrate*sin(a));
+			}
+		}
+		Q_strlcpy(st->type, "vmt/unlitreflect#BASE", sizeof(st->type));
+		Q_strlcatfz(script, &offset, sizeof(script), "\tprogram \"%s%s%s%s%s%s\"\n",
+			st->type, extra, progargs, envmaptint, envmapsat, envmapcontrast);
+		Q_strlcatfz(script, &offset, sizeof(script), "\tdiffusemap \"%s\"\n", VMT_BaseImage(st));
+		if (detmask)
+			Q_strlcatfz(script, &offset, sizeof(script), "\tuppermap \"%s%s.vtf\"\n", strcmp(st->detail, "materials/")?"materials/":"", st->detail);
 	}
 	else if (!Q_strcasecmp(st->type, "UnlitGeneric"))
 	{
@@ -3132,7 +3345,7 @@ static void Shader_GenerateFromVMT(parsestate_t *ps, vmtstate_t *st, const char 
 		else if (st->nobasetex)	//FTESurf Patch 190, see the fallback at the top of this function
 			Q_strlcatfz(script, &offset, sizeof(script),	"\tmap $whiteimage\n");
 		else
-			Q_strlcatfz(script, &offset, sizeof(script),	"\tmap \"%s%s.vtf\"\n", strcmp(st->tex[0].name, "materials/")?"materials/":"", st->tex[0].name);
+			Q_strlcatfz(script, &offset, sizeof(script),	"\tmap \"%s\"\n", VMT_BaseImage(st));
 
 		if (st->vertexcolor)
 			Q_strlcatfz(script, &offset, sizeof(script),	"\rrgbGen vertex\n");
@@ -3244,7 +3457,7 @@ static void Shader_GenerateFromVMT(parsestate_t *ps, vmtstate_t *st, const char 
 			Q_strlcatfz(script, &offset, sizeof(script),	"\tprogram \"%s%s%s%s%s\"\n", st->type, progargs,
 				envsrcspec?envmaptint:"", envsrcspec?envmapsat:"", envsrcspec?envmapcontrast:"");
 		}
-		Q_strlcatfz(script, &offset, sizeof(script),	"\tdiffusemap \"%s%s.vtf\"\n", strcmp(st->tex[0].name, "materials/")?"materials/":"", st->tex[0].name);
+		Q_strlcatfz(script, &offset, sizeof(script),	"\tdiffusemap \"%s\"\n", VMT_BaseImage(st));
 		if (*st->tex[1].name)
 			Q_strlcatfz(script, &offset, sizeof(script),	"\tuppermap \"%s%s.vtf\"\n", strcmp(st->tex[1].name, "materials/")?"materials/":"", st->tex[1].name);
 		//$blendmodulatetexture rides in on `lowermap`: S_LOWERMAP/s_lower
@@ -3502,7 +3715,7 @@ static void Shader_GenerateFromVMT(parsestate_t *ps, vmtstate_t *st, const char 
 		above has to be a one-sampler special case.
 		*/
 		Q_strlcatfz(script, &offset, sizeof(script),	"\tprogram \"%s%s\"\n", st->type, progargs);
-		Q_strlcatfz(script, &offset, sizeof(script),	"\tdiffusemap \"%s%s.vtf\"\n", strcmp(st->tex[0].name, "materials/")?"materials/":"", st->tex[0].name);
+		Q_strlcatfz(script, &offset, sizeof(script),	"\tdiffusemap \"%s\"\n", VMT_BaseImage(st));
 		//$texture2 rides on `uppermap`: S_UPPERMAP/s_upper is a real default
 		//sampler slot that nothing on this material type uses.  The same trick
 		//Patch 251 plays with s_specular for $bumpmap2 and Patch 187 with
@@ -3519,7 +3732,7 @@ static void Shader_GenerateFromVMT(parsestate_t *ps, vmtstate_t *st, const char 
 	{
 
 		Q_strlcatfz(script, &offset, sizeof(script), "{\n");
-		Q_strlcatfz(script, &offset, sizeof(script),	"\tmap \"%s%s.vtf\"\n", strcmp(st->tex[0].name, "materials/")?"materials/":"", st->tex[0].name);
+		Q_strlcatfz(script, &offset, sizeof(script),	"\tmap \"%s\"\n", VMT_BaseImage(st));
 
 		if (st->mod2x) {
 			Q_strlcatfz(script, &offset, sizeof(script),"\t\tblendFunc gl_dst_color gl_src_color\n");
@@ -3570,7 +3783,7 @@ static void Shader_GenerateFromVMT(parsestate_t *ps, vmtstate_t *st, const char 
 		VMT_AddVertexColourArgs(progargs, sizeof(progargs));
 		Q_strlcpy(st->type, "vmt/unlit", sizeof(st->type));
 		Q_strlcatfz(script, &offset, sizeof(script),	"\tprogram \"%s%s\"\n", st->type, progargs);
-		Q_strlcatfz(script, &offset, sizeof(script),	"\tdiffusemap \"%s%s.vtf\"\n", strcmp(st->tex[0].name, "materials/")?"materials/":"", st->tex[0].name);
+		Q_strlcatfz(script, &offset, sizeof(script),	"\tdiffusemap \"%s\"\n", VMT_BaseImage(st));
 		vmt_stat_addprog++;
 	}
 	else if (!Q_strcasecmp(st->type, "Sprite"))
@@ -3610,7 +3823,7 @@ static void Shader_GenerateFromVMT(parsestate_t *ps, vmtstate_t *st, const char 
 		is referenced by a sprite ENTITY, and nothing spawns those yet.
 		*/
 		Q_strlcatfz(script, &offset, sizeof(script), "{\n");
-		Q_strlcatfz(script, &offset, sizeof(script),	"\tmap \"%s%s.vtf\"\n", strcmp(st->tex[0].name, "materials/")?"materials/":"", st->tex[0].name);
+		Q_strlcatfz(script, &offset, sizeof(script),	"\tmap \"%s\"\n", VMT_BaseImage(st));
 		Q_strlcatfz(script, &offset, sizeof(script),	"\rrgbGen vertex\n");
 		if (st->vertexalpha || st->translucent || st->alphaval)
 			Q_strlcatfz(script, &offset, sizeof(script),	"\ralphaGen vertex\n");
@@ -3686,7 +3899,7 @@ static void Shader_GenerateFromVMT(parsestate_t *ps, vmtstate_t *st, const char 
 		everything drawn after it.
 		*/
 		Q_strlcatfz(script, &offset, sizeof(script), "{\n");
-		Q_strlcatfz(script, &offset, sizeof(script),	"\tmap \"%s%s.vtf\"\n", strcmp(st->tex[0].name, "materials/")?"materials/":"", st->tex[0].name);
+		Q_strlcatfz(script, &offset, sizeof(script),	"\tmap \"%s\"\n", VMT_BaseImage(st));
 		if (st->vertexcolor || !*st->color)
 			Q_strlcatfz(script, &offset, sizeof(script),	"\trgbGen vertex\n");
 		if (st->vertexalpha || st->translucent || st->additive)
@@ -3711,7 +3924,7 @@ static void Shader_GenerateFromVMT(parsestate_t *ps, vmtstate_t *st, const char 
 	{
 		Q_strlcpy(st->type, "vmt/vertexlit", sizeof(st->type));
 		Q_strlcatfz(script, &offset, sizeof(script),	"\tprogram \"%s%s\"\n", st->type, progargs);
-		Q_strlcatfz(script, &offset, sizeof(script),	"\tdiffusemap \"%s%s.vtf\"\n", strcmp(st->tex[0].name, "materials/")?"materials/":"", st->tex[0].name);
+		Q_strlcatfz(script, &offset, sizeof(script),	"\tdiffusemap \"%s\"\n", VMT_BaseImage(st));
 		Q_strlcatfz(script, &offset, sizeof(script),	"\tpolygonOffset 1\n");
 		st->decal = 0;
 	}
@@ -3719,7 +3932,7 @@ static void Shader_GenerateFromVMT(parsestate_t *ps, vmtstate_t *st, const char 
 	{
 		Q_strlcatfz(script, &offset, sizeof(script),	"\tpolygonOffset 1\n");
 		Q_strlcatfz(script, &offset, sizeof(script),	"\t{\n");
-		Q_strlcatfz(script, &offset, sizeof(script),	"\t\tmap \"%s%s.vtf\"\n", strcmp(st->tex[0].name, "materials/")?"materials/":"", st->tex[0].name);
+		Q_strlcatfz(script, &offset, sizeof(script),	"\t\tmap \"%s\"\n", VMT_BaseImage(st));
 
 		if (!st->mod2x) {
 			Q_strlcatfz(script, &offset, sizeof(script),"\t\tblendFunc gl_dst_color gl_src_color\n");
@@ -3739,7 +3952,7 @@ static void Shader_GenerateFromVMT(parsestate_t *ps, vmtstate_t *st, const char 
 		   for $additive: surf_board_this wraps stage 1 in
 		   Modulate { lody/rainbow $additive 1 }, which washed its sky yellow. */
 		Q_strlcatfz(script, &offset, sizeof(script),	"\t{\n");
-		Q_strlcatfz(script, &offset, sizeof(script),	"\t\tmap \"%s%s.vtf\"\n", strcmp(st->tex[0].name, "materials/")?"materials/":"", st->tex[0].name);
+		Q_strlcatfz(script, &offset, sizeof(script),	"\t\tmap \"%s\"\n", VMT_BaseImage(st));
 
 		if (st->mod2x) {
 			Q_strlcatfz(script, &offset, sizeof(script),"\t\tblendFunc gl_dst_color gl_src_color\n");
@@ -3757,7 +3970,7 @@ static void Shader_GenerateFromVMT(parsestate_t *ps, vmtstate_t *st, const char 
 	{
 		int wmode = hl2_water?hl2_water->ival:3;
 		if (wmode < 0) wmode = 0;
-		if (wmode > 4) wmode = 4;
+		if (wmode > 5) wmode = 5;
 		vmt_stat_water++;
 
 		/*
@@ -3903,6 +4116,21 @@ static void Shader_GenerateFromVMT(parsestate_t *ps, vmtstate_t *st, const char 
 				Q_snprintfz(t, sizeof(t), "#MULTITEXTURE#SCROLL1=%f,%f#SCROLL2=%f,%f", st->waterscroll1[0], st->waterscroll1[1], st->waterscroll2[0], st->waterscroll2[1]);
 				Q_strlcat(progargs, t, sizeof(progargs));
 			}
+			//Patch 990: flowmap water, on vmt/water only (wmode 1/2, not $forcecheap's opaque arm);
+			//defaults for keys a material leaves out are this patch's, not measured.
+			if (*st->flowmap && *st->normalmap && (wmode == 1 || wmode == 2 || wmode == 5) && !(st->water_cheap && st->envauthored))
+			{
+				static const float fdef[7] = {1, 1, 0.2f, 1, 1, 1, 0.0002f};
+				float f[7];
+				int k;
+				for (k = 0; k < 7; k++)
+					f[k] = st->flow_set[k] ? st->flow[k] : fdef[k];
+				if (f[1] <= 0) f[1] = 1;
+				if (f[5] <= 0) f[5] = 1;
+				Q_snprintfz(t, sizeof(t), "#FLOW#FLOWPARMS=%f,%f,%f,%f#FLOWTIME=%f,%f,%f", f[0], f[1], f[2], f[3], f[4], f[5], f[6]);
+				Q_strlcat(progargs, t, sizeof(progargs));
+				vmt_stat_flowwater++;
+			}
 			//What the census will print. See the note beside vmt_stat_waterargs
 			//for why this is recorded here rather than probed with shader_here.
 			Q_strlcpy(vmt_stat_waterargs, *progargs ? progargs : "(none)",
@@ -3998,21 +4226,40 @@ static void Shader_GenerateFromVMT(parsestate_t *ps, vmtstate_t *st, const char 
 			removes one whole scene render per batch and is what Source's own
 			cheap water does.
 			*/
-			Q_strlcatfz(script, &offset, sizeof(script),
-				"\t{\n"
-					"\t\tprogram \"vmt/water%s%s\"\n"	//P867: vmt/wateranim is vmt/water under GLSL 130
-					"\t\tmap $refraction\n", strstr(progargs, "#ANIMBUMP") ? "anim" : "", progargs);
+			//FTESurf Patch 1020: mode 5 samples a copy of the view (colour and depth, taken after the opaque
+			//world -- sort seethrough, below) instead of rendering refraction and reflection; #SCREEN reflects
+			//by marching that depth copy.
+			{
+				//P1039: water.glsl's ALPHA is its base layer, which Source draws only with a $basetexture
+				//(vmt/waterbudget's ALPHA is its opacity, and keeps it)
+				char wargs[sizeof(progargs)], *a, *e;
+				Q_strlcpy(wargs, progargs, sizeof(wargs));
+				if (st->nobasetex && (a = strstr(wargs, "#ALPHA=")))
+				{
+					e = strchr(a+1, '#');
+					memmove(a, e ? e : a+strlen(a), strlen(e ? e : a+strlen(a))+1);
+				}
+				Q_strlcatfz(script, &offset, sizeof(script),
+					"\t{\n"
+						"\t\tprogram \"vmt/water%s%s%s\"\n"	//P867: vmt/wateranim is vmt/water under GLSL 130
+						"\t\tmap %s\n", strstr(progargs, "#ANIMBUMP") ? "anim" : "", wargs, wmode == 5 ? "#SCREEN" : "",
+						wmode == 5 ? "$currentrender" : "$refraction");
+			}
 			//FTESurf Patch 868: #LQWATER ($forcecheap without $forceexpensive) reads the cubemap,
 			//never the capture.
-			if (wmode >= 2 && !strstr(progargs, "#LQWATER"))
+			if (wmode >= 2 && wmode != 5 && !strstr(progargs, "#LQWATER"))
 				Q_strlcatfz(script, &offset, sizeof(script), "\t\tmap $reflection\n");
 			else
 				Q_strlcatfz(script, &offset, sizeof(script), "\t\tmap $null\n");
-			Q_strlcatfz(script, &offset, sizeof(script), "\t\tmap $refractiondepth\n");
+			Q_strlcatfz(script, &offset, sizeof(script), wmode == 5 ? "\t\tmap $currentdepth\n" : "\t\tmap $refractiondepth\n");
 			if (strstr(progargs, "#ANIMBUMP"))	//FTESurf Patch 867: sampler 3, every frame of the normal map
 				Q_strlcatfz(script, &offset, sizeof(script), "\t\tmap \"$2darray:%s%s.vtf\"\n",
 					strcmp(st->normalmap, "materials/")?"materials/":"", st->normalmap);
 			Q_strlcatfz(script, &offset, sizeof(script), "\t}\n");
+			//After the opaque world, decals and see-through surfaces, before the unlit-decal and banner sorts
+			//that particles and Source fire smoke draw in without depth (underwater painted over them).
+			if (wmode == 5)
+				Q_strlcatfz(script, &offset, sizeof(script), "\tsort seethrough\n");
 			//FTESurf Patch 868: Source water reflects entities only under $reflectentities.
 			if (!st->water_reflectents)
 				Q_strlcatfz(script, &offset, sizeof(script), "\tfte_reflectnoentities\n");
@@ -4026,8 +4273,16 @@ static void Shader_GenerateFromVMT(parsestate_t *ps, vmtstate_t *st, const char 
 		*/
 		if (wmode != 3 && wmode != 4)
 		{
-			Q_strlcatfz(script, &offset, sizeof(script),	"\tdiffusemap \"%s%s.vtf\"\n", strcmp(st->tex[0].name, "materials/")?"materials/":"", st->tex[0].name);
+			Q_strlcatfz(script, &offset, sizeof(script),	"\tdiffusemap \"%s\"\n", VMT_BaseImage(st));
 			Q_strlcatfz(script, &offset, sizeof(script),	"\tnormalmap \"%s%s.vtf\"\n", strcmp(st->normalmap, "materials/")?"materials/":"", st->normalmap);
+			if (strstr(progargs, "#FLOW#"))	//Patch 990: shader-scoped slots the water pass's program reads
+			{
+				Q_strlcatfz(script, &offset, sizeof(script), "\tuppermap \"%s%s.vtf\"\n", strcmp(st->flowmap, "materials/")?"materials/":"", st->flowmap);
+				if (*st->flownoise)
+					Q_strlcatfz(script, &offset, sizeof(script), "\tlowermap \"%s%s.vtf\"\n", strcmp(st->flownoise, "materials/")?"materials/":"", st->flownoise);
+				else
+					Q_strlcatfz(script, &offset, sizeof(script), "\tlowermap $blackimage\n");
+			}
 		}
 		Q_strlcatfz(script, &offset, sizeof(script),	"\tsurfaceparm nodlight\n");
 	}
@@ -4168,6 +4423,7 @@ static void Shader_GenerateFromVMT(parsestate_t *ps, vmtstate_t *st, const char 
 			qboolean env = !!*st->envmap;	//env_cubemap too, as in mode 0
 			int rkind = VMT_RefractBlend(st);
 			qboolean add = rkind == REFR_ADD || rkind == REFR_ADDALPHA;
+			qboolean animbump;
 
 			if (*nm)
 				Q_snprintfz(bump, sizeof(bump), "\"%s%s.vtf\"", strcmp(nm, "materials/")?"materials/":"", nm);
@@ -4190,6 +4446,20 @@ static void Shader_GenerateFromVMT(parsestate_t *ps, vmtstate_t *st, const char 
 			{
 				aoff = strlen(args);
 				Q_strlcatfz(args, &aoff, sizeof(args), "#REFRAMOUNT=%f", st->refractamount);
+			}
+			if (st->refrsine_set)	//Patch 990
+			{
+				aoff = strlen(args);
+				Q_strlcatfz(args, &aoff, sizeof(args), "#REFRSINE=%f,%f,%f", st->refrsine[0], st->refrsine[1], st->refrsine[2]);
+			}
+			//Patch 990: an AnimatedTexture on $normalmap -- every frame from a 2D array in vmt/refractanim
+			//(P867's water path); bhop_ceaseless's sword-floor ripple is 60 frames at 30 a second.
+			animbump = *nm && VMT_AnimBump(st, nm);
+			if (animbump)
+			{
+				aoff = strlen(args);
+				Q_strlcatfz(args, &aoff, sizeof(args), "#ANIMBUMP=%f", st->animrate);
+				Q_snprintfz(bump, sizeof(bump), "\"$2darray:%s%s.vtf\"", strcmp(nm, "materials/")?"materials/":"", nm);
 			}
 			if (*st->refracttinttexture)
 				Q_strlcat(args, "#TINTTEX", sizeof(args));
@@ -4230,13 +4500,13 @@ static void Shader_GenerateFromVMT(parsestate_t *ps, vmtstate_t *st, const char 
 			//(#OPAQUE) and asks for depth, which the engine keeps on models only.
 			Q_strlcatfz(script, &offset, sizeof(script),
 				"\t{\n"
-					"\t\tprogram \"vmt/refract%s\"\n"
+					"\t\tprogram \"vmt/refract%s%s\"\n"
 					"\t\tblendfunc %s\n"
 					"%s"
 					"\t\tmap %s\n"
 					"\t\tmap %s\n"
 					"\t\tmap %s\n"
-				"\t}\n", args,
+				"\t}\n", animbump ? "anim" : "", args,
 				rkind == REFR_ADDALPHA ? "GL_SRC_ALPHA GL_ONE" : rkind == REFR_ADD ? "GL_ONE GL_ONE" : "blend",
 				(rkind == REFR_OPAQUE && !st->nowritez && st->basedefaulted) ? "\t\tdepthwrite\n" : "", refr, bump, tint);
 			st->translucent = 0;
@@ -4310,6 +4580,14 @@ static void Shader_GenerateFromVMT(parsestate_t *ps, vmtstate_t *st, const char 
 			Q_strlcatfz(script, &offset, sizeof(script),	"\tsurfaceparm nodraw\n");
 		else
 			Q_strlcatfz(script, &offset, sizeof(script),	"\tprogram \"vmt/imposter%s\"\n", progargs);
+		//FTESurf Patch 1033: 2 = Source's state (windowimposter_dx90.cpp blends and writes no depth), ahead of
+		//other blended surfaces, so a fading func_lod outside bhop_ceaseless's fake sky is not cut by it. Opt-in:
+		//particles and blended faces behind an imposter then draw over it (Source sorts them back to front).
+		if (hl2_imposter && hl2_imposter->ival == 2)
+		{
+			Q_strlcatfz(script, &offset, sizeof(script),	"\tsort seethrough\n");
+			st->translucent = 1;
+		}
 	}
 	/*
 	FTESurf Patch 236: a LIGHTMAPPED material does not stop being lightmapped
@@ -4411,7 +4689,7 @@ static void Shader_GenerateFromVMT(parsestate_t *ps, vmtstate_t *st, const char 
 
 
 
-		Q_strlcatfz(script, &offset, sizeof(script),	"\tdiffusemap \"%s%s.vtf\"\n", strcmp(st->tex[0].name, "materials/")?"materials/":"", st->tex[0].name);
+		Q_strlcatfz(script, &offset, sizeof(script),	"\tdiffusemap \"%s\"\n", VMT_BaseImage(st));
 
 		if (*st->normalmap) {
 			Q_strlcatfz(script, &offset, sizeof(script),	"\tnormalmap \"%s%s.vtf\"\n", strcmp(st->normalmap, "materials/")?"materials/":"", st->normalmap);
@@ -4468,7 +4746,7 @@ static void Shader_GenerateFromVMT(parsestate_t *ps, vmtstate_t *st, const char 
 			Q_strlcatfz(script, &offset, sizeof(script),	"\tprogram \"%s%s%s%s%s\"\n", st->type, progargs, envmaptint, envmapsat, envmapcontrast);
 
 
-		Q_strlcatfz(script, &offset, sizeof(script),	"\tdiffusemap \"%s%s.vtf\"\n", strcmp(st->tex[0].name, "materials/")?"materials/":"", st->tex[0].name);
+		Q_strlcatfz(script, &offset, sizeof(script),	"\tdiffusemap \"%s\"\n", VMT_BaseImage(st));
 
 		if (*st->normalmap)
 			Q_strlcatfz(script, &offset, sizeof(script),	"\tnormalmap \"%s%s.vtf\"\n", strcmp(st->normalmap, "materials/")?"materials/":"", st->normalmap);
@@ -4524,7 +4802,7 @@ static void Shader_GenerateFromVMT(parsestate_t *ps, vmtstate_t *st, const char 
 			/* the default should just be unlit, let's not make any assumptions - eukara*/
 			Q_strlcpy(st->type, "vmt/unlit", sizeof(st->type));
 			Q_strlcatfz(script, &offset, sizeof(script),	"\tprogram \"%s%s\"\n", st->type, progargs);
-			Q_strlcatfz(script, &offset, sizeof(script),	"\tdiffusemap \"%s%s.vtf\"\n", strcmp(st->tex[0].name, "materials/")?"materials/":"", st->tex[0].name);
+			Q_strlcatfz(script, &offset, sizeof(script),	"\tdiffusemap \"%s\"\n", VMT_BaseImage(st));
 		}
 	}
 
@@ -4626,16 +4904,20 @@ static void Shader_GenerateFromVMT(parsestate_t *ps, vmtstate_t *st, const char 
 	}
 
 	if (st->decal) {
-		Q_strlcatfz(script, &offset, sizeof(script),	"\tpolygonOffset 1\n");
+		//Patch 990: a $decal Refract one step nearer than other decals: bhop_ceaseless's ripple, the
+		//swirl decal and the floor share z 11616, and at equal bias the ripple flickered over the swirl.
+		Q_strlcatfz(script, &offset, sizeof(script),	"\tpolygonOffset %d\n", !Q_strcasecmp(st->vmtclass, "Refract") ? 2 : 1);
 		Q_strlcatfz(script, &offset, sizeof(script),	"\trgbGen vertex\n");
 	}
 	if (st->wireframe)
 		Q_strlcatfz(script, &offset, sizeof(script),	"\tfte_wireframe\n");	//FTESurf Patch 780
+	if (st->nofog)
+		Q_strlcatfz(script, &offset, sizeof(script), "\tfte_materialnofog\n");
 
 	if (*st->fullbrightmap)
 		Q_strlcatfz(script, &offset, sizeof(script), "\tfullbrightmap \"%s%s.vtf\"\n", strcmp(st->fullbrightmap, "materials/")?"materials/":"", st->fullbrightmap);
 	else if (st->selfillum == 1)
-		Q_strlcatfz(script, &offset, sizeof(script), "\tfullbrightmap \"%s%s.vtf\"\n", strcmp(st->tex[0].name, "materials/")?"materials/":"", st->tex[0].name);
+		Q_strlcatfz(script, &offset, sizeof(script), "\tfullbrightmap \"%s\"\n", VMT_BaseImage(st));
 
 	if (*st->envmapmask)
 		Q_strlcatfz(script, &offset, sizeof(script),	"\treflectmask \"%s%s.vtf\"\n", strcmp(st->envmapmask, "materials/")?"materials/":"", st->envmapmask);
@@ -4963,9 +5245,117 @@ static void VMT_EmissiveMappingScale(const char *name, char *args, size_t argsiz
 
 const char *VBSP_ColourCorrectScript(const char *name);	//FTESurf Patch 288, mod_vbsp.c
 
+/*
+FTESurf Patch 1013: Source's $underwateroverlay. A leaf names its water by the SURFACE material's
+texinfo (dleafwaterdata_t); with the eye in the volume Source reads the overlay from that
+material's $bottommaterial when it has one, else from the material itself. mod_vbsp.c resolves
+one per volume at map load and publishes the eye's in r_underwateroverlay. Returns -1 when the
+surface material cannot be read (the engine's warp stays), 0 for no overlay, 1 with out set.
+*/
+int Mat_VMT_UnderwaterOverlay(const char *material, char *out, size_t outsize)
+{
+	vmtstate_t *st = plugfuncs->Malloc(sizeof(*st));
+	char bottom[MAX_QPATH];
+	int r = -1;
+
+	*out = 0;
+	memset(st, 0, sizeof(*st));
+	if (VMT_ReadVMT(material, st))
+	{
+		r = 0;
+		if (*st->bottommaterial)
+		{
+			VMT_BottomNormalise(st->bottommaterial, bottom, sizeof(bottom));
+			memset(st, 0, sizeof(*st));
+			if (!VMT_ReadVMT(bottom, st))
+				*st->underwateroverlay = 0;	//a missing bottom material has no overlay (liquids/water_beneath)
+		}
+		if (*st->underwateroverlay)
+		{
+			VMT_BottomNormalise(st->underwateroverlay, out, outsize);	//no materials/, no extension
+			Q_strlwr(out);
+			r = 1;
+		}
+	}
+	if (st->sourcefile)
+		plugfuncs->Free(st->sourcefile);
+	plugfuncs->Free(st);
+	return r;
+}
+
+//The overlay's post-process: refract.glsl's warp, blur, tint and $bumptransform scroll on the scene
+//($sourcecolour) instead of a screen copy. False when nothing can warp (no $normalmap).
+qboolean Mat_VMT_OverlayScript(const char *overlay, char *script, size_t size)
+{
+	vmtstate_t *st = plugfuncs->Malloc(sizeof(*st));
+	char args[512] = "";
+	size_t aoff = 0;
+	qboolean ok;
+
+	memset(st, 0, sizeof(*st));
+	ok = VMT_ReadVMT(overlay, st);
+	if (ok)
+		VMT_ResolveProxies(st);
+	ok = ok && *st->normalmapkey;
+	if (ok)
+	{
+		if (st->refracttint_set)
+			Q_strlcatfz(args, &aoff, sizeof(args), "#REFRTINT=%f,%f,%f", st->refracttint[0], st->refracttint[1], st->refracttint[2]);
+		if (st->refractamount_set)
+			Q_strlcatfz(args, &aoff, sizeof(args), "#REFRAMOUNT=%f", st->refractamount);
+		if (st->refrsine_set)
+			Q_strlcatfz(args, &aoff, sizeof(args), "#REFRSINE=%f,%f,%f", st->refrsine[0], st->refrsine[1], st->refrsine[2]);
+		if ((int)st->bluramount >= 1)
+			Q_strlcatfz(args, &aoff, sizeof(args), "#BLUR");
+		if (st->scrollrate != 0 && VMT_ScrollsBump(st->scrollvar, false))
+		{
+			double a = st->scrollangle * (3.14159265358979323846/180.0);
+			Q_strlcatfz(args, &aoff, sizeof(args), "#SCROLL=%f,%f", st->scrollrate*cos(a), st->scrollrate*sin(a));
+		}
+		//No opening brace: a loader's script starts inside the shader body (see mod_vbsp.c's colour grade).
+		Q_snprintfz(script, size,
+			"\tprogram \"vmt/uwoverlay%s\"\n"
+			"\t{\n\t\tmap $sourcecolour\n\t\tnodepthtest\n\t}\n"
+			"\t{\n\t\tmap \"%s%s.vtf\"\n\t}\n"
+			"}\n", args, strcmp(st->normalmapkey, "materials/")?"materials/":"", st->normalmapkey);
+	}
+	if (st->sourcefile)
+		plugfuncs->Free(st->sourcefile);
+	plugfuncs->Free(st);
+	return ok;
+}
+
+//FTESurf Patch 1038: a detail-prop cell's skin, "<maxd>/<fade>/<material>" after "ftesurf/detail/"
+//(mod_vbsp.c VBSP_DetailBuild): the material's base texture under vmt/detail's billboard program.
+static qboolean Mat_VMT_DetailScript(const char *args, char *script, size_t size)
+{
+	vmtstate_t *st;
+	const char *s = strchr(args, '/'), *mat = s ? strchr(s + 1, '/') : NULL;
+	float maxd = atof(args), fade = s ? atof(s + 1) : 0;
+	qboolean ok;
+
+	if (!mat || maxd <= 0)
+		return false;
+	st = plugfuncs->Malloc(sizeof(*st));
+	memset(st, 0, sizeof(*st));
+	ok = VMT_ReadVMT(mat + 1, st) && *st->tex[0].name;
+	if (ok)
+		Q_snprintfz(script, size,
+			"\tprogram \"vmt/detail#MAXD=%g#FADE=%g\"\n"
+			"\tdiffusemap \"%s%s.vtf\"\n"
+			"\tcull disable\n\tsurfaceparm nodlight\n\tsurfaceparm noshadows\n\tsurfaceparm nomarks\n"
+			"}\n", maxd, fade, strcmp(st->tex[0].name, "materials/")?"materials/":"", st->tex[0].name);
+	if (st->sourcefile)
+		plugfuncs->Free(st->sourcefile);
+	plugfuncs->Free(st);
+	return ok;
+}
+
 static qboolean Shader_LoadVMT(parsestate_t *ps, const char *filename, void (*LoadMaterialString)(parsestate_t *ps, const char *script))
 {
 	vmtstate_t st;
+	const char *vmtname = filename;
+	float spriterate = 0;
 
 	/*
 	FTESurf Patch 288: the colour-correction post-process, which is not a
@@ -4991,10 +5381,41 @@ static qboolean Shader_LoadVMT(parsestate_t *ps, const char *filename, void (*Lo
 			return true;
 		}
 	}
+	if (!Q_strncasecmp(filename, "ftesurf/uw/", 11))
+	{	//FTESurf Patch 1013: the underwater overlay mod_vbsp.c names in r_underwateroverlay
+		static char uw[4096];
+		if (!Mat_VMT_OverlayScript(filename + 11, uw, sizeof(uw)))
+			return false;
+		LoadMaterialString(ps, uw);
+		return true;
+	}
+	if (!Q_strncasecmp(filename, "ftesurf/detail/", 15))
+	{	//FTESurf Patch 1038
+		char det[1024];
+		if (!Mat_VMT_DetailScript(filename + 15, det, sizeof(det)))
+			return false;
+		LoadMaterialString(ps, det);
+		return true;
+	}
+
+	//FTESurf Patch 1035: "ftesurf/spranim/<rate>/<material>" is cl_sprites.qc asking for an env_sprite
+	//flipbook at its own framerate (see hl2_spranim, mod_vbsp.c).  <material> is the real VMT and <rate>
+	//feeds the AnimatedTexture synthesis; the full name stays the shader's identity, so each rate is its
+	//own shader.  Rate 0 is a still frame, as Source starts no animation then (sprite.cpp:560).
+	if (!Q_strncasecmp(filename, "ftesurf/spranim/", 16))
+	{
+		const char *slash = strchr(filename + 16, '/');
+		spriterate = atof(filename + 16);
+		if (!slash || spriterate < 0)
+			return false;
+		if (!spriterate)
+			spriterate = -1;
+		vmtname = slash + 1;
+	}
 
 	memset(&st, 0, sizeof(st));
 	st.savefile = NULL;//ps->saveshaderbody;
-	if (!VMT_ReadVMT(filename, &st))
+	if (!VMT_ReadVMT(vmtname, &st))
 	{
 		/*
 		FTESurf build 11: COUNT THE MISSES, and remember the first name.
@@ -5058,13 +5479,13 @@ static qboolean Shader_LoadVMT(parsestate_t *ps, const char *filename, void (*Lo
 		//gfx/loading are QUAKE's own console and loading-screen images, probed on every
 		//map by the engine's 2D code.  They are not Source materials, no VPK will ever
 		//hold one, and they were 13 constant entries in the running list on every map.
-		size_t fl = strlen(filename);
-		const char *ext = fsfuncs->GetExtension(filename, NULL);
-		if ((fl < 5 || strcmp(filename+fl-5, "_glsl")) &&
-		    strchr(filename, '/') &&
-		    strncmp(filename, "tools/", 6) &&
-		    strncmp(filename, "sky/", 4) &&
-		    strncmp(filename, "gfx/", 4) &&
+		size_t fl = strlen(vmtname);
+		const char *ext = fsfuncs->GetExtension(vmtname, NULL);
+		if ((fl < 5 || strcmp(vmtname+fl-5, "_glsl")) &&
+		    strchr(vmtname, '/') &&
+		    strncmp(vmtname, "tools/", 6) &&
+		    strncmp(vmtname, "sky/", 4) &&
+		    strncmp(vmtname, "gfx/", 4) &&
 		    !(*ext && strcmp(ext, ".vmt")))
 		{
 			//FTESurf Patch 181: a material that WAS found and would not parse is
@@ -5072,19 +5493,19 @@ static qboolean Shader_LoadVMT(parsestate_t *ps, const char *filename, void (*Lo
 			//a missing asset pack -- see vmtstate_t::filefound.
 			if (st.filefound)
 			{
-				if (!VMT_CensusSeen(vmt_stat_unparsed_name, vmt_stat_unparsed, filename))
+				if (!VMT_CensusSeen(vmt_stat_unparsed_name, vmt_stat_unparsed, vmtname))
 				{
 					if (vmt_stat_unparsed < VMT_MISSING_LIST)
-						Q_strlcpy(vmt_stat_unparsed_name[vmt_stat_unparsed], filename, MAX_QPATH);
+						Q_strlcpy(vmt_stat_unparsed_name[vmt_stat_unparsed], vmtname, MAX_QPATH);
 					vmt_stat_unparsed++;
 				}
 			}
 			else
 			{
-				if (!VMT_CensusSeen(vmt_stat_missing_name, vmt_stat_missing, filename))
+				if (!VMT_CensusSeen(vmt_stat_missing_name, vmt_stat_missing, vmtname))
 				{
 					if (vmt_stat_missing < VMT_MISSING_LIST)
-						Q_strlcpy(vmt_stat_missing_name[vmt_stat_missing], filename, MAX_QPATH);
+						Q_strlcpy(vmt_stat_missing_name[vmt_stat_missing], vmtname, MAX_QPATH);
 					vmt_stat_missing++;
 				}
 			}
@@ -5099,7 +5520,7 @@ static qboolean Shader_LoadVMT(parsestate_t *ps, const char *filename, void (*Lo
 	//only thing in the map that knows which water that underside belongs to.  Recorded
 	//here rather than in VMT_ParseBlock because that recurses through patch/include
 	//chains whose intermediate states are not materials in their own right.
-	VMT_BottomRecord(filename, st.bottommaterial);
+	VMT_BottomRecord(vmtname, st.bottommaterial);
 
 	//FTESurf: the proxy graph is complete only once every include and patch has
 	//been folded in, so it is compiled into coefficients HERE and not inside
@@ -5107,7 +5528,8 @@ static qboolean Shader_LoadVMT(parsestate_t *ps, const char *filename, void (*Lo
 	//and whose Subtract comes from the patch that includes it is a real shape.
 	VMT_ResolveProxies(&st);
 
-	Shader_GenerateFromVMT(ps, &st, filename, LoadMaterialString);
+	st.spriterate = spriterate;	//Patch 1035: set after the parse, which owns the rest of st
+	Shader_GenerateFromVMT(ps, &st, vmtname, LoadMaterialString);
 	return true;
 }
 

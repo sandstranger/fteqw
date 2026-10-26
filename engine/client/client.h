@@ -1619,7 +1619,7 @@ void	 CSQC_PlayerInfoChanged(int player);
 qboolean CSQC_Parse_Damage(int seat, float save, float take, vec3_t source);
 qboolean CSQC_Parse_SetAngles(int seat, vec3_t newangles, qboolean wasdelta);
 //FTESurf Patch 335: per-predicted-usercmd CSQC trigger hook.
-void	 CSQC_PredictPlayerMove(int seat, const usercmd_t *cmd, const float *preorigin, float offsetmsec);
+void	 CSQC_PredictPlayerMove(int seat, const usercmd_t *cmd, const float *preorigin, float offsetmsec, qboolean preground);
 void	 CSQC_PredictPortalAngles(int seat, const usercmd_t *cmd);
 void	 CSQC_PortalView(playerview_t *pv);
 int      CSQC_PredictPlayerPreMove(int seat, const usercmd_t *cmd, float offsetmsec);
@@ -1657,7 +1657,7 @@ void	 CSQC_CvarChanged(cvar_t *var);
 #define CSQC_UnconnectedInit() false
 #define CSQC_UseGamecodeLoadingScreen() false
 #define CSQC_Parse_SetAngles(seat,newangles,wasdelta) false
-#define CSQC_PredictPlayerMove(seat,cmd,preorigin,offsetmsec)
+#define CSQC_PredictPlayerMove(seat,cmd,preorigin,offsetmsec,preground)
 #define CSQC_PredictPortalAngles(seat,cmd)
 #define CSQC_PortalView(pv)
 #define CSQC_PredictPlayerPreMove(seat,cmd,offsetmsec) 0

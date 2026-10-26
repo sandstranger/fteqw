@@ -354,6 +354,24 @@ qboolean Material_RegisterLoader(void *module, plugmaterialloaderfuncs_t *driver
 }
 
 //Native query: a downloaded CSQC must not infer mode 4 from a plugin cvar.
+//FTESurf Patch 1020: hl2_water 5 -- this engine's $currentdepth and a loaded vmt/water that has the #SCREEN branch
+qboolean R_HL2WaterScreenSupported(void)
+{
+	size_t l;
+	const struct sbuiltin_s *progs;
+
+	if (qrenderer != QR_OPENGL || !sh_config.progs_supported)
+		return false;
+	for (l = 0; l < materialloader_count; l++)
+	{
+		if (!materialloader[l].funcs || !materialloader[l].funcs->builtinshaders)
+			continue;
+		for (progs = materialloader[l].funcs->builtinshaders; *progs->name; progs++)
+			if (progs->qrtype == QR_OPENGL && !strcmp(progs->name, "vmt/water") && progs->body && strstr(progs->body, "SCREEN"))
+				return true;
+	}
+	return false;
+}
 qboolean R_HL2WaterBudgetSupported(void)
 {
 	size_t l;
@@ -1666,6 +1684,11 @@ static void Shader_ReflectNoEntities (parsestate_t *ps, const char **ptr)
 	ps->s->reflectnoents = true;
 }
 
+static void Shader_MaterialNoFog (parsestate_t *ps, const char **ptr)
+{
+	ps->s->materialnofog = true;
+}
+
 #if defined(GLQUAKE) || defined(D3DQUAKE)
 static qboolean Shader_ParseProgramCvar(char *script, char **cvarnames, int *cvartypes, int cvartype)
 {
@@ -1693,8 +1716,12 @@ static qboolean Shader_ParseProgramCvar(char *script, char **cvarnames, int *cva
 			script++;
 
 		out = body;
-		while (out < com_token+countof(body)-1 && *script != '\n' && !(script[0] == '/' && script[1] == '/')) 
+		//FTESurf Patch 1019: bounded by body (was com_token, an unrelated global: on a stack above it the loop
+		//copied nothing), stopped at a CR too, and trailing blanks before a // comment dropped ("0\r", "512 ").
+		while (out < body+countof(body)-1 && *script != '\n' && *script != '\r' && !(script[0] == '/' && script[1] == '/'))
 			*out++ = *script++;
+		while (out > body && (out[-1] == ' ' || out[-1] == '\t'))
+			out--;
 		*out++ = 0;
 		ref = Cvar_Get(cvarnames[0], body, 0, "GLSL Variables");
 	}
@@ -3618,6 +3645,7 @@ static shaderkey_t shaderkeys[] =
 	{"fullrate",			Shader_FullRate,			"fte"},	//blocks half-rate shading on this surface.
 	{"wireframe",			Shader_Wireframe,			"fte"},	//FTESurf Patch 780: Source's MATERIAL_VAR_WIREFRAME (GL only)
 	{"reflectnoentities",	Shader_ReflectNoEntities,	"fte"},	//FTESurf Patch 868: fte_reflectnoentities
+	{"materialnofog",		Shader_MaterialNoFog,		"fte"},
 
 	{"bemode",				Shader_BEMode,				"fte"},
 
@@ -3806,6 +3834,11 @@ static qboolean Shaderpass_MapGen (parsestate_t *ps, shaderpass_t *pass, char *t
 	else if (!Q_stricmp (tname, "$currentrender"))
 	{
 		pass->texgen = T_GEN_CURRENTRENDER;
+		shader->flags |= SHADER_HASCURRENTRENDER;
+	}
+	else if (!Q_stricmp (tname, "$currentdepth"))
+	{	//FTESurf Patch 1020: screen-space water's depth, beside $currentrender
+		pass->texgen = T_GEN_CURRENTDEPTH;
 		shader->flags |= SHADER_HASCURRENTRENDER;
 	}
 	else if (!Q_stricmp (tname, "$sourcecolour"))
@@ -9032,6 +9065,7 @@ static char *Shader_DecomposeSubPass(char *o, shader_t *s, shaderpass_t *p, qboo
 	case T_GEN_TRANSMISSION:	Shader_DecomposeSubPassMap(o, s, "map $transmission", s->defaulttextures[0].transmission); break;
 	case T_GEN_THICKNESS:		Shader_DecomposeSubPassMap(o, s, "map $thickness", s->defaulttextures[0].thickness); break;
 	case T_GEN_CURRENTRENDER:	sprintf(o, "map $currentrender "); break;
+	case T_GEN_CURRENTDEPTH:	sprintf(o, "map $currentdepth"); break;
 	case T_GEN_SOURCECOLOUR:	sprintf(o, "map $sourcecolour"); break;
 	case T_GEN_SOURCEDEPTH:		sprintf(o, "map $sourcedepth"); break;
 	case T_GEN_REFLECTION:		sprintf(o, "map $reflection"); break;

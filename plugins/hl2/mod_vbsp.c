@@ -153,12 +153,15 @@ extern char  vmt_stat_waterfog[64];
 extern float vmt_stat_waterfogstart, vmt_stat_waterfogend;
 extern int   vmt_stat_waterfog_set;
 void Mat_VMT_KeyCensus_f (void);
+void Mat_VMT_SprAnim_f (void);	//FTESurf Patch 1035
 /*
 FTESurf Patch 233: the $bottommaterial link mat_vmt.c now keeps, and the two operations
 this file performs on the census with it.  See VMT_BottomRecord in mat_vmt.c for what the
 link is and why a name rule could not have produced it.
 */
 const char *Mat_VMT_BottomParent(const char *name);
+int Mat_VMT_UnderwaterOverlay(const char *material, char *out, size_t outsize);	//FTESurf Patch 1013
+qboolean Mat_VMT_OverlayScript(const char *overlay, char *script, size_t size);
 qboolean Mat_VMT_CensusMissing(const char *name);
 void Mat_VMT_CensusForget(const char *name);
 static cvar_t *hl2_bottommaterial;
@@ -172,6 +175,7 @@ extern cvar_t *hl2_dither_force;	//FTESurf Patch 174, likewise
 cvar_t *hl2_texdiag;	//FTESurf build 11: the engine's r_texdiag, borrowed -- see VBSP_GenerateMaterials.
 							//Patch 239 dropped `static`: img_vtf.c reports the per-file image format under it.
 static cvar_t *hl2_propdist;	//FTESurf Patch 193: default draw distance for props that declare no fade -- see VBSP_PrepareFrame.
+static cvar_t *hl2_detail;	//FTESurf Patch 1038: detail props (grass) -- see VBSP_DetailBuild.
 cvar_t *hl2_rigidprops;			//FTESurf Patch 230: read by Mod_LoadHL2Model in mod_hl2.c, registered here with the rest.
 
 extern volatile int phy_stat_hull, phy_stat_nofile, phy_stat_jointed;
@@ -332,13 +336,13 @@ enum hllumps_e
 //	VLUMP_FOO			= 27,
 //	VLUMP_FOO			= 28,
 //	VLUMP_FOO			= 29,
-//	VLUMP_FOO			= 30,
-//	VLUMP_FOO			= 31,
+	VLUMP_VERTNORMALS	= 30,	//FTESurf Patch 1023: VRAD's smoothed vertex normals...
+	VLUMP_VERTNORMALINDICES = 31,	//...one index per face vertex, faces in lump order
 	VLUMP_DISP_LMALPHA	= 32,
 	VLUMP_DISP_VERTS	= 33,
 	VLUMP_DISP_LMCOORDS	= 34,
 	VLUMP_GAMELUMP		= 35,
-//	VLUMP_FOO			= 36,
+	VLUMP_LEAFWATERDATA	= 36,	//FTESurf Patch 1013: dleafwaterdata_t, a water volume's surface texinfo
 //	VLUMP_FOO			= 37,
 //	VLUMP_FOO			= 38,
 //	VLUMP_FOO			= 39,
@@ -429,6 +433,15 @@ typedef struct dispinfo_s
     //unsigned short *flags;
 } dispinfo_t;
 
+//FTESurf Patch 1038: one cell of detail props -- a rigid mesh model, the box it can reach, and the
+//entity submitted for it (its pvscache holds the leaves that box touches).
+typedef struct detailcell_s
+{
+	vec3_t mins, maxs;
+	entity_t ent;
+	char tag[32];	//the content tag its entry holds: another map's build into the entry changes it
+} detailcell_t;
+
 typedef struct vbspinfo_s
 {
 	/*
@@ -473,6 +486,9 @@ typedef struct vbspinfo_s
 
 	q2mapsurface_t	*surfaces;
 	dispinfo_t		**surfdisp;
+	vec3_t			*vertnormals;		//FTESurf Patch 1023, VBSP_LoadVertNormals
+	unsigned int	*vertnormalidx;
+	unsigned int	*surfvn;			//[numsurfaces] first vertnormalidx entry; NULL: plane normals
 
 	int				numleafbrushes;
 	q2cbrush_t		**leafbrushes;
@@ -504,6 +520,9 @@ typedef struct vbspinfo_s
 	} *texinfo;
 
 	qbyte			*leafflags;			//FTESurf Patch 880: dleaf_t's flags (LEAF_FLAGS_SKY 0x01, SKY2D 0x04), [numleafs]
+	int				*leafwater;			//FTESurf Patch 1013: dleaf_t's leafwaterid, [numleafs], -1 = no water volume
+	char			(*wateroverlay)[MAX_QPATH+16];	//...per volume: "none" or ftesurf/uw/<overlay> (VBSP_LoadLeafWater)
+	int				numwater;
 	int				numareas;
 	int				floodvalid;
 	int				lastreportedarea;	//FTESurf Build 8: edge-detects the area print in VBSP_PrepareFrame
@@ -676,6 +695,17 @@ typedef struct vbspinfo_s
 	const qbyte		*lightraw;
 	size_t			lightrawsize;
 	qboolean		lightrepacked;
+
+	//FTESurf Patch 1038: the detail-prop lump kept raw at load and built into cells on the first frame
+	//that draws them (VBSP_DetailBuild: creating models wants the main thread).
+	qbyte			*detailraw;
+	size_t			detailrawsize;
+	char			detailmaterial[MAX_QPATH];	//worldspawn "detailmaterial"
+	float			detailfadestart, detailfadeend;	//env_detail_controller's; -1 = none
+	float			detailmaxd, detailfade;		//as Source sets cl_detaildist / cl_detailfade from them
+	qboolean		detailbuilt;
+	size_t			numdetailcells, maxdetailcells;
+	detailcell_t	*detailcells;
 
 	unsigned int contentsremap[32];
 } vbspinfo_t;
@@ -1637,6 +1667,7 @@ THERE, which is why every one of those has a number in the census line.
 #define CC_KEY			64
 
 static cvar_t *hl2_colourcorrection;	//registered beside hl2_twoframes
+static cvar_t *hl2_underwateroverlay;	//FTESurf Patch 1013, registered beside hl2_colourcorrection
 static char  cc_shader[MAX_QPATH];		//"" when this map has no grade
 static char  cc_script[1024];			//handed to the material loader on demand
 static float cc_w[CC_MAX];				//the accepted weights, in pass order
@@ -1935,6 +1966,57 @@ static void VBSP_LoadColourCorrection(model_t *loadmodel, const qbyte *entdata, 
 	Con_DPrintf("[cc] %s generated as %s:\n%s", loadmodel->name, cc_shader, cc_script);
 }
 
+#ifdef HAVE_CLIENT
+//FTESurf Patch 1038: worldspawn's "detailmaterial" and env_detail_controller's fade distances.
+static void VBSP_LoadDetailKeys(model_t *mod, const qbyte *entdata, size_t entlen)
+{
+	vbspinfo_t *prv = (vbspinfo_t*)mod->meshinfo;
+	char key[256], token[1024], *text, *data;
+
+	Q_strlcpy(prv->detailmaterial, "detail/detailsprites", sizeof(prv->detailmaterial));
+	prv->detailfadestart = prv->detailfadeend = -1;
+	text = plugfuncs->Malloc(entlen+1);	//NUL-terminated, as VBSP_LoadColourCorrection's
+	if (!text)
+		return;
+	memcpy(text, entdata, entlen);
+	text[entlen] = 0;
+	for (data = text; ; )
+	{
+		char classname[64] = "", mat[MAX_QPATH] = "";
+		float fmin = 0, fmax = 0;	//a key the controller lacks is 0 in Source, not the FGD default
+
+		data = cmdfuncs->ParseToken(data, token, sizeof(token), NULL);
+		if (!data)
+			break;
+		if (*token != '{')
+			continue;
+		for (;;)
+		{
+			data = cmdfuncs->ParseToken(data, key, sizeof(key), NULL);
+			if (!data || *key == '}')
+				break;
+			data = cmdfuncs->ParseToken(data, token, sizeof(token), NULL);
+			if (!data)
+				break;
+			if (!Q_strcasecmp(key, "classname"))			Q_strlcpy(classname, token, sizeof(classname));
+			else if (!Q_strcasecmp(key, "detailmaterial"))	Q_strlcpy(mat, token, sizeof(mat));
+			else if (!Q_strcasecmp(key, "fademindist"))		fmin = atof(token);
+			else if (!Q_strcasecmp(key, "fademaxdist"))		fmax = atof(token);
+		}
+		if (!Q_strcasecmp(classname, "worldspawn") && *mat)
+			Q_strlcpy(prv->detailmaterial, mat, sizeof(prv->detailmaterial));
+		else if (!Q_strcasecmp(classname, "env_detail_controller"))
+		{
+			prv->detailfadestart = fmin;
+			prv->detailfadeend = fmax;
+		}
+		if (!data)
+			break;
+	}
+	plugfuncs->Free(text);
+}
+#endif
+
 static qboolean VBSP_LoadEntities (model_t *loadmodel, qbyte *mod_base, vlump_t *lumps)
 {
 	vlump_t *l = &lumps[VLUMP_ENTITIES];
@@ -1955,6 +2037,9 @@ static qboolean VBSP_LoadEntities (model_t *loadmodel, qbyte *mod_base, vlump_t 
 	do with colour.
 	*/
 	VBSP_LoadColourCorrection(loadmodel, entdata, l->filelen);
+#ifdef HAVE_CLIENT
+	VBSP_LoadDetailKeys(loadmodel, entdata, l->filelen);	//FTESurf Patch 1038
+#endif
 
 	if (!hl2_overlays || !hl2_overlays->value)
 		return modfuncs->LoadEntities(loadmodel, entdata, l->filelen);
@@ -2977,6 +3062,68 @@ typedef struct
 	int				leafwaterid;
 } strata_dleaf_t;
 
+/*
+FTESurf Patch 1013: each water volume's underwater overlay, from the leaf water lump's surface
+texinfo -- Source finds the eye's volume the same way. Mat_VMT_UnderwaterOverlay follows the
+material to its $bottommaterial; an overlay that cannot draw (no $normalmap) reads as "none", a
+surface material that cannot be read as "" (the engine's own warp).
+*/
+typedef struct
+{
+	float	surfacez, minz;
+	short	surfacetexinfo;
+	short	pad;
+} hl2dleafwater_t;
+static char vbsp_uwlast[MAX_QPATH+16];	//what r_underwateroverlay was last set to
+static void VBSP_LoadLeafWater (model_t *mod, qbyte *mod_base, vlump_t *l)
+{
+	vbspinfo_t *prv = (vbspinfo_t*)mod->meshinfo;
+	const hl2dleafwater_t *in = (const void*)(mod_base + l->fileofs);
+	char mat[MAX_QPATH], ov[MAX_QPATH], *h;
+	static char script[4096];
+	struct { char mat[MAX_QPATH]; char res[MAX_QPATH+16]; } seen[16];	//volumes repeat a few materials
+	int i, j, k, n, nseen = 0, overlays = 0;
+
+	vbsp_uwlast[0] = 0;
+	cvarfuncs->ForceSetString("r_underwateroverlay", "");	//machine-set and kept across maps, as r_colourcorrection
+	if (!hl2_underwateroverlay || !hl2_underwateroverlay->ival || !l->filelen || l->filelen % sizeof(*in))
+		return;
+	n = l->filelen / sizeof(*in);
+	prv->wateroverlay = plugfuncs->GMalloc(&mod->memgroup, sizeof(*prv->wateroverlay) * n);
+	prv->numwater = n;
+	for (i = 0; i < n; i++)
+	{
+		int ti = LittleShort(in[i].surfacetexinfo);
+		Q_strlcpy(prv->wateroverlay[i], "none", sizeof(prv->wateroverlay[i]));
+		if (ti < 0 || ti >= mod->numtexinfo)
+			continue;
+		Q_strlcpy(mat, mod->texinfo[ti].texture->name, sizeof(mat));	//not surfaces[].rname: 32 bytes cut half the library's names
+		if ((h = strchr(mat, '#')))
+			*h = 0;	//#WARP
+		for (j = 0; j < nseen && strcmp(seen[j].mat, mat); j++)
+			;
+		if (j == nseen)
+		{
+			Q_strlcpy(seen[j % 16].mat, mat, sizeof(seen[0].mat));
+			k = Mat_VMT_UnderwaterOverlay(mat, ov, sizeof(ov));
+			Q_strlcpy(seen[j % 16].res, k < 0 ? "" : "none", sizeof(seen[0].res));
+			if (k > 0 && strlen(ov) + 11 < MAX_QPATH)	//R_LoadShader keeps MAX_QPATH-1 of a name
+			{
+				if (Mat_VMT_OverlayScript(ov, script, sizeof(script)))
+					Q_snprintfz(seen[j % 16].res, sizeof(seen[0].res), "ftesurf/uw/%s", ov);
+			}
+			else if (k > 0)
+				Q_strlcpy(seen[j % 16].res, "", sizeof(seen[0].res));
+			if (nseen < 16)
+				nseen++;
+		}
+		Q_strlcpy(prv->wateroverlay[i], seen[j % 16].res, sizeof(prv->wateroverlay[i]));
+		if (*prv->wateroverlay[i] && strcmp(prv->wateroverlay[i], "none"))
+			overlays++;
+	}
+	Con_DPrintf("%s: %i water volumes, %i with an underwater overlay\n", mod->name, n, overlays);
+}
+
 static qboolean VBSP_LoadLeafs (model_t *mod, qbyte *mod_base, vlump_t *l, int ver)
 {
 	vbspinfo_t	*prv = (vbspinfo_t*)mod->meshinfo;
@@ -3021,6 +3168,7 @@ static qboolean VBSP_LoadLeafs (model_t *mod, qbyte *mod_base, vlump_t *l, int v
 
 	mod->leafs = out;
 	mod->numleafs = count;
+	prv->leafwater = plugfuncs->GMalloc(&mod->memgroup, sizeof(*prv->leafwater) * count);
 
 	/*
 	FTESurf Patch 277(b) (Patch 273's open item b) -- A LEAF'S CLUSTER IS MAP DATA AND WAS NEVER CHECKED.
@@ -3081,6 +3229,7 @@ static qboolean VBSP_LoadLeafs (model_t *mod, qbyte *mod_base, vlump_t *l, int v
 			out->numleafbrushes = LittleLong(in->numleafbrushes);
 			out->firstmarksurface = mod->marksurfaces + LittleLong(in->firstleafface);
 			out->nummarksurfaces = LittleLong(in->numleaffaces);
+			prv->leafwater[i] = LittleLong(in->leafwaterid);
 		}
 		else
 		{
@@ -3100,6 +3249,7 @@ static qboolean VBSP_LoadLeafs (model_t *mod, qbyte *mod_base, vlump_t *l, int v
 			out->numleafbrushes = (unsigned short)LittleShort (in->numleafbrushes);
 			out->firstmarksurface = mod->marksurfaces + (unsigned short)LittleShort(in->firstleafface);
 			out->nummarksurfaces = (unsigned short)LittleShort(in->numleaffaces);
+			prv->leafwater[i] = (short)LittleShort(in->leafwaterid);
 
 			if (lightpoint)
 			{
@@ -4027,6 +4177,59 @@ static void VBSP_RepackLighting(model_t *mod, qbyte *mod_base, vlump_t *lumps)
 }
 #endif
 
+#ifdef HAVE_CLIENT
+//FTESurf Patch 1023: see VBSP_VertNormal.  Lumps that do not index every face vertex are left out.
+static void VBSP_LoadVertNormals(model_t *mod, qbyte *mod_base, vlump_t *lumps)
+{
+	vbspinfo_t *prv = (vbspinfo_t*)mod->meshinfo;
+	vlump_t *ln = &lumps[VLUMP_VERTNORMALS], *li = &lumps[VLUMP_VERTNORMALINDICES];
+	const qbyte *in = mod_base + li->fileofs;
+	const float *inn = (const float*)(mod_base + ln->fileofs);
+	size_t nn = ln->filelen / sizeof(vec3_t), need = 0, w, i;
+	unsigned int first;
+
+	for (i = 0; i < (size_t)mod->numsurfaces; i++)
+		need += mod->surfaces[i].numedges;
+	if (!nn || !need || !li->filelen || nn > need)	//more normals than face vertices is no VRAD lump
+		return;
+	if ((size_t)li->filelen == need * 2)
+		w = 2;
+	else if ((size_t)li->filelen == need * 4)
+		w = 4;
+	else
+	{
+		Con_Printf("VBSP: %s keeps plane normals: %u vertex-normal index bytes for %u face vertices\n",
+			mod->name, (unsigned)li->filelen, (unsigned)need);
+		return;
+	}
+	prv->vertnormalidx = plugfuncs->GMalloc(&mod->memgroup, need * sizeof(*prv->vertnormalidx));
+	for (i = 0; i < need; i++, in += w)
+	{
+		prv->vertnormalidx[i] = in[0] | (in[1] << 8) | ((w == 4) ? (in[2] << 16) | ((unsigned int)in[3] << 24) : 0);
+		if (prv->vertnormalidx[i] >= nn)
+		{
+			Con_Printf("VBSP: %s keeps plane normals: vertex-normal index %u of %u\n",
+				mod->name, prv->vertnormalidx[i], (unsigned)nn);
+			return;
+		}
+	}
+	prv->vertnormals = plugfuncs->GMalloc(&mod->memgroup, nn * sizeof(*prv->vertnormals));
+	for (i = 0; i < nn; i++)
+	{
+		prv->vertnormals[i][0] = LittleFloat(inn[i*3+0]);
+		prv->vertnormals[i][1] = LittleFloat(inn[i*3+1]);
+		prv->vertnormals[i][2] = LittleFloat(inn[i*3+2]);
+	}
+	prv->surfvn = plugfuncs->GMalloc(&mod->memgroup, mod->numsurfaces * sizeof(*prv->surfvn));
+	for (first = 0, i = 0; i < (size_t)mod->numsurfaces; i++)
+	{
+		prv->surfvn[i] = first;
+		first += mod->surfaces[i].numedges;
+	}
+	Con_DPrintf("VBSP: %s %u vertex normals over %u face vertices\n", mod->name, (unsigned)nn, (unsigned)need);
+}
+#endif
+
 static qboolean VBSP_LoadFaces (model_t *mod, qbyte *mod_base, vlump_t *lumps, int version)
 {
 	vbspinfo_t	*prv = (vbspinfo_t*)mod->meshinfo;
@@ -4360,6 +4563,30 @@ static float VBSP_MissingTC(float raw, const float *vecs, float tile)
 	return len ? (raw - vecs[3]) / (len * tile) : 0;
 }
 
+//FTESurf Patch 1023: a face vertex's normal is VRAD's (Mod_LoadVertNormalIndices: one index per
+//vertex, faces in lump order), so smoothing groups smooth envmap, specular and the bumped
+//lightmap basis across faceted brushes as Source draws them (bhop_ceaseless's tube was flat facets).
+//Unit length and in front of the face, else the plane's: VRAD writes zero for faces it skips.
+//Water and portal surfaces keep the plane's: GLR_PortalPlane takes their reflection and clip
+//plane from the first vertex normal, and VRAD smooths a shore corner into it.
+static const float *VBSP_VertNormal(vbspinfo_t *prv, model_t *mod, msurface_t *surf, int v)
+{
+	const float *n;
+	float l;
+	shader_t *sh;
+
+	if (!prv->surfvn || (surf->flags & SURF_DRAWTURB))
+		return surf->plane->normal;
+	sh = surf->texinfo->texture ? surf->texinfo->texture->shader : NULL;
+	if (sh && (sh->flags & (SHADER_HASREFRACT|SHADER_HASREFLECT|SHADER_HASPORTAL)))
+		return surf->plane->normal;
+	n = prv->vertnormals[prv->vertnormalidx[prv->surfvn[surf - mod->surfaces] + v]];
+	l = DotProduct(n, n);
+	if (!(l >= 0.9 && l <= 1.1 && DotProduct(n, surf->plane->normal) > 0))	//NaN fails it too
+		return surf->plane->normal;
+	return n;
+}
+
 static void VBSP_BuildSurfMesh(model_t *mod, msurface_t *surf, builddata_t *bd)
 {
 	vbspinfo_t	*prv = (vbspinfo_t*)mod->meshinfo;
@@ -4482,10 +4709,8 @@ static void VBSP_BuildSurfMesh(model_t *mod, msurface_t *surf, builddata_t *bd)
 		}
 
 		//figure out the texture directions, for bumpmapping and stuff
-// 		if (surf->flags & SURF_PLANEBACK)
-// 			VectorNegate(surf->plane->normal, mesh->normals_array[i]);
-// 		else
-		VectorCopy(surf->plane->normal, mesh->normals_array[i]);
+		//A Source face's plane is its own (side only names the node's), so no SURF_PLANEBACK negate.
+		VectorCopy(VBSP_VertNormal(prv, mod, surf, i), mesh->normals_array[i]);
 		VectorCopy(surf->texinfo->vecs[0], mesh->snormals_array[i]);
 		VectorNegate(surf->texinfo->vecs[1], mesh->tnormals_array[i]);
 		//the s+t vectors are axis-aligned, so fiddle them so they're normal aligned instead
@@ -5909,8 +6134,18 @@ static qboolean VBSP_LoadGameLump(model_t *mod, qbyte *mod_base, vlump_t *l)
 #define LUMPTYPE(a,b,c,d, minver, maxver) (blob->sl[i].id == (((qbyte)a<<24)|((qbyte)b<<16)|((qbyte)c<<8)|((qbyte)d<<0)) && blob->sl[i].version >= minver && blob->sl[i].version <= maxver)
 		if (LUMPTYPE('s','p','r','p', 4,13))	//static props (placed by mapper); v11/v13 = Strata
 			VBSP_LoadStaticProps(mod, sub, sublen, blob->sl[i].version);
-		else if (LUMPTYPE('d','p','r','p', 4,4))	//dynamic props (generated by textures)
-			;
+		else if (LUMPTYPE('d','p','r','p', 4,4))	//detail props: grass and sprites VBSP scattered from materials
+		{
+#ifdef HAVE_CLIENT
+			vbspinfo_t *prv = (vbspinfo_t*)mod->meshinfo;
+			if (qrenderer != QR_NONE && sublen > 12 && !prv->detailraw)	//FTESurf Patch 1038: kept for VBSP_DetailBuild
+			{
+				prv->detailraw = plugfuncs->GMalloc(&mod->memgroup, sublen);
+				memcpy(prv->detailraw, sub, sublen);
+				prv->detailrawsize = sublen;
+			}
+#endif
+		}
 		else if (LUMPTYPE('d','p','l','t', 0,0))	//detail prop ldr lighting
 			;
 		else if (LUMPTYPE('d','p','l','h', 0,0))	//detail prop hdr lighting
@@ -9257,6 +9492,499 @@ qboolean HL2_CalcModelLighting(entity_t *e, model_t *clmodel, refdef_t *r_refdef
 	return e->light_known-1;
 }
 
+/*
+FTESurf Patch 1038: Source's detail props (client/detailobjectsystem.cpp), built into cells the first
+frame that draws them.
+
+The dprp lump (v4) is a model dictionary, a sprite dictionary (a quad and its rectangle in the map's
+detail material, 32 bytes each) and 52-byte objects sorted by leaf.  66 library maps carry them, 1.25 M
+objects in all (surf_castle 279 k); 97% are sprites, nearly all turning about the vertical to face the
+viewer.  Source rebuilds a dynamic mesh of the near ones every frame; here every DETAIL_CELL-unit cell is
+one rigid mesh made once, and vmt/detail turns and fades the sprites on the GPU, so a frame costs a draw
+per visible cell and no per-object work.  Detail MODELS (type 0: 5,367 objects on 10 maps) are not
+drawn; lightstyles are not applied; sway and player avoidance are off as Source's cvars default them.
+*/
+#define DETAIL_CELL		1024	//cells are model-table entries (gl_model.c MAX_MOD_KNOWN 8192, shared)
+#define DETAIL_MAXVERTS	16000	//index_t may be 16 bits
+
+typedef struct
+{
+	vec3_t	origin, angles;
+	unsigned short model, leaf;
+	qbyte	light[4];		//ColorRGBExp32
+	unsigned int lightstyles;
+	qbyte	lightstylecount, sway, shapeangle, shapesize, orientation, pad2[3], type, pad3[3];
+	float	scale;
+} detailobjlump_t;
+
+typedef struct
+{
+	vecV_t		*xyz;
+	vec3_t		*norm;
+	vec2_t		*st;
+	byte_vec4_t	*rgba;
+	index_t		*idx;
+	unsigned int nv, ni;
+	vec3_t		mins, maxs;
+} detailmesh_t;
+
+static unsigned int VBSP_DetailVerts(const detailobjlump_t *o)
+{
+	switch (o->type)
+	{
+	case 1:	return 4;	//sprite
+	case 2:	return 16;	//cross: four half quads
+	case 3:	return 12;	//tri: three quads
+	default: return 0;	//a model: not drawn
+	}
+}
+
+//One quad: corners p[4] (or one anchor when off != NULL, which then holds the billboard offsets).
+static void VBSP_DetailQuad(detailmesh_t *m, vec3_t p[4], vec3_t off[4], vec2_t st[4], const qbyte rgba[4])
+{
+	unsigned int i, b = m->nv;
+	for (i = 0; i < 4; i++, m->nv++)
+	{
+		VectorCopy(p[i], m->xyz[m->nv]);
+		if (off)
+		{
+			float r = fabs(off[i][0]) + fabs(off[i][1]);
+			VectorCopy(off[i], m->norm[m->nv]);
+			m->mins[0] = min(m->mins[0], p[i][0]-r); m->maxs[0] = max(m->maxs[0], p[i][0]+r);
+			m->mins[1] = min(m->mins[1], p[i][1]-r); m->maxs[1] = max(m->maxs[1], p[i][1]+r);
+			m->mins[2] = min(m->mins[2], p[i][2]-r); m->maxs[2] = max(m->maxs[2], p[i][2]+r);
+		}
+		else
+		{
+			VectorClear(m->norm[m->nv]);
+			AddPointToBounds(p[i], m->mins, m->maxs);
+		}
+		Vector2Copy(st[i], m->st[m->nv]);
+		memcpy(m->rgba[m->nv], rgba, 4);
+	}
+	m->idx[m->ni++] = b;	m->idx[m->ni++] = b+1;	m->idx[m->ni++] = b+2;
+	m->idx[m->ni++] = b;	m->idx[m->ni++] = b+2;	m->idx[m->ni++] = b+3;
+}
+
+//DrawSwayingQuad, with no sway: o is the first corner, texture a there and b diagonally across.
+static void VBSP_DetailSwayQuad(detailmesh_t *m, const vec3_t o, const vec2_t a, const vec2_t b, const vec3_t width, const vec3_t height, const qbyte rgba[4])
+{
+	vec3_t p[4];
+	vec2_t st[4];
+	VectorCopy(o, p[0]);					Vector2Set(st[0], a[0], a[1]);
+	VectorAdd(o, height, p[1]);				Vector2Set(st[1], a[0], b[1]);
+	VectorAdd(p[1], width, p[2]);			Vector2Set(st[2], b[0], b[1]);
+	VectorAdd(o, width, p[3]);				Vector2Set(st[3], b[0], a[1]);
+	VBSP_DetailQuad(m, p, NULL, st, rgba);
+}
+
+static void VBSP_DetailObject(detailmesh_t *m, const detailobjlump_t *o, const float *spr, qboolean flipped)
+{
+	qbyte rgba[4];
+	vec2_t ul, lr, tul, tlr;
+	vec3_t f, r, u, p[4], off[4], w, h;
+	vec2_t st[4];
+	int i;
+
+	//GetColorModulation: TexLightToLinear, LightStyleValue(0) 1, LinearToGamma.
+	for (i = 0; i < 3; i++)
+	{
+		float lin = o->light[i] * ldexp(1, (signed char)o->light[3]) / 255;
+		rgba[i] = bound(0, pow(bound(0, lin, 1), 1/2.2) * 255 + 0.5, 255);
+	}
+	rgba[3] = 255;
+	Vector2Set(ul, spr[0]*o->scale, spr[1]*o->scale);
+	Vector2Set(lr, spr[2]*o->scale, spr[3]*o->scale);
+	Vector2Set(tul, spr[4], spr[5]);
+	Vector2Set(tlr, spr[6], spr[7]);
+
+	if (o->type == 1)
+	{
+		if (!flipped)	//UnserializeDetailSprites/DrawTypeSprite: unflipped swaps the rectangle's x
+		{
+			tul[0] = spr[6];
+			tlr[0] = spr[4];
+		}
+		Vector2Set(st[0], tul[0], tul[1]);
+		Vector2Set(st[1], tul[0], tlr[1]);
+		Vector2Set(st[2], tlr[0], tlr[1]);
+		Vector2Set(st[3], tlr[0], tul[1]);
+		if (o->orientation == 0)
+		{	//fixed: the corners DrawTypeSprite walks, dx = right, dy = up of the map's angles
+			modfuncs->AngleVectors(o->angles, f, r, u);
+			VectorMA(o->origin, ul[0], r, p[0]);
+			VectorMA(p[0], ul[1], u, p[0]);
+			VectorMA(p[0], lr[1]-ul[1], u, p[1]);
+			VectorMA(p[1], lr[0]-ul[0], r, p[2]);
+			VectorMA(p[0], lr[0]-ul[0], r, p[3]);
+			VBSP_DetailQuad(m, p, NULL, st, rgba);
+		}
+		else
+		{	//facing the viewer: Source's dx is the viewer's LEFT, so x offsets are negated.  A sprite
+			//Source sends down its fast path (DetailObjectIsFastSprite) is a symmetric quad round a fixed
+			//point instead (GetSpriteMiddleBottomPosition: (ul.x+lr.x)/2 along -x), so an off-centre
+			//rectangle does not swing round its origin as the view turns.
+			float x0 = -ul[0], x1 = -lr[0];
+			vec3_t a;
+			VectorCopy(o->origin, a);
+			if (o->orientation == 2 && !o->lightstylecount && !o->shapeangle && !o->shapesize && !o->sway)
+			{
+				a[0] -= (ul[0] + lr[0]) / 2;
+				x0 = (lr[0] - ul[0]) / 2;
+				x1 = -x0;
+			}
+			for (i = 0; i < 4; i++)
+				VectorCopy(a, p[i]);
+			VectorSet(off[0], x0, ul[1], o->orientation == 1);
+			VectorSet(off[1], x0, lr[1], o->orientation == 1);
+			VectorSet(off[2], x1, lr[1], o->orientation == 1);
+			VectorSet(off[3], x1, ul[1], o->orientation == 1);
+			VBSP_DetailQuad(m, p, off, st, rgba);
+		}
+	}
+	else if (o->type == 2)
+	{	//DrawTypeShapeCross: four half-width quads out from the centre line
+		vec2_t mid, ll;
+		float sx = (lr[0]-ul[0])/2, sy = lr[1]-ul[1];
+		vec3_t top, nf, nr;
+		modfuncs->AngleVectors(o->angles, f, r, u);
+		VectorMA(o->origin, ul[1], u, top);
+		Vector2Set(mid, (tul[0]+tlr[0])/2, tul[1]);
+		Vector2Set(ll, tul[0], tlr[1]);
+		VectorScale(u, sy, h);
+		VectorScale(f, -sx, nf);	VBSP_DetailSwayQuad(m, top, mid, tlr, nf, h, rgba);
+		VectorScale(r, -sx, nr);	VBSP_DetailSwayQuad(m, top, mid, ll, nr, h, rgba);
+		VectorScale(f, sx, w);		VBSP_DetailSwayQuad(m, top, mid, ll, w, h, rgba);
+		VectorScale(r, sx, w);		VBSP_DetailSwayQuad(m, top, mid, tlr, w, h, rgba);
+	}
+	else if (o->type == 3)
+	{	//InitShapeTri + DrawTypeShapeTri: three quads at 120 degrees, tilted by shapeangle and pushed
+		//out by shapesize/255 of the width; AngleMatrix's columns are forward, left, up
+		float fw = lr[0]-ul[0], fh = lr[1]-ul[1];
+		modfuncs->AngleVectors(o->angles, f, r, u);
+		for (i = 0; i < 3; i++)
+		{
+			vec3_t ta, tf, tr, tu, bf, br, bu, org;	//not rf: an engine macro
+			VectorSet(ta, o->shapeangle, i*120, 0);
+			modfuncs->AngleVectors(ta, tf, tr, tu);
+			#define DETAIL_ROT(v,out) VectorSet(out, v[0]*f[0] - v[1]*r[0] + v[2]*u[0], v[0]*f[1] - v[1]*r[1] + v[2]*u[1], v[0]*f[2] - v[1]*r[2] + v[2]*u[2])
+			DETAIL_ROT(tf, bf);
+			DETAIL_ROT(tr, br);
+			DETAIL_ROT(tu, bu);
+			#undef DETAIL_ROT
+			VectorMA(o->origin, ul[0], br, org);
+			VectorMA(org, ul[1], bu, org);
+			VectorMA(org, o->shapesize/255.0*fw, bf, org);
+			VectorScale(br, fw, w);
+			VectorScale(bu, fh, h);
+			VBSP_DetailSwayQuad(m, org, tul, tlr, w, h, rgba);
+		}
+	}
+}
+
+typedef struct { unsigned int key, idx; } detailkey_t;
+static int QDECL VBSP_DetailKeyCmp(const void *a, const void *b)
+{
+	const detailkey_t *x = a, *y = b;
+	if (x->key != y->key)
+		return (x->key < y->key) ? -1 : 1;
+	return (x->idx < y->idx) ? -1 : (x->idx > y->idx);
+}
+
+static void VBSP_DetailCell(model_t *world, vbspinfo_t *prv, const char *shader, unsigned int hash,
+							const detailobjlump_t *objs, const float *sprdict, unsigned int numspr,
+							const detailkey_t *keys, size_t first, size_t count, unsigned int nverts)
+{
+	detailcell_t *c = &prv->detailcells[prv->numdetailcells];
+	//Named by index, so every map shares the same few model-table entries (an entry is never freed
+	//before vid_restart); the surface name says whose cell it holds.
+	model_t *m = modfuncs->BeginSubmodelLoad(va("*detail/%u", (unsigned)prv->numdetailcells));
+	galiasinfo_t *held;
+	entity_t *ent = &c->ent;
+	char tag[64];
+	size_t k;
+
+	Q_snprintfz(tag, sizeof(tag), "detail %08x %u", hash, (unsigned)first);
+	held = (m && (m->loadstate == MLS_LOADED || m->loadstate == MLS_LOADING)) ? (galiasinfo_t*)m->meshinfo : NULL;
+	if (held && (m->type != mod_alias || strcmp(held->surfacename, tag)))
+	{	//another map's cell, still loaded (a load in flight at the map change): building into it would
+		//leak its VBOs and queue a second Mod_ModelLoaded, so this map takes a name of its own
+		m = modfuncs->BeginSubmodelLoad(va("*detail/%u/%08x", (unsigned)prv->numdetailcells, hash));
+		held = (m && (m->loadstate == MLS_LOADED || m->loadstate == MLS_LOADING)) ? (galiasinfo_t*)m->meshinfo : NULL;
+		if (held && (m->type != mod_alias || strcmp(held->surfacename, tag)))
+			m = NULL;
+	}
+	if (!m)
+	{	//nothing to build under: the index still advances, or every later cell would retry these names
+		memset(c, 0, sizeof(*c));
+		prv->numdetailcells++;
+		return;
+	}
+	if (!held)
+	{
+		galiasinfo_t *g = plugfuncs->GMalloc(&m->memgroup, sizeof(*g));
+		galiasskin_t *skin = plugfuncs->GMalloc(&m->memgroup, sizeof(*skin));
+		skinframe_t *frame = plugfuncs->GMalloc(&m->memgroup, sizeof(*frame));
+		detailmesh_t dm;
+
+		memset(&dm, 0, sizeof(dm));
+		dm.xyz = plugfuncs->GMalloc(&m->memgroup, sizeof(*dm.xyz)*nverts);
+		dm.norm = plugfuncs->GMalloc(&m->memgroup, sizeof(*dm.norm)*nverts);
+		dm.st = plugfuncs->GMalloc(&m->memgroup, sizeof(*dm.st)*nverts);
+		dm.rgba = plugfuncs->GMalloc(&m->memgroup, sizeof(*dm.rgba)*nverts);
+		dm.idx = plugfuncs->GMalloc(&m->memgroup, sizeof(*dm.idx)*nverts*6/4);
+		ClearBounds(dm.mins, dm.maxs);
+		for (k = first; k < first+count; k++)
+		{
+			const detailobjlump_t *o = &objs[keys[k].idx];
+			if (o->model < numspr)
+				VBSP_DetailObject(&dm, o, sprdict + o->model*8, keys[k].idx & 1);
+		}
+
+		Q_strlcpy(g->surfacename, tag, sizeof(g->surfacename));
+		g->numverts = dm.nv;
+		g->ofs_skel_xyz = dm.xyz;
+		g->ofs_skel_norm = dm.norm;
+		g->ofs_st_array = dm.st;
+		g->ofs_rgbaub = dm.rgba;
+		g->ofs_indexes = dm.idx;
+		g->numindexes = dm.ni;
+		g->numskins = 1;
+		g->ofsskins = skin;
+		skin->numframes = 1;
+		skin->skinspeed = 10;
+		skin->frame = frame;
+		Q_strlcpy(frame->shadername, shader, sizeof(frame->shadername));
+
+		m->type = mod_alias;
+		m->fromgame = fg_new;	//0 is fg_quake, and gl_shader.c consults no material loader for those
+		m->meshinfo = g;
+		m->numframes = 1;
+		VectorCopy(dm.mins, m->mins);
+		VectorCopy(dm.maxs, m->maxs);
+		m->radius = RadiusFromBounds(m->mins, m->maxs);
+		m->loadstate = MLS_LOADING;
+		modfuncs->EndSubmodelLoad(m, MLS_LOADED);	//Mod_ModelLoaded, on the main thread: skins, VBOs
+	}
+	VectorCopy(m->mins, c->mins);
+	VectorCopy(m->maxs, c->maxs);
+
+	memset(ent, 0, sizeof(*ent));
+	ent->model = m;
+	ent->playerindex = -1;
+	ent->topcolour = TOP_DEFAULT;
+	ent->bottomcolour = BOTTOM_DEFAULT;
+	ent->scale = 1;
+	ent->flags = RF_NOSHADOW;
+	Vector4Set(ent->shaderRGBAf, 1, 1, 1, 1);
+	ent->framestate.g[FS_REG].lerpweight[0] = 1;
+	VectorSet(ent->axis[0], 1, 0, 0);
+	VectorSet(ent->axis[1], 0, 1, 0);
+	VectorSet(ent->axis[2], 0, 0, 1);
+	ent->light_known = 1;	//vmt/detail carries the map's baked light per vertex
+	VectorSet(ent->light_avg, 1, 1, 1);
+	VBSP_FindTouchedLeafs(world, &ent->pvscache, c->mins, c->maxs);
+	Q_strlcpy(c->tag, tag, sizeof(c->tag));
+	prv->numdetailcells++;
+}
+
+//the cell's entry still holds this cell (another map may have rebuilt it since)
+static qboolean VBSP_DetailOwn(const detailcell_t *c)
+{
+	const model_t *m = c->ent.model;
+	return m->type == mod_alias && m->meshinfo && !strcmp(((const galiasinfo_t*)m->meshinfo)->surfacename, c->tag);
+}
+
+static void VBSP_DetailBuild(model_t *mod)
+{
+	vbspinfo_t *prv = (vbspinfo_t*)mod->meshinfo;
+	const qbyte *d = prv->detailraw, *end = d + prv->detailrawsize;
+	int nmodels, nspr, nobj;
+	float *sprdict;
+	detailobjlump_t *objs;
+	detailkey_t *keys;
+	char shader[MAX_QPATH], mat[MAX_QPATH];
+	unsigned int hash = 2166136261u, nverts, v;
+	size_t i, first, maxcells;
+	double t0 = plugfuncs->GetSeconds();	//a stall in the first frame that draws them
+
+	prv->detailbuilt = true;
+	prv->numdetailcells = 0;
+	if (d + 4 > end)
+		return;
+	nmodels = LittleLong(*(const int*)d);			d += 4 + 128*(size_t)max(0, nmodels);
+	if (d + 4 > end)
+		return;
+	nspr = LittleLong(*(const int*)d);				d += 4;
+	if (nspr < 0 || d + 32*(size_t)nspr + 4 > end)
+		return;
+	sprdict = plugfuncs->Malloc(sizeof(float)*8*(nspr+1));
+	for (i = 0; i < (size_t)nspr*8; i++)
+		sprdict[i] = LittleFloat(((const float*)d)[i]);
+	d += 32*(size_t)nspr;
+	nobj = LittleLong(*(const int*)d);				d += 4;
+	if (nobj <= 0 || d + sizeof(detailobjlump_t)*(size_t)nobj > end)
+	{
+		plugfuncs->Free(sprdict);
+		return;
+	}
+	objs = plugfuncs->Malloc(sizeof(*objs)*nobj);
+	memcpy(objs, d, sizeof(*objs)*nobj);			//the lump need not be aligned
+	//Source: cl_detailfade 400 and cl_detaildist 1200, each lowered to the controller's (detailobjectsystem.cpp:1520)
+	prv->detailfade = 400;
+	prv->detailmaxd = 1200;
+	if (prv->detailfadeend >= 0)
+	{
+		prv->detailfade = min(prv->detailfade, prv->detailfadestart);
+		prv->detailmaxd = min(prv->detailmaxd, prv->detailfadeend);
+	}
+	if (prv->detailmaxd <= 0)
+	{
+		plugfuncs->Free(objs);
+		plugfuncs->Free(sprdict);
+		return;
+	}
+	Q_strlcpy(mat, prv->detailmaterial, sizeof(mat));
+	if (!Q_strncasecmp(mat, "materials/", 10))
+		memmove(mat, mat+10, strlen(mat+10)+1);
+	modfuncs->StripExtension(mat, mat, sizeof(mat));
+	Q_snprintfz(shader, sizeof(shader), "ftesurf/detail/%g/%g/%s", prv->detailmaxd, prv->detailfade, mat);
+	for (i = 0; i < prv->detailrawsize; i++)
+		hash = (hash ^ prv->detailraw[i]) * 16777619u;
+	for (i = 0; shader[i]; i++)
+		hash = (hash ^ (qbyte)shader[i]) * 16777619u;
+
+	//cells: DETAIL_CELL cubes, objects in lump order inside each (bFlipped alternates by lump index)
+	keys = plugfuncs->Malloc(sizeof(*keys)*nobj);
+	for (i = 0; i < (size_t)nobj; i++)
+	{
+		int gx = (int)floor(LittleFloat(objs[i].origin[0]) / DETAIL_CELL) & 1023;
+		int gy = (int)floor(LittleFloat(objs[i].origin[1]) / DETAIL_CELL) & 1023;
+		int gz = (int)floor(LittleFloat(objs[i].origin[2]) / DETAIL_CELL) & 1023;
+		keys[i].key = gx | (gy<<10) | (gz<<20);
+		keys[i].idx = i;
+	}
+	qsort(keys, nobj, sizeof(*keys), VBSP_DetailKeyCmp);
+
+	maxcells = 1;
+	for (i = 1, v = VBSP_DetailVerts(&objs[keys[0].idx]); i < (size_t)nobj; i++)
+	{
+		unsigned int ov = VBSP_DetailVerts(&objs[keys[i].idx]);
+		if (keys[i].key != keys[i-1].key || v + ov > DETAIL_MAXVERTS)
+		{
+			maxcells++;
+			v = 0;
+		}
+		v += ov;
+	}
+	if (maxcells > prv->maxdetailcells)
+	{
+		prv->detailcells = plugfuncs->GMalloc(&mod->memgroup, sizeof(*prv->detailcells)*maxcells);
+		prv->maxdetailcells = maxcells;
+	}
+
+	for (first = 0, nverts = 0, i = 0; i <= (size_t)nobj; i++)
+	{
+		unsigned int ov = (i < (size_t)nobj) ? VBSP_DetailVerts(&objs[keys[i].idx]) : 0;
+		if (i == (size_t)nobj || (i > first && (keys[i].key != keys[first].key || nverts + ov > DETAIL_MAXVERTS)))
+		{
+			if (nverts)
+				VBSP_DetailCell(mod, prv, shader, hash, objs, sprdict, nspr, keys, first, i-first, nverts);
+			first = i;
+			nverts = 0;
+		}
+		nverts += ov;
+	}
+	Con_DPrintf("detail: %i objects, %i sprite shapes, %u cells in %.1f ms (%s)\n", nobj, nspr, (unsigned)prv->numdetailcells, (plugfuncs->GetSeconds() - t0) * 1000, shader);
+	plugfuncs->Free(keys);
+	plugfuncs->Free(objs);
+	plugfuncs->Free(sprdict);
+}
+
+//What the last frame did with the cells, for detail_census.
+static struct { model_t *mod; unsigned int notloaded, distant, pvs, frustum, drawn; vec3_t eye; float nearest; } vbsp_detailstat;
+
+static void VBSP_DetailCensus_f(void)
+{
+	model_t *mod = vbsp_detailstat.mod;
+	vbspinfo_t *prv = mod ? (vbspinfo_t*)mod->meshinfo : NULL;
+	model_t *c0;
+
+	if (!prv || !prv->detailbuilt)
+	{
+		Con_Printf("detail_census: no detail props built -- load a map that has them and render a frame (hl2_detail 1).\n");
+		return;
+	}
+	c0 = prv->numdetailcells ? prv->detailcells[0].ent.model : NULL;
+	Con_Printf("%s: %u cells (%s), draw distance %g fading over %g; last frame: %u drawn, %u beyond it, %u outside the PVS, %u off screen, %u not loaded\n",
+		mod->name, (unsigned)prv->numdetailcells, prv->detailmaterial, prv->detailmaxd, prv->detailfade,
+		vbsp_detailstat.drawn, vbsp_detailstat.distant, vbsp_detailstat.pvs, vbsp_detailstat.frustum, vbsp_detailstat.notloaded);
+	Con_Printf("  eye %g %g %g, nearest cell %g units\n", vbsp_detailstat.eye[0], vbsp_detailstat.eye[1], vbsp_detailstat.eye[2], vbsp_detailstat.nearest < 0 ? -1 : sqrt(vbsp_detailstat.nearest));
+	if (c0)
+		Con_Printf("  cell 0: %s state %i, box %g %g %g .. %g %g %g\n", c0->name, c0->loadstate,
+			prv->detailcells[0].mins[0], prv->detailcells[0].mins[1], prv->detailcells[0].mins[2],
+			prv->detailcells[0].maxs[0], prv->detailcells[0].maxs[1], prv->detailcells[0].maxs[2]);
+}
+
+static void VBSP_DetailDraw(model_t *mod, const qbyte *surfvis, int area)
+{
+	vbspinfo_t *prv = (vbspinfo_t*)mod->meshinfo;
+	int areas[2] = {1, area};
+	float maxd2;
+	size_t i;
+
+	if (!prv->detailbuilt)
+		VBSP_DetailBuild(mod);
+	if (!refdef->recurse)	//the census is the main view's; a skyroom or water pass recurses
+	{
+		memset(&vbsp_detailstat, 0, sizeof(vbsp_detailstat));
+		vbsp_detailstat.mod = mod;
+		VectorCopy(refdef->vieworg, vbsp_detailstat.eye);
+		vbsp_detailstat.nearest = -1;
+	}
+	maxd2 = prv->detailmaxd * prv->detailmaxd;
+	for (i = 0; i < prv->numdetailcells; i++)
+	{
+		detailcell_t *c = &prv->detailcells[i];
+		entity_t *ent;
+		vec3_t n;
+		int a;
+
+		if (!c->ent.model || c->ent.model->loadstate != MLS_LOADED || !VBSP_DetailOwn(c))
+		{
+			if (c->ent.model && (c->ent.model->loadstate == MLS_NOTLOADED ||
+				(c->ent.model->loadstate == MLS_LOADED && !VBSP_DetailOwn(c))))
+				prv->detailbuilt = false;	//purged (vid_restart) or rebuilt by another map: rebuilt next frame
+			vbsp_detailstat.notloaded += !refdef->recurse;
+			continue;
+		}
+		for (a = 0; a < 3; a++)		//the nearest point of the box
+			n[a] = bound(c->mins[a], refdef->vieworg[a], c->maxs[a]) - refdef->vieworg[a];
+		if (!refdef->recurse && (vbsp_detailstat.nearest < 0 || DotProduct(n, n) < vbsp_detailstat.nearest))
+			vbsp_detailstat.nearest = DotProduct(n, n);
+		if (DotProduct(n, n) > maxd2)
+		{
+			vbsp_detailstat.distant += !refdef->recurse;
+			continue;
+		}
+		if (surfvis && !VBSP_EdictInFatPVS(mod, &c->ent.pvscache, surfvis, areas))
+		{
+			vbsp_detailstat.pvs += !refdef->recurse;
+			continue;
+		}
+		if (VBSP_CullBox(c->mins, c->maxs))
+		{
+			vbsp_detailstat.frustum += !refdef->recurse;
+			continue;
+		}
+		ent = modfuncs->NewSceneEntity();
+		if (!ent)
+			break;
+		*ent = c->ent;
+		vbsp_detailstat.drawn += !refdef->recurse;
+	}
+}
+
 static void VBSP_PrepareFrame(model_t *mod, refdef_t *r_refdef, int area, int clusters[2], pvsbuffer_t *vis, qbyte **entvis_out, qbyte **surfvis_out)
 {
 	vbspinfo_t	*prv = (vbspinfo_t*)mod->meshinfo;
@@ -9276,6 +10004,19 @@ static void VBSP_PrepareFrame(model_t *mod, refdef_t *r_refdef, int area, int cl
 			int eyeleaf = VBSP_PointLeafnum(mod, r_refdef->recurse ? r_refdef->pvsorigin : r_refdef->vieworg);
 			if (eyeleaf >= 0 && eyeleaf < mod->numleafs && !(prv->leafflags[eyeleaf] & 0x01))
 				r_refdef->skyroom_noleafsky = true;
+		}
+		if (!r_refdef->recurse)
+		{	//FTESurf Patch 1013: the main view's water volume names the engine's underwater post-process
+			const char *uw = "";
+			int leaf = VBSP_PointLeafnum(mod, r_refdef->vieworg);
+			if (prv->wateroverlay && leaf >= 0 && leaf < mod->numleafs &&
+				prv->leafwater[leaf] >= 0 && prv->leafwater[leaf] < prv->numwater)
+				uw = prv->wateroverlay[prv->leafwater[leaf]];
+			if (strcmp(uw, vbsp_uwlast))
+			{
+				Q_strlcpy(vbsp_uwlast, uw, sizeof(vbsp_uwlast));
+				cvarfuncs->ForceSetString("r_underwateroverlay", uw);
+			}
 		}
 	}
 
@@ -9661,7 +10402,9 @@ static void VBSP_PrepareFrame(model_t *mod, refdef_t *r_refdef, int area, int cl
 			sent = &prv->staticprops[i];
 			src = &sent->ent;
 
-			if (sent->fademaxdist)
+			//Patch 990: only a positive FadeMaxDist fades (vbsp staticprop.cpp:650 m_FadesOut); VBSP++ writes
+			//-1 for "never", and bhop_ceaseless's 27 gates were culled at every distance.
+			if (sent->fademaxdist > 0)
 			{
 				VectorSubtract(refdef->vieworg, src->origin, disp);
 				d = VectorLength(disp);
@@ -9982,6 +10725,10 @@ static void VBSP_PrepareFrame(model_t *mod, refdef_t *r_refdef, int area, int cl
 		}
 #undef PROP_VERDICT
 	}
+
+	//FTESurf Patch 1038: detail props, under the props' RDF_NOENTS rule.
+	if (prv->detailraw && hl2_detail && hl2_detail->ival && !(r_refdef->flags & RDF_NOENTS))
+		VBSP_DetailDraw(mod, surfvis, area);
 }
 static void VBSP_InfoForPoint (struct model_s *mod, vec3_t pos, int *area, int *cluster, unsigned int *contentbits)
 {
@@ -11879,6 +12626,8 @@ static qboolean VBSP_LoadModel(model_t *mod, qbyte *mod_base, size_t filelen, ch
 		VBSP_LoadEntities							(mod, mod_base, header.lumps);	//VBSP_LoadTexInfo so nTexInfo resolves to a material name
 	noerrors = noerrors && VBSP_LoadFaces			(mod, mod_base, header.lumps, header.version);
 #ifdef HAVE_CLIENT
+	if (noerrors && haverenderer && header.version != 17)	//Patch 1023; v17 faces are another layout
+		VBSP_LoadVertNormals					(mod, mod_base, header.lumps);
 	if (noerrors && haverenderer)	//FTESurf Patch 268 D1: needs texinfo, faces and the lighting lump; before displacements only because nothing later moves samples or extents
 		VBSP_ProbeLightmapStride				(mod);
 #endif
@@ -11889,6 +12638,8 @@ static qboolean VBSP_LoadModel(model_t *mod, qbyte *mod_base, size_t filelen, ch
 	noerrors = noerrors && VBSP_LoadBrushes			(mod, mod_base, &header.lumps[VLUMP_BRUSHES]);
 	noerrors = noerrors && VBSP_LoadLeafBrushes		(mod, mod_base, &header.lumps[VLUMP_LEAFBRUSHES]);
 	noerrors = noerrors && VBSP_LoadLeafs			(mod, mod_base, &header.lumps[VLUMP_LEAFS], header.version);
+	if (noerrors && haverenderer)
+		VBSP_LoadLeafWater							(mod, mod_base, &header.lumps[VLUMP_LEAFWATERDATA]);	//FTESurf Patch 1013
 	noerrors = noerrors && VBSP_LoadNodes			(mod, mod_base, &header.lumps[VLUMP_NODES]);
 	noerrors = noerrors && VBSP_LoadSubmodels		(mod, mod_base, &header.lumps[VLUMP_MODELS]);
 	noerrors = noerrors && VBSP_LoadAreas			(mod, mod_base, &header.lumps[VLUMP_AREAS]);
@@ -12320,7 +13071,7 @@ static void VBSP_PropCensus_f(void)
 			sent->nocollide ? "  <-- NOT SOLID: the model ships no .phy" : "");
 		Con_Printf("    fade               : min %g max %g%s\n",
 			sent->fademindist, sent->fademaxdist,
-			sent->fademaxdist ? "" : " (none; hl2_propdist applies)");
+			sent->fademaxdist > 0 ? "" : " (none; hl2_propdist applies)");
 		Con_Printf("    area               : areanum %i, areanum2 %i, headnode %i%s\n",
 			src->pvscache.areanum, src->pvscache.areanum2, src->pvscache.headnode,
 			(sent->nareas > 2) ? "  <-- box spans more areas than the 2 slots hold" : "");
@@ -12632,6 +13383,18 @@ qboolean VBSP_Init(void)
 		*/
 		hl2_animated = cvarfuncs->GetNVFDG("hl2_animated", "0", CVAR_SHADERSYSTEM, "Source's AnimatedTexture proxy -- materials whose frames all live in one VTF (smoke, fire, screens, water).\n0: draw frame 0, which is what shipped before and what every one of these materials has always done (default).\n1: cycle them at the rate the material asks for. 3,342 materials across 741 maps carry the proxy, so this moves a large part of the library onto a separate GLSL 130 shader (vmt/animated) that nothing has exercised before -- which is why it is not on by default.", MAPOPTIONS);
 
+		/*
+		FTESurf Patch 1035: hl2_spranim EXISTING is how cl_sprites.qc knows it may ask for
+		"ftesurf/spranim/<rate>/<material>" (mat_vmt.c Shader_LoadVMT); an older plugin cannot resolve
+		that and the sprite vanishes.  Not a cvar: a cfg_save dump writes every cvar with its description
+		as a `//` comment and `set` reads both back, so a dump replayed on an older plugin faked a cvar
+		test (review, 26 Oct).  checkcommand() reads 1 only for a real command; a config makes aliases.
+		*/
+		cvarfuncs->GetNVFDG("hl2_sprite_framerate", "1", 0, "env_sprite flipbooks (several frames in one VTF, no AnimatedTexture proxy) cycle at the env_sprite's own framerate keyvalue, and framerate 0 shows a still frame, as Source.\n1: each at its own rate (default).\n0: all at Source's default 10.\nNeeds hl2_animated 1; takes effect on the next map load.", MAPOPTIONS);
+		cmdfuncs->AddCommand("hl2_spranim", Mat_VMT_SprAnim_f, "Lists the env_sprite flipbooks drawn at their own framerate (hl2_sprite_framerate) since the plugin loaded.");
+
+		hl2_detail = cvarfuncs->GetNVFDG("hl2_detail", "1", CVAR_ARCHIVE, "FTESurf Patch 1038: Source's detail props -- the grass and small sprites VBSP scatters over a map's ground (66 library maps; bhop_monster_jam, surf_castle).\n1: draw them as Source does, out to 1200 units fading over the last 400, or the map's env_detail_controller (default).\n0: off.", MAPOPTIONS);
+
 		hl2_propdist = cvarfuncs->GetNVFDG("hl2_propdist", "0", CVAR_ARCHIVE, "Maximum draw distance, in units, for static props that declare NO fade distance of their own -- which on some maps is all of them (surf_demise: 2350 of 2350, median distance from the start 24,185 units, and drawing them costs 4.11M of the frame's 5.2M draw indices).\n0: no limit -- draw every prop at any distance (default, and what shipped before).\n>0: skip props further away than this. Source applies its own r_propsmaxdist in the same situation, so a limit here is closer to the map author's intent than none; the trade is that distant scenery disappears, which on a wide-open map is part of the view. Props that set their own fade distance are unaffected either way.", MAPOPTIONS);
 
 		hl2_rigidprops = cvarfuncs->GetNVFDG("hl2_rigidprops", "1", CVAR_MAPLATCH, "Load models compiled $staticprop as rigid geometry instead of as one-bone skeletal models.\n0: what shipped before -- every Source model carries bone weights, so com_mesh.c's rigid static-VBO path is unreachable and any prop surface whose material is not VertexLitGeneric is re-skinned on the CPU and re-uploaded every frame.\n1: emit no skinning data for a model studiomdl has already flattened (default). Measured: 73 of 73 prop models on surf_demise, 54 of 54 on surf_garden and 220 of 238 on ahop_coast are one-bone $staticprop with no animations, so the skinning they pay for is an identity transform. Models with a real rig -- ragdolls, NPCs, viewmodels -- are unaffected either way.", MAPOPTIONS);
@@ -12755,7 +13518,7 @@ qboolean VBSP_Init(void)
 		hl2_cubemaps stays MAPLATCH: it decides what VBSP_LoadCubemaps puts in
 		mod->envmaps while the BSP is being read, which no shader flush revisits.
 		*/
-		hl2_water = cvarfuncs->GetNVFDG("hl2_water", "3", CVAR_SHADERSYSTEM, "How Source water is drawn, and what it costs.\n0: flat translucent -- a $fogcolor sheet, no extra scene render, but it still blends and still sorts.\n1: live refraction with approximate baked-cubemap reflection -- one extra scene render per batch.\n2: live refraction and reflection -- two extra scene renders per batch.\n3: dithered flat (default) -- an ordered dither of $fogcolor. No blend, no sort, no render target; writes depth.\n4: budget animated -- translucent fog-coloured water with normal-map animation and approximate baked-cubemap reflection. No reflection, refraction, depth capture or screen copy; still blends/sorts and does not write depth. Not depth-correct or Source-exact.\nAt 1 and 2 a material with $forcecheap (and an $envmap) draws as Source's cheap water instead: opaque $fogcolor to the cubemap by fresnel, its normal map's AnimatedTexture frames playing but not scrolled by $bumptransform (as Source's), no extra scene render (FTESurf Patch 879).", MAPOPTIONS);
+		hl2_water = cvarfuncs->GetNVFDG("hl2_water", "3", CVAR_SHADERSYSTEM, "How Source water is drawn, and what it costs.\n0: flat translucent -- a $fogcolor sheet, no extra scene render, but it still blends and still sorts.\n1: live refraction with approximate baked-cubemap reflection -- one extra scene render per batch.\n2: live refraction and reflection -- two extra scene renders per batch.\n3: dithered flat (default) -- an ordered dither of $fogcolor. No blend, no sort, no render target; writes depth.\n4: budget animated -- translucent fog-coloured water with normal-map animation and approximate baked-cubemap reflection. No reflection, refraction, depth capture or screen copy; still blends/sorts and does not write depth. Not depth-correct or Source-exact.\n5: screen-space (FTESurf Patch 1020) -- refraction from a copy of the view's colour and depth, reflection marched through that depth copy, the fog colour where the reflected ray leaves the screen. No extra scene render; reflects only what is on screen.\nAt 1, 2 and 5 a material with $forcecheap (and an $envmap) draws as Source's cheap water instead: opaque $fogcolor to the cubemap by fresnel, its normal map's AnimatedTexture frames playing but not scrolled by $bumptransform (as Source's), no extra scene render (FTESurf Patch 879).", MAPOPTIONS);
 		hl2_refract = cvarfuncs->GetNVFDG("hl2_refract", "2", CVAR_SHADERSYSTEM, "How Source's Refract materials (glass, windows) are drawn.\n0: no framebuffer copy -- what is behind the pane tinted by $refracttint (and its tint texture), plus its $envmap reflection: Source's look without the warp.\n1: Source's refraction, which copies the framebuffer once per batch.\n2: dithered flat (default) -- the pane keeps its own texture, $alpha sets the coverage, and it becomes opaque geometry that writes depth. A pane with no texture of its own draws as 0.", MAPOPTIONS);
 		hl2_vertexcolor = cvarfuncs->GetNVFDG("hl2_vertexcolor", "1", CVAR_SHADERSYSTEM, "FTESurf Patch 232: $vertexcolor / $vertexalpha on LightmappedGeneric and WorldVertexTransition materials -- the per-vertex tint and opacity a mapper paints onto a DISPLACEMENT (every other surface carries white at alpha 1, so this cannot change them).\n0: ignore both keys, which is what every build before P232 did.\n1: draw what the material asks for (default). 41 transition materials in 20 maps and 494 LightmappedGeneric ones in 111 maps carry them; surf_rise's ivy is the reported case.", MAPOPTIONS);
 		hl2_bottommaterial = cvarfuncs->GetNVFDG("hl2_bottommaterial", "1", CVAR_SHADERSYSTEM, "FTESurf Patch 233: a water material's $bottommaterial -- the underside of the water -- when the map names one and does not ship it.\n0: leave it unresolved, which is what every build before P233 did; the underside draws with the default wall shader and the map reports a missing material.\n1: draw it as the water material that names it (default). surf_aesthetic's water/clear_beneath is 325 faces and surf_demise's water_tar_beneath 7; neither exists in any pack, in either spelling.", MAPOPTIONS);
@@ -12818,7 +13581,7 @@ qboolean VBSP_Init(void)
 		hl2_lt_baked_dir = cvarfuncs->GetNVFDG("hl2_lt_baked_dir", "0", 0, "Directional fraction given to a prop lit from its own VRAD .vhv bake, 0 to 1.\n0: today -- the bake is used flat, because VRAD already baked the light's direction into each vertex and re-applying a direction over it would shade it twice (default).\n1 (or any fraction): split that much of the level into a max(0,N.L) term along the leaf ambient cube's dominant direction, which gives a nearly-uniform bake some silhouette.\nNOTE: this is per-VERTEX against the geometric normal, so it can never produce relief on a bumpmapped prop -- hl2_cubelight is the knob for that. And at any non-zero value hl2_lt_dirsign 1 becomes a prerequisite, or it lights the wrong side.", MAPOPTIONS);
 
 		//FTESurf Patch 263: WindowImposter, Source's fake-second-skybox shader. See the arm in mat_vmt.c.
-		hl2_imposter = cvarfuncs->GetNVFDG("hl2_imposter", "1", CVAR_SHADERSYSTEM, "Source's WindowImposter shader -- a brush that draws a cubemap by VIEW DIRECTION, used to fake a second skybox in one room (155 materials across 59 maps).\n0: draw them nodraw, so whatever is behind shows through -- on a fake-sky slab that is the map's real sky.\n1: as authored (default). Before this existed the class was unimplemented and these surfaces drew as the notexture checkerboard.", MAPOPTIONS);
+		hl2_imposter = cvarfuncs->GetNVFDG("hl2_imposter", "1", CVAR_SHADERSYSTEM, "Source's WindowImposter shader -- a brush that draws a cubemap by VIEW DIRECTION, used to fake a second skybox in one room (155 materials across 59 maps).\n0: draw them nodraw, so whatever is behind shows through -- on a fake-sky slab that is the map's real sky.\n1: opaque, writing depth (default): a fading func_lod reaching past bhop_ceaseless's fake sky is cut by it.\n2: as Source, blended with no depth writes and drawn ahead of other blended surfaces, so that cut goes, but particles and blended faces behind an imposter show through it.", MAPOPTIONS);
 		//FTESurf: UnlitTwoTexture's second layer and its material proxies. See the arm in mat_vmt.c.
 		cvarfuncs->GetNVFDG("hl2_fog_alphamul", "0", CVAR_SHADERSYSTEM, "FTESurf Patch 299: whether a fogged Source surface is multiplied by its own base-texture ALPHA.\n0: no (default). Fog the colour and leave the alpha to the blender, which is what Source does.\n1: yes -- the pre-Patch-299 picture, bit-for-bit. That is what the engine's fog4() has always done (gl_vidcommon.c:1887, `vec4(fog3(rgb),1.0) * regularcolour.a`), and it is correct only for a PREMULTIPLIED blend, which this plugin never emits.\nSource does not treat base alpha as opacity unless the material says so: on an opaque VertexLitGeneric it is a mask ($basealphaenvmapmask and friends) and the surface is solid. With no fog the opaque blend discards it, so nothing shows; the moment fog is on, the mask multiplies every pixel. Measured on surf_tensor2's 3D skybox, the mean base alpha of the eight building materials in frame splits cleanly into 0.028-0.094 and 0.920-0.984, and it matches the screen object for object -- the 0.03 props drew at 3% of the fog colour, a black cutout against a correctly fogged sky, which is the reported 'bright black' buildings, and the low-alpha window panes inside the 0.92-0.96 textures are the black windows beside them.\nTranslucent materials are affected too and in the same direction: mat_vmt.c:3719/3885 emit `src_alpha one_minus_src_alpha`, so GL already applies the alpha and fog4() was applying it a second time. Additive (fog4additive) and water (fog4blend) never multiplied and are unchanged either way.", MAPOPTIONS);
 
@@ -12844,6 +13607,7 @@ qboolean VBSP_Init(void)
 		how a wrong LUT is told apart from a right LUT applied too strongly.
 		*/
 		hl2_colourcorrection = cvarfuncs->GetNVFDG("hl2_colourcorrection", "1", CVAR_SHADERSYSTEM, "Source's color_correction entities -- a 32x32x32 lookup table applied to the whole frame, which is how a Source map's author set its colour.  FTE has never applied any of them, so every graded map in the library has been rendering ungraded.\nOnly the global form is implemented (minfalloff/maxfalloff -1, which is the common idiom); a correction with a real distance falloff, and color_correction_volume entirely, are counted and declined in the map's census line.\n0: no grade, the way every build before this one looked.  Live -- it takes effect on the current frame, and 0 is bit-for-bit the ungraded scene.\n1: apply the map's own grade (default).  Going from 0 to 1 needs a map load if the map was loaded with it off, because the shader is generated then.\nFractional values scale the grade: .5 is half of it.", MAPOPTIONS);
+		hl2_underwateroverlay = cvarfuncs->GetNVFDG("hl2_underwateroverlay", "1", 0, "Source's $underwateroverlay: while the eye is in a water volume, its material's overlay (a Refract warp of the whole screen) replaces the engine's own underwater warp, and water without one draws no warp, as Source does.\n0: the engine's r_waterwarp everywhere, as before Patch 1013.  Read at map load.", MAPOPTIONS);	//FTESurf Patch 1013
 
 		cvarfuncs->GetNVFDG("hl2_colour_hue", "-999", CVAR_ARCHIVE, "Source scene hue rotation in degrees, after the map's LUT. -999 = map default (light blue on surf_sidistic, original elsewhere); 0 = original hue and saturation. Live; HUD is not graded. Set hl2_colour_hue_strength 0 to disable the hue change.", MAPOPTIONS);
 		cvarfuncs->GetNVFDG("hl2_colour_hue_strength", "1", CVAR_ARCHIVE, "Blend strength of the Source hue rotation, clamped 0..1. 0 leaves the authored scene unchanged; 1 applies the full shift.", MAPOPTIONS);
@@ -12929,6 +13693,7 @@ qboolean VBSP_Init(void)
 		if (cmdfuncs)
 		{
 			cmdfuncs->AddCommand("hl2_missing", VBSP_Missing_f, "List missing or unparseable VMT files, plus unsupported shader fallbacks observed since world load, including streamed props. Unsupported classes need renderer support, not asset-pack mounts. This is not a complete sampled-image census; r_imagelist lists image load failures.");
+			cmdfuncs->AddCommand("detail_census", VBSP_DetailCensus_f, "ftesurf (P1038): the map's detail-prop cells and what the last frame did with them -- drawn, or dropped by distance, PVS or frustum, or not loaded yet.");
 			cmdfuncs->AddCommand("prop_census", VBSP_PropCensus_f, "ftesurf (P257): what the last frame did with the map's static props -- how many drew, and how many each cull dropped. `prop_census <index>` or `prop_census <part of a model name>` reports one prop's verdict together with the fade, PVS and lighting state behind it. Use it when something is solid but not drawn.");
 			cmdfuncs->AddCommand("hl2_lightprobe", VBSP_LightProbe_f, "Report local direct lights, world occlusion and the six-face direct cube at x y z (linear RGB). No player data or scene changes.");
 			cmdfuncs->AddCommand("vbsp_pvsstat", VBSP_PvsStat_f, "ftesurf (P273): how many entity visibility tests ran since the last call, how many of those fell back to the whole-tree headnode descent, and how many nodes that descent touched. sv_perfdump says the visibility test is ~98% of the server's cost on a big Source map; this says whether the tree descent is why.");

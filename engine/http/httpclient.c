@@ -641,7 +641,13 @@ static qboolean HTTP_DL_Work(struct dl_download *dl)
 				if (nl>msg&&nl[-1] == '\r')
 					nl--;
 				*nl = '\0';
-				Con_Printf("%s: %s%s\n", dl->url, buffer, msg);
+				//FTESurf Patch 1026: an optional game file the web mirror lacks falls back to the server.
+#if defined(HAVE_CLIENT) && defined(DLLF_ALLOWWEB)
+				if (dl->replycode == 404 && (dl->qdownload.flags & DLLF_ALLOWWEB) && !(dl->qdownload.flags & (DLLF_REQUIRED|DLLF_VERBOSE)))
+					Con_DPrintf("%s: %s%s\n", dl->url, buffer, msg);
+				else
+#endif
+					Con_Printf("%s: %s%s\n", dl->url, buffer, msg);
 				return false;	//something went wrong.
 			}
 
@@ -1470,7 +1476,18 @@ void HTTP_CL_Think(const char **curname, float *curpercent)
 		else
 #endif
 		{
-			if (!dl->poll(dl))
+			//FTESurf Patch 983: one poll is one socket read (about 32 KB through TLS),
+			//so a frame-polled download ran at a read per frame: 3.2 MB/s at 100 fps
+			//against curl's ~10 MB/s from R2. Drain what has arrived, up to 2 ms.
+			double until = Sys_DoubleTime() + 0.002;
+			size_t before;
+			qboolean alive;
+			do
+			{
+				before = dl->completed;
+				alive = dl->poll(dl);
+			} while (alive && dl->status == DL_ACTIVE && dl->completed != before && Sys_DoubleTime() < until);
+			if (!alive)
 			{
 				*link = dl->next;
 				DL_Close(dl);

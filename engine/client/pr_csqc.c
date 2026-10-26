@@ -265,6 +265,7 @@ static void CSQC_FindGlobals(qboolean nofuncs)
 		csqcg.CSQC_PredictPlayerMove = 0;	//FTESurf P335: an untrusted module must not rewrite predicted movement
 		csqcg.predmove_org0 = csqcg.predmove_org = csqcg.predmove_vel = csqcg.predmove_basevel = NULL;
 		csqcg.predmove_bvfired = csqcg.predmove_offset = NULL;
+		csqcg.predmove_bvset = csqcg.predmove_bvsetflag = csqcg.predmove_wasground = NULL;
 		csqcg.predmove_onground = csqcg.predmove_pmtype = csqcg.predmove_buttons = csqcg.predmove_fixangle = NULL;
 		csqcg.predmove_mins = csqcg.predmove_maxs = csqcg.predmove_anglesnap = csqcg.predmove_cmdangles = NULL;
 		csqcg.input_sequence = NULL;
@@ -2112,6 +2113,8 @@ static void CS_ProjectPoint(const float *in, float *out)
 	tempv[0] /= tempv[3];
 	tempv[1] /= tempv[3];
 	tempv[2] /= tempv[3];
+	if (r_xflip.ival)	//Patch 982: the view is drawn mirrored (gl_rmain.c swaps fov_l/fov_r); this matrix is not
+		tempv[0] = -tempv[0];
 
 	if (csqc_isdarkplaces)
 	{	/*sigh*/
@@ -2170,6 +2173,8 @@ static void QCBUILTIN PF_cs_unproject (pubprogfuncs_t *prinst, struct globalvars
 			ty = ((ty-r_refdef.vrect.y)/r_refdef.vrect.height);
 			ty = 1-ty;
 			v[0] = tx*2-1;
+			if (r_xflip.ival)	//Patch 982: undo the mirrored view, as CS_ProjectPoint applies it
+				v[0] = -v[0];
 			v[1] = ty*2-1;
 			v[2] = in[2]*2-1;	//gl projection matrix scales -1 to 1 (unlike d3d, which is 0 to 1)
 
@@ -10844,7 +10849,7 @@ void CSQC_PredictConsumeBaseVel(int seat, int sequence, qboolean restoreprevious
   more.  The angle-snap ring was already frame-surviving by design. */
 
 
-void CSQC_PredictPlayerMove(int seat, const usercmd_t *cmd, const float *preorigin, float offsetmsec)
+void CSQC_PredictPlayerMove(int seat, const usercmd_t *cmd, const float *preorigin, float offsetmsec, qboolean preground)
 {
 	vec3_t oldorg, oldvel;
 	void *pr_globals;
@@ -10870,6 +10875,8 @@ void CSQC_PredictPlayerMove(int seat, const usercmd_t *cmd, const float *preorig
 	VectorCopy(pmove.origin, csqcg.predmove_org);
 	VectorCopy(pmove.velocity, csqcg.predmove_vel);
 	*csqcg.predmove_onground = pmove.onground;
+	if (csqcg.predmove_wasground)	//FTESurf P1025: the pre-move hook does not run on a listen server
+		*csqcg.predmove_wasground = preground;
 	if (csqcg.predmove_mins)
 		VectorCopy(pmove.player_mins, csqcg.predmove_mins);
 	if (csqcg.predmove_maxs)
@@ -10886,6 +10893,8 @@ void CSQC_PredictPlayerMove(int seat, const usercmd_t *cmd, const float *preorig
 		VectorClear(csqcg.predmove_basevel);
 	if (csqcg.predmove_bvfired)
 		*csqcg.predmove_bvfired = 0;
+	if (csqcg.predmove_bvsetflag)
+		*csqcg.predmove_bvsetflag = 0;
 
 	pr_globals = PR_globals(csqcprogs, PR_CURRENT);
 	((float *)pr_globals)[OFS_PARM0] = seat;
@@ -10930,6 +10939,12 @@ void CSQC_PredictPlayerMove(int seat, const usercmd_t *cmd, const float *preorig
 			VectorCopy(csqcg.predmove_basevel, pred_bv_held[seat]);
 			pred_bv_armed[seat] = true;
 		}
+		/*FTESurf Patch 1025: the server's AddOutput basevelocity -- an overwrite of the held
+		  carrier that leaves the armed flag alone, after this command's touches (an OnEndTouch
+		  fired in the next PreThink, or an OnStartTouch in this command's touch).  The server
+		  stores it divided by the cash-out's scale so the next command pays exactly this.*/
+		if (csqcg.predmove_bvset && csqcg.predmove_bvsetflag && *csqcg.predmove_bvsetflag)
+			VectorScale(csqcg.predmove_bvset, 1 / (1 + movevars.ticrate * 0.5f), pred_bv_held[seat]);
 		CSQC_PredictSaveBaseVel(seat, cmd->sequence);
 	}
 }
