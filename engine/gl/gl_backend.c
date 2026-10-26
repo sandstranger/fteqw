@@ -5812,6 +5812,20 @@ static void DrawMeshes(void)
 	int flags;
 	passno = 0;
 
+	// A shader can be registered before its remap target is initialised.
+	// Never dereference a missing current shader on the render thread.
+	if (!shaderstate.curshader)
+	{
+		static int last_missing_shader_frame = -1;
+		if (last_missing_shader_frame != host_framecount)
+		{
+			Con_DPrintf("DrawMeshes: skipping batch with NULL shader (mode %i, meshes %i)\\n",
+				shaderstate.mode, shaderstate.meshcount);
+			last_missing_shader_frame = host_framecount;
+		}
+		return;
+	}
+
 	if (shaderstate.force2d)
 	{
 		RQuantAdd(RQUANT_2DBATCHES, 1);
@@ -6431,8 +6445,11 @@ static void BE_GenTempMeshVBO(vbo_t **vbo, mesh_t *m)
 
 void GLBE_DrawMesh_List(shader_t *shader, int nummeshes, mesh_t **meshlist, vbo_t *vbo, texnums_t *texnums, unsigned int beflags)
 {
+	if (!shader)
+		return;
+
 	shaderstate.curbatch = &shaderstate.dummybatch;
-	shaderstate.curshader = shader->remapto;
+	shaderstate.curshader = shader->remapto ? shader->remapto : shader;
 
 	if (!vbo)
 	{
@@ -6507,7 +6524,7 @@ void GLBE_SubmitBatch(batch_t *batch)
 	sh = batch->shader;
 	if (!sh)	//nettest: the portal/depthmask loops call GLBE_SubmitBatch directly (bypassing the !bs guard on the sortlist path), so a still-NULL shader (e.g. a frame-1 unparsed Source water material) would fault on sh->remapto
 		return;
-	shaderstate.curshader = sh->remapto;
+	shaderstate.curshader = sh->remapto ? sh->remapto : sh;
 	shaderstate.flags = batch->flags;
 	if (shaderstate.curentity != batch->ent)
 		GLBE_SelectEntity(batch->ent);
