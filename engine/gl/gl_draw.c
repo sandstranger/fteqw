@@ -886,12 +886,13 @@ qboolean GL_LoadTextureMips(texid_t tex, const struct pendingtextureinfo *mips)
 	}
 	if (nummips != levels)
 	{
-		// Do not advertise malformed/unuploaded mip levels to the sampler. Some
-		// mobile drivers (notably GLES implementations) return corrupted texels
-		// when GL_TEXTURE_MAX_LEVEL includes levels that were skipped above.
+		// Keep only the valid prefix of a malformed mip chain. GLES 3 lets us
+		// clamp GL_TEXTURE_MAX_LEVEL to that prefix; leaving the originally
+		// advertised but unuploaded levels makes the texture incomplete. Do not
+		// regenerate the chain here, because that would overwrite valid authored
+		// DDS mips and can produce different results across mobile drivers.
 		levels = nummips;
-		if (!sh_config.can_genmips || !qglGenerateMipmap || !mips->mip[0].data)
-			genlevels = levels;
+		genlevels = levels;
 	}
 
 	//make sure the texture is complete even if the mips are not.
