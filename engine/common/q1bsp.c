@@ -2341,6 +2341,22 @@ static qbyte *Q1BSP_MarkLeaves (model_t *model, int clusters[2])
 	static qbyte *basevis;
 	static size_t basevisbytes;
 	struct q1bspprv_s *prv = model->meshinfo;
+	qboolean bypass_pvs_cache = false;
+
+	/*
+	 * A cached PVS is keyed only by the BSP clusters, not by water alpha or
+	 * the camera's height within a leaf. Re-evaluate it when translucent-water
+	 * visibility may have changed; otherwise the fast return below can prevent
+	 * the water repair from ever seeing a newly enabled transparency setting.
+	 */
+	if (!portal && cls.allow_watervis && r_wateralpha.value < 1.0f)
+	{
+		if (r_wateralpha_extendpvs.ival)
+			bypass_pvs_cache = true;
+		else if (model->leafs && clusters[0] >= 0 && clusters[0] < model->numclusters &&
+			Q1BSP_ContentsIsFluid(model->leafs[clusters[0]+1].contents))
+			bypass_pvs_cache = true;
+	}
 
 	q1_framecount = ++prv->framecount;
 
@@ -2360,7 +2376,7 @@ static qbyte *Q1BSP_MarkLeaves (model_t *model, int clusters[2])
 	{
 		if (!portal)
 		{
-			if (((prv->oldviewclusters[0] == clusters[0] && prv->oldviewclusters[1] == clusters[1]) && !r_novis.ival) || r_novis.ival & 2)
+			if (!bypass_pvs_cache && (((prv->oldviewclusters[0] == clusters[0] && prv->oldviewclusters[1] == clusters[1]) && !r_novis.ival) || r_novis.ival & 2))
 				if (cvis)
 				{
 					q1_visframecount = prv->visframecount;
@@ -2389,15 +2405,13 @@ static qbyte *Q1BSP_MarkLeaves (model_t *model, int clusters[2])
 		}
 		else
 		{
-			// Opt-in via r_wateralpha_extendpvs because modern compilers
-			// (ericw-tools vis with transparent-water support, qbsp -trans,
-			// etc.) already produce BSPs whose vis data correctly accounts
-			// for transparent water surfaces.  On those maps the fluid
-			// merge is redundant AND harmful — it adds far-away leafs that
-			// the fluid leafs can see for unrelated reasons, blowing the
-			// PVS up to nearly r_novis levels and ruining culling.  Only
-			// enable on legacy maps (vanilla GoldSrc, q1 with classic vis)
-			// where the compiler treated water as opaque.
+			// The general water-body merge is opt-in via r_wateralpha_extendpvs
+			// because modern compilers (ericw-tools vis with transparent-water
+			// support, qbsp -trans, etc.) already produce BSPs whose vis data
+			// accounts for transparent water surfaces. The submerged-camera
+			// repair below is narrower: it enables this same merge automatically
+			// only when the air leaf directly above the camera is absent from the
+			// baked PVS, avoiding blanket PVS expansion on already-correct maps.
 			qboolean want_fluid_merge = (model->leafs &&
 			                             r_wateralpha.value < 1.0f &&
 			                             r_wateralpha_extendpvs.ival);
