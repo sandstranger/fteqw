@@ -3608,7 +3608,7 @@ void R_WaterInfo_f(void)
 
 	Con_Printf("^2scene cache^7: r_temporalscenecache \"%s\" -> wanted %i, in use %i%s\n",
 			r_temporalscenecache.string, nettest_sc_wanted, r_temporalscenecache.ival,
-			(nettest_sc_forced>0)?"   ^2(forced off by r_wateralpha_extendpvs)^7":"");
+			(nettest_sc_forced>0)?"   ^2(forced off for rendering correctness)^7":"");
 
 	Con_Printf("^2extendpvs^7: r_wateralpha_extendpvs %s\n", r_wateralpha_extendpvs.string);
 	if (q1bsp_marktime < 0)
@@ -3735,6 +3735,18 @@ void Surf_DrawWorld (void)
 		if (r_wateralpha_extendpvs.ival && r_wateralpha.value < 1.0f && cl.worldmodel &&
 			(cl.worldmodel->fromgame == fg_quake || cl.worldmodel->fromgame == fg_halflife))
 			sc = 0;
+#ifdef GLQUAKE
+		/*
+		 * The temporal EBO cache can reuse a stale world snapshot when its worker
+		 * falls behind. That is visible as surfaces/textures popping while moving,
+		 * and it also bypasses Q1BSP_MarkLeaves, where translucent-water PVS repair
+		 * runs. Prefer correct per-frame BSP visibility on mobile GLES over this
+		 * optional cache. Desktop OpenGL and Vulkan keep their existing behaviour.
+		 */
+		if (qrenderer == QR_OPENGL && gl_config.gles && cl.worldmodel &&
+			(cl.worldmodel->fromgame == fg_quake || cl.worldmodel->fromgame == fg_halflife))
+			sc = 0;
+#endif
 		nettest_sc_forced = (sc != nettest_sc_wanted);
 
 		if (sc != r_temporalscenecache.ival)
