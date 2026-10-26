@@ -2122,12 +2122,12 @@ static int Q1BSP_FindMissingAirLeafAboveCamera(model_t *model, int clusters[2], 
 
 	ceiling = model->maxs[2];
 	VectorCopy(r_refdef.vieworg, probe);
-	for (step = 0; step < 64 && probe[2] < ceiling; step++)
+	for (step = 0; step < 128 && probe[2] < ceiling; step++)
 	{
 		mleaf_t *leaf;
 		int contents, aircluster;
 
-		probe[2] += 32;
+		probe[2] += 16;
 		leaf = Q1BSP_LeafForPoint(model, probe);
 		if (!leaf)
 			continue;
@@ -2668,11 +2668,11 @@ fluidmergedone:
 					float ceiling = model->maxs[2];
 					int step;
 					VectorCopy(r_refdef.vieworg, probe);
-					for (step = 0; step < 64 && probe[2] < ceiling; step++)
+					for (step = 0; step < 128 && probe[2] < ceiling; step++)
 					{
 						mleaf_t *l;
 						int c;
-						probe[2] += 32;
+						probe[2] += 16;
 						l = Q1BSP_LeafForPoint(model, probe);
 						c = l->contents;
 						if (c == Q1CONTENTS_SOLID || c == Q1CONTENTS_SKY)
