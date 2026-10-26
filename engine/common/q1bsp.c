@@ -2102,6 +2102,47 @@ static qboolean Q1BSP_ContentsIsFluid(int contents)
 	       contents == HLCONTENTS_CURRENT_DOWN;
 }
 
+/*
+ * Return the first air leaf above a submerged camera when that leaf is
+ * missing from the camera's baked PVS. Old Quake vis files treated water as
+ * opaque, so a translucent water surface can otherwise blend over an empty
+ * (usually black) framebuffer when viewed from below. This is deliberately
+ * a narrow test: already water-visible BSPs keep their normal PVS and culling.
+ */
+static int Q1BSP_FindMissingAirLeafAboveCamera(model_t *model, int clusters[2], const qbyte *vis)
+{
+	vec3_t probe;
+	float ceiling;
+	int step;
+
+	if (!model || !model->leafs || !vis || clusters[0] < 0 ||
+		clusters[0] >= model->numclusters ||
+		!Q1BSP_ContentsIsFluid(model->leafs[clusters[0]+1].contents))
+		return -1;
+
+	ceiling = model->maxs[2];
+	VectorCopy(r_refdef.vieworg, probe);
+	for (step = 0; step < 64 && probe[2] < ceiling; step++)
+	{
+		mleaf_t *leaf;
+		int contents, aircluster;
+
+		probe[2] += 32;
+		leaf = Q1BSP_LeafForPoint(model, probe);
+		if (!leaf)
+			continue;
+		contents = leaf->contents;
+		if (contents == Q1CONTENTS_SOLID || contents == Q1CONTENTS_SKY || Q1BSP_ContentsIsFluid(contents))
+			continue;
+
+		aircluster = (int)(leaf - model->leafs) - 1;
+		if (aircluster < 0 || aircluster >= model->numclusters)
+			return -1;
+		return (vis[aircluster >> 3] & (1 << (aircluster & 7))) ? -1 : aircluster;
+	}
+	return -1;
+}
+
 //nettest: THE SHORE TABLE, and why "is the fluid leaf in the camera's PVS" cannot work.
 //
 //The gate this replaces asked exactly that, reasoning that vis is symmetric so a fluid
@@ -2368,7 +2409,6 @@ static qbyte *Q1BSP_MarkLeaves (model_t *model, int clusters[2])
 			//fact that we GOT here is what distinguishes the third from the
 			//first two, so it is written unconditionally and before the gate.
 			q1bsp_marktime = realtime;
-			q1bsp_wantmerge = want_fluid_merge;
 
 			{	//nettest: report why the extension is or is not running.  Change-gated,
 				//so a steady state prints once.  r_wateralpha is easily left at 1 by a
@@ -2408,6 +2448,33 @@ static qbyte *Q1BSP_MarkLeaves (model_t *model, int clusters[2])
 			}
 			else
 				vis = cvis = model->funcs.ClusterPVS(model, clusters[0], &pvsbuf, PVM_FAST);
+
+			/*
+			 * A submerged view needs the leaf immediately above the visible water
+			 * surface even when r_wateralpha_extendpvs was not explicitly enabled.
+			 * Only auto-enable the existing merge path when the vertical probe finds
+			 * that the current BSP PVS actually omits that air leaf. This avoids
+			 * widening visibility on maps already compiled for transparent water.
+			 */
+			if (!want_fluid_merge && cls.allow_watervis && r_wateralpha.value < 1.0f && !portal)
+			{
+				int aircluster = Q1BSP_FindMissingAirLeafAboveCamera(model, clusters, vis);
+				if (aircluster >= 0)
+				{
+					// PVM_FAST may point into immutable model PVS data. Recompute into
+					// pvsbuf before the fluid merge mutates the visibility bitmap.
+					if (clusters[1] >= 0 && clusters[1] != clusters[0])
+					{
+						vis = cvis = model->funcs.ClusterPVS(model, clusters[0], &pvsbuf, PVM_REPLACE);
+						vis = cvis = model->funcs.ClusterPVS(model, clusters[1], &pvsbuf, PVM_MERGE);
+					}
+					else
+						vis = cvis = model->funcs.ClusterPVS(model, clusters[0], &pvsbuf, PVM_REPLACE);
+					want_fluid_merge = true;
+					Con_DPrintf("wateralpha extendpvs: auto-enabled for submerged view (air cluster %i missing from PVS)\n", aircluster);
+				}
+			}
+			q1bsp_wantmerge = want_fluid_merge;
 
 			// Water transparency PVS extension: when r_wateralpha is < 1,
 			// the player can see THROUGH water surfaces, but the vis
