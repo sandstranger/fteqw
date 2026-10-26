@@ -4795,6 +4795,8 @@ static void BE_Program_Set_Attributes(const program_t *prog, struct programpermu
 static void BE_RenderMeshProgram(const shader_t *shader, const shaderpass_t *pass, program_t *p)
 {
 	int	i;
+	int perm;
+	struct programpermu_s *permu;
 
 	// Some direct/alternate render paths can reach this function without skin texnums.
 	// The all-zero fallback makes TEXLOADED checks safely resolve to false.
@@ -4810,10 +4812,6 @@ static void BE_RenderMeshProgram(const shader_t *shader, const shaderpass_t *pas
 	}
 	if (!shaderstate.sourcevbo || !shaderstate.curshader || !shaderstate.curbatch || !shader || !p)
 		return;
-
-	int perm;
-
-	struct programpermu_s *permu;
 
 	perm = 0;
 	if (shaderstate.sourcevbo->numbones)
