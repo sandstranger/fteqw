@@ -2745,11 +2745,9 @@ texid_t R_RenderPostProcess (texid_t sourcetex, texid_t sourcedepth, int type, s
 		r_refdef.flags &= ~type;
 
 		/*
-		 * A shader_t may exist even when its GLSL program failed to compile or
-		 * produced no usable passes on this driver. Do not allocate a destination
-		 * render target in that case: it would never be written, and the next
-		 * post-processing stage would sample stale/black pixels instead of the
-		 * original scene.
+		 * Water warp must have a usable shader program. If GLSL failed to compile
+		 * on this driver, do not allocate an unwritten destination render target
+		 * and later sample stale/black pixels; keep the original scene instead.
 		 */
 		if (!shader || !shader->numpasses ||
 			(type == RDF_WATERWARP && !R_PostProcessShaderReady(shader)))
