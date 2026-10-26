@@ -5819,7 +5819,7 @@ static void DrawMeshes(void)
 		static int last_missing_shader_frame = -1;
 		if (last_missing_shader_frame != host_framecount)
 		{
-			Con_DPrintf("DrawMeshes: skipping batch with NULL shader (mode %i, meshes %i)\\n",
+			Con_DPrintf("DrawMeshes: skipping batch with NULL shader (mode %i, meshes %i)\n",
 				shaderstate.mode, shaderstate.meshcount);
 			last_missing_shader_frame = host_framecount;
 		}
