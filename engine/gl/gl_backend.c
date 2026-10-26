@@ -4796,6 +4796,21 @@ static void BE_RenderMeshProgram(const shader_t *shader, const shaderpass_t *pas
 {
 	int	i;
 
+	// Some direct/alternate render paths can reach this function without skin texnums.
+	// The all-zero fallback makes TEXLOADED checks safely resolve to false.
+	if (!shaderstate.curtexnums)
+	{
+		static int last_missing_texnums_frame = -1;
+		shaderstate.curtexnums = &r_nulltexnums;
+		if (last_missing_texnums_frame != host_framecount)
+		{
+			Con_DPrintf("BE_RenderMeshProgram: missing curtexnums; using empty texture set\n");
+			last_missing_texnums_frame = host_framecount;
+		}
+	}
+	if (!shaderstate.sourcevbo || !shaderstate.curshader || !shaderstate.curbatch || !shader || !p)
+		return;
+
 	int perm;
 
 	struct programpermu_s *permu;
