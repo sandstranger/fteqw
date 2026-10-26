@@ -2451,7 +2451,12 @@ static GLuint GLSlang_CreateShader (program_t *prog, const char *name, int ver, 
 								"#if __VERSION__ < 300\n"
 									"#extension GL_EXT_shadow_samplers : require\n"
 								"#endif\n"
-								"precision lowp sampler2DShadow;\n"	//gah
+								"#if __VERSION__ >= 300\n"
+									"precision highp sampler2DShadow;\n"
+								"#else\n"
+									"precision lowp sampler2DShadow;\n"
+								"#endif\n"	//ES3 needs full precision for the filtered depth-compare result.
+
 							"#endif\n"
 				#endif
 				"uniform sampler2DShadow s_shadowmap;\n",
