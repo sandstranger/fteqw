@@ -2725,6 +2725,19 @@ qboolean R_RenderScene_Cubemap(void)
 }
 #endif
 
+static qboolean R_PostProcessShaderReady(const shader_t *shader)
+{
+	int i;
+	if (!shader || !shader->numpasses)
+		return false;
+	if (shader->prog)
+		return true;
+	for (i = 0; i < shader->numpasses; i++)
+		if (shader->passes[i].prog)
+			return true;
+	return false;
+}
+
 texid_t R_RenderPostProcess (texid_t sourcetex, texid_t sourcedepth, int type, shader_t *shader, char *restexname)
 {
 	if (r_refdef.flags & type)
@@ -2738,7 +2751,8 @@ texid_t R_RenderPostProcess (texid_t sourcetex, texid_t sourcedepth, int type, s
 		 * post-processing stage would sample stale/black pixels instead of the
 		 * original scene.
 		 */
-		if (!shader || !shader->prog || !shader->numpasses)
+		if (!shader || !shader->numpasses ||
+			(type == RDF_WATERWARP && !R_PostProcessShaderReady(shader)))
 			return sourcetex;
 
 		if (r_refdef.flags & RDF_ALLPOSTPROC)
@@ -2860,7 +2874,7 @@ void GLR_RenderView (void)
 		}
 		if (!r_waterwarp.value || r_projection.ival)
 			r_refdef.flags &= ~RDF_UNDERWATER;	//no warp at all
-		else if (r_waterwarp.value > 0 && uwpostproc && uwpostproc->prog && uwpostproc->numpasses && !r_uwnowarp)
+		else if (r_waterwarp.value > 0 && R_PostProcessShaderReady(uwpostproc) && !r_uwnowarp)
 			r_refdef.flags |= RDF_WATERWARP;	//try fullscreen warp instead if we can
 	}
 
