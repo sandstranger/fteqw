@@ -529,13 +529,25 @@ cvar_t r_wateralpha_extendpvs				= CVARFD ("r_wateralpha_extendpvs", "0",
 												"When 1 and r_wateralpha < 1, the renderer ORs the PVS of every fluid leaf THE CAMERA CAN SEE into the visible set, so transparent water shows the geometry on the other side. ONLY needed for legacy maps compiled without transparent-water vis support (vanilla GoldSrc maps, q1bsp compiled with classic vis). Modern maps compiled with ericw-tools vis or any vis tool that handles transparent water at compile time already have correct PVS — leave this 0 for those.\n2: as 1, plus a console readout of how many fluid leafs are being merged.\nWhile this is on and r_wateralpha < 1, the temporal scene cache is forced OFF on q1/hl maps (see r_temporalscenecache): the cache returns a PVS built without the fluid merge, which made this cvar inert and left translucent water blending over unpainted framebuffer. Set this to 0 to get the cache, and its performance, back.");
 cvar_t r_waterwarp							= CVARFD ("r_waterwarp", "1",
 												CVAR_ARCHIVE, "Enables fullscreen warp, preferably via glsl. -1 specifies to force the fov warp fallback instead which can give a smidge more performance.");
-cvar_t r_waterripple						= CVARFD ("r_waterripple", "3",
+#ifdef ANDROID
+	//off on android: the tessellated mesh + per-frame cpu deform is the one gpu-side difference between liquid
+	//and wall surfaces here, and it is the path that fails on mali. plain quake water (as upstream fte) works everywhere.
+	#define R_WATERRIPPLE_DEFAULT "0"
+#else
+	#define R_WATERRIPPLE_DEFAULT "3"
+#endif
+cvar_t r_waterripple						= CVARFD ("r_waterripple", R_WATERRIPPLE_DEFAULT,
 												CVAR_ARCHIVE | CVAR_SHADERSYSTEM, "Makes liquid (water/slime/lava/teleport) surfaces ripple as a real subdivided mesh: the value is the wave height in world units, 0 disables. Turning it on from 0, or changing r_waterripple_tess, requires a map reload (the tessellation is baked into the world at load); changing the height or r_waterripple_speed updates live.");
 cvar_t r_waterripple_tess					= CVARFD ("r_waterripple_tess", "64",
 												CVAR_ARCHIVE, "Grid cell size, in world units, for r_waterripple tessellation. Smaller = smoother ripples but more vertices. Read at map load.");
 cvar_t r_waterripple_speed					= CVARFD ("r_waterripple_speed", "1",
 												CVAR_ARCHIVE | CVAR_SHADERSYSTEM, "Speed multiplier for the r_waterripple wave motion.");
-cvar_t r_waterripple_react					= CVARFD ("r_waterripple_react", "1",
+#ifdef ANDROID
+	#define R_WATERRIPPLE_REACT_DEFAULT "0"	//see r_waterripple
+#else
+	#define R_WATERRIPPLE_REACT_DEFAULT "1"
+#endif
+cvar_t r_waterripple_react					= CVARFD ("r_waterripple_react", R_WATERRIPPLE_REACT_DEFAULT,
 												CVAR_ARCHIVE | CVAR_SHADERSYSTEM, "Makes liquid surfaces REACT to gameplay: players jumping in / wading, and bullets and props hitting the water spawn expanding ripple rings on the mesh. The value scales the strength of those rings; 0 disables the reaction (the ambient r_waterripple wave is separate). Like the wave this needs the water tessellated, so turning it on from 0 needs a map reload; the strength updates live. Sources are spawned from QC via the addwaterripple builtin.");
 
 //interactive water ripples fed by R_AddWaterRipple (see render.h).  A fixed ring buffer: new
