@@ -3584,6 +3584,11 @@ qboolean GL_Init(rendererstate_t *info, void *(*getglfunction) (char *name))
 	if (!GL_CheckExtensions (getglfunction))
 		return false;
 
+	//no version of gles has glMultiDrawElements, and drivers (via eglGetProcAddress) may return a pointer for
+	//any name they are asked for. only trust the extension's entry point when it is actually advertised.
+	if (gl_config.gles)
+		qglMultiDrawElements = GL_CheckExtension("GL_EXT_multi_draw_arrays")?(void *)getglext("glMultiDrawElementsEXT"):NULL;
+
 #ifndef FTE_TARGET_WEB
 	if (!gl_config.gles)
 	{

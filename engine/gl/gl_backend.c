@@ -237,6 +237,7 @@ static struct {
 		int streamebo[64];
 		int streamvao[64];
 		int streamid;
+		GLuint deformvbo;	//gles: cpu-generated positions for otherwise buffer-backed meshes (BE_StreamGeneratedVertexes)
 
 		int pendingtexcoordparts[SHADER_TMU_MAX];
 		int pendingtexcoordvbo[SHADER_TMU_MAX];
@@ -3341,6 +3342,35 @@ static void GenerateVertexDeforms(const shader_t *shader)
 	shaderstate.pendingvertexvbo = 0;
 }
 
+#ifndef FTE_TARGET_WEB
+//gles: the positions GenerateVertexDeforms/Blends wrote to vertexarray would otherwise be read from client memory
+//while every other attribute and the indices come from buffer objects. that mix is legal but rarely exercised by
+//drivers, and it is exactly what r_waterripple's deformed water does (mali drew it solid black). upload the
+//positions into a buffer object so these draws are fed like any other world surface. vertex indices stay absolute.
+static void BE_StreamGeneratedVertexes(void)
+{
+	int m, first = MAX_ARRAY_VERTS, last = 0;
+	const mesh_t *meshlist;
+	for (m = 0; m < shaderstate.meshcount; m++)
+	{
+		meshlist = shaderstate.meshes[m];
+		first = min(first, meshlist->vbofirstvert);
+		last = max(last, meshlist->vbofirstvert + meshlist->numvertexes);
+	}
+	if (last <= first || last > MAX_ARRAY_VERTS)
+		return;	//nothing generated, or not from vertexarray. leave it as a client array.
+
+	if (!shaderstate.deformvbo)
+		qglGenBuffersARB(1, &shaderstate.deformvbo);
+	GL_SelectVBO(shaderstate.deformvbo);
+	//orphan rather than overwrite storage that earlier draws this frame may still be using (tilers draw late)
+	qglBufferDataARB(GL_ARRAY_BUFFER_ARB, sizeof(vecV_t)*last, NULL, GL_STREAM_DRAW_ARB);
+	qglBufferSubDataARB(GL_ARRAY_BUFFER_ARB, sizeof(vecV_t)*first, sizeof(vecV_t)*(last-first), vertexarray+first);
+	shaderstate.pendingvertexvbo = shaderstate.deformvbo;
+	shaderstate.pendingvertexpointer = NULL;
+}
+#endif
+
 #if 1//ndef GLSLONLY
 
 /*======================================alpha ===============================*/
@@ -5898,6 +5928,12 @@ static void DrawMeshes(void)
 		shaderstate.pendingvertexpointer = shaderstate.sourcevbo->coord.gl.addr;
 		shaderstate.pendingvertexvbo = shaderstate.sourcevbo->coord.gl.vbo;
 	}
+#ifndef FTE_TARGET_WEB
+	//only when the rest of the mesh is in buffer objects. all-client temp meshes (2d, particles) stay as they are.
+	if (gl_config_gles && !shaderstate.pendingvertexvbo && shaderstate.pendingvertexpointer == (void*)vertexarray &&
+		(shaderstate.sourcevbo->coord.gl.vbo || shaderstate.sourcevbo->texcoord.gl.vbo || shaderstate.sourcevbo->indicies.gl.vbo))
+		BE_StreamGeneratedVertexes();
+#endif
 
 #ifdef _DEBUG
 	if (!shaderstate.pendingvertexpointer && !shaderstate.pendingvertexvbo)
