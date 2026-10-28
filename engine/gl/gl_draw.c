@@ -260,8 +260,11 @@ void GL_SetupFormats(void)
 
 		if (ver >= 3.0)
 		{
-			glfmtc(PTI_R16,			GL_R16,				GL_RED,					GL_RED,					GL_UNSIGNED_SHORT,	0);
-			glfmtc(PTI_RGBA16,		GL_RGBA16,			GL_RGBA,				GL_RGBA,				GL_UNSIGNED_SHORT,	0);
+			if (!gl_config_gles || GL_CheckExtension("GL_EXT_texture_norm16"))
+			{	//unorm16 isn't core in any gles. advertising it anyway left 16bit pngs with no storage (black) instead of converted to rgba8.
+				glfmtc(PTI_R16,			GL_R16,				GL_RED,					GL_RED,					GL_UNSIGNED_SHORT,	0);
+				glfmtc(PTI_RGBA16,		GL_RGBA16,			GL_RGBA,				GL_RGBA,				GL_UNSIGNED_SHORT,	0);
+			}
 
 			glfmtc(PTI_R16F,		GL_R16F,			GL_RED,					GL_RED,					GL_HALF_FLOAT,		0);
 			glfmtc(PTI_R32F,		GL_R16F,			GL_RED,					GL_RED,					GL_HALF_FLOAT,			0);
@@ -887,6 +890,10 @@ qboolean GL_LoadTextureMips(texid_t tex, const struct pendingtextureinfo *mips)
 				break;
 			}
 		}
+		//only declare the levels we will actually fill. immutable storage (and MAX_LEVEL) would otherwise keep the
+		//dropped ones, undefined but still sampled at a distance/glancing angle: black on some gpus, white on others.
+		if (nummips < levels)
+			genlevels = levels = nummips;
 	}
 
 	//make sure the texture is complete even if the mips are not.
