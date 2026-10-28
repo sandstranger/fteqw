@@ -2451,7 +2451,13 @@ static GLuint GLSlang_CreateShader (program_t *prog, const char *name, int ver, 
 								"#if __VERSION__ < 300\n"
 									"#extension GL_EXT_shadow_samplers : require\n"
 								"#endif\n"
-								"precision lowp sampler2DShadow;\n"	//gah
+								//lowp/mediump shadow samplers let some drivers (adreno) compare against an fp16 depth reference,
+								//whose ~1/2048 steps outgrow the shadowmap bias ~120qu from a dlight: self-shadowing acne that flickers.
+								"#ifdef GL_FRAGMENT_PRECISION_HIGH\n"
+									"precision highp sampler2DShadow;\n"
+								"#else\n"
+									"precision lowp sampler2DShadow;\n"	//gah
+								"#endif\n"
 							"#endif\n"
 				#endif
 				"uniform sampler2DShadow s_shadowmap;\n",

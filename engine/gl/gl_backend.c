@@ -1265,7 +1265,9 @@ void GLBE_SetupForShadowMap(dlight_t *dl, int texwidth, int texheight, float sha
 	shaderstate.lightshadowmapproj[0] = shadowscale * (1.0-(1.0/texwidth)) * 0.5/3.0;
 	shaderstate.lightshadowmapproj[1] = shadowscale * (1.0-(1.0/texheight)) * 0.5/2.0;
 	shaderstate.lightshadowmapproj[2] = 0.5*(f+n)/(n-f);
-	shaderstate.lightshadowmapproj[3] = (f*n)/(n-f) - b*n*(1024/texheight);
+	//float divide: as an int it stepped (1,2,3.. at face sizes 512..257, 256..171, 170..129) so the bias jumped
+	//whenever a light's lod-sized faces crossed a threshold, and acne popped in and out as the camera moved.
+	shaderstate.lightshadowmapproj[3] = (f*n)/(n-f) - b*n*(1024.0f/texheight);
 
 	shaderstate.lightshadowmapscale[0] = 1.0/texwidth;
 	shaderstate.lightshadowmapscale[1] = 1.0/texheight;
@@ -1406,6 +1408,11 @@ qboolean GLBE_BeginShadowMap(int id, int w, int h, uploadfmt_t encoding, int *re
 		tex->status = TEX_LOADED;
 	}
 	shaderstate.curshadowmap = shadowmap[id];
+	//pcf taps must step one real texel. cube faces are drawn at a lod-dependent size into fixed cells of this atlas,
+	//so GLBE_SetupForShadowMap's 1/(3*smsize) put them several texels apart on distant lights (gaps that shimmer as
+	//the lod changes, and leaks across face seams). vk and d3d11 step by the atlas size too. no-op for square maps.
+	shaderstate.lightshadowmapscale[0] = 1.0/w;
+	shaderstate.lightshadowmapscale[1] = 1.0/h;
 
 	/*set framebuffer*/
 	*restorefbo = GLBE_BeginRenderBuffer_DepthOnly(shaderstate.curshadowmap);
