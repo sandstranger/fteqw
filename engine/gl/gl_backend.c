@@ -671,6 +671,17 @@ void GL_SelectEBO(int vbo)
 		qglBindBufferARB(GL_ELEMENT_ARRAY_BUFFER_ARB, shaderstate.currentebo);
 	}
 }
+//call before glDeleteBuffers, see GL_ForgetTextureBinding: a recycled name must not look already bound, or the new
+//buffer's data goes to buffer 0 and its draws read offsets as client pointers (eg: the scene cache's ebos).
+void GL_ForgetBufferBinding(unsigned int buf)
+{
+	if (!buf)
+		return;
+	if (shaderstate.currentvbo == buf)
+		shaderstate.currentvbo = 0;
+	if (shaderstate.currentebo == buf)
+		shaderstate.currentebo = 0;
+}
 
 void GL_MTBind(int tmu, int target, texid_t texnum)
 {
@@ -697,6 +708,22 @@ void GL_MTBind(int tmu, int target, texid_t texnum)
 		shaderstate.curtexturetype[tmu] = target;
 		if (target)
 			qglEnable(target);
+	}
+}
+
+//call before glDeleteTextures. GL rebinds 0 on every unit the texture was bound to, and many drivers hand the
+//freed name straight back from the next glGenTextures. A stale cache entry then makes GL_MTBind/GL_LazyBind
+//skip binding the NEW texture, so its storage+uploads land on texture 0 and it stays incomplete (eg: a lightmap
+//page or a resized shadowmap created right after a delete - the latter leaves an incomplete fbo and no shadows).
+void GL_ForgetTextureBinding(GLuint texnum)
+{
+	int tmu;
+	if (!texnum)
+		return;
+	for (tmu = 0; tmu < countof(shaderstate.currenttextures); tmu++)
+	{
+		if (shaderstate.currenttextures[tmu] == texnum)
+			shaderstate.currenttextures[tmu] = 0;
 	}
 }
 
@@ -10691,6 +10718,7 @@ void GLBE_VBO_Destroy(vboarray_t *vearray, void *vbomem)
 {
 	if (vearray->gl.vbo)
 	{
+		GL_ForgetBufferBinding(vearray->gl.vbo);
 		qglDeleteBuffersARB(1, &vearray->gl.vbo);
 		vearray->gl.vbo = 0;
 	}

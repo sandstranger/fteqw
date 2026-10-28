@@ -51,7 +51,10 @@ void GL_DestroyTexture(texid_t tex)
 	if (!tex)
 		return;
 	if (tex->num)
+	{
+		GL_ForgetTextureBinding(tex->num);
 		qglDeleteTextures(1, &tex->num);
+	}
 	tex->num = 0;
 }
 
@@ -830,6 +833,7 @@ qboolean GL_LoadTextureMips(texid_t tex, const struct pendingtextureinfo *mips)
 
 	if (tex->num && qglTexStorage2D)
 	{
+		GL_ForgetTextureBinding(tex->num);	//other units may still cache the old name, which is likely to come straight back
 		qglDeleteTextures(1, &tex->num);
 		qglGenTextures(1, &tex->num);
 		GL_MTBind(0, targ, tex);

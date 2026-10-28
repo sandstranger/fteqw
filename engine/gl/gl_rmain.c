@@ -2599,6 +2599,7 @@ qboolean R_RenderScene_Cubemap(void)
 		}
 		else
 		{
+			GL_ForgetTextureBinding(scenepp_postproc_cube->num);
 			qglDeleteTextures(1, &scenepp_postproc_cube->num);
 			scenepp_postproc_cube->num = 0;
 			GL_MTBind(0, GL_TEXTURE_CUBE_MAP_ARB, scenepp_postproc_cube);

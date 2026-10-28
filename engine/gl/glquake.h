@@ -326,6 +326,7 @@ void Sh_PurgeShadowMeshes(void);
 #ifdef GLQUAKE
 void R_TranslatePlayerSkin (int playernum);
 void GL_MTBind(int tmu, int target, texid_t texnum); /*use this if you're going to change the texture object (ensures glActiveTexture(tmu))*/
+void GL_ForgetTextureBinding(GLuint texnum); /*call before glDeleteTextures, so a recycled name is not mistaken for an already-bound texture*/
 void GL_CullFace(unsigned int sflags);
 void GL_TexEnv(GLenum mode);
 

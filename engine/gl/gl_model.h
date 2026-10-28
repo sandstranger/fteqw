@@ -366,6 +366,7 @@ typedef struct vbo_s
 } vbo_t;
 void GL_SelectVBO(int vbo);
 void GL_SelectEBO(int vbo);
+void GL_ForgetBufferBinding(unsigned int buf);	//call before glDeleteBuffers
 void GL_DeselectVAO(void);
 
 typedef struct texture_s

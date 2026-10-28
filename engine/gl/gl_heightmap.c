@@ -1981,11 +1981,13 @@ void Terr_DestroySection(heightmap_t *hm, hmsection_t *s, qboolean lightmapreusa
 		{
 			if (s->vbo.coord.gl.vbo)
 			{
+				GL_ForgetBufferBinding(s->vbo.coord.gl.vbo);
 				qglDeleteBuffersARB(1, &s->vbo.coord.gl.vbo);
 				s->vbo.coord.gl.vbo = 0;
 			}
 			if (s->vbo.indicies.gl.vbo)
 			{
+				GL_ForgetBufferBinding(s->vbo.indicies.gl.vbo);
 				qglDeleteBuffersARB(1, &s->vbo.indicies.gl.vbo);
 				s->vbo.indicies.gl.vbo = 0;
 			}

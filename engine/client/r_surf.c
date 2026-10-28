@@ -2959,9 +2959,15 @@ static void R_DestroyWorldEBO(struct webostate_s *es)
 	if (qrenderer == QR_OPENGL)
 	{
 		if (es->ebo.gl.vbo)
+		{
+			GL_ForgetBufferBinding(es->ebo.gl.vbo);	//the next scene cache's buffers are likely to get these names back
 			qglDeleteBuffersARB(1, &es->ebo.gl.vbo);
+		}
 		if (es->vbo.gl.vbo)
+		{
+			GL_ForgetBufferBinding(es->vbo.gl.vbo);
 			qglDeleteBuffersARB(1, &es->vbo.gl.vbo);
+		}
 	}
 #endif
 #ifdef VKQUAKE

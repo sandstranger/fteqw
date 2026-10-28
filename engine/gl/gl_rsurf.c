@@ -59,7 +59,10 @@ void GLBE_ClearVBO(vbo_t *vbo, qboolean dataonly)
 				break;	//already freed by one of the other ones
 		}
 		if (j == i)
+		{
+			GL_ForgetBufferBinding(vboh[i]);
 			qglDeleteBuffersARB(1, &vboh[i]);
+		}
 	}
 	if (vbo->vertdata)
 		BZ_Free(vbo->vertdata);
