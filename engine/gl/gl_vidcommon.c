@@ -1204,7 +1204,8 @@ static qboolean GL_CheckExtensions (void *(*getglfunction) (char *name))
 	else
 		qglGetGraphicsResetStatus = NULL;				//its not allowed to crash us. probably will. grr. oh well.
 #else
-	qglGetGraphicsResetStatus = !g_useGLES2_0 ? (void *)getglext("glGetGraphicsResetStatus") : nullptr;
+	qglGetGraphicsResetStatus = !g_useGLES2_0 && gl_config.maxglslversion == 320 ?
+			(void *)getglext("glGetGraphicsResetStatus") : nullptr;
 #endif
 
 	//we only use vao if we don't have a choice.
