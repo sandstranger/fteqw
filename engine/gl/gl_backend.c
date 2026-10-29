@@ -1409,16 +1409,23 @@ qboolean GLBE_BeginShadowMap(int id, int w, int h, uploadfmt_t encoding, int *re
 #ifdef SHADOWDBG_COLOURNOTDEPTH
 		qglTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, w, h, 0, GL_RGBA, GL_UNSIGNED_BYTE, NULL);
 #else
-		if (qglTexStorage2D)
-			qglTexStorage2D(GL_TEXTURE_2D, 1, gl_config.formatinfo[encoding].sizedformat, w, h);
-		else if (gl_config.formatinfo[encoding].type)
-			qglTexImage2D				(GL_TEXTURE_2D, 0, gl_config.formatinfo[encoding].sizedformat, w, h, 0, gl_config.formatinfo[encoding].format, gl_config.formatinfo[encoding].type,	NULL);
-		else
-			qglCompressedTexImage2D		(GL_TEXTURE_2D, 0, gl_config.formatinfo[encoding].sizedformat, w, h, 0,	0, NULL);
+		{
+			//gles2 depth textures (OES_depth_texture) only have the unsized GL_DEPTH_COMPONENT, so there is no sized format.
+			//passing 0 fails the upload and leaves the fbo with nothing attached (0x8cd7), as with any other texture upload.
+			GLenum ifmt = gl_config.formatinfo[encoding].sizedformat?gl_config.formatinfo[encoding].sizedformat:gl_config.formatinfo[encoding].internalformat;
+			if (qglTexStorage2D && gl_config.formatinfo[encoding].sizedformat)
+				qglTexStorage2D(GL_TEXTURE_2D, 1, ifmt, w, h);
+			else if (gl_config.formatinfo[encoding].type)
+				qglTexImage2D				(GL_TEXTURE_2D, 0, ifmt, w, h, 0, gl_config.formatinfo[encoding].format, gl_config.formatinfo[encoding].type,	NULL);
+			else
+				qglCompressedTexImage2D		(GL_TEXTURE_2D, 0, ifmt, w, h, 0,	0, NULL);
+		}
 #endif
 
-		qglTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
-		qglTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+		//without shadow samplers the glsl compares each tap itself, so the depth must not be filtered. android drivers also
+		//hand out gles3 contexts for gles2 requests, where a linear depth texture without compare mode is incomplete (reads 0).
+		qglTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, gl_config.arb_shadow?GL_LINEAR:GL_NEAREST);
+		qglTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, gl_config.arb_shadow?GL_LINEAR:GL_NEAREST);
 #if 0//def SHADOWDBG_COLOURNOTDEPTH
 		qglTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_REPEAT);
 		qglTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_REPEAT);
