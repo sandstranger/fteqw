@@ -1191,6 +1191,7 @@ static qboolean GL_CheckExtensions (void *(*getglfunction) (char *name))
 		qglGetIntegerv(GL_MAX_VERTEX_ATTRIBS_ARB, &gl_config.maxattribs);
 	}
 
+#ifndef ANDROID
 	if (gl_config.glversion >= 4.5)	//the core version
 		qglGetGraphicsResetStatus = (void *)getglext("glGetGraphicsResetStatus");
 	else if (GL_CheckExtension("GL_ARB_robustness"))	//desktop extension
@@ -1199,6 +1200,9 @@ static qboolean GL_CheckExtensions (void *(*getglfunction) (char *name))
 		qglGetGraphicsResetStatus = (void *)getglext("glGetGraphicsResetStatusKHR");
 	else
 		qglGetGraphicsResetStatus = NULL;				//its not allowed to crash us. probably will. grr. oh well.
+#else
+	qglGetGraphicsResetStatus = !g_useGLES2_0 ? (void *)getglext("glGetGraphicsResetStatus") : nullptr;
+#endif
 
 	//we only use vao if we don't have a choice.
 	//certain drivers (*cough* mesa *cough*) update vao0 state even when a different vao is bound.
