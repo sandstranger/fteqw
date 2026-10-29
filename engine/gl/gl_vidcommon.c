@@ -299,7 +299,7 @@ FTEPFNGLACTIVESTENCILFACEEXTPROC qglActiveStencilFaceEXT;
 #if defined(_DEBUG) && !defined(DEBUG)
 #define DEBUG
 #endif
-//debug output is compiled into every build; it is only ENABLED at runtime when vid_gl_context_debug is set (GL_Init).
+#if defined(DEBUG)
 //always defining this, my system headers use void instead of GLvoid which results in gcc warnings.
 typedef void (APIENTRY *qGLDEBUGPROCARB)(GLenum source,
 					GLenum type,
@@ -365,33 +365,36 @@ void (APIENTRY myGLDEBUGPROCAMD)(GLenum source,
 					const GLchar* message,
 					GLvoid* userParam)
 {
-	const char *prefix;
+#ifndef _WIN32
+#define OutputDebugStringA(s) puts(s)
+#endif
 	switch(type)
 	{
 	case GL_DEBUG_TYPE_ERROR_ARB:
-		prefix = CON_ERROR"GL Error";
+		OutputDebugStringA("Error: ");
 		break;
 	case GL_DEBUG_TYPE_DEPRECATED_BEHAVIOR_ARB:
-		prefix = CON_WARNING"GL Deprecated";
+		OutputDebugStringA("Depricated: ");
 		break;
 	case GL_DEBUG_TYPE_UNDEFINED_BEHAVIOR_ARB:
-		prefix = CON_WARNING"GL Undefined";
+		OutputDebugStringA("Undefined: ");
 		break;
 	case GL_DEBUG_TYPE_PORTABILITY_ARB:
-		prefix = CON_WARNING"GL Portability";
+		OutputDebugStringA("Portability: ");
 		break;
 	case GL_DEBUG_TYPE_PERFORMANCE_ARB:
-		if (severity != GL_DEBUG_SEVERITY_HIGH_ARB)
-			return;	//too spammy to be useful.
-		prefix = "GL Performance";
+		OutputDebugStringA("Performance: ");
 		break;
 	default:
 	case GL_DEBUG_TYPE_OTHER_ARB:
 		return;
+		OutputDebugStringA("Other: ");
+		break;
 	}
-	//the console also reaches the android log, so 'vid_gl_context_debug 1;vid_restart' is usable on a device.
-	Con_Printf("%s: %s"CON_DEFAULT"\n", prefix, message);
+	OutputDebugStringA(message);
+	OutputDebugStringA("\n");
 }
+#endif
 
 int gl_mtexarbable=0;	//max texture units
 qboolean gl_mtexable = false;
@@ -1322,6 +1325,7 @@ static qboolean GL_CheckExtensions (void *(*getglfunction) (char *name))
 	}
 */
 #endif
+#ifdef DEBUG
 	if (GL_CheckExtension("GL_ARB_debug_output"))
 	{
 		qglDebugMessageControlARB	= (void *)getglext("glDebugMessageControlARB");
@@ -1353,6 +1357,7 @@ static qboolean GL_CheckExtensions (void *(*getglfunction) (char *name))
 		qglDebugMessageCallbackARB = NULL;
 		qglGetDebugMessageLogARB = NULL;
 	}
+#endif
 
 	if (!gl_config.nofixedfunc)
 	{	//clamping breaks overbrights. so if this isn't deprecated, try to use it.
@@ -3430,10 +3435,12 @@ void GL_ForgetPointers(void)
 	qglCheckFramebufferStatusEXT	= NULL;
 	qglGetFramebufferAttachmentParameteriv	= NULL;
 #endif
+#ifdef DEBUG
 	qglDebugMessageControlARB = NULL;
 	qglDebugMessageInsertARB = NULL;
 	qglDebugMessageCallbackARB = NULL;
 	qglGetDebugMessageLogARB = NULL;
+#endif
 
 	qglGenQueriesARB		= NULL;
 	qglDeleteQueriesARB		= NULL;
@@ -3697,22 +3704,16 @@ qboolean GL_Init(rendererstate_t *info, void *(*getglfunction) (char *name))
 	if (qglShadeModel)
 		qglShadeModel (GL_FLAT);
 
-	{	//GL_KHR_debug is the only way to learn WHY a gles driver (or angle) rejected a call: it names the call and
-		//the reason, where glGetError gives a bare enum. It costs performance, so only when asked for.
-		extern cvar_t vid_gl_context_debug;
-		if (vid_gl_context_debug.ival && qglDebugMessageCallbackARB)
-		{
-			if (qglDebugMessageControlARB)
-				qglDebugMessageControlARB(0, 0, 0, 0, NULL, true);
-			qglDebugMessageCallbackARB(myGLDEBUGPROCAMD, NULL);
-			qglEnable(GL_DEBUG_OUTPUT_SYNCHRONOUS_ARB);
-			qglEnable(0x92E0);	//GL_DEBUG_OUTPUT: khr_debug wants this too when the context itself is not a debug one.
-			Con_Printf("GL debug output enabled (vid_gl_context_debug)\n");
-		}
-		else if (vid_gl_context_debug.ival)
-			Con_Printf("vid_gl_context_debug: no GL_KHR_debug/GL_ARB_debug_output in this driver\n");
-		qglGetError();	/*suck up the invalid operation error for non-debug contexts*/
+#ifdef DEBUG
+	if (qglDebugMessageControlARB)
+		qglDebugMessageControlARB(0, 0, 0, 0, NULL, true);
+	if (qglDebugMessageCallbackARB)
+	{
+		qglDebugMessageCallbackARB(myGLDEBUGPROCAMD, NULL);
+		qglEnable(GL_DEBUG_OUTPUT_SYNCHRONOUS_ARB);
 	}
+	qglGetError();	/*suck up the invalid operation error for non-debug contexts*/
+#endif
 
 	sh_config.texture2d_maxsize = 256;	//early minidrivers might not implement this, but anything else should.
 	qglGetIntegerv(GL_MAX_TEXTURE_SIZE, &sh_config.texture2d_maxsize);
