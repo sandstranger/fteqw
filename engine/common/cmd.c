@@ -28,7 +28,9 @@ cvar_t rcon_level			= CVAR("rcon_level", "20");
 cvar_t cmd_maxbuffersize	= CVAR("cmd_maxbuffersize", "65536");
 #ifdef HAVE_LEGACY
 cvar_t dpcompat_set         = CVAR("dpcompat_set", "0");
-cvar_t dpcompat_console     = CVARD("dpcompat_console", "0", "Enables hacks to emulate DP's console.");
+//Patch 1086: not from a server or CSQC -- it changes COM_QuotedString's escapes, which the
+//config writers rely on, so a quote in a saved bind/cvar/alias could close early.
+cvar_t dpcompat_console     = CVARFD("dpcompat_console", "0", CVAR_NOTFROMSERVER, "Enables hacks to emulate DP's console.");
 #else
 static const cvar_t dpcompat_set = {0};
 static const cvar_t dpcompat_console = {0};
@@ -4495,6 +4497,15 @@ static void Cmd_set_f(void)
 		forceflags |= 0;
 	}
 
+	//ftesurf (P1101): refused before Cvar_Get2, which would first merge a server's `u`/`s` flag in
+	{
+		cvar_t *was = Cvar_FindVar(name);
+		if (was && (was->flags & CVAR_NOTFROMSERVER) && Cmd_IsInsecure())
+		{
+			Con_Printf ("Server tried setting %s cvar\n", was->name);
+			return;
+		}
+	}
 	var = Cvar_Get2 (name, text, CVAR_TEAMPLAYTAINT|forceflags, desc, "Custom variables");
 
 	mark = If_Token_GetMark();

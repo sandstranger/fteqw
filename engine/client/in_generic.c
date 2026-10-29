@@ -15,6 +15,7 @@ extern qboolean mouse_active;
 static cvar_t m_filter = CVARF("m_filter", "0", CVAR_ARCHIVE);
 static cvar_t m_forcewheel = CVARD("m_forcewheel", "1", "0: ignore mousewheels in apis where it is abiguous.\n1: Use mousewheel when it is treated as a third axis. Motion above a threshold is ignored, to avoid issues with an unknown threshold.\n2: Like 1, but excess motion is retained. The threshold specifies exact z-axis distance per notice.");
 static cvar_t m_forcewheel_threshold = CVARD("m_forcewheel_threshold", "32", "Mousewheel graduations smaller than this will not trigger mousewheel deltas.");
+static cvar_t cl_tas_mouselock = CVARD("cl_tas_mouselock", "1", "Lock physical mouse look while your own TAS body is paused. 0 deliberately enables free look; authored step angles and UI cursor still work.");
 static cvar_t m_touchstrafe = CVARAFD("m_touchstrafe", "0", "m_strafeonright", CVAR_ARCHIVE, "0: entire screen changes angles only.\n1: right hand side controls strafing.\n2:left hand side strafes.");
 //static cvar_t m_fatpressthreshold = CVARFD("m_fatpressthreshold", "0.2", CVAR_ARCHIVE, "How fat your thumb has to be to register a fat press (touchscreens).");
 static cvar_t m_longpressthreshold = CVARFD("m_longpressthreshold", "1", CVAR_ARCHIVE, "How long to press for it to register as a long press (touchscreens).");
@@ -792,6 +793,7 @@ void IN_Init(void)
 	Cvar_Register (&m_filter, "input controls");
 	Cvar_Register (&m_forcewheel, "Input Controls");
 	Cvar_Register (&m_forcewheel_threshold, "Input Controls");
+	Cvar_Register (&cl_tas_mouselock, "Input Controls");
 	Cvar_Register (&m_touchstrafe, "input controls");
 	Cvar_Register (&m_longpressthreshold, "input controls");
 	Cvar_Register (&m_slidethreshold, "input controls");
@@ -842,7 +844,7 @@ void IN_Init(void)
 	Cvar_Register (&in_jrn484_badframes, "input controls");
 	Cvar_Register (&in_jrn484_skipped, "input controls");
 	Cmd_AddCommandD ("in_journal_begin", IN_JournalBegin_f, "Start an in-memory journal of raw input events.  Discards any journal already open.");
-	Cmd_AddCommandD ("in_journal_end", IN_JournalEnd_f, "in_journal_end [path] -- write the journal under data/ and close it.  With no path, discard it.");
+	Cmd_AddCommandD ("in_journal_end", IN_JournalEnd_f, "in_journal_end [path] -- write the journal to data/...*.hid and close it.  With no path, discard it.");
 	Cmd_AddCommandD ("in_journal_note", IN_JournalNote_f, "Append a comment line to the open input journal.");
 	Cmd_AddCommandD ("in_journal_synth", IN_JournalSynth_f, "in_journal_synth <n> -- inject n synthetic input events, for testing.  Marks the journal as synthetic, which makes it inadmissible.");
 
@@ -2344,9 +2346,19 @@ static void IN_JournalEnd_f(void)
 		return;
 	}
 
-	if (!QC_FixFileName(Cmd_Argv(1), &name, &fallback) || strncmp(name, "data/", 5))
+	/*Patch 1086: and only under a journal's own name.  CSQC's localcmd and server
+	  stufftext share RESTRICT_INSECURE, so a level test would also refuse our own
+	  recorder (which writes .hid only); without this any server's code could write a
+	  journal over a saved zone file or a save.  Tested whole: a name the namelocal copy
+	  would cut is refused, not truncated to a different file.  Lowercase, as rec_ul_arm.
+	  No "may not replace" rule: CSQC can rewrite any data/ file itself, Windows path
+	  aliases (8.3 names, trailing dots) defeat an existence test, and it would refuse an
+	  honest PB journal whose stamped name already exists (review round 2).*/
+	if (!QC_FixFileName(Cmd_Argv(1), &name, &fallback) || strncmp(name, "data/", 5)
+	    || strlen(name) < 9 || strlen(name) >= sizeof(namelocal)
+	    || strcmp(name + strlen(name) - 4, ".hid"))
 	{
-		Con_Printf("in_journal_end: refused \"%s\" -- journals go under data/\n", Cmd_Argv(1));
+		Con_Printf("in_journal_end: refused \"%s\" -- journals go under data/ as .hid\n", Cmd_Argv(1));
 		IN_Journal_Digest(false);	/*complete bytes; nobody kept them*/
 		IN_Journal_Drop();
 		return;
@@ -2460,6 +2472,13 @@ static void IN_JournalSynth_f(void)
 	int n = (Cmd_Argc() > 1) ? atoi(Cmd_Argv(1)) : 1;
 	int i;
 
+	/*Patch 1086: test-only, and no QC uses it.  From CSQC or stufftext the events move
+	  the pointer a real press is judged by (P1081's zone dialog), so local console only.*/
+	if (Cmd_IsInsecure())
+	{
+		Con_Printf("%s: local console only\n", Cmd_Argv(0));
+		return;
+	}
 	if (n < 1)
 		n = 1;
 	if (n > 100000)
@@ -2789,9 +2808,22 @@ void IN_CountsGet(int pnum, double *ring, double *read, int *rejected)
 	*rejected = (in_raw_injected > 0 ? in_raw_injected : 0) + (in_raw_unenum > 0 ? in_raw_unenum : 0);
 }
 
+/* P1074: stats 102/187 are QC's STATOWNER/TASPAUSE. A spectator's target
+ * stats and a mod's different protocol must never lock ordinary mouse look. */
+static qboolean IN_TASMouseLocked(int pnum)
+{
+	playerview_t *pv;
+	if (!cl_tas_mouselock.ival || pnum < 0 || pnum >= MAX_SPLITS ||
+		cls.state != ca_active || cls.protocol != CP_QUAKEWORLD || cls.demoplayback) return false;
+	pv = &cl.playerview[pnum];
+	return !pv->spectator && pv->viewentity == pv->playernum + 1 &&
+		pv->statsf[102] == pv->playernum + 1 && pv->statsf[187] == 1;
+}
+
 void IN_MoveMouse(struct mouse_s *mouse, float *movements, int pnum, float frametime)
 {
 	float mx, my;
+	qboolean taslocked;
 	double mouse_x, mouse_y, mouse_deltadist;
 	int mfwt;
 	qboolean strafe_x, strafe_y;
@@ -3011,6 +3043,15 @@ void IN_MoveMouse(struct mouse_s *mouse, float *movements, int pnum, float frame
 		}
 	}
 
+	// Consume raw/device and UI events above; discard only the final game delta.
+	// Clear filter history too: otherwise one pre-lock delta leaks into the aim.
+	taslocked = IN_TASMouseLocked(pnum);
+	if (taslocked)
+	{
+		mx = my = 0;
+		mouse->old_delta[0] = mouse->old_delta[1] = 0;
+	}
+
 	/*FTESurf Patch 293.  HERE, and not at the `mx = mouse->delta[0]` grab far
 	  above, because between the two there are four places that legitimately
 	  discard the delta -- the Key_MouseShouldBeFree zeroing, the touch major-axis
@@ -3019,7 +3060,7 @@ void IN_MoveMouse(struct mouse_s *mouse, float *movements, int pnum, float frame
 	  as a broken invariant on a clean client.  This is the last point at which
 	  mx/my are still integer device counts and the first at which they are final.*/
 	IN_Journal_ViewDelta(mx, my,
-		(strafe_x?1:0) | (strafe_y?2:0) | (Key_MouseShouldBeFree()?4:0));
+		(strafe_x?1:0) | (strafe_y?2:0) | ((Key_MouseShouldBeFree() || taslocked)?4:0));
 
 	if (m_filter.value)
 	{

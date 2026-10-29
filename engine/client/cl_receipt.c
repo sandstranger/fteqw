@@ -625,6 +625,85 @@ qboolean CL_FriendsSign(const char *nonce, const char *op, const char *who, char
 	return true;
 }
 
+static qboolean CL_Receipt_IsHex(const char *s, size_t len)
+{
+	size_t i;
+	if (!s || strlen(s) != len)
+		return false;
+	for (i = 0; i < len; i++)
+		if (!((s[i] >= '0' && s[i] <= '9') || (s[i] >= 'a' && s[i] <= 'f')))
+			return false;
+	return true;
+}
+
+/*
+  P1090: a TAS project revision's author statement (TAS plan 5.2).  sha is the revision's
+  P1089 hash, which covers its parent, map and inputs, so the statement checks offline;
+  ticks is the input span this revision supplies over its parent.  Audience surfd, like
+  FRIENDS.  Only in a game this process hosts (projects are local) and only under a key
+  press, so a remote server's CSQC cannot collect one behind some other prompt.  The VM
+  checks are acct_sign's: the code must be this connection's, one file, and its sha256 is
+  the `code` line, so a cached or packed csprogs is named in what it asked for.
+*/
+#define TASREV_MAXTICK	16777215	/*the last tick a QC float holds exactly*/
+qboolean CL_Receipt_TasRevSign(const char *sha, const char *parent, const char *mapcrc,
+							   int from, int to, qboolean keyed, char *out, size_t outlen)
+{
+	char msg[400], pubhex[65], sighex[129];
+	qbyte sig[64];
+
+	if (outlen) out[0] = 0;
+	if (!keyed)
+	{
+		Con_Printf("tasrev_sign: signed only under a key press. Refused.\n");
+		return false;
+	}
+	if (cls.demoplayback || cls.state < ca_connected || cls.netchan.remote_address.type != NA_LOOPBACK)
+	{
+		Con_Printf("tasrev_sign: only in a game this client hosts. Refused.\n");
+		return false;
+	}
+	if (!acct_vm_live || !NET_CompareAdr(&acct_vm_adr, &cls.netchan.remote_address))
+	{
+		Con_Printf("tasrev_sign: this game code is not the connected server's. Refused.\n");
+		return false;
+	}
+	if (strlen(acct_vm_code) != 64 || acct_vm_mixed)
+	{
+		Con_Printf("tasrev_sign: this game code is not one file with a name. Refused.\n");
+		return false;
+	}
+#ifndef CLIENTONLY
+	{
+		/*P1090 reviews 2-3: a hosted game still takes its CSQC from the download cache when one
+		  matches the served file's md4 and size (CSQC_FindMainProgs), and any server can fill
+		  that cache: the VM must be the very bytes this game served, as hashed when the map
+		  spawned (sv_init.c), not whatever the CSQC-settable sv_csqc_progname names now.*/
+		extern char sv_csqc_sha256[65];
+		if (!sv.state || strlen(sv_csqc_sha256) != 64 || strcmp(sv_csqc_sha256, acct_vm_code))
+		{
+			Con_Printf("tasrev_sign: this game code is not the file this game serves. Refused.\n");
+			return false;
+		}
+	}
+#endif
+	if (!CL_Receipt_IsHex(sha, 64) || !CL_Receipt_IsHex(mapcrc, 8)
+		|| !parent || (strcmp(parent, "-") && !CL_Receipt_IsHex(parent, 64)))
+		return false;
+	if (from < 1 || to < from || to > TASREV_MAXTICK)
+		return false;
+	if (!CL_Receipt_Key())
+		return false;
+	Q_snprintfz(msg, sizeof(msg), "FTESURF-TASREV 1\nserver play.proto.bar:443\nsha %s\nparent %s\nmapcrc %s\nticks %i %i\ncode %s\n",
+				sha, parent, mapcrc, from, to, acct_vm_code);
+	Ed25519_Sign(sig, (const qbyte *)msg, strlen(msg), rcpt_sk);
+	CL_Receipt_Hex(pubhex, sizeof(pubhex), rcpt_pk, sizeof(rcpt_pk), true);
+	CL_Receipt_Hex(sighex, sizeof(sighex), sig, sizeof(sig), true);
+	Q_snprintfz(out, outlen, "%s %s %s", pubhex, sighex, acct_vm_code);
+	Con_DPrintf("tasrev_sign: %.8s ticks %i..%i\n", sha, from, to);
+	return true;
+}
+
 /*
   Patch 625: THE SIGN-IN PAGE, IN THE PLAYER'S BROWSER.  Game code cannot name
   an address: it supplies the opener it made for a link (24 lowercase hex) and
@@ -810,6 +889,11 @@ static cvar_t rcpt_hid_upload = CVARFD("rec_hid_upload", "0", CVAR_ARCHIVE|CVAR_
 	"New online acceptance includes raw mouse/keyboard run journal uploads to the official HTTPS collector unless you opt out. "
 	"Older saved answers do not grant the new scope. Stop cancels active uploads and blocks new ones; rec_hid 0 also stops local recording. "
 	"Native confirmed permission is still required; evidence already received is not deleted.");
+//ftesurf (P1101): the menu's mirror of data/consent.txt, read by every online gate in menu and
+//csprogs. A plain QC cvar until now: a server's `seta rec_terms 8` set an override cvar() read.
+//-1 until the menu publishes it, so a launch without the menu still reads consent.txt (Rec_TermsReport).
+static cvar_t rcpt_terms = CVARFD("rec_terms", "-1", CVAR_NOTFROMSERVER|CVAR_NOSAVE,
+	"The terms version accepted in data/consent.txt, set by the menu at boot and on acceptance; -1 before it has. Not saved; a server may not set it.");
 
 #ifdef WEBCLIENT
 #define HID_HTTP_HEAD 1024
@@ -1149,6 +1233,7 @@ void CL_Receipt_Init(void)
 	  value. Cvar_Get alone does not retrofit NOTFROMSERVER on that value.*/
 	Cvar_Register(&rcpt_upload, "Anti-cheat evidence");
 	Cvar_Register(&rcpt_hid_upload, "Anti-cheat evidence");
+	Cvar_Register(&rcpt_terms, "Anti-cheat evidence");
 #ifdef WEBCLIENT
 	Cvar_Get("fshidhttp", "1", CVAR_USERINFO|CVAR_NOSET, "Anti-cheat evidence");
 	Cvar_Register(&rcpt_http_test, "Anti-cheat evidence");

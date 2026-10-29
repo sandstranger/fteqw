@@ -1,5 +1,1290 @@
 # Engine patches (fteqw `fteqw64.exe`)
 
+## Patch 1103 -- Preserve closing-clock refusal diagnostics (native verifier)
+
+**Problem:** Recorder 12--14 can legitimately close with sampled, pending or kept
+clock accounting. The native verifier does not model those modes, but reported
+an incomplete viewing clock instead. Parsed malformed and unsupported physical
+clock reasons could likewise be hidden by later completeness/equation checks.
+Ordinary zero-carry REC11--14 controls already pass; this is not a fix for a
+false refusal of those eligible recordings.
+
+**Change:** Classify the three exact writer fallback modes as unsupported, and
+report an existing parsed closing-clock refusal before viewing-clock absence or
+equation diagnostics. All acceptance, arithmetic, count and unsupported-carry
+gates remain unchanged; no general held/parked replay support is added.
+
+**Verified:** Three independent source/contract reviews. Exact unmodified base
+105901357 and the candidate dedicated target each pass 58 native controls using
+identical input/map/plugin/progs/config bytes: zero verdict changes, four known
+PASS controls retain 45 ticks/45 rows, and 30 reasons change as predicted. Cases
+include matched duplicate/missing counts, mixed-mode ordering, malformed fields,
+positive frozen/viewing carry and zero/positive parked edges. The recording reader
+suite passes 945 checks; the same-byte corpus retains its per-file fault lists.
+Incremental baseline/candidate native builds produce no warnings; LSP has only
+pre-existing warnings outside the change.
+
+**Limits:** Dedicated Windows verifier qualified only. The full native entrypoint
+first hit an empty static dependency cache, then missing system Opus/Speex headers;
+those failures are retained, not repaired through unrelated source edits. No full
+client/plugin qualification, fleet deployment, Linux build or release is claimed.
+
+## Patch 1102 -- The map tables are read only from the gamedir's own loose files (client, fs)
+
+**Problem:** P1099's last review: a copy of data/mapdeps.net.txt, mapmeta.net.txt or mapdl.net.txt
+could still come from a package or a download a server provides, read wherever the loose gamedir
+had none (detail in the private tree, checkpoints/p1099-maptables-csqc-20261029.md, item 5).
+
+**Change:** FS_OpenTableVFS opens a data/map* table from the write gamedir, then the install's
+when a home dir is in use -- never a package, downloads/ or a server's pure path.
+FS_AutoMountForMap reads both mount tables through it; PF_fopen opens a QC_MenuTable name only
+that way and only as FILE_READ. CL_EnqueDownload refuses any path into data/ (QC_DataPath). The
+stamp reader checks month, day, hour, minute and second, as the menu's does.
+
+**Verified:** arm root rig1101 (copies), consent removed so the menu fetches nothing. A package in
+downloads/ holding both .net tables: the installed exe's menu read its mapmeta.net.txt and mounted
+TF2 for surf_hellenic from its mount table; this build read data/mapmeta.txt and mounted nothing. A
+loose net table: mounted (twice); stamped hour 24: nothing. A test csprogs' precache_file of a
+data/ name: "Denying download". 0 new warnings; one stamp, git-7980-patch-1090-10-g5178bbd60.
+
+## Patch 1101 -- rec_terms is the engine's, and a server may not set it (client)
+
+**Problem:** rec_terms, the menu's mirror of data/consent.txt that every online gate in menu and
+csprogs reads, was a plain QC cvar, so a server could change the value those gates read
+(measured; detail in the private tree, checkpoints/p1099-maptables-csqc-20261029.md, item 4).
+
+**Change:** registered in cl_receipt.c beside rec_upload and rec_hid_upload, CVAR_NOTFROMSERVER,
+not saved. The menu sets it with localcmd_local (cvar_set refuses such cvars).
+
+**Verified:** same arm, consent on and off: this build printed "Server tried setting rec_terms cvar"
+and kept 8 / 0; the installed exe, as control, did not. The menu still sets 8 at boot.
+
+## Patch 1099 -- fs_automount reads the menu's newer mount table; URL pictures skip the VMT loader
+
+**Problem:** Lex, 29 Oct: new maps should show up correctly between releases. The menu now fetches
+the Pi's data/mapdeps.txt once a session (FTESurf src/menu/m_mapmedia.qc), but it cannot rewrite
+the shipped file: the launcher hashes every managed file at launch and re-fetches an altered one.
+And the menu's URL thumbnails reached the hl2 plugin's Shader_LoadVMT, which probed
+"materials/http:/..." and made the Windows FS print an alternative-data-stream error.
+
+**Change:** the menu writes data/mapdeps.net.txt; FS_AutoMountForMap reads whichever of it and
+data/mapdeps.txt has the greater `# stamp YYYYMMDDHHMMSS` (UTC; none sorts first). From the menu's
+copy only `steam:` specs without ".." are taken, since a relative or absolute spec mounts any
+directory and `Sys_SteamHasFile` joins `..` straight under the Steam library. Shader_LoadVMT
+returns false for a name containing ':' -- not "://": the name arrives as "http:/..." with its
+double slash collapsed, and the first cut still printed the error.
+
+**Verified:** arm root rig1099 (copies only), shipped table without surf_hellenic's TF2 line, a
+local server holding one with it. Test exe: the menu wrote the net file mid-session, `map
+surf_hellenic` mounted TF2's four packs, fs_automount_state 1. The installed exe (control, same
+files): state 0. Test exe, net file rewritten by hand between loads: a relative spec 0, a steam:
+spec with `..` 0, a valid spec stamped older than the shipped file 0, the valid spec newer 1.
+URL thumbnails (no atlas pages in the root): 12 lobby cards drawn from 12 requests; the ADS line
+printed once with the "://" check and 0 times with ':'. 0 new warnings in fs.c or mat_vmt.c.
+
+**Review 1:** CSQC (server-supplied) could write data/mapdeps.net.txt, since QC may write anywhere
+in data/. QC_CfgChangeDenied now also refuses CSQC the menu's two tables and its spool
+(QC_MenuTable: segments as QC_TasprojSeg reads them, and any '~' name directly in data/, for 8.3
+short names), so fopen-for-write, fcopy, frename and fremove all refuse. fs.c now takes from the
+menu's copy only a file headed `FTESURF-MAPDEPS 1`, only the menu's four specs, and treats a stamp
+more than a day ahead of the clock as none. Arms: a test csprogs tried each spelling at
+CSQC_Init. This build refused data/mapdeps.net.txt, mapdeps.net.txt (prefixed to data/), a trailing
+dot, a doubled slash, data/mapmeta.net.txt, data/mapmedia.tmp and data/MAPDEP~1.TXT, and fcopy,
+frename and fremove onto them (-1); an ordinary data/ file and reading stayed allowed.
+`DATA/MAPDEPS.NET.TXT` opened data/DATA/MAPDEPS.NET.TXT, another file. The installed exe (control)
+opened every one. Net file with steam:Half-Life 2/hl2, with no header, or stamped 99999999999999:
+state 0 each; the valid file: 1.
+
+**Review 2:** the launcher-managed data/map* tables were not refused to CSQC either, and
+fs_automount took any spec from data/mapdeps.txt -- older than P1099, closed here (the private
+tree has the detail: checkpoints/p1099-maptables-csqc-20261029.md). QC_MenuTable now covers every
+data/map* table (our csprogs only reads them), matching the first segment after data/ whatever
+follows; CL_EnqueDownload refuses those names (downloads/ is a search path); FS_MapDepsNetSpec
+applies to both tables (the four ADDONS plus `steam:Momentum Mod Playtest/mount`, which 0.1.32's
+table names 55 times); the stamp cap is the end of tomorrow (UTC), the menu's own day test. Arms,
+CSQC sent by a dedicated server: this build refused each route and kept data/maps/zones/local/
+(ours) and reads open; the installed exe, as control, refused none of them.
+
+## Patch 1096 -- A static prop's VRAD bake made for another model is dropped (hl2 plugin)
+
+**Problem:** Lex, 29 Oct: surf_pantheon's identical columns drew brown, grey and black, striped
+down the flutes. VRAD stamps each sp_N.vhv with its model's studiohdr checksum
+(vradstaticprops.cpp:1570); a map whose prop list or models changed after VRAD ran ships bakes for
+other models, and the plugin painted them anyway. On surf_pantheon 791 of its 820 bakes carry a
+checksum that is not their model's (props 319/321 one model's 1050-vertex bake, 320/322 another's
+168-vertex, two-mesh bake, all four awningpillar.mdl); demise's 2350 and garden's 381 all match. Library census (Momentum's folder, models packed in
+the map only): 668 maps carry bakes, 47 have mismatched ones (5,259 props), 13 mostly so --
+surf_kitsune2 1361/1389, bhop_vagabond 574/575, surf_milkyway 191/191, surf_valpect 156/156.
+
+**Change:** the hl2 loader keeps studiohdr_t::checksum on the model's first surface (two fields
+APPENDED to galiasinfo_t, read only by the plugin, so the shipped exe is unchanged); the prop
+remembers its .vhv's. At the prop's first light (its model is MLS_LOADED there) a mismatch clears
+hasbaked and frees the unscattered colours, so the prop lights from the leaf ambient cube like an
+unbaked one. prop_census counts the drops and names them on the prop.
+
+**Verified:** surf_pantheon on the PC, the same three poses before/after: before, the columns at
+saves 9 and 10 were brown, grey and black-striped; after, even marble, one warm column left whose
+bake does match its model. prop_census: "79 bake(s) dropped at first light: made for another model
+(checksum)" after those poses. Plugin-only build from patch-1090 + this commit; 0 new warnings.
+
+## Patch 1090 -- TAS revision author statements (engine client, QC, tools)
+
+**Problem:** TAS plan 5.2. A revision (P1089's hash) needs its author's signed claim of the ticks
+it supplied, for public credit later (Lex: Steam-linked signing, public credits), and nothing a
+server sends may obtain, forge or tamper with one.
+
+**Change:** engine: `tasrev_sign` (CSQC) signs FTESURF-TASREV 1 (sha, parent, mapcrc, ticks, code)
+with fskey on one real key press, only in a loopback game whose CSQC is this connection's and the
+very bytes SV_SpawnServer served (sv_csqc_sha256; sv_csqc_progname is now CVAR_NOTFROMSERVER, so a
+server cannot point a later hosted game at a cached csprogs). QC_TasprojDenied refuses CSQC every
+file builtin under data/tasproj (segments matched as the file system resolves them; search and
+multisearch patterns). QC: .tasp version 2 `supply` (an exact diff against the parent's own rows;
+never a tick at or before the parent's base); revisions kept by hash and statements write-once
+beside them; a save after a detach or close in the same attempt stays the loaded revision's child;
+only the host's saves are signable; every copy is read back before it replaces anything; a diff too
+long for one QC call is refused. tools/tasrev.py mirrors the reader and verifies statements.
+
+**Verified:** p1090_sign_socket.py 47/47 on the shipped exe (a real click via a window moved under a
+still pointer: engine refuses a console call; click beside the chip signs nothing; the twin verifies
+the statement under the client's fskey and refuses every altered field; junk, stale-claim and guest
+statements refused; fork/reload/close/stopped-load lineage exact; a loaded foreign revision refuses);
+remote 11/11 (the earlier remote run measured the engine's own loopback refusal before the client
+gate existed); P1086 exe control asks for the engine. p1090_csqcprobe.py 8/8 (reads, five search
+forms, fexists, whichpack, copy/rename/remove/write all refused, nothing changed on disk) against a
+P1086 control where the same CSQC reads, lists, copies, deletes and plants. tas_project_socket.py
+60/60 (game and twin agree on 41 mutations; a 96000-row read; a too-long diff refused) against a
+control without the guard: `SV_Error: runaway loop error`. Five review rounds (evidence lost per
+name, detach/close roots, CSQC file access, cached csprogs, a CSQC-settable cvar, FILE_APPEND
+rewrites, silent FILE_WRITE failures, two strict reads per call, guest provenance); deferred items
+in BACKLOG, server-text specifics private. Stamp git-7970-patch-1090-0-g5d5557d82.
+
+## Patch 1089 -- TAS project revision hash (QC, tools)
+
+**Problem:** TAS plan 5.1. Signed collaborative revisions (Lex: Steam-linked signing, public
+credits) need a revision identity that the game and a game-less backend compute alike, and that
+one load behaviour cannot carry many of.
+
+**Change:** a hash chain over a revision's canonical lines (h0 = sha256("FTESURF-TASREV-CANON
+1"); save time, revision counter, origin, parent name and revsha left out; base without its
+local save id). A file counts only if it is exactly what the writer writes: key order, bytes,
+spacing, %.0f/%.9g values (no -0), 8-hex checksums, required assist line (SV_TASPLineCanon).
+`parentsha` names the previous revision while a save stays on the project's line; `revsha`
+follows `end`. The writer goes through `<path>.new`, the strict reader and a rename, so a
+refused save never replaces the last revision. tools/tasrev.py mirrors the reader (stricter:
+no CR, nothing after the last line); tools/test_tasrev.py's 31 mutations agree with the game.
+
+**Verified:** tas_project_socket.py --exact --tasrev 59/59 (game and twin agree on all 31
+mutations; a refused save keeps the file byte for byte; a 96000-row revision reads without a
+runaway and hashes alike; the full-length SAVE path is not measured). Four review rounds (fgets
+4095 split hiding rows, malleable forms, a looser twin, exponent floats breaking read-back,
+write-in-place); controls fail on the fixed cases. Live 11:30Z installs / ~11:35Z lobbies from
+main 8b8976de (qw b2f8f3db); lobby smoke PASS.
+
+## Patch 1088 -- TAS optimizer: a constant turn for exit speed (QC)
+
+**Problem:** TAS plan Stage 4b; Lex 28 Oct wanted optimizer goals total time, exit speed,
+immediate speed, and per ramp a constant strafe rate, boarding angle and end-of-ramp flick
+("do what you can"). P1074's AIR help is the per-tick (immediate) one; nothing searched.
+
+**Change:** `tas optimize <ticks 4..128> <left|right>` (and two TAS-panel chips at 32):
+from the paused head H, one constant yaw rate turned from the current view while strafing
+that way at 450, scored by horizontal speed at H + ticks. Range 0..2*asin(30/v) clamped
+1..45 deg/tick; 9-point grid, 10 golden-section steps, then the best played, paused there.
+Each candidate is a TAS back to H plus a native tape (src/server/sv_tasoptimize.qc); idle
+paused frames drive it from inside PlayerPostThink's paused return. The client forwards the
+action (its tas handler drops unknown ones).
+
+**Verified:** p1088_optimize_socket.py 12/12 on the shipped bytes: from 76 u/s in the air
+straight strafe 81.8, best 13.388 deg/tick 162.0 u/s over 24 ticks, best inside the range,
+repeatable from the same tick, works straight after a pause, tas play stops it. First cuts
+measured wrong: a fixed 0..8 range put the best on its edge; a 540-degree tape was refused
+until yaw wrap; the idle-frame hook was missing. One review (server safety): no server harm;
+fixed a fresh-pause tape refusal (pre-fix FAILs), up-front start-tick checks, play/off stop.
+Live 09:50Z (installs) / ~09:55Z (lobbies, where REC14 streams refuse it) from main 1953e5b7:
+qw 16e685e8, cs 27a38f84. BACKLOG "TAS optimizer (P1088)" holds the other goals.
+
+## Patch 1087 -- TAS comparison line, ghost and deltas; a TAS back keeps the trail (csprogs)
+
+**Problem:** Stage 4a (Lex: ghost + deltas first). A TAS back or timeline edit also EMPTIED
+the live trail: the go's save has no trail file and Trail_Load's failure ran Trail_Trim(-1);
+STAT_FS_SAVETICKS is the save cursor's tick (read 0 at the edge), not the restored tick.
+
+**Change:** the load edge of a TAS go leaves the line; the clock-back trim (STAT_FS_TIMERTICKS)
+keeps it to the restored tick and first copies the cut branch into new pooled line slot 69,
+drawn pink. The race ghost runs it alone at your run clock; the TAS panel prints "+t s here,
++v u/s" (Cmp_Match). Project loads (client-stamped) and non-TAS loads drop it.
+
+**Verified:** p1087_compare_socket.py 13/13 (prefix 185 of 301 points kept; line ticks
+71..121; ghost on the old tick-121 sample; 3849 pink pixels, looked at; project/plain loads
+drop it). Controls: main 7ae351cf kept 26 of 303 points; pre-review-fix build FAILs the
+project-load drop. One review (regression): no change to play without TAS. Live with P1088.
+
+## Patch 1086 -- Server text and server code kept from local-only commands (client)
+
+**Problem:** P1081's consent review: `in_journal_synth` (a test helper; no QC
+calls it) ran from any source, so a server's stufftext or CSQC could inject
+pointer events, and `in_journal_end` wrote a journal to any data/ name. CSQC's
+localcmd and stufftext share RESTRICT_INSECURE, so the recorder's own begin/end
+cannot be gated by level. Seven review rounds then found routes by which a
+server reached a level above RESTRICT_INSECURE anyway, without a click: CSQC
+could write cfg/default.cfg (exec'd every boot; the quakers cfg/ write prefix);
+the auto-record line, the demo loop and tp_autostatus built local commands from
+strings a server sets; game-code bindmap binds were saved without their level;
+`load` ran a save's {} block at RESTRICT_RCON, and the savegame writer stored
+cvar values unquoted (a newline became a command; an over-long serverinfo line
+split into fake sections); dpcompat_console, which changes the config writers'
+quoting, was settable by a server; `map pkg:map` was open to CSQC.
+
+**Change:**
+- in_generic.c: `in_journal_synth` refuses Cmd_IsInsecure(); `in_journal_end`
+  writes only a whole (under 128 bytes, never truncated), lowercase
+  `data/...*.hid` name -- every recorder exit and cfg/test arm is one. A "may not
+  replace" rule was tried and dropped (round 2: Windows path aliases defeat the
+  existence test, CSQC can rewrite data/ itself, and it refused honest PB names).
+- pr_bgcmd.c QC_CfgChangeDenied: CSQC may read cfg/ but not write, copy into,
+  rename or remove it. Ours never writes there; menu QC keeps it.
+- cl_main.c: the auto-record name is [A-Za-z0-9_-] (and '/' in the directory);
+  `startdemos`/`demos` local only, a loop name outside [A-Za-z0-9_./-] stops it.
+  zqtp.c: tp_autostatus refuses newlines too. keys.c: only local bindmap binds
+  are saved.
+- savegame.c: `load`/`loadgame` local only (rcon passes); the cvar block's values
+  are written with COM_QuotedString, capped at 900 chars, and read back by
+  SV_LoadgameCvarLine (no execution, no $ expansion, listed cvars only); a line
+  that fills the read buffer is a corrupt save.
+- cmd.c: dpcompat_console CVAR_NOTFROMSERVER. sv_ccmds.c: `map pkg:map` refused
+  for insecure callers too.
+
+**Verified:** -Full build, stamp git-7962-patch-1086-0-ge7e2df742 (16 copies,
+one value), client 4546724b, 79 build warning lines as before, none in the
+changed files. Only client/listen-server code changed from patch-1074; plugins
+unchanged. Real server + client (conbridge), graded on the client's own lines,
+the round-1 build (1b3e8cecd) as control:
+- server `stuffcmd`: synth refused (patch-1074: injected); `.json` end refused;
+  `.hid` written; a 131-char `.hid` name refused (control: truncated file
+  written); `startdemos`, `load` refused (control: accepted); `dpcompat_console
+  1` refused (control: took effect).
+- local `startdemos "x;echo P1086"` + `demos`: loop stopped (control: the echo ran).
+- `sv_demoAutoPrefix "x;echo P1086INJECT;"` + reconnect: recorded under a
+  sanitised name (control: recorded demos/x and the echo ran).
+- listen server, `cl_saveroot_test cfg/p1086`, `retry`: our CSQC's fremove under
+  cfg/ refused, file kept (control: deleted, and its Seq_Retry wrote cfg/).
+- listen server, saved1 set to a value with a newline, `save` + `load`: one
+  escaped line in info.fsv, nothing ran, the save loaded (control: split line,
+  the echo ran).
+Seven review rounds (predicate/evidence, hostile-server, then each fix alone);
+round 8 found no defect. Installed both Windows installs 09:50Z (.prev = the
+round-1 exe 0af34335, .pre1086 = patch-1074 4e4a5262).
+Not checked: tp_autostatus, bindmap saving and `map pkg:map` by reading only;
+the Linux client (next release).
+Left open (FTESurf BACKLOG): click-to-run server text (console links, kick/ban
+menu, server browser); CSQC cvar_set persisting e.g. rec_hid; csprogs writing
+under data/; the particle-set loader's level; Windows aux/COM superscript names;
+SV_Error rather than a refusal on an over-long first line of a non-save file.
+The plugin step's zip packaging failed on four of nine -Full builds ("zip I/O
+error: Device or resource busy", at -Jobs 8 and 4); the exes always built.
+
+## Patch 1085 -- func_bhop TimeLimit counts mover ticks, not server time (QC)
+
+**Problem:** P1082 cold reloads of a bhop_eazy line ended 0.7225 off at tick 277 in 2-3 of 5
+loads. First blamed on the engine's sub-tick carry; arm12 falsified it (carry 0.014 before an
+exact AND a diverged load) before any engine op shipped. Per-tick dumps showed SV_BhopFrame
+timing the dwell on server `time`: at tick 132 elapsed was 0.110 (teleport) or 0.0999 (one
+tick later), so identical inputs teleported a tick apart.
+
+**Change:** the dwell is (run_movetick - latch) * run_movetickrate (+1e-4: 10 ticks of float
+0.01 reach 0.1), as Source's per-tick curtime; server time stays the fallback without a mover
+rate. SV_TASGo and a project load clear the latch: no native checkpoint is taken grounded on
+an entity, so a restored tick is never mid-dwell. Teleport after 7 ticks at 66 tick, 10 at 100.
+
+**Verified:** tas_project_socket.py --exact 46/46: every reload exact, 12 single steps equal
+one 12-tick request (landing 123, teleport 130); main 8134b64f FAILs (teleport one tick after
+landing on wall time). Two reviews (control flow; ranked/evidence: no verifier re-derives the
+dwell, the recorder writes the warp): none ranks or corrupts. Live 28 Oct 08:25Z installs, ~08:30Z
+lobbies (main edabb672, qw f3f4d64e); bhop_eazy lobby smoke PASS.
+
+## Patch 1084 -- Stats page in the main menu; native lobby fonts (menu, csprogs)
+
+**Problem:** Lex 28 Oct: the lobby cards' player count rendered soft; the stats
+switch should default to World of Surf and say so; clicking the stats from the
+main menu should give hud_player's Stats page. P1070 drew the count (and the
+medium layout's title) at 14 px, off the UI ladder (sh_font.qc FONT_UI_SIZES 8..32
+in fours), so it was resampled. The Home switch defaulted to WOS but any reply
+without WOS figures (every reply before the 74e060d7 generation) forced
+Everything for the session; hud_player's page defaulted to Everything outright.
+
+**Change:** lobby text on 16 px rungs. Home and client/cl_profile.qc: World of
+Surf unless the player picked a source this session, labelled "World of Surf".
+The whole Home stats panel opens SCREEN_STATS, which hosts cl_profile.qc itself
+-- compiled into the menu behind m_statshim.qc's six CSQC names (cltime,
+ui_consent_ver, itos, SteamPic_Draw -> MP_Draw, Chat_Fit -> ui_fit_text, a dead
+sui_text_event: menu fields read keys in sui_text_input) -- with its search,
+breakdown, tier lists and rows; a row's board opens the menu's own leaderboard.
+
+**Verified:** builds 0 new warnings (the probe build's 25 errors were exactly
+those six names). Real client, loopback fixture, production hosts patched out
+(p1084-stats-smoke.py): Home source 0 native 1; panel click -> page for me,
+state OK, 3 runs, source WOS; typed search sent `players=`, picking the hit
+showed that player; Back to me; ESC home. Screenshots looked at (cards 16 px,
+switch, page). Live 07:19Z from main 2702665d: both installs and all 12 lobbies
+(qw 8134b64f, cs 7ae351cf, menu 587d416c), .prev kept; ftesurf-8b's lobby smoke
+on 27520 loaded the served csprogs, drew the board, no QC error. Not checked: a
+real Steam-linked account, the board hand-off, the in-game Stats chip.
+
+## Patch 1083 -- Ranked runs use the standard move size (QC/tools)
+
+Problem: cl_forwardspeed/sidespeed/upspeed and cl_movespeedkey were pinned to nothing
+(Patch 493 only marked moves over a 2000 evidence bound), and cl_netfps was matched to
+the tick only at map load. Owner rule, 28 Oct: a run off the standard settings is not
+ranked.
+Change: CSQC_Input_Frame scales the move vector to at most RUN_MOVE_STD 450 per axis
+(direction kept), so raised settings and the engine's pad-on-key sum / x360 walk scaling
+cannot exceed it. SV_MoveBoundFrame
+latches TF_NOPROFILE and PW_MOVE ("move") the moment an axis exceeds 450, independent of
+the run_movebound evidence switch; SV_ProfileWhy reports it at the finish. surfd needs
+no change (TF_NOPROFILE already uncertifies). Net_MatchTicrate runs every frame.
+sv_mintic/sv_maxtic/run_starthop are server cvars on the official servers, the only
+ones that rank, so they are not pinned here.
+Verified: 3 VMs 0 warnings, test_reccheck 945/0, board pass. Native arms (main vs
+P1083, synthetic running bodies): 451/900 latch and judge `move`, also at
+run_movebound 0; main judges ok; 450 ok in both. Two reviews found the pad-on-key sum,
+a stale resume reason and the shared off switch; a second round found stale load
+values and the clamp's skew; all fixed. The third round found no integrity defect;
+its strict residuals are in BACKLOG.
+**Delivered:** both Windows installs QW/CS d272394d/86a99387 at 2026-10-28T07:13:30Z;
+all 12 Pi lobbies 07:14:34Z, each restarted once while empty, same native, fresh
+heartbeats; .prev = P1082's 155a6a3d/d0abcfb9. The Pi's reccheck predates the `move`
+word (a note there until it is refreshed).
+
+## Patch 1082 -- TAS projects: save a line to disk, reload and verify it (QC)
+
+**Problem:** TAS work lived only in the warm session (a ~60 s rewind ring, in-memory
+undo/redo); leaving the map or reconnecting lost every edit. TAS plan Stage 3.
+
+**Change:** `tas project save/load/list/diff/status/close`, `tas cp add/del/list` and a
+project strip in the Timeline tab (sv_tasproject.qc). A project = one ordinary TAS save as
+its base (exact rewind writer) + data/tasproj/<map>/<name>.tasp: map/zone/ruleset identity,
+the base save's sha256 and exact origin/velocity, every input after it, checkpoints,
+revision, parent. Inputs come from the recorder's `in` rows (the rewind ring samples once
+per PACKET, so it has gaps): bounded by rec_rec_lines, move counters consecutive except
+across a go/load record, spot-checked against tas_input. Load = pre-checked base save,
+state.txt rounding undone (<= 0.0002), TAS pause, <=128-tick native tape chunks, checkpoint
+states compared: "reproduced" or "DIVERGED at T (max D)". Refused in lobbies and with
+rec_stream. Also cl_banner: a TAS run's tail stage reads TAS. No native, reader or format change.
+
+**Verified:** three review rounds. Round 1 found a first save after a full ring crashing the
+server (measured on the reviewed build: "SV_Error: runaway loop error" after 4096 ticks;
+fixed: one ring pass, 0.58 s), silent overwrites, unaligned harvest, branch mixing; round 2
+an anchor read across cuts and unbounded spot-checks; round 3 project-file quirks only. No
+round found a path to an untainted run. Final arm 38/38 (map-restart cold loads, fork/diff/
+revert, refusals, cross-cut and back-to-h0 first saves); control on main saves nothing;
+0.1.32 release client 175/175 with this csprogs. Limit, measured: the engine carries the
+connection's sub-tick ms carry into a replay; 2-3 of 5 cold loads of a duck-then-jump line
+end 0.7225 off at tick 277/281 and say DIVERGED (BACKLOG: an engine op to set it). A
+`reconnect` leaves the old body solid in the world (cmd stuck: hit 'player').
+
+**Deployed (2026-10-28):** both Windows installs 07:05:17Z (qwprogs 155a6a3d, csprogs
+d0abcfb9; .prev 3e14e81f / 70536e99; menu.dat untouched). Lobbies: `build.ps1 -Pi` from a
+clean worktree at ftesurf 8f07c96e, same two hashes live, .prev 3e14e81f / 70536e99, all 12
+active; pi_lobby_smoke on lobby 4 with the 0.1.32 client passed. TAS on the lobbies (B7,
+P1066), 0.1.32 client: bhop lobbies 4/5 run the map's 100-tick clock (live pm_ticrate 0.01,
+read by ftesurf-aa), so TAS refuses there by design (15 ms only) -- an earlier line here blamed
+the ARM native; that was wrong. On surf_beginner (27520, 0.015): pause, a 20-tick step
+(`native 1`) and the timeline page work; an edit refuses "REC14 stream editing is
+unsupported" (lobbies stream recordings; BACKLOG "Historical REC14 streamed rewind state");
+projects refuse as designed.
+
+## Patch 1080 -- Sort the Maps list by completion (menu, surfd)
+
+**Problem:** the owner asked to sort maps by completion, with unknown never
+treated as incomplete. P1062's cards know `complete` only for the 16 visible
+maps a batch carries, which cannot order the whole list.
+
+**Change:** surfd `/api/board?completed=<player>` (read-only, board rate bucket,
+`runs_player` index) returns every map name with a clean main finish: a ranked
+run on the build, or a Momentum/KSF run on its base map -- `game_mapcards`'
+`complete`, shared through `_game_player`. Unknown player is `player_known:
+false`, not an empty "nothing done". Menu: a Sort chip row (tier / incomplete
+first / completed first, `ui_maps_compsort`, archived) wraps the stable counting
+sort as an outer bucket, tier order kept within. The list is fetched only while a
+completion sort is on, refreshed after 60 s, backed off 30 s; a failed refresh
+keeps a known list, and an unknown/unavailable one is a single last bucket, so
+the list stays in tier order and the chip row says why.
+
+**Verified:** test_mapcards 24/24, including the completed list equal to each
+card's `complete` over native, import-only, variant-through-base and excluded
+(community/TAS/bonus) maps; a mutant without the variant rule fails it.
+test_board, test_home_completion, test_completion_pool, test_web pass. Real
+client, loopback fixture, production hosts patched out of the fixture menu copy
+(`p1080-compsort-smoke.py`, menu 716c14a3 = the commit): tier order 1634 rows,
+no request; incomplete first 556/1078/0 unknown ascending, first incomplete;
+completed first, first complete; unlinked and 500 both 1634 unknown in tier
+order with the note shown (screenshots looked at). One independent review: the
+backend predicate matched the cards route exactly; it found the menu re-sorting
+(and jumping to the top) on every unchanged 60 s refresh, and sorting a two-build
+row by its plain name while the card shows the effective build. Fixed (mcd_ver
+moves only on a real change, data re-sorts keep the scroll, the sort keys on
+ui_eff); arm on menu ee999eab: wheel scroll 256, unchanged refresh 256/ver 2,
+changed list re-sorted 256/ver 3. Live board answer waits on the generation.
+
+## Patch 1079 -- Declare inherited-effect exclusion across run tiers (QC/tools)
+
+Problem: existing practice marking does not override segmented/shadow precedence.
+Change: one derived TF_BANKTAINT bit in existing flags; actual recipient exclusion
+and reader/board handling. Current otherwise eligible segmented/shadow source
+admissions retain their tier. Internal reason bits distinguish these from expired
+or otherwise ineligible causes without changing map effects or ownership lifetime.
+The spectator pose stream masks bit23 (its signed 24-bit field would clamp to all
+lower bits, TAS included) and there reads as practice; client labels and admin flag
+words treat it as practice. Recording tags/retention are unchanged. No new raw input/identity/hardware/header field, native pin or Build change.
+Verified: three VMs 0 warnings (fteqcc c24ede65; QC 99bd8169 qwprogs 3e14e81f);
+test_reccheck 939/0; surfd test_board pass. Native control/subject pairs on synthetic
+bodies (production helpers, not HID/natural finish/ranking): 14 eligibility cases
+(current segmented authors stay segmented, expired/ineligible sources latch the bit,
+16777215 exact, saved flag re-latches); pose/say arms -- unfixed pose sent 8388737
+as 8388607 with TAS set, fixed sends practice only; no repeated practice say. Three
+independent reviews (logic, evidence readers, cheater gain) plus two fix rounds; the
+pose clamp and an RT_LAST retention loss were found and fixed there. Reach into
+segmented/shadow via recurring timers and named targets is in BACKLOG (census owed).
+Board backend not yet live (old surfd boards these runs as segmented, as before).
+**Delivered (server progs only):** both Windows installs QW/LNO 3e14e81f/a40dad96 at
+2026-10-28T04:56:54Z (.prev = P1077's 4b303813); all 12 Pi lobbies QW 3e14e81f at
+04:57:51Z, each restarted once while empty, same native, fresh heartbeats, .prev =
+P1076 1d2df5ec. P1077's server QC went out with it (its owner agreed). csprogs and
+surfd unchanged here: the client labels arrive with the next csprogs deploy and the
+board rule with the next backend generation.
+
+## Patch 1078 -- Tiers for maps newer than tiers.txt (data)
+
+**Problem:** surf_midnight showed tier 4 in the menu's map list but "MOM tier ? |
+KSF tier ?" in game. The info box and scoreboard read the SERVER's
+maps/tiers.txt (P723), and that file -- identical on the Pi, both installs and
+main (1a033e53, 3,163 maps, 24 Oct) -- predates the map; the menu reads the
+live directory row instead. Six other newer maps had the same gap.
+
+**Change:** tiers.txt regenerated with tools/maptiers.py from the live
+/api/board?maps=1 list, data/ksf_roster.csv and the Momentum caches of 27 Oct:
+3,163 -> 3,170 maps, none dropped. Added surf_midnight, surf_frequency,
+surf_shoria_css, surf_solitude_css, sj_bright, bhop_anomalous, bhop_2020_aux;
+surf_blink, surf_diverge, surf_neoplasma and surf_not_so_funhouse left Momentum
+Beta (sugg -> rank, blink's bonuses renumbered upstream); sj_covenant MOM 2 -> 3.
+surf_midnight's MOM 4 (suggested) is Momentum's Beta port (submission 2491,
+bb8c3e65), not the KSF build the lobbies run (1b6fa0db): MOM rows are keyed by
+name, as for every map. Same mapper (nao) and KSF's b_count 4 matches the port's
+four bonus ratings. mapwatch never swaps it in (--updates replaces `mom` only).
+
+**Verified:** two independent generations byte-identical (ea774409); all 3,170
+rows pass SV_MapTierInit's accept rules in a parser mirror (3 tokens, prefix,
+7 fields, row < 64, track/leg 0..99, one of them 0); test_maptiers 15/15.
+Server-only arm, own basedir, installed fteqwsv64 (de0099ac) + fteplug_hl2
+(83303920) + qwprogs (1d2df5ec), graded from the server's log: the shipped file
+publishes only `mapratings v1:surf_midnight`; the new one adds `maprating_0_0
+0,0,4,sugg,4,-,-` and 1_0..4_0. Installed both Windows installs and the Pi
+game dir 2026-10-28T04:21:38Z, all three ea774409; lobbies read it on their
+next map. No client screenshot: the in-game box is the owner's check.
+
+## Patch 1077 -- Retained-input TAS timeline and bounded revisions (QC)
+
+**Problem:** The next-input workshop could author future ticks, but retained
+inputs still required console edits and offered no bounded undo/redo.
+
+**Change:** Own-body reliable eight-row pages, exact displayed-head bindings,
+range/field editor and eight before/after effective-input tail revisions. Undo
+and redo use the existing guarded prefix/cut/native replay and only a completed
+replay exposes history. New edits discard redo. Missing/stale/interrupted or
+unsupported history refuses; no approximate placement. Existing escape controls,
+TAS ancestry, streaming/capability guards and shared-world limits are unchanged.
+No native API/pin/tag, evidence grammar, qcbuild/Build, public service/lobby native
+enablement or persisted/cold-restorable project claim. Usage/limits:
+`tools/p1077-tas-timeline.md` in the mod repository.
+
+**Fixed before shipping (QC 0b4d90ed):** the workshop had never drawn, P1074
+included. `getproperty(VF_ACTIVESEAT) != 0` compiled to `OP_NE_I64` over the
+return pair and a 0/1.0 constant pair, so TASUI_Draw returned every frame; the
+console paths and headless arms all passed around it. The page event
+was 40, sv_archive's `AR_EV_ROW`, so every archive row would have parsed as a
+TAS page; now 50. History arrays gained the slot bound.
+
+**Verified:** commit build (fteqcc c24ede65) 0 warnings in all three progs, no
+`*_I64` opcode in any function. Rendered production-socket arm on that exact
+build: 175 checks, 0 failed (rows, field-only range edit, undo/redo to exact
+input and endpoint, LIFO, redo discard, stale refusal, step detach, 8-deep cap),
+6010 workshop frames drawn and the table seen in the screenshot. The unfixed
+build failed that drawing check with 0 frames. Two independent reviews (flow and
+abuse; evidence and cheater gain) found the event collision and no path that
+loses the TAS marker; a third read the fixes and found none. Open
+low items are in BACKLOG.md. Owner feel pending.
+
+**Deployed:** both Windows installs 2026-10-28T04:30:47Z (qwprogs 4b303813, csprogs
+a4d7cf8a). Server QC reached the lobbies inside P1079's QW 3e14e81f (04:57:51Z).
+Lobby csprogs, owner-approved, 04:59:23Z: `build.ps1 -Pi` from a clean worktree at
+ftesurf 99bd8169 (fteqcc c24ede65): csprogs 70536e99 (was a043b93b = P1065's client
+source, rebuilt byte-exact), qwprogs rebuilt byte-identical 3e14e81f, all 12 restarted
+empty. `-Pi` had set qwprogs.dat.prev to the live file; restored to P1076 1d2df5ec.
+Same csprogs in both installs 05:04:49Z (.prev a4d7cf8a). It also carries P1068
+(inert in CSQC) and P1074. Release client 0.1.32 (17f7ec60): the P1077 arm passed
+175/175 against a TAS server; pi_lobby_smoke on lobby 4 passed (served csprogs, board,
+no QC error) once the rig carried the Pi's exact bhop_eazy.bsp -- with this PC's CS:S
+copies the lobby kicks it as "modified" (the 03:07 smoke on the old csprogs too). TAS
+stays refused on the lobbies until their native carries P1055+ (live 4a149d79).
+
+## Patch 1076 -- Preserve recurring timer scheduled-callback lineage (QC)
+
+**Problem:** A recurring timer's later native callback did not retain the
+admission that scheduled it.
+
+**Change:** Reuse existing VM-local bank metadata and callback scope. Changed
+schedules/actual off-on transitions replace scheduled ownership; an unchanged
+enabled schedule does not. Preserve the public think identity used by existing
+FireTimer/ResetTimer/RefireTime gates, original callback body/recurrence/oscillator
+outputs and actual physical effect. Existing actual-body checks mark the affected
+recipient's practice state/flag, not cancellation. Otherwise clean/nonsegmented/
+nonshadow attempts become unranked practice; pre-existing segmented/shadow tier
+precedence is unchanged, NOT an all-tier-unranked claim. No new captured field/format, native
+API/pin/tag, device collection, gameplay/dwell threshold, qcbuild, Build or release.
+Persistent interval/phase/other logical contributors across replacements and full
+world/body commitment bank remain OPEN; not complete P455/Rule8.
+
+**Verified:** Published QC632f2b58 baseline, nine ACTED native control/subject
+cases: old admission, clean current/world, unchanged schedule, actual off/on,
+original timer-input acceptance, oscillator, accepted changed deadline and a
+recipient distinct from source/unrelated player. Effect/counts/recurrence/state
+preserved; only affected recipient practices. Explicit synthetic bodies/timer
+labels, not client/input/HID/real ground/reconnect/natural finish/new record/rank
+or measured performance. Stock3VM0warnings/c24; raw reader930/0 actual exit0.
+Pre-runtime fixture API/compile failures retained privately, not passes. Three
+fresh frozen reviews SOURCE OK/no product issues; qualification narrowed for
+pre-existing segmented/shadow precedence. Pure actual-source classifier probe
+confirms that limit, not actual endpoint/receipt acceptance. Fresh full680-file
+corpus503REC/167pairedVIEW/10unpaired:312 findings311faulted, increase0 against
+retained independent control. Reviewed product523ead9c/ledger9f4ef94f published
+with qualification QC8614273d/engine4873ff3d, no changed product source afterward.
+Delivered2026-10-27T23:59:23Z: exact stock QW1d2df5ec + LNO BOTH Windows, immediate
+P1075 .prev and protected roles unchanged, no Windows process action. Pi QW-only,
+all12 positive status7 empty including spectators at boundary AND immediately
+before each once-only ordinary restart; new PIDs/same native/fresh positive app
+spawn/heartbeats AFTER LAST restart, exact actual PID namespaces and local/public
+health200/directory12. No forced busy drop, backend/native/client/UI/config/data/
+Build/release operation; stage consumed/short lock released. Human ordinary-map/
+natural clean-run acceptance PENDING. Full-bank/cross-tier limits above remain.
+Public scope and exact artifact: tools/p1076-timer-callbacks.md.
+
+## Patch 1075 -- Consume finish forgiveness after the native command (QC)
+
+**Problem:** The automatic finish/reset-forgiveness check ran before all of the
+current native command's synchronous work had completed.
+
+**Change:** Request only when the unchanged P968 body/hold predicates qualify;
+consume at a later existing native EndFrame, require the same positive VM-local
+admission, and recheck those predicates. Consume stale/invalid requests without
+forgiving another admission. No cached frame stamp, new dwell/speed threshold,
+captured field/format, native ABI/pin/tag, qcbuild, Build or release change.
+Authored effects keep working. Published P1074 work is preserved. Persistent
+logical/world/body state and obligations beyond this frame remain OPEN; not
+complete P455/Rule8.
+
+**Verified:** Published P1074 baseline fe9ebe1e, five acted native dedicated-socket
+control/subject cases: late physical effect, clean positive, changed admission,
+invalid admission, later hold. Same observed phase/no intervening EndFrame and
+actual native ground/rest required. Instrumented production-helper calls and
+synthetic timer labels, not natural finishes, hardware, reconnect, new recordings
+or rank proof. Full stock3VM0warnings (unchanged c24 compiler); raw reader930/0,
+actual exit0 retained. Initial fixture/logging failures remain private and are not
+passes. Three independent frozen-source reviews SOURCE OK, no product issues;
+corrected review wording records admission/flag invalidation, not explicit pending
+field clearing. Fresh entire680-file corpus503REC/167pairedVIEW/10unpairedVIEW:
+312 findings311 faulted reports, unchanged from retained independent control.
+
+**Delivery2026-10-27T22:52:13Z:** Reviewed QC4259c582 server-only stock QW
+f75f3b4150f61f53e6e12f3884ee046695e3ff40aa21651da5ddc7f6143b10fd.
+BOTH Windows DAT/LNO pairs exact with `.prev`, no owner process stopped. All12 Pi
+fresh-empty including actual status7 spectators at swap; one ordinary restart
+each, new PID/positive fresh spawn and heartbeat, no selected startup QC errors.
+All12 actual PID-namespace QW hashes match; local/public health200/directory12.
+Short sweep lock released; no native/client/menu/backend/config or Build/release
+change. Preapply quoting failure caused no swap/process action; same staged file
+used, not a new attempt name. Human clean-run acceptance remains pending; not
+new recording/rank proof or full Rule8. Public qualification: tools/p1075-command-fence.md.
+
+## Patch 1074 -- Author the next TAS ticks in a workshop
+
+**Problem:** Paused TAS still used live controls and free mouse look. There was
+no window to choose upcoming inputs or hold a direction for repeated air help.
+
+**Change:** Add a single-seat own-body workshop, validated full-draft configure/
+advance transactions, manual movement/aim/buttons and persistent left/right AIR
+selection after actual native TAS admission. Choose quantized yaw for the current
+horizontal air-acceleration gain using this body's effective speed/walk/stamina,
+friction and acceleration inputs; retain presets at contacts, transitions, zero
+speed, near clamps and differing custom server/mover caps. This is not future
+QC/collision/route search. Preserve per-command head carry and settle executed
+assists after PostThink/new-missile callbacks; new drafts, context loss, replay,
+placement and cancellation cannot revive an old plan. Preserve exact angle words
+through CLI/GUI and legal pitch endpoints. Default paused physical mouse lock is
+own-seat only, deliberately switchable, and never blocks authored camera updates.
+Ordinary mover speed calculation is extracted without changing its behavior.
+Planner protocol capability1071 stays stable; publication patch is1074. No new
+recording grammar, world snapshots, project persistence, signatures or TAS boards.
+
+**Verified:** Full native build adds no warnings (same74); QC retains only2old
+F333 warnings. Actual-C objective/guard suite983/0 compares quantized selection
+against exhaustive real AIR acceleration and acting per-axis/pre-server-clamp
+counterexamples. Dedicated-socket production controls exercise manual aim/buttons,
+sustained left/right turns/gain, replay/rewind and invalid/stale/cancel boundaries.
+Controlled actual bhop PostThink teleport and real cached-stat UI sequence prove
+old stale-heading/wrong-draft behavior and corrected execution; no mocked stats or
+body assignment. Tiny-yaw capture, imported +/-89 pitch and393219float32 threshold
+roundtrips pass; normal Source selftests and unchanged930reader/full corpus proof
+remain valid. Independent source reviews cleared the implemented corrections.
+These are bounded/headless checks, not rendered acceptance, all-map parity or a
+global fastest-line claim. Final stamped/pinned artifacts and destination proof
+are recorded separately in tools/p1074-tas-workshop.md. No Build/release bump.
+
+## Patch 1073 -- Preserve active button callback source lineage (QC)
+
+**Problem:** Button completion/return retained a mutable activator but not the
+admission/taint that armed the actual callback. Ordinary delayed I/O lineage did
+not cover this asynchronous lifetime; ignored Use can change the activator
+without replacing pending work.
+
+**Change:** Scope the complete Press/Use/Damage gesture and carry its provenance
+through the actual native button Top/Return/Home callbacks. Store one VM-local
+callback pointer beside the existing source snapshot. Preserve ltime deadlines,
+state guards, output counts, dynamic activators and authored effects. Rejected
+input does not retag pending work; actual replacement scheduling replaces it.
+Owner-selected practice/unranked, not cancellation, uses existing actual-body
+write hooks. No captured field/format, native ABI/pin/tag, threshold, Build or
+release change. Persistent logical/world/body/carrier state beyond the active
+callback and native same-command completion remain OPEN; not full Rule8.
+
+**Verified:** Clean frozen source954de018 vs2471f03c independently reviewed by3
+lenses, no product issue. Native production control14/subject14 ACTED, same
+compiler/image/fixture/runner, exact effects/running states and restored enclosing
+context. Original held case was actually a missing-target refusal due to cosmetic
+rename ordering; preserved/archive, not credited. Corrected SAME fixture runs
+controle0385624/subject22c9f07a deliver teleport before rename, all14 ACTED and
+held body stays put/clean; current/world/cancellation controls stay clean.
+Case13 proves canceled physical callback plus acted cosmetic replacement, not
+clean arbitrary replacement physics or complete world-state retirement. Synthetic
+bodies/sprint interception, no real client/reconnect/record/rank or human claim.
+Reader raw stdout930/0; postread CP1252/UTF8 mismatch retained, exit not persisted.
+Fresh entire680-file REC/VIEW domain and reader hashes equal retained independent
+503REC/167paired/10unpaired reports312findings311faulted, zero increase; reuse,
+not a new sweep. Final stock3VM0warnings (same c24 compiler), allQC/SRC inputs
+unchanged during build, no fixture in production; QWda35b1ec/LNOa75ae4cc.
+Correction-review disposition/publication/delivery recorded separately. Peer
+published P1070/reserved P1071 and native1066 pins preserved.
+
+**Delivery2026-10-27T21:10:37Z:** Independent evidence-correction review accepted
+actualheld guard/control with no issue, productsource unchanged. Exact published
+QCb0f404fc/ledger21a0d573, finalstock3VM0, QWda35b1ec/LNOa75ae4cc BOTHWindows;
+PiQWsame/prevf094 retained. Short sharedflock actual12freshZEROplayer boundary,
+all12 ordinary restarts ONCE/newPID/nativeimages unchanged/NEW appspawn logs/no
+selectedQCerrors/everyheartbeat lowerbound AFTERLASTrestart; local+public200/
+directory12/maxage3. Stageconsumed/lockreleased. ProtectedCSa043/peerUI/native
+binaries/backend/config/owner/playerdata, no ownerclient/backend signal, no
+forcedbusyrestart/Build/release. Human clean-run pending; fullRule8 staysOPEN.
+Final provenance/coverage limits: tools/p1073-button-callbacks.md.
+
+## Patch 1072 -- Keep queued player-origin I/O tied to its admission (QC)
+
+**Problem:** A queued player-origin output retained its activator but not the
+admission/taint that caused it. Later delivery could apply a physics change to a
+fresh attempt, or a dynamically named different body, without its original cause.
+
+**Change:** Owner selected practice/unranked, not cancellation. VM-local admission
+identities and captured source taint survive delayed and synchronous nested I/O;
+checks run at the supported actual player physics writes. Preserve effects and
+existing practice classification. True admission boundaries mint identities;
+same-box occupancy reconciliation and refused saves preserve them. Integer
+exhaustion cannot alias an earlier identity. No new captured field, recording
+format, native ABI/pin/tag, gameplay threshold, Build or release change. Preserve
+peer P1070 menu and reserved P1071 work; this is one claim after max+1 inspection.
+
+**Verified:** Same native/compiler, full production I/O/timer/body helpers,
+control25/subject25 ACTED with exact effects and preserved running/armed states.
+Current/world/cosmetic/held-teleport controls stay clean; actual recipient, nested
+world activator, serial exhaustion, same-box/refused-save identity+latch and
+existing recursion-cap/context restore pass. Synthetic bodies, sprint intercepted;
+not genuine input/client/reconnect, successful save/retry, full record/rank or
+human acceptance. Stock3VM0warnings, fresh reader930/0; exact unchanged full503REC/
+167pairedVIEW/10unpairedVIEW reader+input/report hashes retain312findings311faulted,
+zero increase. Three independent final reviews OK with notes after two v1
+false-taint regressions were fixed; original reviewer timeouts and harness
+failures retained, not passed. Latest published menu integration leaves every
+reviewed source byte/server dependency unchanged. Final artifact/deployment is
+recorded separately. Persistent map/button/timer/pad/body/carrier commitments and
+native same-command completion remain OPEN; this is NOT full Rule-8 closure.
+
+**Delivery2026-10-27T20:04:05Z:** QCfae8bd6d/ledger04c4ebab exact pushed,
+clean source-bound final3VM0warnings, QWf0943780/previous1fa6df95 retained.
+Server DAT/LNO BOTH Windows installs, QW-only Pi; protected peer menu/client,
+native/backend/config/owner/player data unchanged. Short existing sweep lock,
+actual12fresh/zero-player boundary, all12 normal bare-unit restarts ONCE; each
+new PID/native image unchanged/new app-log positive/no selected QCerror, all12
+heartbeat lower-bound AFTER last restart, public/local health200+directory12.
+No forced busy restart, backend signal or native-binary deployment, Build/release. Human clean-run
+check pending; final delivered provenance/limits in tools/p1072-delayed-io.md.
+
+## Patch 1070 -- Group lobby text and load sharper directory photos (mod side)
+
+**Problem:** Home stretched128x72 atlas cells and separated12px lobby/title counts
+at the top from a map name at the bottom. Its catalogue-row lookup could also
+cache a miss before catalogue loading, delaying available pictures.
+
+**Change:** Group larger lobby/map/count text in a centred block, retaining a
+compact layout and full-card click targets. At most16large cards use existing
+local pictures or async, readiness-checked960px web photos keyed by the directory
+map name, without requiring catalogue UUID loading. Fixed trusted photo route,
+map-name validation and online consent remain required; retain atlas/no-image
+fallbacks and dense64-lobby layout. Probe files only on map/consent changes,
+release unused pictures and account for shared URLs. No native/schema change.
+
+**Verified:** Isolated QC build passes with MENU/server0warnings and the same2
+old CSQC F333/227 warnings. Real public web route returns960x540JPEG. Fixture-
+routed native control reproduces old layout; subject1920x1111draws12/12cards and
+12ready960px photos with6deduplicated transfers. Last-card hover, missing-photo
+fallback/shared-URL retention and acting offline gate pass. Crops inspected.
+Oversized fixture correctly failed the unchanged native131072-byte limit; fixed
+the fixture, not the limit. Owner/live feel and numerical latency remain pending.
+No backend-native rollout or live account-stat claim. tools/p1070-lobby-cards.md.
+
+## Patch 1069 -- Require integral recorder generations and rewind coordinates
+
+**Problem:** Range-only saved-generation checks accepted malformed numeric
+indices, which could skip a generation cut; a non-whole row mark could also enter
+a matching warm-buffer rewind. These coordinates are already integer indices.
+
+**Change:** Express the existing generation range positively, require whole
+indices and reject non-whole row marks before dispatch. Keep current valid warm
+matches and independently confirmed cold recovery. No new recorded field,
+format, gameplay threshold, forgiveness, native ABI/pin/tag or Build change.
+P1068 is another session's published menu work; preserve its UI and delivery.
+
+**Verified:** Production full writer/real rewind cut/new-tail/full reader native
+control14 and subject14, zero warnings, unchanged dedicated image. Invalid warm
+matches refuse while valid current generation and independent confirmed cold
+copy controls survive. Synthetic entities/minimal rows, sprint only intercepted;
+not real input, signed/rank, client restart or full native-stream proof. Standard
+isolated3VM build zero warnings; reader930/0. Unchanged full503REC/167pairedVIEW/
+10unpairedVIEW source+input hashes reuse exact control/subject reports312findings/
+311faulted, zero increase. Server-only deployment recorded separately. No atomic/
+durable/authenticated save-pair or later content-mutation claim.
+
+## Patch 1068 -- Consistent menu glass over a loaded map (mod side)
+
+**Problem:** screen renderers painted ui_backdrop after the shell had pushed its
+panel-sized coordinate frame, producing a large square and tab-dependent dark
+regions. Glass was enabled only while disconnected Milk was active, and the
+panel highlight was deliberately top-only. The owner also wanted more tint.
+
+**Change:** MENU draws its backdrop once at full-screen root coordinates before
+shell frames. Map-photo fallbacks never replace a live world. MENU opts into
+glass in every context (HUD default remains opaque), adds a complete rounded
+rim and increases panel/well tint. No native engine, movement or schema change.
+
+**Verified:** build.ps1 -NoDeploy -Jobs8 passes, MENU/server0warnings and the same
+2 pre-existing CSQC F333/227 warnings. Existing runtime transport exercised
+installed-control and subject Settings/Maps disconnected and hosted; actual
+1920x1111 captures and active/client/glass probes pass,8captures retained and
+inspected. The control reproduces the square and opaque in-game panel; subject
+removes it and reports glass1 over a real loaded map. Milk was disabled for
+this stable visual control; default-Milk/online feel awaits owner acceptance.
+No backend-card, lobby-native rollout or performance claim. Native source pin
+and tag remain P1066; tools/p1068-menu-glass.md records scope and limits.
+
+## Patch 1067 -- Refuse malformed save confirmation before legacy fallback
+
+**Problem:** The full save reader skipped short rows before recorder parsing,
+while the existing prefix-confirmation key was recognized only at exact arity.
+Present malformed confirmation could therefore look like absent legacy metadata
+and cold-restore a prefix instead of being explicitly unconfirmed.
+
+**Change:** Recognize that known field before the generic short-row skip and
+accept confirmation only with its existing exact arity/value. Guard other short
+recorder keys without changing unknown-key handling. Matching warm memory stays
+first; missing historical metadata retains its existing behavior. No new stored
+field, recording grammar, forgiveness, native ABI/pin/tag or Build change.
+
+**Verified:** Identical native production full-writer/full-reader/rewind fixtures
+on published control and subject,16 acted cases each, zero compile warnings.
+Control reproduces malformed cold acceptance; subject refuses it while preserving
+missing/valid cold restoration, explicit failure and all8 matching warm cases.
+Synthetic entities/minimal rows, sprint only intercepted: not real input, signed
+proof, verifier/rank acceptance or a client map restart. Standard isolated Windows
+build: all3 VMs, zero warnings. Reader930/0; SAME hash-bound503REC/167pairedVIEW/
+10unpairedVIEW corpus has identical full control/subject reports,312 findings on
+311 reports, zero increase. Deployment recorded separately. No atomic/durable/
+authenticated pairing or later same-count content-mutation claim.
+
+## Patch 1066 -- Preserve TAS view angles and refuse incomplete stream restores
+
+**Problem:** P1065 replay set fixangle before movement but put model-scaled pitch
+in .angles. The wire sender selected that model pitch, and the pending fixangle
+also suppressed mover-produced view angles at rotated portals. Native warm restore
+had the same model/view wire mismatch. REC14 stream snapshots lacked historical
+mover-command state, yet editor preflight could accept them and a failed restore
+could cancel the active recording.
+
+**Change:** Native warm restore preserves historical model angles and emits the
+full restored view through the standard reliable sender without leaving its own
+fixangle pending. Replay does not manufacture an early fixangle; genuine QC angle
+corrections keep ordinary ownership. Its camera notification follows ordinary
+mover/portal view publication and uses full view angles. QC refuses REC14 stream
+edits/replay and tick-back before ticket/pin/placement/recorder mutation; buffered
+REC14 remains supported. Historical stream support is explicitly deferred, not
+faked using current-head metadata.
+
+**Verified:** Real-socket headless control/subject checks reproduced all three
+P1065 failures. Corrected unchanged nonzero-pitch replay, pitch30 edits and
+nonzero-pitch one-tick back agree with actual client view within ordinary angle
+wire quantization. A real linked-portal counter increment proves both direct and
+replayed 90-degree crossings; resulting body/velocity/view agree. Stream edit and
+tick-back refuse while preserving running/recording state, serial, row count,
+byte extent, body/velocity, request and pin. Observer-only SSQC telemetry; no new
+production debug RPC. Human rendered camera feel remains unconfirmed.
+
+## Patch 1065 -- Edit captured TAS inputs and recalculate the affected tail
+
+**Problem:** Exact pause/step/back preserves a line but cannot change its commands
+and calculate the resulting movement. Replaying live input or a QC packet index
+would substitute commands, lose carried movement state and miscount executions.
+
+**Change:** Add bounded movement-input metadata to native TAS checkpoints and a
+trusted-VM-only128-row staging/execution queue. Preserve exact signed aim words
+and compact jump/duck/walk bits before mover filtering; bind input availability
+only after successful movement and publication of the resulting native count.
+Restores rebind metadata to current counters, never transport/DONE/history.
+Overlay stored commands before QC input consumers, keep entity/body/retained aim
+coherent across pending setangle, and publish completion only on actual success.
+Cancellation is unconditional, terminal and independent of supported/alive gates.
+Matching QC adds inputs/replay/edit, inclusive range selection, lexical numeric
+validation and a local immutable tail copy. Validate every exact warm prefix/input
+and cumulative headroom before restore; use the warm-only writer, verify recorder
+lineage after go, then begin/fill/arm native storage. No staged tape survives a
+placement. All assistance stays TAS; no human/segmented admission or file import.
+
+**Verified:** Actual production C headers100236 checks0failed with strict compile
+warnings. Real dedicated-socket distinct-input unchanged replay matches printed
+pose/velocity/carry/hull/eye despite opposing live input. Edited side/jump/duck
+slices match directly simulated identical inputs; yaw90 matches world-equivalent
+direct input, first retained/entity aim agrees and a one-row45-degree tail acts.
+Only selected command fields/rows change. Render/net30/20 and240/144 preserve the
+exact affected count; malformed values, missing prefix and duplicate requests do
+not move. Active step conflicts refuse; play/off cancels and an actually applied
+unsupported clock faults terminally, with no revival on supported return. An
+edited attempt finishes as TAS and its REC is reader-clean. Reader suite930/0;
+current497REC/167paired+10unpairedVIEW corpus is identity-identical to its control,
+with no increase over306existing findings/305faulted reports. Standard Windows
+builds retain only existing warnings. Delivery/clean-source provenance is recorded
+separately; tools/p1065-tas-inputs.md describes use and scope.
+
+**Limits:** Current rules/shared world and at most128 affected ticks. No world
+rewind, all-map/dynamic/water/ladder or bit-identical full-state claim. Passive
+cursor telemetry is omitted, not movement input; replay clears live extras.
+No project persistence, undo/branch GUI, optimization or new evidence grammar.
+Human camera/input feel remains pending. No surfd/service operation, live-lobby
+rollout, public release or QC Build bump is implied by this source entry.
+
+## Patch 1064 -- Windows visualizer capture ignores the game's mute
+
+**Problem:** Windows-output visualization received packets but analyzed silence
+when the game rendering session had volume0/mute1. Passing a NULL session GUID
+to loopback Initialize joined that session. A positive external-output control
+and a normal-sound versus nosound client distinguished this from absent input.
+
+**Change:** Create a fresh capture-only audio session per open attempt. Keep
+render volume/mute unchanged, local opt-in unchanged and the existing COM close,
+retry, endpoint, PCM, analyzer and non-Windows fallback paths. No microphone,
+raw audio recording, volume-setting override, backend or evidence change.
+
+**Verified:** Direct production-header old/new control with positive external
+input and the same test process's silent muted render: old66packets/RMS0, new
+67packets/RMS.006300; render remains volume0/mute1. Independent captures are
+nonzero in both arms. New Windows session regression and existing PCM/analyzer/
+close/reset/fallback tests compile with -Wall -Wextra -Werror and pass. Full
+-NoDeploy native/client/server/matched-plugin build passes; warnings are in
+untouched sources, not the changed header. Real normal-sound client reports
+source1/active1/nonzero RMS, source0 closes with zero RMS, source1 reopens and
+recovers nonzero RMS. The isolated client's render was unmuted; the explicit
+muted-render regression is the direct production-header control above.
+Human visual reactivity is pending; numeric capture is not a subjective pass.
+Local dual-install provenance and post-swap checks are recorded separately.
+No surfd action, NanoPi deployment, release or qcbuild bump.
+
+## Patch 1062 -- glass menu scenes and source-separated map cards (MENU/API only)
+
+**Problem:** The owner wanted translucent windows and section-based Milk scenes,
+larger map cards/actions, completion and four separately scoped times. P1059
+removed the filter controls as well as their collapse button. Quit tested the
+`ui_synth` function pointer rather than calling it.
+
+**Change:** MENU opts into tinted glass chrome only while Milk is active; text
+remains opaque/native-sized, HUD defaults and the in-game/unsupported fallback
+stay unchanged. Main/Maps/Story/Event/Settings select profiles0..4; profile4
+explicitly reuses shader0, not a nonexistent shader. Maps no longer cover Milk
+with the selected map JPEG. Compact native12 filter chips remain visible.
+128/160px cards carry larger thumbnails/actions and completion fade. An in-memory,
+identity-separated60s cache requests at most16 visible maps through the existing
+board transport/rate bucket. Integer milliseconds keep WOS ranked vs ranked+
+Momentum+KSF clean-main records distinct; local/community PBs are not relabelled.
+Unknown/stale/offline states stay explicit. Quit calls its synthetic guard; the
+remaining Settings Music entry is removed. No native code/pin, gameplay progs,
+evidence/schema/consent change or release/build-number bump.
+
+**Verified:** NoDeploy MENU/server0 warnings; same two untouched CSQC227 warnings,
+zero new. Synthetic SQLite route17 checks, existing completion46 and board328
+checks pass. Real-client three-size800x600/1280x720/1920x1111 matrix, five browser
+swaps plus Settings: glass/actual station0..4, integer four-time and Complete
+positive controls, import-only/incomplete rows, active tier filtering/reset,
+selection/draft/sidebar invariants, one full compact card, bounded batches,
+Milk-off opaque fallback and wanted-but-blocked offline requests all acted.
+Screenshots inspected; no authenticated social, real launch, subjective audio or
+live WR claim. The serving API remains unavailable, so the new endpoint is not
+fleet-deployed. Native desktop-capture silence with a muted render session is
+still under investigation separately; active capture alone is not a pass.
+
+## Patch 1061 - Rewind paused TAS by exact retained movement ticks
+
+**Problem:** The existing rewind cursor advances through sampled line positions,
+not necessarily adjacent physics ticks. Loading a pose alone also misses Source
+jump/duck/carry state. Replay viewing adds elapsed time, and an ordinary hold's
+release can exclude the first explicitly granted movement tick.
+
+**Change:** Add a VM-only bounded native movement-checkpoint store with map,
+connection and slot/token identity. Matching QC retains each granted TAS step,
+selects only an exact retained tick and uses the existing recorder-prefix/load
+path, then restores native movement state and remains paused. Native movement,
+completion, request and freshness counters are not rewound. Reject unsupported
+clocks, moving-carrier captures and native counter ranges without single-tick QC
+precision. Only an explicitly owned TAS rewind pin preserves pause and excludes
+replay-viewing time; ordinary viewer/hold/impulse policies remain unchanged.
+Settle thaw accounting before the next grant. Add `tas back [1..128]`, integer
+tick navigation in paused TAS rewind, and timeline/hull/eye status.
+
+**Verified:** Actual-C admission helper182 checks, reader930 checks, zero failed.
+Real dedicated-socket walk/start controls act before pause; direct back1/back7
+restore the requested logical tick without reducing native counters, and repeat
+flat/airborne endpoints at printed precision. UI control31 checks: exact head,
+one-tick cursor, wall-wait/no movement, paused go with no countdown/free tick,
+first forward logical/native delta1, acting duck eye/hull and duck/unduck parity,
+render/net30/20 and240/144, and actual finish after off retaining TAS ancestry.
+Its produced REC/VIEW reader has zero faults. Existing corpus497 RECs,
+167 paired/10 unpaired VIEWs retains306 findings. Old-native control refuses back
+without movement and still advances a forward tick. No new compiler warnings.
+
+**Limits:** Warm, bounded movement history, not persistent project checkpoints.
+Live packets can cover uncaptured intermediate ticks; those refuse, never choose
+a nearby pose or invent a recorder prefix. Preview geometry is interpolated.
+World/rules remain current; no moving-world rollback or all-map parity claim.
+Input-timeline editing, downstream recalculation, project export and TAS boards
+remain planned. Human rewind/aim feel and deployment are recorded separately.
+
+## Patch 1060 - Retain bounded lobby history across heartbeat gaps
+
+**Problem:** Heartbeat expiry and full-capacity cleanup deleted lobby rows,
+including their persistent least-recently-used rotation timestamps. The first
+heartbeat after downtime could erase the other lobbies' history.
+
+**Change:** Retain lobby rows; the existing TTL still filters the live directory.
+Unknown identities are refused at the200-node bound without evicting history;
+known identities can still heartbeat. An explicit immediate write transaction
+retains the old reaper's serialization across capacity checks and inserts. No
+schema change, client/engine binary change or engine commit/tag pin move.
+
+**Verified:** Clean actor-baseline old-code control ACTED: stale12 rows lost
+history and full stale capacity admitted another identity. Corrected real
+Flask/SQLite checks retain all12 rows after the first and all heartbeats, expose
+only fresh lobbies, update a known node at capacity, refuse an unknown node
+without eviction, and admit only one of two concurrent identities at199 rows.
+The existing surfd and join suites pass on Linux, including LRU selection,
+assignment atomicity and repeatable23-to24 migration. The inspected main-base
+retention, surfd and join suites also pass; all eight schema-compatibility
+controls pass, including ahead-schema/WAL refusal and native URI handling.
+No live deployment or production-data acceptance claimed.
+
+## Patch 1059 - Plain floating navigation and a shared browser sidebar
+
+**Problem:** Owner wanted original bold white navigation without a backing slab,
+compact update info at screen-top-left, no Music UI, and Maps/Story/Event to swap
+only the main panel while Friends/chat persist. Maps had size/filter/friend
+switches and a second centered gutter instead of filling the remainder.
+
+**Change:** Shared browser frame/sidebar and active Friends/chat scope; page
+changes preserve draft/profile selection. Native24/32 display-face white nav,
+no panel/chip backdrop; compact hint at12,12 outside translated frames. Maps
+fills left canvas,128x72 thumbs and20px native names, compact112px rows on narrow
+canvases; remove old filter strip/switches and Music entry/autoplay. Keep search,
+metadata, build/launch/download/leaderboard gates and development update policy.
+No native/audio-capture code, engine pin/tag/qcbuild, consent or saved config edit.
+
+**Verified:** NoDeploy menu/server0 warnings, same two untouched CSQC227 warnings,
+zero new. Real-client1280x720/800x600/1920x1111: all four pages, invariant sidebar,
+bounded full-left maps, actual row selection, unsent draft preserved, pictures
+inspected. Final saved Filters1 case retired the old strip too. Fourteen populated
+arms passed; last1920 Event->Home separate mouse down/up was displaced by real
+desktop motion (both took0), retained as input-driver failure, not a pass.
+Only the missed callback was recovered with an atomic numeric click; valid arms
+reused. Initial Filters0 candidate's15 full swaps also retained. No authenticated
+Friends/DM-send, all-platform or owner feel claim. See FTESurf
+`tools/p1059-shared-browser.md` for scope and separate actual delivery receipt.
+
+**Other requests:** Backend8084 absent and other cohort's admission CLOSED;12
+native lobby units run and public UDP27510 responds. Recovery owner handoff
+requested, no guard/data/process/service mutation. Both installed native clients
+have loopback controls; owner status source1/support1/active1/available1/packets27416
+but RMS0 proves analyser silence, not missing support or a repaired native bug.
+Actual audible-music/default endpoint and known-audio control remain to diagnose.
+MENU removal preserves that opt-in; no native audio patch or config edit claimed.
+
+## Patch 1058 - Crisp floating Home and persistent development menu
+
+**Problem:** Home used11/18/22px sizes off the UI font ladder; owner wanted a
+floating navigation bar. Reboot restored the release MENU: its exact signed
+0.1.31 BLAKE2b-256 hash/size and native updater timestamps identify the current
+overwrite. Prior peer/stale-build attribution was not established and is withdrawn.
+
+**Change:** Use native12/20/24 sizes and separated compact figure rows. Center a
+rounded header above the main frame with12px gap and no double gutter. Default
+source builds compile development mode, preserving signed checks but requiring
+explicit F2 Install release to replace MENU; explicit -ReleaseVersion builds
+retain automatic installation. Native verification/transport/protection, consent,
+ledgers, owner configs, on-demand CS:GO and native/engine pins are unchanged by
+this patch; published P1055 integration must retain its existing pin.
+
+**Verified:** Standard dev and -ReleaseVersion NoDeploy builds: server/menu0
+warnings, same two untouched CSQC setproperty227 warnings, zero new. Populated
+real-client exact1280x720/1920x1111/800x600: floating inset/gap,12/12 targets,
+9 populated tier rows, both mode cards, bounds/switches,64/legacy/offline pass;
+screenshots inspected, native-size text visibly improved, owner feel pending.
+Production-signed LOOPBACK-only fixtures used actual launcher baseline adoption,
+not a fabricated ledger. Native release-mode control auto-installed the old
+published MENU; dev reached available but fetched0 objects and kept bytes,
+consent and ledgers across two fresh processes. Explicit real GUI action then
+installed the signed old MENU. Initial helper/launcher-state/manual-driver
+failures are retained, not passes; valid automatic arms reused and corrected
+manual action finished against exact fresh fixture inputs. No production feed
+published or signing material printed. Actual owner fresh-launch acceptance and
+all-platform/native regression are not claimed. See FTESurf
+`tools/p1058-home-crisp-persistence.md` and separate dual menu-only UTC receipt.
+
+**Installed:** BOTH Windows MENU files at2026-10-27T06:01:02Z; source QC7fef551c,
+byte-identical clean merged/tested MENU SHA2566d52df34 (582498 bytes). Both live
+and adjacent rollback hashes verified; all36 current protected present/absent
+entries unchanged, including consent/updater metadata/configs/native and gameplay
+binaries. Short claim released, foreign processes exited naturally (none killed).
+This is menu-only local delivery, not an API/site/server/native promotion.
+
+## Patch 1057 - Bigger Home lobbies and taller Friends (menu only)
+
+**Problem:** Owner accepted P1056 visually, but requested larger lobby images,
+less stat-panel height and more Friends space than chat. Also reported5-10s
+launches; no startup cause or native fix was assumed.
+
+**Change:** Reserve210..252px for compact stats and give the remainder to a
+three-column lobby grid. Adaptive16:9 image slots replace64x36 thumbs; all12
+cells and all stat rows remain. Friends gets58% of right-panel height; compact
+embedded chat keeps room/messages/input/status/privacy separate. Add optional
+`ui_menu_probe boot` MENU-phase elapsed diagnostics, not a whole-executable timer.
+No native, pin/tag, qcbuild, server, API or evidence change. The separately
+authorized optional CS:GO mount preference is backed up and changed only after
+its actual on-demand map test; saved ftesurf.cfg/player data remain untouched.
+
+**Verified:** Isolated NoDeploy build server/menu0 warnings; same two untouched
+CSQC setproperty227 warnings, zero new. Real-client populated local fixture at
+actual1280x720,1920x1111,800x600:12/12 targets,9 populated WOS/Everything rows,
+Story2/4/Event1/3, all bounds fit. Thumbnail slots129x73/183x103/69x39; lobbies
+taller than stats and Friends taller than chat.64-cell/legacy/offline also pass;
+screenshots inspected, including small chat. These are synthetic layout checks,
+not real linked acceptance. Owner P1057 feel check remains pending.
+
+Separate fresh-launch config comparison, same installed engine/plugin/menu,
+2326-map catalogue and real native mount-resolution control: primary's extra
+CS:GO entry ON9.469s, OFF4.437s, ON again9.406s. Timer is process start to first
+successful populated MENU probe, not first pixel/cold-cache or owner benchmark.
+MENU init273..278ms, first draw77..114ms, catalogue322..339ms in qualified arms;
+the extra~5s is not accounted for by the new layout. Inputs stayed unchanged.
+Owner then authorized on-demand IF verified: surf_cavediver loaded with the full
+CS:GO pack absent beforehand, native state4->1/spec CS:GO, new searchpaths and an
+inspected textured in-game screenshot. Only then removed the one active CS:GO
+line in the primary fs_addons.txt, with adjacent rollback and16 other protected
+hashes unchanged (2026-10-27T04:32:03Z). Secondary absence preserved. This proves
+one declared-dependency case, not undeclared/all custom maps or an owner benchmark.
+Initial missing helper/index-artifact assumptions were tooling failures, retained
+separately; final control used actual fs_steamlibs resolution. See FTESurf
+`tools/p1057-home-balance.md` for evidence and separate menu installation receipt.
+
+## Patch 1056 - Home fits the full lobby directory and stats (menu only)
+
+**Problem:** P1054's two-column lobby list hid rows behind scrolling and its tier
+list could hide lower stats in short windows. A populated fixture also exposed
+an int JSON length passed through MENU min's untyped tail, loading only Tier1.
+
+**Change:** Fit-to-screen, non-scrolling lobby and tier grids; all summary,
+standard tier/Unrated and Story/Event cards remain present. Missing data is
+explicitly unknown. Normalize the JSON length before clamping, retain loaded
+figures during refresh with visible failure state, and reuse the existing board
+GET interface. Move Home update hints into the tab strip and wrap narrow chat
+status. No native/evidence/API change, engine pin/tag or qcbuild bump.
+
+**Verified:** Standard isolated NoDeploy build: server/menu0 warnings; the same
+baseline two untouched CSQC setproperty227 warnings, zero new. Old populated
+P1054 control fetched12 but did not hold the last lobby action. Corrected subject
+at exact1280x720,1920x1111 and800x600:12/12 lobbies,9/9 populated WOS/Everything
+rows, Story2/4 and Event1/3, all bottom bounds fit, source clicks and last lobby
+acted.64/64 stress cells fit at800x600 as numbered-only targets; no full metadata
+claim at that density. Legacy and offline service cases keep all labels with
+unknown native values rather than invented zero. Screenshots inspected; initial
+size and decoder failures retained. Actual owner P1054 "yes it works" is recorded
+as human menu acceptance only; P1056 visual feel/real linked acceptance pending.
+Menu-only dual Windows promotion uses checked hashes/rollback copies; no server,
+API, CSQC/SSQC, config or player data is changed. See FTESurf
+`tools/p1056-home-fit.md` and the task's UTC installation receipt.
+
+## Patch 1055 - authoritative TAS movement pause and fixed-tick advance
+
+**Problem:** Explicit TAS practice and slow pacing did not provide a real paused
+movement boundary or exact single-tick advance. Client-chosen packet durations
+cannot authorize a movement grant, and shared world time must not be paused.
+
+**Change:** Optional complete native/QC field protocol admits bounded grants
+only on the independent QW Source15ms clock with valid carry and an eligible
+body. Raw command debit stays first; blocked commands do not enter per-command
+QC/movement. A fresh grant substitutes15ms, bypasses splitting and clears decoded
+provenance rather than relabelling synthetic duration. Only one actual Source
+tick acknowledges completion. Freshness, exact integral tickets and bounded
+queues prevent repeated consumption. NQ bypass immediately invalidates controls.
+QC adds pause/play/step/status, dedicated stats and per-seat prediction guards;
+validated zone placements, successful loads and ghost entry cancel live controls.
+Existing retained TAS ancestry and normal/segmented exclusion remain unchanged.
+The shader-generator banner is regenerated from a relative source path only.
+
+**Verified:** Standard isolated Windows full native build, zero new warnings
+against57unique baseline warnings; QC server/menu0, client same2old property227
+warnings. Actual-C admission167checks; reader930/0; canonical497RECs/167paired
+VIEWs retain306historical faults. The final all-VIEW sweep also checks10unpaired
+sidecars (177total), with the same fault count and stable source files. Dedicated-socket old/native controls act: static
+pause and clock/carry preservation, actual1/7ticks at three configured render/net
+pairs, duplicate/exact-million-ticket handling, recorder flush, other-player
+motion, jump/release,128drain, live NQ invalidation, actual30ms-clock refusal and
+validated direct-warp/off cancellation. A completed TAS REC reads with0faults.
+Old/new bhop_eazy native regression matches11digests; open-loop replay reproduces
+52/52stored packet poses at file precision. Both native verifiers retain HOLD
+for the same57physent-digest mismatches after another player changed the world.
+Three independent final reviews found no remaining source blocker. Retained
+fixture failures are not relabelled passes. Limits: movement driver only, not
+world snapshots/dynamic parity; no new VIEW capture, human-input or selected12
+native PASS claim. Editor/optimizer/signatures/public TAS boards remain planned.
+Follow-up uses bounded actual-step ACKs for paused packet work and caps the
+ordinary clock plus grants before float32 unit loss. All39live socket cases and
+930reader checks pass. Clean QCabc62390/native2e9260645 payloads are installed
+in BOTH Windows installs, with16post-install socket checks and predecessor
+payloads retained; owner config/menu/player data were not replaced. Portable
+Linuxx86_64 passes all10platform gates. Native AArch64 server compiles at the same
+pin and passes167actual-header checks; full ARM gameplay/parity is NOT claimed.
+Three precision-follow-up reviews are source-only. Public fleet promotion and
+owner feel remain pending, separate from compilation and Windows installation.
+See FTESurf tools/p1055-tas-step.md for controls and evidence boundaries.
+
+## Patch 1054 - tabbed Home, personal leaderboard seek and completion sources (QC/web)
+
+**Problem:** The initial menu separated lobbies/social/progress, while lobbies
+occupied map-list space. Finding one's imported/native record required scrolling;
+large first replies added loading/decoding work. Completion combined native and
+imported finishes without an explicit WOS-only view.
+
+**Change:** Home presents the lobby grid, native WOS figures, per-tier completion
+and official own Story/Event progress, alongside existing Friends and public/DM
+chat. Persistent tabs give Maps its own space. Only an explicit unlinked response
+shows the Steam-link call to action. Both board interfaces seek the current
+public identity within the selected map/build/leg/source/style/name filters and
+retain absolute paging offsets; no match does not widen filters. First pages and
+prefetches are bounded to40 rather than100 rows. Profile completion offers
+WOS/Everything in-game and on the website, including source-aware tier lists and
+identical known enabled map populations. No native/API/evidence-format change;
+engine commit/tag pins and qcbuild remain unchanged.
+
+**Verified:** Isolated standard pwsh7 NoDeploy build: server/menu0 warnings, CSQC
+only its two existing untouched setproperty227 warnings (no new warnings).
+Synthetic completion/seek controls pass: imported-only/native/both/stage cases,
+game/web equality, surf/bhop split, unchanged denominator, source-specific tier
+lists, invalid source, linked8/public12-hex identity, a record at rank1206,
+wrong name/source/style/leg exclusions, global displayed rank versus filtered
+position, and absolute paging after seeking. Existing completion-pool46/0,
+board all-pass and web0-failed; JS/Python syntax and diff checks pass. Limits:
+first-page work is reduced, but no actual-client frame-time claim. The initial
+busy window cleared without interrupting owner/peer processes. Isolated offline
+old-Home -> Maps control and new Home -> Maps -> Settings -> Home subject then
+passed;1920x1111 screenshots inspected (not the initially requested1280x720).
+This falsified a missing Maps screen switch/preparation-order bug; fixed before
+final qualification. Real populated UI, Steam/friends/chat, completion UI and
+owner feel remain pending in lextest.md. Optional
+headless-browser launcher produced no DOM/screenshot/request and is NOT a pass.
+Not deployed: live backend promotion requires coordination with its existing
+owner-guarded cohort; no maintenance/ownership checks were bypassed. See public
+FTESurf tools/p1054-home-leaderboard.md for source and delivery limits.
+
+## Patch 1052 - explicit local TAS practice and retained ancestry (QuakeC, tools, surfd)
+
+Problem: slow practice and rewind exist, but TAS use has no explicit retained label or
+staged editor/contributor contract. Older position-only save transformations cannot
+silently drop assisted ancestry and then call the result human or ordinary segmented.
+
+Change: tas on/off/status/speed reuses per-player P954 pacing and guards. TF_TAS bit22
+retains the local practice/cheat envelope through saves, rewind, demotion, retry and
+native observe/join. Replay/view placement can raise restrictions without asserting
+trusted capture. Old TAS gift/mirror transfers are refused/omitted until ancestry can
+be preserved; protected/incomplete lists retain data. Reader validates the envelope;
+backend independently excludes TAS from human/segmented admission and certification.
+Labels identify TAS; tools/plan-tas.md stages tick advance, timeline re-simulation,
+optimization, signed contribution history and a separate verifier/board.
+
+Verified: isolated clean-base/subject build, no new warnings (same two existing client
+property warnings); reader 930 checks zero failed; board suite zero failures; canonical
+497 recordings/167 sidecars: same 306 existing faults, no increase or mutation. Real
+client/dedicated-server controls exercised clean/TAS saves, speed/refusal/off, clean-load
+inheritance, native observe/join, run_class 0, fresh reconnect/load. Acting running and
+recording TAS survived rewind and exact retry; completed local cheat.rec retained the
+TAS envelope and passed the recording reader. Two-client clean/running-TAS/armed-TAS
+watched-snapshot acceptance: 9 checks passed with actual server-side save flags.
+Independent review found additional save writers/masks/target ancestry before promotion.
+Limits: no stepping/editor/optimizer/signatures/public TAS board yet; no new native
+semantics, engine commit/tag pin or qcbuild. Manual feel/labels pending owner check.
+Detailed implementation/promotion: tools/p1052-tas.md in QC.
+
+## Patch 1053 — complete interrupted initial receipt observations
+
+**Problem:** An initial receipt read could store an independent fault while a
+signed sibling read failed. Its later automatic journal-only retry never
+completed the unmeasured angle/recording observation; only an explicit full
+reread could repair that gap.
+
+**Change:** Capture only those new interrupted initial observations as
+known-signature full retries on the existing bounded durable queue. Distinguish
+their scheduling marker from existing operator-partial reads. Completion keeps
+the first fault/reason, observation/signing time, signature, identity and key
+sightings; only measured content/readiness advances. A deferred BLIND placeholder
+is not an angle measurement. Repeated I/O retains history and queue rotation;
+a new explicit reread retires only automatic completion authority and keeps
+published reevaluation semantics. Existing mode-1 operator reads remain in flight.
+Completed receipts, replacement
+sources and historical unknowns gain no automatic full-reread permission. No
+schema, native/recorder/reader format, threshold, ranking or collection change.
+
+**Verified:** Final signed real-reader fixture: 96 checks/0 failures; the SAME
+fixture on published control fails 30 checks, with all 11 initial-fault controls
+acting. A repaired-recording explicit-reread discriminator passes published base,
+fails the first candidate twice, and passes the corrected candidate.
+Late HID/view/recording, identity, metrics and sweep suites pass. Angle-reason
+suite retains exactly its one published-baseline epoch diagnostic failure; the
+initial-partial expectation alone changes with the feature. Reader 924/0; same
+497-record/167-view current corpus hashes, 305 faults in both control and subject
+(no increase). Standard isolated NoDeploy build: all three VMs/0 warnings.
+Three independent read-only flow/history/adversarial reviews found no issues on
+the corrected clean commit after the explicit-reread regression was fixed and
+retested. Deployment remains separate: no live runtime or native writer/compiler
+audit changed during qualification. No historical backfill, completed-source
+replacement or global hard-budget guarantee is implied.
+
 ## Patch 1051 - goto_start goes to the start of the track you are on (csprogs, qwprogs)
 
 Problem: players report goto_start "just does reset and doesn't go to stage 1". Patch 848 sent it to `!m`

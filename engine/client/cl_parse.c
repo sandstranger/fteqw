@@ -547,6 +547,9 @@ int CL_IsDownloading(const char *localname)
 
 //note: this will overwrite existing files.
 //returns true if the download is going to be downloaded after the call.
+#ifdef CSQC_DAT
+qboolean QC_DataPath(const char *name);	//ftesurf (P1102), pr_bgcmd.c
+#endif
 qboolean CL_EnqueDownload(const char *filename, const char *localname, unsigned int flags)
 {
 	extern cvar_t cl_downloads;
@@ -572,7 +575,11 @@ qboolean CL_EnqueDownload(const char *filename, const char *localname, unsigned 
 			return false;
 	}
 	COM_FileExtension(localname, ext, sizeof(ext));
-	if (!stricmp(ext, "dll") || !stricmp(ext, "so") || strchr(localname, '\\') || strchr(localname, ':') || strstr(localname, ".."))
+	if (!stricmp(ext, "dll") || !stricmp(ext, "so") || strchr(localname, '\\') || strchr(localname, ':') || strstr(localname, "..")
+#ifdef CSQC_DAT
+	    || QC_DataPath(localname)	//ftesurf (P1099, P1102): nothing downloaded goes in data/
+#endif
+	    )
 	{
 		CL_DownloadFailed(filename, NULL, DLFAIL_UNTRIED);
 		Con_Printf("Denying download of \"%s\"\n", filename);

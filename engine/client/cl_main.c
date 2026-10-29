@@ -515,10 +515,23 @@ void CL_MakeActive(char *gamename)
 	if (sv_demoAutoRecord.ival && !sv.mvdrecording && !cls.demorecording && !cls.demoplayback && MVD_CheckSpace(false))
 	{	//don't auto-record if we're already recording... or playing a different demo.
 		extern cvar_t sv_demoAutoPrefix;
-		char timestamp[64];
+		char timestamp[64], dir[MAX_QPATH], file[MAX_QPATH], *c;
 		time_t tm = time(NULL);
 		strftime(timestamp, sizeof(timestamp), "%Y%m%d_%H%M%S", localtime(&tm));
-		Cbuf_AddText(va("record %s%s%s%s_%s\n", sv_demoDir.string, *sv_demoDir.string?"/":"", sv_demoAutoPrefix.string, host_mapname.string, timestamp), RESTRICT_LOCAL);
+		/*Patch 1086: a server can set all three strings (stufftext cvars, its map name) and
+		  this line runs at local level, so a ';' or newline in them was a local command.
+		  Name characters only (no '.', so no ".."); '/' only in sv_demoDir, never leading.*/
+		Q_strncpyz(dir, sv_demoDir.string, sizeof(dir));
+		Q_snprintfz(file, sizeof(file), "%s%s_%s", sv_demoAutoPrefix.string, host_mapname.string, timestamp);
+		for (c = dir; *c; c++)
+			if (!isalnum((unsigned char)*c) && *c != '_' && *c != '-' && *c != '/')
+				*c = '_';
+		for (c = file; *c; c++)
+			if (!isalnum((unsigned char)*c) && *c != '_' && *c != '-')
+				*c = '_';
+		for (c = dir; *c == '/'; c++)
+			;
+		Cbuf_AddText(va("record %s%s%s\n", c, *c?"/":"", file), RESTRICT_LOCAL);
 	}
 #endif
 
@@ -3925,10 +3938,21 @@ CL_NextDemo
 Called to play the next demo in the demo loop
 =====================
 */
+/*Patch 1086: the playdemo line runs at local level and cl_autodemos is any cvar a server
+  or CSQC can create, so a name is only file characters -- never a quote, ';' or newline.*/
+static qboolean CL_DemoLoopName(const char *s)
+{
+	for (; *s; s++)
+		if (!isalnum((unsigned char)*s) && !strchr("_-./", *s))
+			return false;
+	return true;
+}
+
 void CL_NextDemo (void)
 {
 	cvar_t *cl_autodemos;
 	char	str[1024];
+	const char *name;
 
 	if (cls.demonum < 0)
 		return;		// don't play demos
@@ -3945,10 +3969,17 @@ void CL_NextDemo (void)
 		if (cls.demonum >= Cmd_Argc())
 			cls.demonum = 0;	//restart the loop
 
-		if (!strcmp(Cmd_Argv(cls.demonum), "quit"))
+		name = Cmd_Argv(cls.demonum);
+		if (!strcmp(name, "quit"))
 			Q_snprintfz (str, sizeof(str), "quit\n");
+		else if (CL_DemoLoopName(name))
+			Q_snprintfz (str, sizeof(str), "playdemo \"demos/%s\"\n", name);
 		else
-			Q_snprintfz (str, sizeof(str), "playdemo \"demos/%s\"\n", Cmd_Argv(cls.demonum));
+		{
+			Con_Printf ("demo loop stopped: cl_autodemos names a file with unsafe characters\n");
+			cls.demonum = -1;
+			return;
+		}
 	}
 	else
 	{
@@ -3965,8 +3996,14 @@ void CL_NextDemo (void)
 
 		if (!strcmp(cls.demos[cls.demonum], "quit"))
 			Q_snprintfz (str, sizeof(str), "quit\n");
-		else
+		else if (CL_DemoLoopName(cls.demos[cls.demonum]))
 			Q_snprintfz (str, sizeof(str), "playdemo %s\n", cls.demos[cls.demonum]);
+		else
+		{
+			Con_Printf ("demo loop stopped: startdemos named a file with unsafe characters\n");
+			cls.demonum = -1;
+			return;
+		}
 	}
 	Cbuf_InsertText (str, RESTRICT_LOCAL, false);
 	cls.demonum++;
@@ -3993,6 +4030,11 @@ void CL_Startdemos_f (void)
 {
 	int		i, c;
 
+	if (Cmd_IsInsecure())	//Patch 1086: the loop's playdemo lines run at local level
+	{
+		Con_Printf ("%s: local console only\n", Cmd_Argv(0));
+		return;
+	}
 	c = Cmd_Argc() - 1;
 	if (c > MAX_DEMOS)
 	{
@@ -4021,6 +4063,11 @@ Return to looping demos
 void CL_Demos_f (void)
 {
 	const char *mode = Cmd_Argv(1);
+	if (Cmd_IsInsecure())	//Patch 1086: as startdemos
+	{
+		Con_Printf ("%s: local console only\n", Cmd_Argv(0));
+		return;
+	}
 	if (!strcmp(mode, "idle"))
 	{	//'demos idle' only plays the demos when we're idle.
 		//this can be used for menu backgrounds (engine and menuqc).

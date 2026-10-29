@@ -1215,6 +1215,16 @@ void SV_SaveLevelCache(const char *savedir, qboolean dontharmgame)
 	FS_FlushFSHashWritten(name);
 }
 
+/*Patch 1086: a server or CSQC can set these cvars, so a newline or quote in a value split the
+  line.  Quoted with escapes, and capped so the escaped line fits VFS_PRINTF's 2048-byte buffer
+  (2*900+4 plus the name); SV_LoadgameCvarLine parses it back without executing it.*/
+static const char *SV_SaveVarValue(const char *v, char *buf, size_t bufsize)
+{
+	if (strlen(v) > 900)
+		v = "";
+	return COM_QuotedString(v, buf, bufsize, false);
+}
+
 //mapchange is true for Q2's map-change autosaves.
 void SV_Savegame (const char *savename, qboolean mapchange)
 {
@@ -1225,6 +1235,7 @@ void SV_Savegame (const char *savename, qboolean mapchange)
 	int len;
 	levelcache_t *cache;
 	char *savefilename;
+	char qv[1024*2+4];
 
 	if (!sv.state || sv.state == ss_clustermode)
 	{
@@ -1331,27 +1342,27 @@ void SV_Savegame (const char *savename, qboolean mapchange)
 	InfoBuf_WriteToFile(f, &svs.localinfo, NULL, 0);
 
 	VFS_PRINTF (f, "\n{\n");	//all game vars. FIXME: Should save the ones that have been retrieved/set by progs.
-	VFS_PRINTF (f, "skill			\"%s\"\n",	skill.string);
-	VFS_PRINTF (f, "deathmatch		\"%s\"\n",	deathmatch.string);
-	VFS_PRINTF (f, "coop			\"%s\"\n",	coop.string);
-	VFS_PRINTF (f, "teamplay		\"%s\"\n",	teamplay.string);
+	VFS_PRINTF (f, "skill			%s\n",	 SV_SaveVarValue(skill.string, qv, sizeof(qv)));
+	VFS_PRINTF (f, "deathmatch		%s\n",	 SV_SaveVarValue(deathmatch.string, qv, sizeof(qv)));
+	VFS_PRINTF (f, "coop			%s\n",	 SV_SaveVarValue(coop.string, qv, sizeof(qv)));
+	VFS_PRINTF (f, "teamplay		%s\n",	 SV_SaveVarValue(teamplay.string, qv, sizeof(qv)));
 
-	VFS_PRINTF (f, "nomonsters		\"%s\"\n",	nomonsters.string);
-	VFS_PRINTF (f, "gamecfg\t		\"%s\"\n",	gamecfg.string);
-	VFS_PRINTF (f, "scratch1		\"%s\"\n",	scratch1.string);
-	VFS_PRINTF (f, "scratch2		\"%s\"\n",	scratch2.string);
-	VFS_PRINTF (f, "scratch3		\"%s\"\n",	scratch3.string);
-	VFS_PRINTF (f, "scratch4		\"%s\"\n",	scratch4.string);
-	VFS_PRINTF (f, "savedgamecfg\t	\"%s\"\n",	savedgamecfg.string);
-	VFS_PRINTF (f, "saved1			\"%s\"\n",	saved1.string);
-	VFS_PRINTF (f, "saved2			\"%s\"\n",	saved2.string);
-	VFS_PRINTF (f, "saved3			\"%s\"\n",	saved3.string);
-	VFS_PRINTF (f, "saved4			\"%s\"\n",	saved4.string);
-	VFS_PRINTF (f, "temp1			\"%s\"\n",	temp1.string);
-	VFS_PRINTF (f, "noexit			\"%s\"\n",	noexit.string);
-	VFS_PRINTF (f, "pr_maxedicts\t	\"%s\"\n",	pr_maxedicts.string);
-	VFS_PRINTF (f, "progs			\"%s\"\n",	pr_ssqc_progs.string);
-	VFS_PRINTF (f, "set nextserver		\"%s\"\n",	Cvar_Get("nextserver", "", 0, "")->string);
+	VFS_PRINTF (f, "nomonsters		%s\n",	 SV_SaveVarValue(nomonsters.string, qv, sizeof(qv)));
+	VFS_PRINTF (f, "gamecfg\t		%s\n",	 SV_SaveVarValue(gamecfg.string, qv, sizeof(qv)));
+	VFS_PRINTF (f, "scratch1		%s\n",	 SV_SaveVarValue(scratch1.string, qv, sizeof(qv)));
+	VFS_PRINTF (f, "scratch2		%s\n",	 SV_SaveVarValue(scratch2.string, qv, sizeof(qv)));
+	VFS_PRINTF (f, "scratch3		%s\n",	 SV_SaveVarValue(scratch3.string, qv, sizeof(qv)));
+	VFS_PRINTF (f, "scratch4		%s\n",	 SV_SaveVarValue(scratch4.string, qv, sizeof(qv)));
+	VFS_PRINTF (f, "savedgamecfg\t	%s\n",	 SV_SaveVarValue(savedgamecfg.string, qv, sizeof(qv)));
+	VFS_PRINTF (f, "saved1			%s\n",	 SV_SaveVarValue(saved1.string, qv, sizeof(qv)));
+	VFS_PRINTF (f, "saved2			%s\n",	 SV_SaveVarValue(saved2.string, qv, sizeof(qv)));
+	VFS_PRINTF (f, "saved3			%s\n",	 SV_SaveVarValue(saved3.string, qv, sizeof(qv)));
+	VFS_PRINTF (f, "saved4			%s\n",	 SV_SaveVarValue(saved4.string, qv, sizeof(qv)));
+	VFS_PRINTF (f, "temp1			%s\n",	 SV_SaveVarValue(temp1.string, qv, sizeof(qv)));
+	VFS_PRINTF (f, "noexit			%s\n",	 SV_SaveVarValue(noexit.string, qv, sizeof(qv)));
+	VFS_PRINTF (f, "pr_maxedicts\t	%s\n",	 SV_SaveVarValue(pr_maxedicts.string, qv, sizeof(qv)));
+	VFS_PRINTF (f, "progs			%s\n",	 SV_SaveVarValue(pr_ssqc_progs.string, qv, sizeof(qv)));
+	VFS_PRINTF (f, "set nextserver		%s\n",	 SV_SaveVarValue(Cvar_Get("nextserver", "", 0, "")->string, qv, sizeof(qv)));
 	VFS_PRINTF (f, "}\n");
 
 	SV_SaveLevelCache(savename, true);	//add the current level.
@@ -2074,6 +2085,44 @@ static qboolean SV_Loadgame_Legacy(const char *savename, const char *filename, v
 }
 #endif
 
+/*Patch 1086: the cvar block is SV_Savegame's fixed list, but its values are whatever a server
+  or CSQC set.  Each line used to run through Cmd_ExecuteString at RESTRICT_RCON, with $ macro
+  expansion; now it is parsed without expansion and only a listed cvar is set.*/
+static void SV_LoadgameCvarLine(const char *line)
+{
+	static const char *names[] = {"skill", "deathmatch", "coop", "teamplay", "nomonsters", "gamecfg",
+		"scratch1", "scratch2", "scratch3", "scratch4", "savedgamecfg", "saved1", "saved2", "saved3",
+		"saved4", "temp1", "noexit", "pr_maxedicts", "progs", NULL};
+	cvar_t *var;
+	int i;
+
+	Cmd_TokenizeString(line, false, false);
+	if (Cmd_Argc() == 3 && !strcmp(Cmd_Argv(0), "set") && !strcmp(Cmd_Argv(1), "nextserver"))
+	{
+		Cvar_Set(Cvar_Get("nextserver", "", 0, ""), Cmd_Argv(2));
+		return;
+	}
+	for (i = 0; names[i] && Q_strcasecmp(names[i], Cmd_Argv(0)); i++)
+		;
+	if (Cmd_Argc() != 2 || !names[i] || !(var = Cvar_FindVar(names[i])))
+	{
+		Con_DPrintf("loadgame: skipped a line of the cvar block\n");
+		return;
+	}
+	Cvar_Set(var, Cmd_Argv(1));
+}
+
+/*Patch 1086: a line that fills the buffer was split by VFS_GETS and its tail read as the next
+  line -- with a server-set serverinfo value over 32k (skill, sv_progs...) that could stand in
+  for the {} block or the level list.  No line the writer emits comes near it: refuse the save.*/
+static char *SV_LoadGets(vfsfile_t *f, char *buf, size_t size)
+{
+	char *r = VFS_GETS(f, buf, size-1);
+	if (r && strlen(buf) >= size-2)
+		SV_Error("Corrupt saved game: overlong line\n");
+	return r;
+}
+
 //Attempts to load a named saved game.
 qboolean SV_Loadgame (const char *unsafe_savename)
 {
@@ -2159,7 +2208,7 @@ qboolean SV_Loadgame (const char *unsafe_savename)
 	MP_Toggle(0);
 #endif
 
-	VFS_GETS(f, str, sizeof(str)-1);
+	SV_LoadGets(f, str, sizeof(str));
 	version = atoi(str);
 	if (version < SAVEGAME_VERSION_FTE_HUB || version >= SAVEGAME_VERSION_FTE_HUB+GT_MAX)
 	{
@@ -2173,7 +2222,7 @@ qboolean SV_Loadgame (const char *unsafe_savename)
 	}
 
 	gametype = version - SAVEGAME_VERSION_FTE_HUB;
-	VFS_GETS(f, str, sizeof(str)-1);
+	SV_LoadGets(f, str, sizeof(str));
 #ifndef SERVERONLY
 	if (!cls.state)
 #endif
@@ -2181,7 +2230,7 @@ qboolean SV_Loadgame (const char *unsafe_savename)
 
 
 
-	VFS_GETS(f, str, sizeof(str)-1);
+	SV_LoadGets(f, str, sizeof(str));
 	slots = atoi(str);
 
 	if (slots < 1 || slots > countof(lp))
@@ -2193,7 +2242,7 @@ qboolean SV_Loadgame (const char *unsafe_savename)
 
 	for (cl = svs.clients, clnum=0; clnum < slots; cl++,clnum++)
 	{
-		VFS_GETS(f, str, sizeof(str)-1);
+		SV_LoadGets(f, str, sizeof(str));
 		str[sizeof(cl->namebuf)-1] = '\0';
 		for (trim = str+strlen(str)-1; trim>=str && *trim <= ' '; trim--)
 			*trim='\0';
@@ -2205,10 +2254,10 @@ qboolean SV_Loadgame (const char *unsafe_savename)
 
 		if (*str)
 		{
-			VFS_GETS(f, str, sizeof(str)-1);
+			SV_LoadGets(f, str, sizeof(str));
 			if (*str == '{')
 			{
-				while(VFS_GETS(f, str, sizeof(str)-1))
+				while(SV_LoadGets(f, str, sizeof(str)))
 				{
 					if (*str == '}')
 						break;
@@ -2247,7 +2296,7 @@ qboolean SV_Loadgame (const char *unsafe_savename)
 	SV_LoadPlayers(lp, slots);
 
 
-	VFS_GETS(f, str, sizeof(str)-1);
+	SV_LoadGets(f, str, sizeof(str));
 	for (trim = str+strlen(str)-1; trim>=str && *trim <= ' '; trim--)
 		*trim='\0';
 	for (trim = str; *trim <= ' ' && *trim; trim++)
@@ -2256,7 +2305,7 @@ qboolean SV_Loadgame (const char *unsafe_savename)
 	InfoBuf_Clear(&svs.info, false);
 	InfoBuf_FromString(&svs.info, str, true);
 
-	VFS_GETS(f, str, sizeof(str)-1);
+	SV_LoadGets(f, str, sizeof(str));
 	for (trim = str+strlen(str)-1; trim>=str && *trim <= ' '; trim--)
 		*trim='\0';
 	for (trim = str; *trim <= ' ' && *trim; trim++)
@@ -2265,7 +2314,7 @@ qboolean SV_Loadgame (const char *unsafe_savename)
 	InfoBuf_Clear(&svs.localinfo, false);
 	InfoBuf_FromString(&svs.localinfo, str, true);
 
-	VFS_GETS(f, str, sizeof(str)-1);
+	SV_LoadGets(f, str, sizeof(str));
 	for (trim = str+strlen(str)-1; trim>=str && *trim <= ' '; trim--)
 		*trim='\0';
 	for (trim = str; *trim <= ' ' && *trim; trim++)
@@ -2274,7 +2323,7 @@ qboolean SV_Loadgame (const char *unsafe_savename)
 		SV_Error("Corrupt saved game\n");
 	while(1)
 	{
-		if (!VFS_GETS(f, str, sizeof(str)-1))
+		if (!SV_LoadGets(f, str, sizeof(str)))
 			SV_Error("Corrupt saved game\n");
 		for (trim = str+strlen(str)-1; trim>=str && *trim <= ' '; trim--)
 			*trim='\0';
@@ -2283,12 +2332,12 @@ qboolean SV_Loadgame (const char *unsafe_savename)
 		if (!strcmp(str, "}"))
 			break;
 		else if (*str)
-			Cmd_ExecuteString(str, RESTRICT_RCON);
+			SV_LoadgameCvarLine(str);
 	}
 
 	SV_FlushLevelCache();
 
-	VFS_GETS(f, str, sizeof(str)-1);
+	SV_LoadGets(f, str, sizeof(str));
 	for (trim = str+strlen(str)-1; trim>=str && *trim <= ' '; trim--)
 		*trim='\0';
 	for (trim = str; *trim <= ' ' && *trim; trim++)
@@ -2297,7 +2346,7 @@ qboolean SV_Loadgame (const char *unsafe_savename)
 		SV_Error("Corrupt saved game\n");
 	while(1)
 	{
-		if (!VFS_GETS(f, str, sizeof(str)-1))
+		if (!SV_LoadGets(f, str, sizeof(str)))
 			SV_Error("Corrupt saved game\n");
 		for (trim = str+strlen(str)-1; trim>=str && *trim <= ' '; trim--)
 			*trim='\0';
@@ -2321,14 +2370,14 @@ qboolean SV_Loadgame (const char *unsafe_savename)
 		svs.levcache = cache;
 	}
 
-	VFS_GETS(f, str, sizeof(str)-1);
+	SV_LoadGets(f, str, sizeof(str));
 	for (trim = str+strlen(str)-1; trim>=str && *trim <= ' '; trim--)
 		*trim='\0';
 	for (trim = str; *trim <= ' ' && *trim; trim++)
 		;
 
 	//serverflags is reset on restart, so we need to read the value as it was at the start of the current map.
-	VFS_GETS(f, filename, sizeof(filename)-1);
+	SV_LoadGets(f, filename, sizeof(filename));
 	svs.serverflags = atof(filename);
 
 	VFS_CLOSE(f);
@@ -2360,6 +2409,13 @@ qboolean SV_Loadgame (const char *unsafe_savename)
 
 void SV_Loadgame_f (void)
 {
+	/*Patch 1086: a save's {} block runs at RESTRICT_RCON, above every insecure source,
+	  and CSQC can write a file under data/ for it to name.*/
+	if (Cmd_IsInsecure())
+	{
+		Con_Printf("%s: local console only\n", Cmd_Argv(0));
+		return;
+	}
 #ifdef HAVE_CLIENT
 	if (!Renderer_Started() && !isDedicated)
 	{
