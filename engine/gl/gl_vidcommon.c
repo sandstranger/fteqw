@@ -2363,14 +2363,14 @@ static GLuint GLSlang_CreateShader (program_t *prog, const char *name, int ver, 
 				if (ver <= 110)		//gles2 is rougly gl2 so 100(es)==110ish
 					ver = 100;
 				else if (ver <= 330)	//gles3 is rougly gl3.3 so 300es==330ish
-					ver = 300;
+					ver = 320;
 			}
 			else
 			{
 				if (ver == 100)
 					ver = 110;	//gles2 is roughly equivelent to gl2
 				else if (ver >= 300 && ver < 330)
-					ver = 330;	//gles3 is roughly equivelent to gl3.3
+					ver = 320;	//gles3 is roughly equivelent to gl3.3
 			}
 
 			if (gl_config_gles && ver != 100)
@@ -2455,13 +2455,7 @@ static GLuint GLSlang_CreateShader (program_t *prog, const char *name, int ver, 
 								"#if __VERSION__ < 300\n"
 									"#extension GL_EXT_shadow_samplers : require\n"
 								"#endif\n"
-								//lowp/mediump shadow samplers let some drivers (adreno) compare against an fp16 depth reference,
-								//whose ~1/2048 steps outgrow the shadowmap bias ~120qu from a dlight: self-shadowing acne that flickers.
-								"#ifdef GL_FRAGMENT_PRECISION_HIGH\n"
-									"precision highp sampler2DShadow;\n"
-								"#else\n"
-									"precision lowp sampler2DShadow;\n"	//gah
-								"#endif\n"
+								"precision highp sampler2DShadow;\n"	//gah
 							"#endif\n"
 				#endif
 				"uniform sampler2DShadow s_shadowmap;\n",
@@ -2949,7 +2943,7 @@ qboolean GLSlang_CreateProgramPermu(program_t *prog, struct programpermu_s *perm
 		else
 			ver = 110;
 #else
-        ver = useGLes2_0Version() ? 100 : 300;
+        ver = useGLes2_0Version() ? 100 : 320;
 #endif
 	}
 	if ((permu->permutation & PERMUTATION_SKELETAL) && gl_config.maxattribs < 10)
@@ -3579,7 +3573,7 @@ qboolean GL_Init(rendererstate_t *info, void *(*getglfunction) (char *name))
 #ifndef ANDROID
     gl_version =  qglGetString (GL_VERSION);
 #else
-    gl_version = useGLes2_0Version() ? "OpenGL ES 2.0" : "OpenGL ES 3.0";
+    gl_version = useGLes2_0Version() ? "OpenGL ES 2.0" : "OpenGL ES 3.2";
 #endif
 	Con_SafePrintf ("GL_VERSION: %s\n", gl_version);
 
@@ -3729,9 +3723,9 @@ qboolean GL_Init(rendererstate_t *info, void *(*getglfunction) (char *name))
 	{
 		sh_config.minver = 100;
 		if (gl_config.glversion >= 3.1)
-			sh_config.maxver = 310;
+			sh_config.maxver = 320;
 		else if (gl_config.glversion >= 3.0)
-			sh_config.maxver = 300;
+			sh_config.maxver = 320;
 		else
 			sh_config.maxver = 100;
 		sh_config.blobpath = "gles/%s.blob";

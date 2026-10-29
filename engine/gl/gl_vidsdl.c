@@ -484,9 +484,9 @@ static qboolean SDLVID_Init (rendererstate_t *info, unsigned char *palette, r_qr
             extern bool useGLes2_0Version();
             const bool useLegacyOpenGLES2_0 = useGLes2_0Version();
             SDL_Log(useLegacyOpenGLES2_0 ? "Legacy OpenGL ES 2.0 is using for rendering" :
-                    "OpenGL ES 3.0 is using for rendering");
+                    "OpenGL ES 3.2 is using for rendering");
             SDL_GL_SetAttribute(SDL_GL_CONTEXT_MAJOR_VERSION, useLegacyOpenGLES2_0 ? 2 : 3);
-            SDL_GL_SetAttribute(SDL_GL_CONTEXT_MINOR_VERSION,  0);
+            SDL_GL_SetAttribute(SDL_GL_CONTEXT_MINOR_VERSION, useLegacyOpenGLES2_0 ? 0 : 2);
             vid_isfullscreen = true;
             info->fullscreen = true;
 #endif
