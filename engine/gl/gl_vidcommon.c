@@ -2362,15 +2362,15 @@ static GLuint GLSlang_CreateShader (program_t *prog, const char *name, int ver, 
 			{
 				if (ver <= 110)		//gles2 is rougly gl2 so 100(es)==110ish
 					ver = 100;
-				else if (ver <= 330)	//gles3 is rougly gl3.3 so 300es==330ish
-					ver = 320;
+				else if (ver <= 330)	//gles3 is rougly gl3.3 so 300es==330ish. use the newest glsl es the context really has (320 on gles3.2) so shaders can use gles3.1/3.2 features.
+					ver = gl_config.maxglslversion;
 			}
 			else
 			{
 				if (ver == 100)
 					ver = 110;	//gles2 is roughly equivelent to gl2
 				else if (ver >= 300 && ver < 330)
-					ver = 320;	//gles3 is roughly equivelent to gl3.3
+					ver = 330;	//gles3 is roughly equivelent to gl3.3
 			}
 
 			if (gl_config_gles && ver != 100)
@@ -2943,7 +2943,7 @@ qboolean GLSlang_CreateProgramPermu(program_t *prog, struct programpermu_s *perm
 		else
 			ver = 110;
 #else
-        ver = useGLes2_0Version() ? 100 : 320;
+        ver = useGLes2_0Version() ? 100 : gl_config.maxglslversion;
 #endif
 	}
 	if ((permu->permutation & PERMUTATION_SKELETAL) && gl_config.maxattribs < 10)
@@ -3573,7 +3573,9 @@ qboolean GL_Init(rendererstate_t *info, void *(*getglfunction) (char *name))
 #ifndef ANDROID
     gl_version =  qglGetString (GL_VERSION);
 #else
-    gl_version = useGLes2_0Version() ? "OpenGL ES 2.0" : "OpenGL ES 3.2";
+    //legacy mode pins gles2 whatever the driver hands out. gles3 mode must report the real context version:
+    //glsl is picked from it, and asking for more than the context has silently drops every shader (black screen).
+    gl_version = useGLes2_0Version() ? "OpenGL ES 2.0" : (const char *)qglGetString (GL_VERSION);
 #endif
 	Con_SafePrintf ("GL_VERSION: %s\n", gl_version);
 
@@ -3722,10 +3724,12 @@ qboolean GL_Init(rendererstate_t *info, void *(*getglfunction) (char *name))
 	if (gl_config.gles)
 	{
 		sh_config.minver = 100;
-		if (gl_config.glversion >= 3.1)
+		if (gl_config.glversion >= 3.2)
 			sh_config.maxver = 320;
+		else if (gl_config.glversion >= 3.1)
+			sh_config.maxver = 310;
 		else if (gl_config.glversion >= 3.0)
-			sh_config.maxver = 320;
+			sh_config.maxver = 300;
 		else
 			sh_config.maxver = 100;
 		sh_config.blobpath = "gles/%s.blob";

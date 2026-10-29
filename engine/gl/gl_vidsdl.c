@@ -684,6 +684,19 @@ static qboolean SDLVID_Init (rendererstate_t *info, unsigned char *palette, r_qr
 			info->vr = NULL;
 
 		sdlcontext = SDL_GL_CreateContext(sdlwindow);
+#if ANDROID
+		if (!sdlcontext)
+		{	//gles3.2 is missing on older gpus and some angle backends. drivers hand out their newest compatible version
+			//for a 3.0 request, and GL_Init reads the real version back to pick the glsl it can use.
+			extern bool useGLes2_0Version();
+			if (!useGLes2_0Version())
+			{
+				Con_Printf("Couldn't create an OpenGL ES 3.2 context (%s), trying OpenGL ES 3.0\n", SDL_GetError());
+				SDL_GL_SetAttribute(SDL_GL_CONTEXT_MINOR_VERSION, 0);
+				sdlcontext = SDL_GL_CreateContext(sdlwindow);
+			}
+		}
+#endif
 		if (!sdlcontext)
 		{
 			SDL_GL_SetAttribute(SDL_GL_CONTEXT_MAJOR_VERSION, 1);
