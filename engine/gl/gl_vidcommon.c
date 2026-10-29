@@ -2455,7 +2455,11 @@ static GLuint GLSlang_CreateShader (program_t *prog, const char *name, int ver, 
 								"#if __VERSION__ < 300\n"
 									"#extension GL_EXT_shadow_samplers : require\n"
 								"#endif\n"
-								"precision highp sampler2DShadow;\n"	//gah
+								"#ifdef GL_FRAGMENT_PRECISION_HIGH\n"
+									"precision highp sampler2DShadow;\n"
+								"#else\n"
+									"precision mediump sampler2DShadow;\n"	//gah
+								"#endif\n"
 							"#endif\n"
 				#endif
 				"uniform sampler2DShadow s_shadowmap;\n",
