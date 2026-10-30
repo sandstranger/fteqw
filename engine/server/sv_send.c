@@ -3187,15 +3187,17 @@ void SV_UpdateToReliableMessages (void)
                     host_client->old_frags = curfrags;
                 }
 
-                {
-                    if (host_client->entgravity != curgrav) {
-                        if (ISQWCLIENT(host_client)) {
-                            sp = SV_SplitClientDest(host_client, svc_entgravity, 5);
-                            ClientReliableWrite_Float(sp, curgrav /
-                                                          movevars.gravity);    //lie to the client in a cunning way
-                        }
-                        host_client->entgravity = curgrav;
-                    }
+			{
+				if (host_client->entgravity != curgrav)
+				{
+					if (ISQWCLIENT(host_client))
+					{
+						sp = SV_SplitClientDest(host_client, svc_entgravity, 5);
+						ClientReliableWrite_Float(sp, curgrav/movevars.gravity);	//lie to the client in a cunning way
+					}
+					host_client->entgravity = curgrav;
+				}
+				SV_BankGravitySelect(host_client);
 
                     if (host_client->maxspeed !=
                         curspeed) {    //MSVC can really suck at times (optimiser bug)

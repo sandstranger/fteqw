@@ -1,5 +1,572 @@
 # Engine patches (fteqw `fteqw64.exe`)
 
+## Patch 1134 — bounded native legal-start TAS verification CLI
+
+**Problem:** The TAS editor can replay a project, but no isolated operator path
+joins admitted legal-start inputs to a fresh native finish. Headless rendering's
+fixed 100 ms sleep also prevents normal-rate TAS replay within its wall allowance.
+
+**Change:** Add opt-in bounded headless pacing (default still 100 ms) and native
+`-pluginrootonly`, enforcing binary-directory-only FTE plugin loads from startup.
+An operator-only aarch64 CLI freezes admitted bytes into exclusive VFS roots,
+checks effective images and joins SSQC's reader/placement binding to the closed
+recording's track/leg, consecutive mover clock and exact consumed input prefix.
+Preserve real rules, entity fixes, .ent/.edo and model collision absence pins;
+claimed states/times and unused tail are not authority. Bound native memory/files
+and both peers' output. Signals notify rather than throw into ownership cleanup.
+No movement, recording format, human admission, queue, board or Build change;
+trusted queue approval is still required for TAS promotion. See tools/tasverify.md.
+
+**Verified:** 39 Pi unit tests (Windows run has eight Linux-specific skips),
+independent receipt/ownership/plugin/asset/deadline reviews clear, and acting resource,
+cancellation, late-match/cleanup and case-alias HOLD/reap controls. Normal plugin
+lookup acts while binary-confined startup refuses the same outside plugin; native
+ACK and registered-zero/default100 pacing controls act. Fresh committed composite
+`cd7efdd93` / QC `bf21d774` preserves published P1133. Both FULL platform builds have
+zero new warnings: Windows retains 75 compiler and two QC messages; SSQC/menu zero.
+Both exact native images pass 9 P1133 +33 P1131 +58 P1129 and all older checks;
+all60 physics rows per platform exactly equal qualified predecessors. Declared
+historical QW pin2(4418/4418) and P813 pin7(9194/9192) pass both; the known boreas
+18-physent HOLD is preserved, not pin1 coverage. Fresh composite native PASS342/
+5130ms uses one real map with private fixture zones, actual new native/plugin/progs
+hashes, a 6.133 s replay under its 45 s limit and reaped peers. Earlier acting controls
+remain applicable to the unchanged CLI/loader code. Reader949 and unchanged
+527-REC/328-fault baseline are reused, not fault-free/human proof. Reservation1132
+retired before publication; one final feature1134.
+No production TAS board, canonical-zone finish, all-map/dynamic-object or unsupported
+tick-rate qualification is claimed.
+
+**Deployed:** Exact committed-source images/progs reached both Windows installs
+(22 destinations, predecessor bytes retained) and all12 lobbies on 30 Oct2026.
+Live11:48UTC readback matches all12 new native epochs, version1134, mapped HL2
+inodes and destination/.prev hashes. The activation preserves all35113 protected
+lobby paths; Windows preserves16477 protected paths. Configs/backend generation,
+stubs, unit and master are unchanged. No force, owner-process kill or repeated
+restart. A fresh isolated client downloads the exact served CSQC, draws the board
+(9cols/type14), exits cleanly and supplies an inspected screenshot. Empty board,
+missing map zones and unaccepted terms are not human/feel/ranked-run acceptance.
+Unchanged CSQC/menu bytes and existing CSQC caches are reused. Build89, tested
+native pin/tag and ordinary human boards are unchanged by this delivery record.
+
+## Patch 1133 — retain eligible airborne gravity status with jump input
+
+**Problem:** The bounded earlier-air observer refused every jump button, including
+an already airborne command whose actual jump check cannot jump or change velocity.
+The accepted displacement could still use the existing nondefault gravity input.
+
+**Change:** Remove only that redundant input exclusion. The existing dry-air entry
+requires no ground, and the actual jump check cannot jump or change velocity on
+this path. Its existing input latch updates identically for the same default
+command. Genuine grounded jumps and other unsupported contexts remain excluded.
+Keep the same accepted-movement/default-trajectory proof and existing use bit,
+source/cache admission and status; no new captured field, format, flag,
+tier, gameplay step or numerical movement change. Add acting air-refusal and
+normal grounded-jump native controls; refine the old any-button negative to the
+still-excluded genuine grounded-jump context.
+
+**Verified:** Isolated Windows and ARM64 candidate builds: zero new warnings,
+9 new native controls, 33 earlier-air controls (including the refined genuine-jump
+negative), 58 prior gravity controls and all older checks pass. Both platforms'
+60 named physics rows exactly match qualified P1131, with acting prop/wrapped-hull
+controls. The same compiled QC fixture across original, candidate and unavailable-
+API images acts in all six socket comparisons: actual input/airborne/admission
+controls pass; all raw/cache/movement/lateral outputs remain identical. Only the
+two intended held-input statuses change; default cases and unavailable-API refusal
+remain. Reader 949/0 and fixed-corpus evidence are reused without reader or recorded-
+body changes; no new sweep or fault-free-corpus claim. Fresh whole-feature reviews,
+clean committed builds and publication/promotion are separate gates. No human,
+finished/ranked-run or complete bank/consumer acceptance is claimed.
+
+**Deployed:** Two fresh independent whole-feature reviews found no issues. Clean
+native `64e0191ca` / QC `31690324`, `patch-1133`, exact frozen artifacts reached
+both Windows installs and all 12 lobbies on 30 Oct 2026. Public QC merge
+`c050bd01` additionally preserves committed release-only changes; it was not
+rebuilt or substituted for the recorded runtime source. Live 11:19:31 UTC:
+all 12 original new native/plugin epochs and versions match; destination and
+`.prev` hashes match. All 16,475 protected Windows paths and 35,095 protected
+lobby paths retain their old bytes; configs/backend files/unit/master remain
+unchanged. No force or repeat swap/restart was needed. A fresh isolated client
+downloaded the exact served CSQC and drew the empty board without QC errors;
+screenshot inspected, terms unaccepted, no human/feel/finished/ranked-run pass.
+The bank and remaining consumers stay partial/open. Engine pin/tag and Build 89
+are unchanged by this delivery-only documentation.
+
+## Patch 1131 — retain gravity-source status through earlier accepted air motion
+
+**Problem:** The late gravity half can converge to the default result after an
+existing nondefault input already changed accepted airborne displacement. The
+finish-only observer deliberately did not cover that earlier work.
+
+**Change:** Extend the existing begin/end use bit for a bounded dry, ungrounded,
+linear air path. An optional stack result identifies the first actual fully
+accepted movement trace; the default-only path must also pass its sweep,
+endpoint retest and ground/quadrant checks. Query only when the late observer has
+not already established use. Exclude discontinuities, assists and unsupported
+contexts rather than infer their result. Existing source/cache/admission checks
+and status policy remain; no new captured fields, formats, flags or tiers, no
+second gameplay step or changed movement arithmetic. This is partial consumer
+coverage, not a complete body/bank or ranked-run verification claim.
+
+**Verified:** Isolated Windows and ARM64 candidate builds: zero new warnings,
+33 new native checks plus all 58 previous gravity checks and older checks pass;
+60 normalized physics rows per platform exactly match their qualified predecessor,
+including acting prop and wrapped-hull controls. A Windows real-socket 20-arm
+counterpart reuses one compiled QC fixture across old, current and unavailable-API
+images: all measured raw/cache/movement outputs remain identical; only the two
+established earlier-use cases gain the existing status. Grounded/held/default and
+projected-tail negatives remain, and a blocked default path is conservatively
+excluded rather than claimed no-use. Reader 949/0; the fixed 527-recording and
+167-paired-view corpus retains identical bytes and diagnostics, no introduced
+faults. Independent reviews and clean publication/promotion remain separate gates;
+no human, finished/ranked-run or complete bank/consumer acceptance is claimed.
+
+**Deployed:** Reviewed native `4bddca067` / QC `e0eb0aa8`, `patch-1131`, exact
+frozen artifacts to both Windows installs and all 12 lobbies on 30 Oct 2026.
+Live 08:52:35 UTC: all 12 new native/plugin epochs and versions match; destination
+and `.prev` hashes match, original protected data/config bytes remain intact.
+No force was needed; backend generation/unit/master unchanged. A fresh isolated
+client downloaded the exact served CSQC and drew the board without QC errors;
+the empty/no-zone, unaccepted-terms screen is not human or ranked-run acceptance.
+
+## Patch 1130 — finish the stats-kind switches; WOS-only map completion
+
+**QC/backend only; no native or plugin change.** Continues Claude's P1122:
+Surf/Bhop/All on home figures and tier bars, one matching full-stats switch,
+and Show all off at launch without forgetting its choice during navigation.
+Reopening cached Full stats now refreshes records for the home kind/source.
+Switch knobs start at their actual selection; home switches fit narrow cards.
+
+Lex's final completion decision: only an exact-build clean WOS main finish
+paints Complete! and contributes to completed-first sorting. Imported times
+remain visible. `/api/board?completed=...&source=wos` supplies that sort;
+omitted source retains the legacy all-source union, and the menu validates the
+explicit source echo. Session-only `ui_showall` replaces obsolete fixture cvar setters.
+
+**Evidence:** task `C:/FTESurf-worktrees/uiresume-20261030T041556Z`, artifacts:
+`build-r4.log` all three VMs zero warnings with compiler c24ede65;
+`ui-r2` actual click/row controls, two launches and inspected screenshots;
+`ui-cache-control.log` catches an intentionally removed cached-row refresh.
+32 map-card assertions, 9 profile-filter tests, completion-pool 46 checks,
+map-tier, zone-index and mappool suites pass. Two bounded independent reviews
+and cross-examination resolved the per-navigation Show all reset. No deliberately
+reordered HTTP-response race or comprehensive viewport-coverage claim.
+
+## Patch 1129 — attribute retained airborne gravity use to its source
+
+**Problem:** A persistent player gravity profile can outlive its admission;
+current QC values alone do not identify the native cached input actually used.
+
+**Change:** Native runtime-only property/cache provenance and an optional trusted
+VM bridge. Observe only demonstrably changed, undiscarded airborne full-walk
+finish-gravity output after the final accepted slide projection. Compare matching
+three-component default-gravity output through the same velocity checks and
+accepted plane; movement arithmetic and order stay unchanged. Exceptional values
+follow the same sanitization/comparison rather than a categorical exclusion;
+identical exceptional outputs do not manufacture use.
+Apply the existing eligibility policy to the selected source before frame end.
+Explicit equal-value reauthoring replaces provenance, never earned body debt.
+Pair native TAS memory checkpoints and invalidate lost provenance. No new QC
+entity/evidence fields, file/network formats, flags, tiers or movement arithmetic.
+This is partial consumer coverage, not full gravity/body/config/world closure.
+
+**Verified:** Local Windows/ARM native builds, 58 new/all prior selftests and
+all60 named physics rows equal to the qualified predecessor on each platform,
+including acting prop/wrapped branches. Identical-QC dedicated-socket controls
+cover current/expired/frozen-bad/unknown sources, stale caches, sticky debt,
+native TAS restore and no-use/release. Same-QC exceptional-value controls distinguish
+surviving sanitized/cache-overflow output from held or identically clamped output.
+An original-observer slide control exposed
+a projected-away false charge; corrected status stays clean with identical motion
+and an acting retained-effect counterpart. Historical qualified-world pin2/pin7
+verifiers PASS; all58 clock-input cases match expected verdicts/reasons on both
+platforms. Reader949 and the complete527REC/167VIEW corpus introduce no faults;
+pre-existing faults remain explicit. Two original whole-feature reviews blocked
+the slide fault; a subsequent review blocked the exceptional-value exclusion.
+Both are corrected; source is gated on two fresh whole-feature reviews
+and clean publication/promotion. These are local qualifications, not claims of
+current-world legacy, full consumer-bank, human-proof, Build or release coverage.
+Delivery provenance is recorded separately. See QC tools/p1129-claim.md.
+
+## Patch 1128 — skip immediate status for unchanged speed modifiers
+
+**Problem:** ModifySpeed marks inherited status even for equal/neutral effective
+scalar values, including default0to1, although later changed-cap use has its own
+source check. An expired neutral input can manufacture practice without an effect.
+
+**Change:** QC-only immediate own-value gate. Preserve input normalization,
+unconditional source replacement/scalar write, recipient selection and P1121
+actual changed-cap gate/math. No early-return/no-value source retention or body
+cleansing. No new VM/captured fields/common policy/format/flag/tier/native pin/
+backend/Build/release; not full property/body/logical/multisource closure.
+
+**Verified:**16paired public scheduled-QC-input/fullPreThink units, same factors/
+caps/capturedsource/IDs/targetvalues/IO, only7immediate and6final no-value status
+removals. Equal2x still prices oldsource at real520cap use; atbase0 itdoesnot.
+Changed/removal/sticky/current/world/nonplayer and distinct actor/target controls
+ACT: ModifySpeed playeractivator priority is tested, not inferred from aliases.
+Initial fixture compile correctly refused9TOTALsprintfargs, warning retained,
+telemetry split to<=8TOTALinclformat BEFOREnativebaseline/implementation; first
+nativebaseline/subject pass unchanged. FullNoDeploySS/menu0/2oldCSF333/zeroNEW,
+speed10 andinput26/5cashouts regressions/reader949-0; same527REC167VIEW entire
+pathsbytesdiagnostics328faultyREC7faultyVIEW/zero introduced NOTfaultfree. Stored
+futurecallbacks invokedBEFOREdeadline, NOTelapsedclock/scheduler/nativeMove/BSP/
+prediction/freshfinishedrecord/rank/human/fullbank proof. Bothfreshindependent
+read-onlyreviews noissues exactruntimeQC613a8af2/engineDOC6e4159f9d/exactpublished,
+parentGitprovenancequalified. Normalbuild0NEW, BOTHWindows6DAT/LNO+actualprev/
+originalpreprevrollback/PiQW4bcd14fdee02/CSfa9bb6d39634+prev/rollback/12freshsame-native/
+healthy12/empty verified2026-10-29 21:46:18.391923UTC, nonforce. All16347/142Windows+
+35189Pi oldprotectedpathsbytesunchanged/none missing;2newREC5 existingmomentum
+namespace preserved/narrowheaderstatdomain+stablehashcheck/writerUNATTRIBUTED
+(35191after), notgeneralaudit. Firstwrong data/runs prefix diagnostic failedbefore
+writes; actualdata/momentum frompriorboundaryevidence, failurestderrretained.
+Backendfiles/unit/AI/native/configunchanged/no native/backend/config/Build/release
+action. Frozen6/rollbackretained, unchangedCS/MENU/native/clientsource priorserved/
+drawnchainreuse NOTnewGUI/wire/move/elapsedclock/finishedrank/humanproof. ZIP121
+ownedfilesverified/ONLY9filesoneNoDeployrootretired/112minimalrigretained+archived/
+0owngames/links/gates; exactOWNcanonicalcfg retired originalhash/publicnumber/
+untrackedguard/originalretained. See tools/p1128-claim.md.
+
+## Patch 1127 — price immediate gravity/carrier inputs by actual value
+
+**Problem:** Three immediate I/O writer sites mark existing run status before
+checking whether their own effective gravity or stored carrier value changed.
+Repeating an equal setting or a rounded-away addition can manufacture practice.
+
+**Change:** QC-only own-value gates. Gravity compares effective0=1 but preserves
+raw stored0. AddOutput compares after unchanged impulse scaling; additive speed
+compares after unchanged sum. Original parsing/float order/counters/dispatch/
+filter/early return and existing bank policy retained. No new VM/captured fields,
+format/flag/tier/native pin/backend/Build/release. Not persistent/full-bank closure.
+
+**Verified:** Final26 paired scheduled-public-QC-input units, same actual values/
+IDs/IO/counters and5QCcashouts, only10 intended no-value status removals. Actual
+changes/removals/cancellation/sticky-repeat/currentforeign/world/zero-direction
+and positive-rounded-away controls ACT. Two initial baseline fixture failures
+retained: wrong WORLD identity/raw0/scale assumptions; full writer reread and
+actual-world priming replace fixture float imitation BEFORE implementation.
+First actual subject passed unchanged. Stored future callbacks deliberately
+invoked: NOTelapsed-clock/scheduler proof; gravity meaning source-inspected,
+not a measured native move. FullNoDeploySS/menu0/2oldCSF333/zeroNEW, gravity14/
+mom23/reader949-0; same527REC167VIEW entirepathsbytesdiagnostics328faultyREC/
+7faultyVIEW/zero introduced, NOTfaultfree. No authored BSP/native mover/prediction/
+freshfinishedrecord/rank/human proof. Review1caught P2recipientprose, review2had
+repeatedwrongsourceclaim; fixedONLYprose/originalreportsretained, bothfinaladdenda
+explicitlyresolve/withdraw/noissues. RuntimeQCca8fc04a unchanged undercorrected
+QCcc0641ad, engineDOC49e144c09 exactpublished. ParentGitprovenancequalified;
+aliasedactor/target is NOTroutingdiscriminator. Normalbuild0NEW/BOTHWindows6+prev/
+originalpreprevrollback/PiQW0538e2c302b3/CSfa9bb6d39634+prev/rollback/12freshsame-native/
+healthy12/empty verified2026-10-29 21:10:23.663152UTC, nonforce. All16347/142Windows+
+35168Pi protectedpathsbytesunchanged/none missing/zero newPi, backendfiles/unit/AI/
+native/config unchanged. No native/backend/config/Build/release action. Frozen6/
+rollback retained; unchangedCS/MENU/native/clientsource priorserved/drawnchain
+reused NOTnewGUI/wire/move/elapsedclock/distincttarget/finishedrecord/rank/humanproof.
+ZIP113ownedfilesverified,ONLY9files/oneNoDeployroot retired/104minimalrigretained+
+archived/zeroowngames/links/gates. Exactowncanonicalclaim retired originalhash/
+publishednumberguard/originalretained. See tools/p1127-claim.md.
+
+## Patch 1126 — retain reversal/catapult activation through value use
+
+**Problem:** Direct Momentum reversal/catapult activation can outlive admission
+without a check at later velocity/ground/carrier writes.
+
+**Change:** QC-only four actual classnames; freeze before reentrant TouchEntered,
+pass tuple to the shared writer's only two callers, compare actual own values
+before original RecWarp. No new VM field/common policy/trajectory/threshold/
+repeat/order/capture/format/flag/tier/native pin/backend/Build/release change.
+One activation contributor, not full body/config/logical/multisource closure.
+
+**Verified:** Same23 paired actual-QC I/O/helper/touch units, all actual values/IDs
+identical, only12 intended existing ancestry changes. Currentforeign/world/
+no-value/rejection/onlyCheck/callback/throttled controls act. Controlled deadline
+is NOTelapsed-clock proof. Original22's unsupported guessed setter exposed a
+wrong fixture expectation; failure preserved, candidate source unchanged. Supported
+post-output carrier-clear counterpart added, parent parked/restored ONLYowned
+source for23baseline, no input implementation/evidence waiver. FullNoDeploy
+SS/menu0/2oldCSF333/zeroNEW; gravity14/reader949-0; same527REC167VIEW wholepaths/
+bytes/diagnostics328faultyREC7faultyVIEW/zero introduced, NOTfaultfree. No authored
+BSP/native mover/prediction/finishedrecord/rank/human claim. Bothfreshindependent
+read-onlyreviews noissues on exactruntimeQC360b6a15/engineDOCa29923f12, exactpublished;
+Git-less child provenance qualified. Normalbuild0NEW; BOTHWindows6DAT/LNO+actualprev/
+originalpreprevrollback, PiQWc945e77e3150/CSfa9bb6d39634+prev/rollback/12freshsame-native/
+healthy12/empty verified2026-10-29 20:22:27.669399UTC, nonforce. All16347/142Windows+
+35144Pi protectedpathsbytes unchanged/none missing/zero newPi. Backendfiles/unit/AI/
+native/config unchanged. Frozen6/rollbackretained, unchangedclient/native/CS/MENU
+reuses priorserved/drawn proof NOTnewGUI/wire/mover/elapsedclock/finishedrecord/
+rank/human acceptance. ZIP101ownedfilesverified, only9files/oneNoDeployroot retired,
+92minimalrigfilesretained+archived/0owngames/links/gates. ExactOWNcanonicalclaim
+retired originalhash/publishednumberguard/originalretained. No native/backend/
+config/Build/release action. See tools/p1126-claim.md.
+
+## Patch 1125 — retain gravity activation through an owed exit reset
+
+**Problem:** Gravity activation and its touch-owned delayed reset outlive their
+admissions without a value-use check; volume re-authoring is not entry identity.
+
+**Change:** QC-only effective activation snapshot before reentrant outputs,
+normalized profile comparison after outputs, dedicated three VM-only body reset
+cause fields and matching existing ownership clears. Existing0=1/physics/persist/
+filter/order and bank policy unchanged. No capture/format/flag/tier/native pin,
+backend/Build/release change; full body/logical/config/multisource bank still open.
+
+**Verified:** Same14 paired actual-QC input/touch/frame units, actual values/IDs
+identical; only3entry/7final existing ancestry changes. Currentforeign/world/
+disabled/0-vs1/reentrant/no-value controls act. Pending reset keeps entry cause
+through first-frame and volume re-authoring; same-value entry/later-value reset
+priced only at reset. Normalization by existing C source inspection, not measured
+native move. FullNoDeploySS/menu0/2oldCSF333/zeroNEW; teleport22regression pass.
+Reader949/0; same527REC167VIEW whole paths/bytes/diagnostics328faultyREC7faultyVIEW,
+zero introduced/notfaultfree. Spawn/start metadata clears source-inspected, no
+actual lifecycle/geometry/mover/prediction/finished-rank/human acceptance claim.
+Both fresh read-only reviews noissues on exact runtimeQC85a2a9a0/engineDOCf4d17212d,
+published exact; Git-less child provenance qualified. Normalbuild0NEW;
+BOTHWindows6DAT/LNO+prev, PiQWb6fefe276fa8/CSfa9bb6d39634+actualprev/12freshsame-native/
+healthy12/empty verified2026-10-29 19:34:19.661883UTC, nonforce. All16347/142Windows+
+35108Pi oldprotectedpathsbytesunchanged/none missing;6newREC5 existingmomentum
+namespace preserved(35114after), narrowheader/stat/domain check/NOTexactwriter
+attribution. Backendfiles/unit/AI/native/configunchanged. Frozen6/rollbackretained;
+unchangedclient/native/CS/MENU reuses priorserved/drawn proof, not newGUI/wire/
+move/lifecycle/finishedrecord/rank/human proof. ZIP91ownedfiles verified, only9files/
+oneNoDeployroot retired,82minimalrigfilesretained+archived/0owngames/links/gates.
+ExactOWNcanonicalclaim retired originalhash/publishednumberguard, originalretained.
+No native/backend/config/Build/release action. See tools/p1125-claim.md.
+
+## Patch 1124 — retain teleport activation through actual body-value use
+
+**Problem:** Teleport activation could outlive its source admission without a
+cause check when its later use changes the recipient's body values.
+
+**Change:** QC-only ordinary/Momentum-alias/relative activation cause; freeze
+before reentrant outputs, snapshot body after them. Reuse existing policy before
+all warp-record exits only for changed pose/ground/carrier, including pending
+unarmed cashout. No movement arithmetic, collection/format/flag/tier/native pin,
+Build or release change. Logical/phase/config/multisource bank remains open.
+
+**Verified:** Same native/compiler/fixture22 paired actual-I/O/numeric units;
+values and identities identical, only11 intended cases gain existing status.
+Current/world/replacement/rejected/no-value controls clean, armed-zero negative
+and production pending-cashout positive act. Push15/activation23 regressions pass.
+NoDeploySS/menu0warnings,2oldCSF333/zeroNEW; reader949/0. Same527REC/167VIEW whole
+paths/bytes/diagnostics equal,328faultyREC7faultyVIEW/zero introduced, not faultfree.
+Initial formatter warning/path-aggregation failure and corrected carrier
+prediction retained. Both fresh read-only reviews noissues; exactruntimeQC065b254e/
+engineDOCe0c175247 published, Git-less child provenance explicitly qualified.
+Normalbuild0NEW; BOTHWindows6DAT/LNO+prev, PiQW9403daf4f595/CSfa9bb6d39634+prev,
+12freshsame-native/healthy12/empty readback2026-10-29 18:46:13.502096UTC, nonforce.
+All16347/142Windows+35076Pi oldprotectedpathsbytesunchanged/nomissing/zero newPi;
+native/config/backendfiles+unit/AI unchanged. Rollback/frozen6retained; unchanged
+CS/MENU/native/client source reuses previous served/drawn proof, not new GUI/wire/
+move/rank/human acceptance. ZIP85ownedfiles verified; only9files/oneNoDeployroot
+retired,76minimalrigfiles retained+archived,0owngames/links/gates. Exact ownCFG
+reservation retired with originalhash/publicnumber proof, original preserved.
+No native/backend/config/Build/release action. See tools/p1124-claim.md.
+
+## Patch 1123 — retain speed-delivery activation through body-phase use
+
+**Problem:** Set-speed/alias and conveyor delivery did not recheck the source
+of their retained activation. Monolith's later body phase outlives the pad cause.
+
+**Change:** QC-only. Capture effective activation in non-callback class slots,
+world0 without active context; preserve no-op Enable. Freeze before reentrant
+touch outputs, price actual changed velocity/nonzero carrier contribution with
+the unchanged common policy. Dedicated three-slot BODY-phase metadata preserves
+one Monolith activation across reapplication/exit and clears on existing reset,
+not an alias of callbacks/basevel/multiplier causes. Existing movement arithmetic
+unchanged, including cancellation/interval/filter/jump/ghost behavior. Direct
+P732 fixture calls explicitly pass world cause via a test-only adapter. No new
+capture/format/flag/tier/native pin/backend/Build/release change or context join.
+
+**Verified:** SAME qualified native/compiler/fixture23paired production-I/O and
+numeric writer/carrier/profile units ACT; all value outputs/IO/phase/identities
+match, only11 intended inherited cases gain3/8388609/notice1. Explicit clean first
+phase before expiry, CURRENTforeign/world/independent replacement/no-value/nondue/
+filter controls clean. P73260/0, push15/full-PreThink10 regressions ACT/pass.
+Initial aggregation suffix/schema error AFTER both23passes corrected read-only;
+first P732 world-self cleanup/timestamp-parser failure retained, not passed.
+Same fixture's actual owned-unit caller and prefix/error guards fixed;60/0exit0.
+No native geometry/contact/cashout/socket/grant/finish/rank/human/full-bank claim.
+Full NoDeploySS/menu0warnings/2oldCSF333/zeroNEW, reader949/0. Fresh SAME527REC/
+167VIEW full-domain published/current byte-identical reader pairs exactinputs/
+diagnostics328faultyREC7faultyVIEW/zerointroduced, NOTfault-free. Prior504domain
+changed:499same,5oldfaultyunpairedabsent/28newREC5faulted (alladditionspreprobe);
+aggregate+23 is data churn, notsame504PASS. Attributionunknown, nodatarestore/
+delete; BACKLOGfollow-up. Timeout/old-domain guard retained, only incompletesweep
+resumed and explicit-reader seam providesactualfreshcontrol. BOTHindependentreviews
+PASS/noissues; publishedruntimeQC904572cfefc1/ledger3152a272c77f. Normalbuild same
+0NEW, BOTHWindows6DAT/LNO+.prev, PiQWace36faca814/CSfa9bb6d39634 exact+.prev,
+12freshsame-native/healthy12/empty verified2026-10-29 17:52:46.953918UTC. Nonforce
+normalPi; config/native/backendfiles+unit/AIunchanged. ALL16347/142Windows and
+35043Pi oldprotectedbytesunchanged/nomissing,6newPipathspreserved: this boundary
+PASSED, older corpuschurn is a different interval. CS/MENU/native/source match
+priorlive drawcohort, reusedacceptance notnewGUI/wire/rank/feel. Originalrollback/
+frozen6bundle retained;75ownedfilesZIPverified,9files/oneNoDeployroot retired,
+66minimalrigretained+archived,0owngames/links/gates. ExactowncanonicalCFGreservation
+retiredafterhash+publishednumberproof, notsameblobasMarkdown; peers/indexuntouched.
+No native/backend/Build/release action. See tools/p1123-claim.md.
+Broader transitive logical/config/body/world/own-phase/multi-source bank OPEN.
+
+## Patch 1121 — retain persistent speed-effect source until actual cap use
+
+**Problem:** ModifySpeed charges its input once, but its persistent multiplier
+was later reused without checking the original admission.
+
+**Change:** QC-only. Dedicated VM-local source slots follow the independently
+assigned scalar; spawn clears both. Keep immediate attribution and the existing
+CURRENT/world policy. At real PlayerPreThink cap use, compute the unchanged result
+first and price only a changed cap. Equal explicit scalar assignment replaces its
+property cause, not already-earned body debt. No callback-slot alias, context
+swap/join, new captured field/format/flag/policy, native pin or Build change.
+
+**Verified:** SAME qualified native/compiler/fixture ten paired public-I/O and
+FULL-PreThink controls ACT. All factors/caps/input counts/source identities match;
+only expired2x gains existing3/8388609/notice1. Current/world, equal independent
+world replacement, fresh3x, neutral/normalized inputs and base0 no-value stay clean.
+Not real socket/movement/EndFrame grant/held-save/rank or whole-bank acceptance.
+Full NoDeploy SS/menu0warnings/same2oldCSF333/zeroNEW; reader949/0, fresh504REC/
+167pairedVIEW identical bytes/305faultyREC/7faultyVIEW, NOT fault-free. Clean-commit
+independent reviews BOTHclear. PublishedQC1c48565df323/ledger013a435f64d2, normal
+build plus BOTHWindows6DAT/LNO+.prev and Pi exactQW172a66da8aa1/CSfa9bb6d39634
+verified2026-10-29 15:34:19UTC;12freshsame-native actors/healthy12, unchanged Pi
+config/native/backend. PiForce announced/preapproved for2connectedclients. Same
+CS/MENU/native as P1120 live draw; reuse acceptance, no redundant GUI run or new
+rank/feel claim. Active-runtime data NOT an all-bytes-unchanged pass: primary16
+cache/friends/config differences preserved, Pi2temporarypaths absent/1REC changed
+beforeupload, no completedpath missing. Strict guards/failures retained, not
+relabeled; exact temp finalization/config writer unproved. No playerdata restore/
+delete/repair restart. Immutable original/.prev rollback retained;59owned
+filesZIPverified,9disposable files/oneNoDeploy root retired,50fileminimalrig retained.
+See tools/p1121-claim.md; broader body/world/config/phase/multi-source bank OPEN.
+No native/backend/Build/release action. Human movement/status/ranking pending.
+
+## Patch 1120 — retain effective boost-enable lineage (QC)
+
+**Problem:** An accepted push Enable could outlive its source admission; later
+actual pushes had no retained cause to check. Queued/active I/O was insufficient.
+
+**Change:** Reuse existing cause slots for actual off->on push enables. Preserve
+same-value inputs. Bind that cause before touch outputs and resolve its source
+at the actual body/carrier write through the unchanged bank policy. One-shots
+require an effective nonzero impulse or real ground clear, not rejected-impulse
+bookkeeping (nor nonzero final velocity). Current and
+world sources remain exempt, including a different CURRENT clean author. No
+new capture, flag, format, tier rule, native pin or Build change.
+
+**Verified:** Fifteen acting native-QC output/input/push units; rejected-candidate
+witness/fixed physical effects/input counts/identities exactly match; only its two
+no-value exclusions disappear. Original policy-body/wrapper equivalence checked.
+Only bank notifications intercepted; not native geometry/contact/cashout or
+finished-rank acceptance. Initial reviews BLOCKED pre-clamp false positive;
+never published/deployed. Rounded output, wrong one-shot-origin prediction and
+native-change guard retained; observations corrected, no owner binary restore.
+Redesigned full isolated SS/menu0warnings, two unchanged CSF333 warnings/zeroNEW;
+reader949/0, identical504REC/167pairedVIEW unchanged faults. BOTH independent
+re-reviews clear. Published reviewed QCed58d60f9ea2/ledger2173f1f280a8; normal
+build and BOTH Windows/all12Pi deployment verified2026-10-29 13:49:02UTC. Exact
+QWa1c3ff72934a/CSfa9bb6d39634/MENU7cb11cb1d5c0; actual .prev predecessors retained,
+12fresh same-native actors, zero positive clients, no PiForce. Protected existing
+Windows16198/142 and Pi34807 files plus backend launchers/unit unchanged. New
+menu/native cohort live smoke13:52:32UTC: exact servedCS, board9/type14, exit0,
+noQCerror, screenshot inspected (terms unaccepted/no local zone; not feel/rank).
+No native/backend/Build/release change. Read-only preflight UDP timeout retained;
+owner/hash-bound partial scratch resumed only after current-byte/fresh-census
+checks, no live mutation/restart to repair it. Details tools/p1120-claim.md.
+This closes only direct enable-state delivery, NOT all config/phase or
+transitive logical/world accounting. Human boost feel/status still pending.
+
+## Patch 1118 — validate one saved-state snapshot before placement (QC)
+
+**Problem:** Normal load placed the selected body before the full state reader
+could reject it, leaving the previous settled clean admission on failure. The
+light identity read and full application also reopened the same path separately.
+
+**Change:** Capture complete rows with the existing native byte/row helper, then
+check selected identity and the existing view-clock predicate before any mode,
+recorder, body or run-state mutation. Commit those same caller-owned rows without
+another state-file open. The three-argument retry/resume API prepares/validates
+before commit too. Preserve legacy empty-line and unread-tail grant rules, valid
+KEEP speed, existing recording-failure containment and the shared zone-latch tail.
+No new state/capture format, field, taint/tier policy, native code or native pin.
+
+**Verified:** Acting baseline/subject production-loader seam; five normal-load
+controls preserve valid moving/rest classifications and speed while rejecting bad
+state without moving the old body. Fourteen existing grant/malformed/duplicate/
+unread-tail/upright cases pass through the current deferred FinishFrame helper
+(synthetic empty-I/O phase, not native newmis-drain proof). A prepared-API unit
+mutates the real disk file, independently rejects its new rows, then applies the
+original valid buffer with saved speed and segmented classification. This is not
+a measured normal-entrypoint race/open count or a real ranked-finish acceptance.
+Two independent implementation reviews OK. Fixed full build: server/menu zero
+warnings; two unchanged upstream client F333 property227 warnings, zero NEW.
+Reader949/0; unchanged504REC/167pairedVIEW fault counts, ten current orphan views
+structurally checked without inventing matching recordings. Initial fixture/
+compiler/grader failures retained, not relabelled. General writer/compiler audit
+remains owner-deferred; broader viewing/parked replay is separate, not complete.
+
+**Delivery:** RuntimeQC f6bfdb9bc98f and this log e54355342eb4 pushed by exactSHA.
+Clean normal build: bothWindows threeVM/LNO and predecessors hash-verified; Pi
+QWc537e5e5/CS3cca1ed6 plus.prev, all12once-restarted fresh/same-native actors,
+empty status7/healthy12 at29Oct11:28:10Z; noPiForce. Existing protected byte
+counts16198/142Windows,34737Pi unchanged; backend launchers/unit unchanged.
+Fresh client at11:31:51Z downloads exactCS and draws9cols/type14, noQCerror,
+exit0. Screenshot inspected: visible board, nozone/time rows, terms unaccepted;
+not ranked/zone/HID/consent/world-visual or load-feel acceptance. No owner Windows client
+signal, native/backend/schema/threshold, Build or release deployment. Exact
+source/artifacts/predecessor/prior-prev and proof privately retained; no rebuild
+for this documentation. Public provenance/limits: tools/p1118-claim.md.
+
+## Patch 1116 -- A finish's journal hash and upload leave the main thread (client)
+
+Every lobby finish with journal uploads on hashed the whole input journal on the frame the run
+ended, and again when the server asked for it, then posted it with frame polls. Measured with
+tools/p1116finish.py (FTESurf repo; a local lobby, a 3.2 MB journal, developer 0): two command
+frames of 20.0-20.6 ms and 16.8-16.9 ms per finish; fixed, both are gone (the largest command
+frame left is 9.5 ms: the journal write and two signatures). The HTTPS handshake also left the
+main thread (P1114 measured that at 62.6 ms in one frame for a download).
+
+- The journal keeps a SHA-256 state fed every 16 KB as it grows (IN_Journal_Raw), so
+  in_journal_end hashes only the tail: 5.9 ms -> 0.0 ms at 1.6 MB. Fed and freed on the main
+  thread only. It falls back to a whole-buffer hash at close (the old cost) when a journal saw
+  cl_threadedphysics (its thread appends with no lock against the main thread's: review 2), when
+  the synth mark lands in hashed bytes or comes from another thread, and for the failed-write
+  path's second digest.
+- The file is written to the digest's length and nothing is appended after `end`, so it cannot
+  outrun its receipt; COM_WriteFile now fails a short write (disk full), for every caller.
+- rec_ul_http reads and hashes the armed journal on a loader thread, signs it back on the main
+  thread and posts it on a download thread (HTTP_CL_Thread; the reply goes to a VFSPIPE, as
+  image downloads do). One read at a time (review 1: a cancel did not stop a queued read, so a
+  server's arm/request/disarm loop could queue unbounded 64 MiB reads); a cancel bumps a
+  generation and the late job is dropped.
+- Developer prints: in_journal_end's digest/write ms, rec_sign's ms, rec_ul_send's read/hash
+  (loader thread)/sign ms, P1114's poll totals for /api/hid.
+- Checked: each receipt's signed hid digest equals sha256 of the staged file and of the bytes the
+  receiver got, with threaded physics off (running hash) and on (6.2 ms whole-buffer), and on a
+  64-byte-step build (rehash path); a build dropping one byte from the running hash fails it.
+  Three review rounds; the last found nothing new.
+
+## Patch 1114 -- Map and file downloads run on a download thread (client, http)
+
+A download cl_parse.c starts with HTTP_CL_Get (a map from the menu's Download button, a map or
+file a server asks for) was polled by HTTP_CL_Think each frame, so its DNS lookup, connect and
+TLS handshake ran on the main thread. Measured on one HTTPS map download from play.proto.bar:
+496.5 ms of main-thread polling over 4530 frames, the longest single poll 62.6 ms; threaded,
+0.0 ms (the download prints its own figure at DL_Close with developer / log_developer 1).
+
+- HTTP_CL_Thread opens the download's .tmp on the calling thread -- creating a file adds to the
+  fs hash with no lock (fs_win32.c:478) -- and hands the transfer to DL_CreateThread. The
+  completion callback (CL_WebDownloadFinished: rename, CL_DownloadFinished) still runs on the
+  main thread from HTTP_CL_Think -> DL_Close.
+- HTTP_Wake_Think still reaps (a blocking COM_WorkerPartialSync on an http image waits on it --
+  review 1 caught the first cut hanging there), but not while HTTP code is already on the stack
+  (HTTP_CL_Think, a DL_Close callback), and never a threaded map download (reaponframe): its
+  callback renames and reloads, so the frame's HTTP_CL_Think reaps it, not whichever
+  main-queue drain the wake lands in.
+- Review 1 also: a download closed while ACTIVE (quit) no longer starts the next queued map; the
+  function builds without MULTITHREAD; a map stays polled when all four download threads are
+  busy; a stale .tmp is removed before it is opened (Windows' "w+b" kept its tail); off the
+  main thread CertLog_ConnectOkay refuses an untrusted or expired cert instead of prompting
+  (uri_get downloads included).
+- cl_download_threaded 0 polls as before. package/ (DLLF_NONGAME) downloads stay polled: they
+  write their real name, not the .tmp.
+
 ## Patch 1103 -- Preserve closing-clock refusal diagnostics (native verifier)
 
 **Problem:** Recorder 12--14 can legitimately close with sampled, pending or kept
@@ -24,10 +591,47 @@ suite passes 945 checks; the same-byte corpus retains its per-file fault lists.
 Incremental baseline/candidate native builds produce no warnings; LSP has only
 pre-existing warnings outside the change.
 
-**Limits:** Dedicated Windows verifier qualified only. The full native entrypoint
-first hit an empty static dependency cache, then missing system Opus/Speex headers;
-those failures are retained, not repaired through unrelated source edits. No full
-client/plugin qualification, fleet deployment, Linux build or release is claimed.
+**Initial publication limits:** At source commit85b1d3838 only the dedicated
+Windows target was qualified. The full entrypoint first hit an empty static
+cache, then missing system Opus/Speex headers. Those failures remain retained.
+
+**29 October qualification/delivery follow-up (runtime source still85b1d3838):**
+The documented isolated `makelibs` route repaired the prerequisites without
+changing shared tools or unrelated source; the normal full Windows build passed.
+All10 native destinations/.prev predecessors and17 protected progs/menu/config
+files verified at2026-10-29T07:21:39Z. Actual installed server/HL2 module paths
+pass58 controls. No QC/menu/config/player-data, Build decision or release change.
+Client51771d77, server626b43d6, HL25f229e3c; full hashes/provenance are recorded
+in FTESurf's tools/p1103-claim.md and private deployment evidence.
+
+ARM dedicated/HL2 builds and58 clock controls match Windows; all60 full-fixture
+physics rows match with acting prop/wrapped-hull controls. An initial minimal
+manifest/config arm mismatched10 mover rows and remains excluded; using the
+established full fixture restores parity without weakening the comparator.
+Reader0e420a5e passes949 checks, with no corpus fault increases on the same bytes.
+The inherited public pin2 HOLD was isolated to its world profile: changing ONLY
+current captured QW to the qualified archived program restores4418tick/4418row
+PASS on both Windows natives. ARM predecessor/candidate also pass pin2 and the
+documented P813 pin7 replacement9194ticks/9192rows. Original HOLDs remain failed;
+this declares a historical world, not current-QW or pin1 compatibility. No old QW
+was deployed and no recording/gate/product code was changed for qualification.
+
+ARM native-only deployment is now verified2026-10-29T09:05:36Z: the exact server
+4a085b77/HL22043eeb2 pair runs in all12fresh actors with actual plugin mapped-inode
+proof, positive empty status7 boundaries including spectators and one ordinary
+restart each. All34029 pre-existing protected files/configs unchanged;6 new files
+preserved. Initial postflight wrapper API mismatch remains failed/retained;
+read-only recovery proves the original12actors without repeated swap/restart.
+All12live version replies match, and two distinct early closing-clock refusals
+act at09:13:16Z. A first loose-file hash visibility failure remains retained;
+source-reviewed fs_flush makes the two exact temporary probes visible, with
+verified file removal/cache refresh afterwards, no remount/restart/cvar change.
+
+The active plain-API backend has no native dependency pins: generation, manifest,
+launchers/unit and health stayed unchanged. No backend handoff/schema/threshold,
+AI, QC/menu/config, Build or release action. Exact rollback/predecessors retained;
+sweep lock released, no maintenance gate. General held/parked replay remains OPEN.
+These follow-ups change documentation only, not qualified source/tag/artifacts.
 
 ## Patch 1102 -- The map tables are read only from the gamedir's own loose files (client, fs)
 
