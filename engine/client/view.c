@@ -1707,10 +1707,32 @@ V_CalcRefdef
 
 ==================
 */
+static float V_SourcePracticeEye(const vec3_t feet, const vec3_t gravity, float height)
+{
+	vec3_t start, end, hit;
+	float limit;
+	if (height <= 0)
+		return height;
+	/* Query the existing collision world at the PRESENTED position, not the
+	   ahead-of-camera body's roof. Start inside the body, below the eye. */
+	VectorMA(feet, -height * 0.5f, gravity, start);
+	VectorMA(feet, -(height + 12), gravity, end);
+	if (CL_TraceLineProps(start, end, hit, NULL, NULL) < 1)
+	{
+		/* Same Source head clearance and existing scalar bound as P916/917.
+		   No movement state, command globals or captured fields are written. */
+		limit = -DotProduct(hit, gravity) - 12;
+		return PMSrc_ClipRenderEye(height, limit, -DotProduct(feet, gravity));
+	}
+	return height;
+}
+
 void V_CalcRefdef (playerview_t *pv)
 {
 	float		bob;
 	float		viewheight;
+	vec3_t		practiceoffset;
+	qboolean	practiceview;
 
 	if (r_refdef.fixedview)
 	{
@@ -1743,6 +1765,11 @@ void V_CalcRefdef (playerview_t *pv)
 
 // refresh position from simulated origin
 	VectorCopy (pv->simorg, r_refdef.vieworg);
+	/* P1138: interpolate the camera, not the shared body/input/HUD state.
+	   Apply before the gun, portal, chase-camera and skyroom calculations. */
+	practiceview = CL_GetSourcePracticeViewOffset(pv, practiceoffset);
+	if (practiceview)
+		VectorAdd(r_refdef.vieworg, practiceoffset, r_refdef.vieworg);
 
 	r_refdef.useperspective = true;
 	r_refdef.mindist = bound(0.1, gl_mindist.value, 4);
@@ -1781,7 +1808,11 @@ void V_CalcRefdef (playerview_t *pv)
 		// v_viewheight only affects the view if the player is alive
 		viewheight += bob;
 	}
-	viewheight += pv->crouch;
+	/* The historical feet already blend a stair rise. Applying the current
+	   body's correction to them produces a downward kick before the step. */
+	viewheight += practiceview ? 0 : pv->crouch;
+	if (practiceview)
+		viewheight = V_SourcePracticeEye(r_refdef.vieworg, pv->gravitydir, viewheight);
 
 	VectorMA(r_refdef.vieworg, -viewheight, pv->gravitydir, r_refdef.vieworg);
 	if (!pv->spectator && (pv->portalpmtype == PM_NORMAL || pv->portalpmtype == PM_DEAD))

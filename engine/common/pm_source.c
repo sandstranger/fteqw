@@ -3127,7 +3127,7 @@ static void PMSrc_WalkMove (void)
 PMSrc_AirMove   (cpp:1764)
 ==================
 */
-static void PMSrc_AirMove (qboolean *firstclear)
+static void PMSrc_AirMove (qboolean *firstclear, vec3_t firstvelocity)
 {
 	vec3_t wishdir;
 	float wishspeed;
@@ -3138,6 +3138,8 @@ static void PMSrc_AirMove (qboolean *firstclear)
 
 	VectorAdd (pmove.velocity, pmove.basevelocity, pmove.velocity);
 	PMSrc_TryPlayerMoveCore (NULL, NULL, firstclear);
+	// Observer-only stack copy: the accepted path includes the carrier.
+	if (firstvelocity) VectorCopy(pmove.velocity, firstvelocity);
 	VectorSubtract (pmove.velocity, pmove.basevelocity, pmove.velocity);
 }
 
@@ -3269,26 +3271,79 @@ The order here IS the physics.  Do not reorder.
 ==================
 */
 // P1131: a bounded default-only start, not evidence that its result was used.
-static qboolean PMSrc_BankGravityStartDefault(vec3_t normal)
+static qboolean PMSrc_BankGravityDefaultStart(vec3_t normal, qboolean groundjump)
 {
 	int i;
-	/* This entry is already airborne: CheckJumpButton cannot jump or change
-	 * velocity. Its input latch is identical for the same default command. */
 	if (!pms_bankgravity_observe || pms_bankgravity_used ||
 		movevars.sourceversion < 11 || pmove.pm_type != PM_NORMAL ||
-		pmove.onground || pmove.waterlevel || pmove.waterjumptime ||
+		(pmove.onground && !groundjump) || pmove.waterlevel || pmove.waterjumptime ||
 		pmove.waterjumpremaining ||
 		pms_haveportals || pms_anyslide || pms_slidetick || pms_momslide ||
 		!movevars.entgravity || movevars.entgravity == 1 ||
 		!isfinite(pms_frametime) || pms_frametime <= 0)
 		return false;
 	for (i = 0; i < 3; ++i)
-		if (pmove.basevelocity[i] || !isfinite(pmove.origin[i]) || !isfinite(pmove.velocity[i]))
+		if (!isfinite(pmove.basevelocity[i]) || !isfinite(pmove.origin[i]) || !isfinite(pmove.velocity[i]))
 			return false;
 	PMSrc_NextTickVelocity(pmove.velocity, pms_frametime, movevars.gravity, 1, normal);
 	normal[2] += pmove.basevelocity[2] * pms_frametime;
 	PMSrc_BankGravitySanitize(normal);
 	return true;
+}
+
+// Airborne input cannot enter the genuine-jump branch; retain that contract.
+static qboolean PMSrc_BankGravityStartDefault(vec3_t normal)
+{
+	return PMSrc_BankGravityDefaultStart(normal, false);
+}
+
+static qboolean PMSrc_BankGravityGroundStartCommon(vec3_t normal)
+{
+	if (!pmove.onground || !(pmove.cmd.buttons & BUTTON_JUMP) ||
+		movevars.ktjump ||
+		movevars.jumpzoffset ||
+		!isfinite(movevars.entgravity) || !isfinite(movevars.gravity) ||
+		!isfinite(movevars.jumpvelocity) || !isfinite(movevars.maxvelocity))
+		return false;
+	return PMSrc_BankGravityDefaultStart(normal, true);
+}
+
+static qboolean PMSrc_BankGravityGroundStartDefault(vec3_t normal)
+{
+	// P1145: stock crouch assigns Z; normalized postures share the existing add path.
+	if (movevars.normalizejump || movevars.jumpaddrise || pmove.ducked || pmove.ducking ||
+		PMSrc_StaminaEnabled())
+		return false;
+	return PMSrc_BankGravityGroundStartCommon(normal);
+}
+
+static qboolean PMSrc_BankGravityGroundStartNormalized(vec3_t normal)
+{
+	if (!isfinite(movevars.normalizejump) || !movevars.normalizejump ||
+		!isfinite(movevars.jumpaddrise)) return false;
+	// P1148: identity BEFORE jump cost; the default helper runs after it is spent.
+	if (PMSrc_StaminaEnabled())
+		if (!isfinite(movevars.stamina) || !isfinite(pmove.stamina) ||
+			!isfinite(movevars.staminarecovery) || !isfinite(movevars.staminajumpcost) ||
+			PMSrc_StaminaRatio() != 1.0f) return false;
+	return PMSrc_BankGravityGroundStartCommon(normal);
+}
+
+static qboolean PMSrc_BankGravityJumpDefault(vec3_t normal)
+{
+	float impulse = movevars.jumpvelocity;
+	if (impulse <= 0) impulse = 268.3281572999747f;
+	// P241: only normalized non-additive mode undoes positive inbound.
+	if (movevars.normalizejump && !movevars.jumpaddrise)
+	{
+		float inbound = normal[2] + (1.0f * movevars.gravity * 0.5f * pms_frametime);
+		if (inbound > 0) normal[2] -= inbound;
+	}
+	normal[2] += impulse;
+	if (!movevars.normalizejump)
+		normal[2] -= (1.0f * movevars.gravity * pms_frametime * 0.5f);
+	PMSrc_BankGravitySanitize(normal);
+	return isfinite(normal[2]);
 }
 
 static qboolean PMSrc_BankGravityTraceClear(const trace_t *tr, const vec3_t end)
@@ -3367,13 +3422,17 @@ static qboolean PMSrc_BankGravityAirChanged(const vec3_t origin, const vec3_t ac
 static void PMSrc_FullWalkMove (void)
 {
 	qboolean wasonground = pmove.onground, bankfinish_projected = false, bankairclear = false;
+	qboolean bankgroundjump = false;
 	vec3_t bankfinish_before, bankfinish_plane;
 	vec3_t bankstart_default, bankstart_origin, bankstart_airend, bankstart_airvel;
-	qboolean bankstart = PMSrc_BankGravityStartDefault(bankstart_default);
+	qboolean bankstart = wasonground ?
+		(movevars.normalizejump ? PMSrc_BankGravityGroundStartNormalized(bankstart_default) :
+		PMSrc_BankGravityGroundStartDefault(bankstart_default)) :
+		PMSrc_BankGravityStartDefault(bankstart_default);
 
 	if (pmove.waterlevel < 2)
 		PMSrc_StartGravity ();
-	if (bankstart && VectorCompare(bankstart_default, pmove.velocity)) bankstart = false;
+	if (bankstart && !wasonground && VectorCompare(bankstart_default, pmove.velocity)) bankstart = false;
 
 	if (movevars.sourceversion >= 11)
 	{
@@ -3410,9 +3469,12 @@ static void PMSrc_FullWalkMove (void)
 		   re-categorize first so the jump test sees the ground the slide
 		   otherwise hides.  PMSrc_SlideAllowsJumpNow inside CategorizePosition
 		   is what lets it ground on this call and not on the others. */
+		qboolean jumped;
 		if ((pms_slidetick & PMSLIDE_ALLOWJUMP) && !(pms_slidetick & PMSLIDE_STAYON))
 			PMSrc_CategorizePosition ();
-		PMSrc_CheckJumpButton ();
+		jumped = PMSrc_CheckJumpButton ();
+		if (bankstart && wasonground && jumped)
+			bankgroundjump = PMSrc_BankGravityJumpDefault(bankstart_default);
 	}
 	else
 		pmove.oldbuttons &= ~BUTTON_JUMP;
@@ -3426,6 +3488,8 @@ static void PMSrc_FullWalkMove (void)
 	}
 
 	PMSrc_CheckVelocity ();
+	if (bankstart && wasonground && (!bankgroundjump || VectorCompare(bankstart_default, pmove.velocity)))
+		bankstart = false;
 
 	if (pmove.onground)
 	{
@@ -3435,12 +3499,8 @@ static void PMSrc_FullWalkMove (void)
 	else
 	{
 		if (bankstart) VectorCopy(pmove.origin, bankstart_origin);
-		PMSrc_AirMove (bankstart ? &bankairclear : NULL);
-		if (bankstart)
-		{
-			VectorCopy(pmove.origin, bankstart_airend);
-			VectorCopy(pmove.velocity, bankstart_airvel);
-		}
+		PMSrc_AirMove (bankstart ? &bankairclear : NULL, bankstart ? bankstart_airvel : NULL);
+		if (bankstart) VectorCopy(pmove.origin, bankstart_airend);
 	}
 
 	PMSrc_CategorizePosition ();
@@ -4550,8 +4610,14 @@ static void PMSrc_TestBankStartGravity(void)
 	qboolean crossed = pms_portalcrossed, surfed = pms_surfed;
 	qboolean observe = pms_bankgravity_observe, used = pms_bankgravity_used;
 	qboolean clear, changed;
-	vec3_t normal, begin, accepted, velocity, mins, maxs, dest;
+	vec3_t normal, begin, accepted, velocity, relative, mins, maxs, dest;
+	vec3_t savedforward, savedright;
+	float maxspeed = pms_maxspeed;
+	int axis;
+	char name[96];
 	trace_t hit;
+	VectorCopy(pms_forward, savedforward);
+	VectorCopy(pms_right, savedright);
 	memcpy(saved, &pmove, sizeof(pmove));
 	memset(&pmove, 0, sizeof(pmove));
 	pmove.pm_type = PM_NORMAL;
@@ -4607,9 +4673,9 @@ static void PMSrc_TestBankStartGravity(void)
 	pms_haveportals = true;
 	PMSrc_Check("P1131 portal map excluded", PMSrc_BankGravityStartDefault(normal), 0, 0);
 	pms_haveportals = false;
-	pmove.basevelocity[0] = 1;
-	PMSrc_Check("P1131 base velocity excluded", PMSrc_BankGravityStartDefault(normal), 0, 0);
-	pmove.basevelocity[0] = 0;
+	pmove.basevelocity[2] = INFINITY;
+	PMSrc_Check("P1131 nonfinite Z carrier excluded", PMSrc_BankGravityStartDefault(normal), 0, 0);
+	pmove.basevelocity[2] = 0;
 	pmove.waterjumpremaining = 1;
 	PMSrc_Check("P1131 waterjump excluded", PMSrc_BankGravityStartDefault(normal), 0, 0);
 	pmove.waterjumpremaining = 0;
@@ -4637,6 +4703,108 @@ static void PMSrc_TestBankStartGravity(void)
 	PMSrc_Check("P1133 grounded jump rises finitely", isfinite(pmove.velocity[2]) && pmove.velocity[2] > 0, 1, 0);
 	pmove.onground = false;
 	pmove.oldbuttons = pmove.cmd.buttons = 0;
+	movevars.entgravity = INFINITY;
+	VectorSet(pms_forward, 1, 0, 0);
+	VectorSet(pms_right, 0, 1, 0);
+	pms_maxspeed = 320;
+	for (axis = 0; axis < 2; ++axis)
+	{
+		VectorSet(pmove.origin, 0, 0, 128);
+		VectorClear(pmove.velocity);
+		VectorClear(pmove.basevelocity);
+		pmove.basevelocity[axis] = 100;
+		PMSrc_BankGravityBegin(true);
+		Q_snprintfz(name, sizeof(name), "P1135 carrier %c admitted", axis ? 'Y' : 'X');
+		PMSrc_Check(name, PMSrc_BankGravityStartDefault(normal), 1, 0);
+		PMSrc_StartGravity();
+		VectorCopy(pmove.origin, begin);
+		PMSrc_AirMove(&clear, velocity);
+		Q_snprintfz(name, sizeof(name), "P1135 carrier %c first clear", axis ? 'Y' : 'X');
+		PMSrc_Check(name, clear, 1, 0);
+		Q_snprintfz(name, sizeof(name), "P1135 carrier %c path acts", axis ? 'Y' : 'X');
+		PMSrc_Check(name, velocity[axis] == 100 && pmove.velocity[axis] == 0 && pmove.origin[axis] == 1.5f, 1, 0);
+		VectorCopy(pmove.origin, accepted);
+		VectorCopy(pmove.velocity, relative);
+		changed = PMSrc_BankGravityAirChanged(begin, accepted, velocity, normal[2]);
+		Q_snprintfz(name, sizeof(name), "P1135 carrier %c total path used", axis ? 'Y' : 'X');
+		PMSrc_Check(name, changed, 1, 0);
+		Q_snprintfz(name, sizeof(name), "P1135 carrier %c relative path refused", axis ? 'Y' : 'X');
+		PMSrc_Check(name, PMSrc_BankGravityAirChanged(begin, accepted, relative, normal[2]), 0, 0);
+		Q_snprintfz(name, sizeof(name), "P1135 carrier %c observer preserves origin", axis ? 'Y' : 'X');
+		PMSrc_Check(name, VectorCompare(pmove.origin, accepted), 1, 0);
+		Q_snprintfz(name, sizeof(name), "P1135 carrier %c observer preserves relative velocity", axis ? 'Y' : 'X');
+		PMSrc_Check(name, VectorCompare(pmove.velocity, relative), 1, 0);
+		if (changed) pms_bankgravity_used = true;
+		Q_snprintfz(name, sizeof(name), "P1135 carrier %c command use delivered", axis ? 'Y' : 'X');
+		PMSrc_Check(name, PMSrc_BankGravityEnd(), 1, 0);
+	}
+	PMSrc_BankGravityBegin(true);
+	VectorClear(pmove.basevelocity);
+	{
+		int i;
+		float forwardmove = pms_forwardmove, sidemove = pms_sidemove;
+		vec3_t finishbefore, linear;
+		qboolean admitted, firstclear;
+		pms_forwardmove = pms_sidemove = 0;
+		for (i = 0; i < 4; ++i)
+		{
+			memset(&pmove, 0, sizeof(pmove));
+			pmove.pm_type = PM_NORMAL;
+			pmove.skipent = -1;
+			VectorCopy(mins, pmove.player_mins);
+			VectorCopy(maxs, pmove.player_maxs);
+			pmove.surfacefriction = 1;
+			pmove.velocity[0] = 80;
+			pmove.velocity[2] = -3490;
+			pmove.basevelocity[2] = (i & 1) ? -100 : 100;
+			if (i >= 2) pmove.basevelocity[i - 2] = 100;
+			movevars.entgravity = 16;
+			pms_bankgravity_used = false;
+			VectorCopy(pmove.origin, begin);
+			VectorClear(normal);
+			admitted = PMSrc_BankGravityStartDefault(normal);
+			Q_snprintfz(name, sizeof(name), "P1136 carrier %i finite Z admitted", i);
+			PMSrc_Check(name, admitted, 1, 0);
+			Q_snprintfz(name, sizeof(name), "P1136 carrier %i default Z includes carry", i);
+			PMSrc_Check(name, normal[2], (i & 1) ? -3497.5f : -3494.5f, 0);
+			PMSrc_StartGravity();
+			Q_snprintfz(name, sizeof(name), "P1136 carrier %i Z consumed once", i);
+			PMSrc_Check(name, pmove.basevelocity[2], 0, 0);
+			firstclear = false;
+			PMSrc_AirMove(&firstclear, velocity);
+			VectorCopy(pmove.origin, accepted);
+			Q_snprintfz(name, sizeof(name), "P1136 carrier %i first clear acts", i);
+			PMSrc_Check(name, firstclear, 1, 0);
+			VectorMA(begin, pms_frametime, velocity, linear);
+			Q_snprintfz(name, sizeof(name), "P1136 carrier %i total accepted path", i);
+			PMSrc_Check(name, VectorCompare(linear, accepted), 1, 0);
+			VectorCopy(pmove.velocity, finishbefore);
+			PMSrc_FinishGravity();
+			Q_snprintfz(name, sizeof(name), "P1136 carrier %i late clamp converges", i);
+			PMSrc_Check(name, PMSrc_BankGravityFinishChanged(finishbefore, pmove.velocity, NULL), 0, 0);
+			changed = admitted && firstclear && PMSrc_BankGravityAirChanged(begin, accepted, velocity, normal[2]);
+			Q_snprintfz(name, sizeof(name), "P1136 carrier %i earlier path used", i);
+			PMSrc_Check(name, changed, 1, 0);
+			Q_snprintfz(name, sizeof(name), "P1136 carrier %i relative X retained", i);
+			PMSrc_Check(name, pmove.velocity[0], 80, 0);
+			Q_snprintfz(name, sizeof(name), "P1136 carrier %i relative Y retained", i);
+			PMSrc_Check(name, pmove.velocity[1], 0, 0);
+		}
+		pms_forwardmove = forwardmove;
+		pms_sidemove = sidemove;
+	}
+	pmove.basevelocity[0] = NAN;
+	PMSrc_Check("P1135 NaN horizontal carrier refused", PMSrc_BankGravityStartDefault(normal), 0, 0);
+	pmove.basevelocity[0] = INFINITY;
+	PMSrc_Check("P1135 infinite X carrier refused", PMSrc_BankGravityStartDefault(normal), 0, 0);
+	pmove.basevelocity[0] = 0;
+	pmove.basevelocity[1] = -INFINITY;
+	PMSrc_Check("P1135 infinite Y carrier refused", PMSrc_BankGravityStartDefault(normal), 0, 0);
+	pmove.basevelocity[1] = 0;
+	pmove.basevelocity[0] = 100;
+	movevars.entgravity = 1;
+	PMSrc_Check("P1135 default gravity carrier excluded", PMSrc_BankGravityStartDefault(normal), 0, 0);
+	VectorClear(pmove.basevelocity);
 	movevars.entgravity = INFINITY;
 	PMSrc_BankGravityBegin(false);
 	PMSrc_Check("P1131 unarmed excluded", PMSrc_BankGravityStartDefault(normal), 0, 0);
@@ -4678,6 +4846,533 @@ static void PMSrc_TestBankStartGravity(void)
 	hit.startsolid = false;
 	hit.endpos[2] += 1;
 	PMSrc_Check("P1131 wrong trace endpoint refused", PMSrc_BankGravityTraceClear(&hit, accepted), 0, 0);
+	{
+		int i;
+		float forwardmove = pms_forwardmove, sidemove = pms_sidemove;
+		vec3_t unobserved_origin, unobserved_velocity;
+		pms_forwardmove = pms_sidemove = 0;
+		pms_maxspeed = 260;
+		movevars.normalizejump = movevars.jumpaddrise = movevars.ktjump = 0;
+		movevars.stamina = movevars.jumpzoffset = movevars.autobunny = 0;
+		movevars.gravity = 1048576;
+		movevars.jumpvelocity = 16000;
+		pms_frametime = 1.0f / 64;
+		for (i = 0; i < 6; ++i)
+		{
+			memset(&pmove, 0, sizeof(pmove));
+			pmove.pm_type = PM_NORMAL;
+			pmove.skipent = -1;
+			VectorCopy(mins, pmove.player_mins);
+			VectorCopy(maxs, pmove.player_maxs);
+			VectorSet(pmove.origin, 0, 0, 128);
+			pmove.surfacefriction = 1;
+			pmove.numphysent = 1;
+			pmove.physents[0].info = 1;
+			pmove.physents[0].scale = 1;
+			VectorSet(pmove.physents[0].mins, -256, -256, -16);
+			VectorSet(pmove.physents[0].maxs, 256, 256, 0);
+			pmove.physents[0].origin[2] = 128;
+			if (i == 3)
+			{
+				pmove.numphysent = 2;
+				pmove.physents[1].info = 2;
+				pmove.physents[1].scale = 1;
+				VectorSet(pmove.physents[1].mins, -256, -256, 0);
+				VectorSet(pmove.physents[1].maxs, 256, 256, 16);
+				pmove.physents[1].origin[2] = 220;
+			}
+			movevars.entgravity = (i == 0 || i == 4) ? 1 : 1.5f;
+			PMSrc_CategorizePosition();
+			Q_snprintfz(name, sizeof(name), "P1139 groundjump %i actual contact", i);
+			PMSrc_Check(name, pmove.onground, 1, 0);
+			pmove.cmd.buttons = BUTTON_JUMP;
+			if (i == 5)
+			{
+				pmove.jump_held = true;
+				pmove.oldbuttons = BUTTON_JUMP;
+			}
+			PMSrc_BankGravityBegin(i >= 2);
+			if (i == 2)
+			{
+				PMSrc_Check("P1139 ground default admitted", PMSrc_BankGravityGroundStartDefault(normal), 1, 0);
+				PMSrc_Check("P1139 ground default first clamp", normal[2], -3500, 0);
+				movevars.normalizejump = 1;
+				PMSrc_Check("P1139 normalized jump excluded", PMSrc_BankGravityGroundStartDefault(normal), 0, 0);
+				movevars.normalizejump = 0;
+				movevars.jumpaddrise = 1;
+				PMSrc_Check("P1139 alternate rise excluded", PMSrc_BankGravityGroundStartDefault(normal), 0, 0);
+				movevars.jumpaddrise = 0;
+				movevars.ktjump = 1;
+				PMSrc_Check("P1139 KT jump excluded", PMSrc_BankGravityGroundStartDefault(normal), 0, 0);
+				movevars.ktjump = 0;
+				movevars.stamina = 1;
+				PMSrc_Check("P1139 stamina jump excluded", PMSrc_BankGravityGroundStartDefault(normal), 0, 0);
+				movevars.stamina = 0;
+				movevars.jumpzoffset = 1;
+				PMSrc_Check("P1139 offset jump excluded", PMSrc_BankGravityGroundStartDefault(normal), 0, 0);
+				movevars.jumpzoffset = 0;
+				pmove.ducked = true;
+				PMSrc_Check("P1139 ducked jump excluded", PMSrc_BankGravityGroundStartDefault(normal), 0, 0);
+				pmove.ducked = false;
+				pmove.ducking = true;
+				PMSrc_Check("P1139 ducking jump excluded", PMSrc_BankGravityGroundStartDefault(normal), 0, 0);
+				pmove.ducking = false;
+				pmove.basevelocity[2] = INFINITY;
+				PMSrc_Check("P1139 nonfinite ground carrier excluded", PMSrc_BankGravityGroundStartDefault(normal), 0, 0);
+				pmove.basevelocity[2] = 0;
+				pmove.cmd.buttons = 0;
+				PMSrc_Check("P1139 missing jump excluded", PMSrc_BankGravityGroundStartDefault(normal), 0, 0);
+				pmove.cmd.buttons = BUTTON_JUMP;
+				movevars.entgravity = INFINITY;
+				PMSrc_Check("P1139 nonfinite ground property excluded", PMSrc_BankGravityGroundStartDefault(normal), 0, 0);
+				movevars.entgravity = 1.5f;
+				movevars.jumpvelocity = NAN;
+				PMSrc_Check("P1139 nonfinite impulse excluded", PMSrc_BankGravityGroundStartDefault(normal), 0, 0);
+				movevars.jumpvelocity = 16000;
+				movevars.gravity = INFINITY;
+				PMSrc_Check("P1139 nonfinite world gravity excluded", PMSrc_BankGravityGroundStartDefault(normal), 0, 0);
+				movevars.gravity = 1048576;
+				movevars.maxvelocity = INFINITY;
+				PMSrc_Check("P1139 nonfinite maximum excluded", PMSrc_BankGravityGroundStartDefault(normal), 0, 0);
+				movevars.maxvelocity = 3500;
+				movevars.gravity = 800;
+				movevars.jumpvelocity = 0;
+				VectorClear(normal);
+				PMSrc_Check("P1139 zero impulse default acts", PMSrc_BankGravityJumpDefault(normal), 1, 0);
+				PMSrc_Check("P1139 zero impulse stock fallback", normal[2], 268.3281572999747f - 6.25f, 0);
+				movevars.jumpvelocity = -1;
+				VectorClear(normal);
+				PMSrc_Check("P1139 negative impulse default acts", PMSrc_BankGravityJumpDefault(normal), 1, 0);
+				PMSrc_Check("P1139 negative impulse stock fallback", normal[2], 268.3281572999747f - 6.25f, 0);
+				movevars.gravity = 1048576;
+				movevars.jumpvelocity = 16000;
+			}
+			PMSrc_FullWalkMove();
+			Q_snprintfz(name, sizeof(name), "P1139 groundjump %i jump phase acted", i);
+			PMSrc_Check(name, i == 5 ? pmove.onground :
+				(pmove.jump_held && (pmove.oldbuttons & BUTTON_JUMP) && !pmove.onground), 1, 0);
+			Q_snprintfz(name, sizeof(name), "P1139 groundjump %i accepted rise", i);
+			PMSrc_Check(name, pmove.origin[2], i == 5 ? 128 :
+				((i == 0 || i == 4) ? 182.6875f : 131.3125f), 0);
+			Q_snprintfz(name, sizeof(name), "P1139 groundjump %i accepted tail", i);
+			PMSrc_Check(name, pmove.velocity[2], i == 5 ? 0 : -3500, 0);
+			if (i == 1)
+			{
+				VectorCopy(pmove.origin, unobserved_origin);
+				VectorCopy(pmove.velocity, unobserved_velocity);
+			}
+			if (i == 2 || i == 3)
+			{
+				PMSrc_Check("P1139 groundjump observer preserves origin", VectorCompare(pmove.origin, unobserved_origin), 1, 0);
+				PMSrc_Check("P1139 groundjump observer preserves velocity", VectorCompare(pmove.velocity, unobserved_velocity), 1, 0);
+			}
+			Q_snprintfz(name, sizeof(name), "P1139 groundjump %i accepted use", i);
+			PMSrc_Check(name, PMSrc_BankGravityEnd(), i == 2, 0);
+		}
+		movevars.normalizejump = 1;
+		movevars.jumpvelocity = 14000;
+		for (i = 0; i < 6; ++i)
+		{
+			memset(&pmove, 0, sizeof(pmove));
+			pmove.pm_type = PM_NORMAL;
+			pmove.skipent = -1;
+			VectorCopy(mins, pmove.player_mins);
+			VectorCopy(maxs, pmove.player_maxs);
+			VectorSet(pmove.origin, 0, 0, 128);
+			pmove.surfacefriction = 1;
+			pmove.numphysent = 1;
+			pmove.physents[0].info = 1;
+			pmove.physents[0].scale = 1;
+			VectorSet(pmove.physents[0].mins, -256, -256, -16);
+			VectorSet(pmove.physents[0].maxs, 256, 256, 0);
+			pmove.physents[0].origin[2] = 128;
+			if (i == 3)
+			{
+				pmove.numphysent = 2;
+				pmove.physents[1].info = 2;
+				pmove.physents[1].scale = 1;
+				VectorSet(pmove.physents[1].mins, -256, -256, 0);
+				VectorSet(pmove.physents[1].maxs, 256, 256, 16);
+				pmove.physents[1].origin[2] = 240;
+			}
+			movevars.entgravity = (i == 0 || i == 4) ? 1 : 1.5f;
+			PMSrc_CategorizePosition();
+			Q_snprintfz(name, sizeof(name), "P1141 normalized %i actual contact", i);
+			PMSrc_Check(name, pmove.onground, 1, 0);
+			pmove.cmd.buttons = BUTTON_JUMP;
+			if (i == 5)
+			{
+				pmove.jump_held = true;
+				pmove.oldbuttons = BUTTON_JUMP;
+			}
+			PMSrc_BankGravityBegin(i >= 2);
+			if (i == 2)
+			{
+				PMSrc_Check("P1141 normalized ground admitted", PMSrc_BankGravityGroundStartNormalized(normal), 1, 0);
+				PMSrc_Check("P1141 normalized neutral first clamp", normal[2], -3500, 0);
+				movevars.normalizejump = 0;
+				PMSrc_Check("P1141 stock mode excluded", PMSrc_BankGravityGroundStartNormalized(normal), 0, 0);
+				movevars.normalizejump = NAN;
+				PMSrc_Check("P1141 nonfinite mode excluded", PMSrc_BankGravityGroundStartNormalized(normal), 0, 0);
+				movevars.normalizejump = INFINITY;
+				PMSrc_Check("P1141 infinite mode excluded", PMSrc_BankGravityGroundStartNormalized(normal), 0, 0);
+				movevars.normalizejump = -1;
+				PMSrc_Check("P1141 finite boolean mode admitted", PMSrc_BankGravityGroundStartNormalized(normal), 1, 0);
+				movevars.normalizejump = 1;
+				movevars.gravity = 800;
+				movevars.jumpvelocity = 0;
+				VectorSet(normal, 0, 0, -6.25f);
+				PMSrc_Check("P1141 zero impulse counter acts", PMSrc_BankGravityJumpDefault(normal), 1, 0);
+				PMSrc_Check("P1141 zero impulse stock fallback", normal[2], 262.0781572999747f, 0);
+				movevars.jumpvelocity = -1;
+				VectorSet(normal, 0, 0, -6.25f);
+				PMSrc_Check("P1141 negative impulse counter acts", PMSrc_BankGravityJumpDefault(normal), 1, 0);
+				PMSrc_Check("P1141 negative impulse stock fallback", normal[2], 262.0781572999747f, 0);
+				movevars.jumpvelocity = 268.3281572999747f;
+				VectorSet(normal, 0, 0, -3);
+				PMSrc_Check("P1141 positive inbound counter acts", PMSrc_BankGravityJumpDefault(normal), 1, 0);
+				PMSrc_Check("P1141 positive inbound undo", normal[2], 262.0781572999747f, 0);
+				VectorSet(normal, 0, 0, -7.25f);
+				PMSrc_Check("P1141 negative inbound counter acts", PMSrc_BankGravityJumpDefault(normal), 1, 0);
+				PMSrc_Check("P1141 negative inbound retained", normal[2], 261.0781572999747f, 0);
+				movevars.gravity = 1048576;
+				movevars.jumpvelocity = 14000;
+			}
+			PMSrc_FullWalkMove();
+			Q_snprintfz(name, sizeof(name), "P1141 normalized %i jump phase acted", i);
+			PMSrc_Check(name, i == 5 ? pmove.onground :
+				(pmove.jump_held && (pmove.oldbuttons & BUTTON_JUMP) && !pmove.onground), 1, 0);
+			Q_snprintfz(name, sizeof(name), "P1141 normalized %i accepted rise", i);
+			PMSrc_Check(name, pmove.origin[2], i == 5 ? 128 :
+				((i == 0 || i == 4) ? 182.6875f : 154.75f), 0);
+			Q_snprintfz(name, sizeof(name), "P1141 normalized %i accepted tail", i);
+			PMSrc_Check(name, pmove.velocity[2], i == 5 ? 0 : -3500, 0);
+			if (i == 1)
+			{
+				VectorCopy(pmove.origin, unobserved_origin);
+				VectorCopy(pmove.velocity, unobserved_velocity);
+			}
+			if (i == 2 || i == 3)
+			{
+				PMSrc_Check("P1141 normalized observer preserves origin", VectorCompare(pmove.origin, unobserved_origin), 1, 0);
+				PMSrc_Check("P1141 normalized observer preserves velocity", VectorCompare(pmove.velocity, unobserved_velocity), 1, 0);
+			}
+			Q_snprintfz(name, sizeof(name), "P1141 normalized %i accepted use", i);
+			PMSrc_Check(name, PMSrc_BankGravityEnd(), i == 2, 0);
+		}
+		/* P1143: actual normalized additive-rise takeoff, not a shadow-only call. */
+		movevars.normalizejump = movevars.jumpaddrise = 1;
+		movevars.ktjump = movevars.stamina = movevars.jumpzoffset = movevars.autobunny = 0;
+		movevars.jumpvelocity = 1000;
+		for (i = 0; i < 6; ++i)
+		{
+			memset(&pmove, 0, sizeof(pmove));
+			pmove.pm_type = PM_NORMAL;
+			pmove.skipent = -1;
+			VectorCopy(mins, pmove.player_mins);
+			VectorCopy(maxs, pmove.player_maxs);
+			VectorSet(pmove.origin, 0, 0, 128);
+			pmove.surfacefriction = 1;
+			pmove.numphysent = 1;
+			pmove.physents[0].info = 1;
+			pmove.physents[0].scale = 1;
+			VectorSet(pmove.physents[0].mins, -256, -256, -16);
+			VectorSet(pmove.physents[0].maxs, 256, 256, 0);
+			pmove.physents[0].origin[2] = 128;
+			if (i == 3)
+			{
+				pmove.numphysent = 2;
+				pmove.physents[1].info = 2;
+				pmove.physents[1].scale = 1;
+				VectorSet(pmove.physents[1].mins, -256, -256, 0);
+				VectorSet(pmove.physents[1].maxs, 256, 256, 16);
+				pmove.physents[1].origin[2] = 240;
+			}
+			movevars.entgravity = (i == 0 || i == 4) ? 1 : 1.5f;
+			PMSrc_CategorizePosition();
+			Q_snprintfz(name, sizeof(name), "P1143 additive rise %i actual contact", i);
+			PMSrc_Check(name, pmove.onground, 1, 0);
+			pmove.basevelocity[2] = 768000;
+			pmove.cmd.buttons = BUTTON_JUMP;
+			if (i == 5)
+			{
+				pmove.jump_held = true;
+				pmove.oldbuttons = BUTTON_JUMP;
+			}
+			PMSrc_BankGravityBegin(i >= 2);
+			if (i == 2)
+			{
+				VectorClear(normal);
+				PMSrc_Check("P1143 additive rise ground admitted", PMSrc_BankGravityGroundStartNormalized(normal), 1, 0);
+				PMSrc_Check("P1143 additive rise neutral first clamp", normal[2], 3500, 0);
+				movevars.jumpaddrise = -1;
+				PMSrc_Check("P1143 negative finite rise admitted", PMSrc_BankGravityGroundStartNormalized(normal), 1, 0);
+				movevars.jumpaddrise = .5f;
+				PMSrc_Check("P1143 fractional finite rise admitted", PMSrc_BankGravityGroundStartNormalized(normal), 1, 0);
+				movevars.jumpaddrise = NAN;
+				PMSrc_Check("P1143 nonfinite rise excluded", PMSrc_BankGravityGroundStartNormalized(normal), 0, 0);
+				movevars.jumpaddrise = INFINITY;
+				PMSrc_Check("P1143 infinite rise excluded", PMSrc_BankGravityGroundStartNormalized(normal), 0, 0);
+				movevars.jumpaddrise = 1;
+				movevars.normalizejump = 0;
+				PMSrc_Check("P1143 stock normalized entry excluded", PMSrc_BankGravityGroundStartNormalized(normal), 0, 0);
+				PMSrc_Check("P1143 stock rise entry excluded", PMSrc_BankGravityGroundStartDefault(normal), 0, 0);
+				movevars.normalizejump = 1;
+				movevars.gravity = 800;
+				movevars.jumpvelocity = 268.3281572999747f;
+				VectorSet(normal, 0, 0, 3);
+				PMSrc_Check("P1143 positive inbound counter acts", PMSrc_BankGravityJumpDefault(normal), 1, 0);
+				PMSrc_Check("P1143 positive inbound retained", normal[2], 271.3281572999747f, 0);
+				VectorSet(normal, 0, 0, -7.25f);
+				PMSrc_Check("P1143 negative inbound counter acts", PMSrc_BankGravityJumpDefault(normal), 1, 0);
+				PMSrc_Check("P1143 negative inbound retained", normal[2], 261.0781572999747f, 0);
+				movevars.jumpvelocity = 0;
+				VectorSet(normal, 0, 0, -6.25f);
+				PMSrc_Check("P1143 zero impulse counter acts", PMSrc_BankGravityJumpDefault(normal), 1, 0);
+				PMSrc_Check("P1143 zero impulse stock fallback", normal[2], 262.0781572999747f, 0);
+				movevars.jumpvelocity = -1;
+				VectorSet(normal, 0, 0, -6.25f);
+				PMSrc_Check("P1143 negative impulse counter acts", PMSrc_BankGravityJumpDefault(normal), 1, 0);
+				PMSrc_Check("P1143 negative impulse stock fallback", normal[2], 262.0781572999747f, 0);
+				movevars.gravity = 1048576;
+				movevars.jumpvelocity = 1000;
+				VectorSet(normal, 0, 0, 3500);
+				PMSrc_Check("P1143 high rise counter acts", PMSrc_BankGravityJumpDefault(normal), 1, 0);
+				PMSrc_Check("P1143 high rise neutral second clamp", normal[2], 3500, 0);
+			}
+			PMSrc_FullWalkMove();
+			Q_snprintfz(name, sizeof(name), "P1143 additive rise %i jump phase acted", i);
+			PMSrc_Check(name, i == 5 ? pmove.onground :
+				(pmove.jump_held && (pmove.oldbuttons & BUTTON_JUMP) && !pmove.onground), 1, 0);
+			Q_snprintfz(name, sizeof(name), "P1143 additive rise %i accepted rise", i);
+			PMSrc_Check(name, pmove.origin[2], i == 5 ? 128 :
+				((i == 0 || i == 4) ? 182.6875f : 139.125f), 0);
+			Q_snprintfz(name, sizeof(name), "P1143 additive rise %i accepted tail", i);
+			PMSrc_Check(name, pmove.velocity[2], i == 5 ? 0 : -3500, 0);
+			Q_snprintfz(name, sizeof(name), "P1143 additive rise %i carrier consumed", i);
+			PMSrc_Check(name, pmove.basevelocity[2], 0, 0);
+			if (i == 1)
+			{
+				VectorCopy(pmove.origin, unobserved_origin);
+				VectorCopy(pmove.velocity, unobserved_velocity);
+			}
+			if (i == 2 || i == 3)
+			{
+				PMSrc_Check("P1143 additive rise observer preserves origin", VectorCompare(pmove.origin, unobserved_origin), 1, 0);
+				PMSrc_Check("P1143 additive rise observer preserves velocity", VectorCompare(pmove.velocity, unobserved_velocity), 1, 0);
+			}
+			Q_snprintfz(name, sizeof(name), "P1143 additive rise %i accepted use", i);
+			PMSrc_Check(name, PMSrc_BankGravityEnd(), i == 2, 0);
+		}
+		/* P1145: normalized duck postures with their real hull and blocked alternative. */
+		{
+			int mode, posture;
+			float height;
+			movevars.normalizejump = 1;
+			movevars.standheight = 62;
+			movevars.duckheight = 45;
+			for (mode = 0; mode < 2; ++mode)
+			for (posture = 0; posture < 2; ++posture)
+			{
+				movevars.jumpaddrise = mode;
+				movevars.jumpvelocity = mode ? 1000 : 14000;
+				height = posture ? PMSrc_StandHeight() : PMSrc_DuckHeight();
+				for (i = 0; i < 6; ++i)
+				{
+					memset(&pmove, 0, sizeof(pmove));
+					pmove.pm_type = PM_NORMAL;
+					pmove.skipent = -1;
+					pmove.ducked = !posture;
+					pmove.ducking = !!posture;
+					VectorSet(pmove.player_mins, -16, -16, 0);
+					VectorSet(pmove.player_maxs, 16, 16, height);
+					VectorSet(pmove.origin, 0, 0, 128);
+					pmove.surfacefriction = 1;
+					pmove.basevelocity[2] = mode ? 768000 : 0;
+					pmove.numphysent = 1;
+					pmove.physents[0].info = 1;
+					pmove.physents[0].scale = 1;
+					VectorSet(pmove.physents[0].mins, -256, -256, -16);
+					VectorSet(pmove.physents[0].maxs, 256, 256, 0);
+					pmove.physents[0].origin[2] = 128;
+					if (i == 3)
+					{
+						pmove.numphysent = 2;
+						pmove.physents[1].info = 2;
+						pmove.physents[1].scale = 1;
+						VectorSet(pmove.physents[1].mins, -256, -256, 0);
+						VectorSet(pmove.physents[1].maxs, 256, 256, 16);
+						pmove.physents[1].origin[2] = 176 + height;
+					}
+					movevars.entgravity = (i == 0 || i == 4) ? 1 : 1.5f;
+					PMSrc_CategorizePosition();
+					Q_snprintfz(name, sizeof(name), "P1145 normalized duck %i/%i/%i actual contact", mode, posture, i);
+					PMSrc_Check(name, pmove.onground, 1, 0);
+					if (i == 0)
+					{
+						Q_snprintfz(name, sizeof(name), "P1145 normalized duck %i/%i actual hull", mode, posture);
+						PMSrc_Check(name, pmove.player_maxs[2] - pmove.player_mins[2], posture ? 62 : 45, 0);
+					}
+					pmove.cmd.buttons = BUTTON_JUMP | BUTTON_DUCK;
+					if (i == 5)
+					{
+						pmove.jump_held = true;
+						pmove.oldbuttons = BUTTON_JUMP | BUTTON_DUCK;
+					}
+					PMSrc_BankGravityBegin(i >= 2);
+					if (i == 2)
+					{
+						Q_snprintfz(name, sizeof(name), "P1145 normalized duck %i/%i normalized admitted", mode, posture);
+						PMSrc_Check(name, PMSrc_BankGravityGroundStartNormalized(normal), 1, 0);
+					}
+					PMSrc_FullWalkMove();
+					Q_snprintfz(name, sizeof(name), "P1145 normalized duck %i/%i/%i jump phase acted", mode, posture, i);
+					PMSrc_Check(name, i == 5 ? pmove.onground :
+						(pmove.jump_held && (pmove.oldbuttons & BUTTON_JUMP) && !pmove.onground), 1, 0);
+					Q_snprintfz(name, sizeof(name), "P1145 normalized duck %i/%i/%i accepted rise", mode, posture, i);
+					PMSrc_Check(name, pmove.origin[2], i == 5 ? 128 :
+						((i == 0 || i == 4) ? 182.6875f : (mode ? 139.125f : 154.75f)), 0);
+					Q_snprintfz(name, sizeof(name), "P1145 normalized duck %i/%i/%i accepted tail", mode, posture, i);
+					PMSrc_Check(name, pmove.velocity[2], i == 5 ? 0 : -3500, 0);
+					if (i == 1)
+					{
+						VectorCopy(pmove.origin, unobserved_origin);
+						VectorCopy(pmove.velocity, unobserved_velocity);
+					}
+					if (i == 2 || i == 3)
+					{
+						Q_snprintfz(name, sizeof(name), "P1145 normalized duck %i/%i/%i observer preserves origin", mode, posture, i);
+						PMSrc_Check(name, VectorCompare(pmove.origin, unobserved_origin), 1, 0);
+						Q_snprintfz(name, sizeof(name), "P1145 normalized duck %i/%i/%i observer preserves velocity", mode, posture, i);
+						PMSrc_Check(name, VectorCompare(pmove.velocity, unobserved_velocity), 1, 0);
+					}
+					Q_snprintfz(name, sizeof(name), "P1145 normalized duck %i/%i/%i accepted use", mode, posture, i);
+					PMSrc_Check(name, PMSrc_BankGravityEnd(), i == 2, 0);
+				}
+			}
+		}
+		/* P1148: recovered normalized stamina must use the pre-cost identity ratio. */
+		{
+			int mode, posture;
+			float height;
+			movevars.normalizejump = movevars.stamina = 1;
+			movevars.staminarecovery = 19;
+			movevars.staminajumpcost = 25;
+			movevars.standheight = 62;
+			movevars.duckheight = 45;
+			for (mode = 0; mode < 2; ++mode)
+			for (posture = 0; posture < 3; ++posture)
+			{
+				movevars.jumpaddrise = mode;
+				movevars.jumpvelocity = mode ? 1000 : 14000;
+				height = posture == 1 ? PMSrc_DuckHeight() : PMSrc_StandHeight();
+				for (i = 0; i < 6; ++i)
+				{
+					memset(&pmove, 0, sizeof(pmove));
+					pmove.pm_type = PM_NORMAL;
+					pmove.skipent = -1;
+					pmove.ducked = posture == 1;
+					pmove.ducking = posture == 2;
+					VectorSet(pmove.player_mins, -16, -16, 0);
+					VectorSet(pmove.player_maxs, 16, 16, height);
+					VectorSet(pmove.origin, 0, 0, 128);
+					pmove.surfacefriction = 1;
+					pmove.basevelocity[2] = mode ? 768000 : 0;
+					pmove.numphysent = 1;
+					pmove.physents[0].info = 1;
+					pmove.physents[0].scale = 1;
+					VectorSet(pmove.physents[0].mins, -256, -256, -16);
+					VectorSet(pmove.physents[0].maxs, 256, 256, 0);
+					pmove.physents[0].origin[2] = 128;
+					if (i == 3)
+					{
+						pmove.numphysent = 2;
+						pmove.physents[1].info = 2;
+						pmove.physents[1].scale = 1;
+						VectorSet(pmove.physents[1].mins, -256, -256, 0);
+						VectorSet(pmove.physents[1].maxs, 256, 256, 16);
+						pmove.physents[1].origin[2] = 176 + height;
+					}
+					movevars.entgravity = (i == 0 || i == 4) ? 1 : 1.5f;
+					PMSrc_CategorizePosition();
+					Q_snprintfz(name, sizeof(name), "P1148 recovered stamina %i/%i/%i actual contact", mode, posture, i);
+					PMSrc_Check(name, pmove.onground, 1, 0);
+					Q_snprintfz(name, sizeof(name), "P1148 recovered stamina %i/%i/%i PRE-cost ratio", mode, posture, i);
+					PMSrc_Check(name, PMSrc_StaminaRatio(), 1, 0);
+					if (i == 0)
+					{
+						Q_snprintfz(name, sizeof(name), "P1148 recovered stamina %i/%i actual hull", mode, posture);
+						PMSrc_Check(name, pmove.player_maxs[2] - pmove.player_mins[2], posture == 1 ? 45 : 62, 0);
+					}
+					pmove.cmd.buttons = BUTTON_JUMP | (posture ? BUTTON_DUCK : 0);
+					if (i == 5)
+					{
+						pmove.jump_held = true;
+						pmove.oldbuttons = pmove.cmd.buttons;
+					}
+					PMSrc_BankGravityBegin(i >= 2);
+					if (i == 2)
+					{
+						Q_snprintfz(name, sizeof(name), "P1148 recovered stamina %i/%i normalized admitted", mode, posture);
+						PMSrc_Check(name, PMSrc_BankGravityGroundStartNormalized(normal), 1, 0);
+						movevars.normalizejump = movevars.jumpaddrise = 0;
+						Q_snprintfz(name, sizeof(name), "P1148 recovered stamina %i/%i stock excluded", mode, posture);
+						PMSrc_Check(name, PMSrc_BankGravityGroundStartDefault(normal), 0, 0);
+						movevars.normalizejump = 1;
+						movevars.jumpaddrise = mode;
+						pmove.stamina = 40;
+						Q_snprintfz(name, sizeof(name), "P1148 recovered stamina %i/%i fatigue excluded", mode, posture);
+						PMSrc_Check(name, PMSrc_BankGravityGroundStartNormalized(normal), 0, 0);
+						pmove.stamina = NAN;
+						Q_snprintfz(name, sizeof(name), "P1148 recovered stamina %i/%i NaN pool excluded", mode, posture);
+						PMSrc_Check(name, PMSrc_BankGravityGroundStartNormalized(normal), 0, 0);
+						pmove.stamina = 0;
+						movevars.stamina = NAN;
+						Q_snprintfz(name, sizeof(name), "P1148 recovered stamina %i/%i NaN mode excluded", mode, posture);
+						PMSrc_Check(name, PMSrc_BankGravityGroundStartNormalized(normal), 0, 0);
+						movevars.stamina = 1;
+						movevars.staminarecovery = NAN;
+						Q_snprintfz(name, sizeof(name), "P1148 recovered stamina %i/%i NaN recovery excluded", mode, posture);
+						PMSrc_Check(name, PMSrc_BankGravityGroundStartNormalized(normal), 0, 0);
+						movevars.staminarecovery = 19;
+						movevars.staminajumpcost = NAN;
+						Q_snprintfz(name, sizeof(name), "P1148 recovered stamina %i/%i NaN cost excluded", mode, posture);
+						PMSrc_Check(name, PMSrc_BankGravityGroundStartNormalized(normal), 0, 0);
+						movevars.staminajumpcost = 25;
+					}
+					PMSrc_FullWalkMove();
+					Q_snprintfz(name, sizeof(name), "P1148 recovered stamina %i/%i/%i jump phase acted", mode, posture, i);
+					PMSrc_Check(name, i == 5 ? pmove.onground :
+						(pmove.jump_held && (pmove.oldbuttons & BUTTON_JUMP) && !pmove.onground), 1, 0);
+					Q_snprintfz(name, sizeof(name), "P1148 recovered stamina %i/%i/%i actual stamina cost acted", mode, posture, i);
+					PMSrc_Check(name, pmove.stamina > 0, i != 5, 0);
+					Q_snprintfz(name, sizeof(name), "P1148 recovered stamina %i/%i/%i POST-cost ratio changed", mode, posture, i);
+					PMSrc_Check(name, PMSrc_StaminaRatio() < 1, i != 5, 0);
+					Q_snprintfz(name, sizeof(name), "P1148 recovered stamina %i/%i/%i accepted rise", mode, posture, i);
+					PMSrc_Check(name, pmove.origin[2], i == 5 ? 128 :
+						((i == 0 || i == 4) ? 182.6875f : (mode ? 139.125f : 154.75f)), 0);
+					Q_snprintfz(name, sizeof(name), "P1148 recovered stamina %i/%i/%i accepted tail", mode, posture, i);
+					PMSrc_Check(name, pmove.velocity[2], i == 5 ? 0 : -3500, 0);
+					if (i == 1)
+					{
+						VectorCopy(pmove.origin, unobserved_origin);
+						VectorCopy(pmove.velocity, unobserved_velocity);
+					}
+					if (i == 2 || i == 3)
+					{
+						Q_snprintfz(name, sizeof(name), "P1148 recovered stamina %i/%i/%i observer preserves origin", mode, posture, i);
+						PMSrc_Check(name, VectorCompare(pmove.origin, unobserved_origin), 1, 0);
+						Q_snprintfz(name, sizeof(name), "P1148 recovered stamina %i/%i/%i observer preserves velocity", mode, posture, i);
+						PMSrc_Check(name, VectorCompare(pmove.velocity, unobserved_velocity), 1, 0);
+					}
+					Q_snprintfz(name, sizeof(name), "P1148 recovered stamina %i/%i/%i accepted use", mode, posture, i);
+					PMSrc_Check(name, PMSrc_BankGravityEnd(), i == 2, 0);
+				}
+			}
+		}
+		pms_forwardmove = forwardmove;
+		pms_sidemove = sidemove;
+	}
 	memcpy(&pmove, saved, sizeof(pmove));
 	BZ_Free(saved);
 	movevars = mv;
@@ -4690,6 +5385,9 @@ static void PMSrc_TestBankStartGravity(void)
 	pms_surfed = surfed;
 	pms_bankgravity_observe = observe;
 	pms_bankgravity_used = used;
+	VectorCopy(savedforward, pms_forward);
+	VectorCopy(savedright, pms_right);
+	pms_maxspeed = maxspeed;
 }
 
 static void PMSrc_SelfTest_f (void)

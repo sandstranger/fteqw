@@ -1814,7 +1814,7 @@ static int CL_LoadModels(int stage, qboolean dontactuallyload)
 
 	for (i=1 ; i<MAX_CSMODELS ; i++)
 	{
-		if (!cl.model_csqcname[i])
+		if (!cl.model_csqcname[i][0])
 			skipstage();
 		else if (atstage())
 		{
