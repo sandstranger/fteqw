@@ -27,7 +27,7 @@ extern qboolean vid_isfullscreen;
 
 #if ANDROID
 static bool controlsWereReinit = false;
-static qboolean androidTouchMouseButtonForwarded = false;
+static unsigned int androidTouchMouseButtonsForwarded = 0;
 typedef void (*forceLandScapeActivityOrientationDelegate)();
 static forceLandScapeActivityOrientationDelegate activityOrientationChangerInstance = nullptr;
 #endif
@@ -1764,16 +1764,19 @@ SDL_AppResult SDLCALL SDL_AppEvent(void *appstate, SDL_Event *event)
 		{
 			// Touch-generated mouse clicks are required by FTE menus. Keep suppressing
 			// gameplay touch clicks, which are already delivered as SDL finger events.
+			if (event->button.button >= 32)
+				break;
+			const unsigned int buttonMask = 1u << event->button.button;
 			if (event->button.down)
 			{
 				if (!topmenu)
 					break;
-				androidTouchMouseButtonForwarded = true;
+				androidTouchMouseButtonsForwarded |= buttonMask;
 			}
-			else if (!androidTouchMouseButtonForwarded)
+			else if (!(androidTouchMouseButtonsForwarded & buttonMask))
 				break;
 			else
-				androidTouchMouseButtonForwarded = false;
+				androidTouchMouseButtonsForwarded &= ~buttonMask;
 		}
 #else
 		if (event->button.which == SDL_TOUCH_MOUSEID)
