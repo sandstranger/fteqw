@@ -2635,6 +2635,17 @@ void SCR_ShowPics_Draw(void)
 	if (a != 1)
 		R2D_ImageColours(1,1,1,1);
 }
+qboolean SCR_ShowPics_HasTouchControls(void)
+{
+	showpic_t *sp;
+	for (sp = showpics; sp; sp = sp->next)
+	{
+		if (sp->tcommand && *sp->tcommand)
+			return true;
+	}
+	return false;
+}
+
 const char *SCR_ShowPics_ClickCommand(float cx, float cy, qboolean istouch)
 {
 	downloadlist_t *failed;

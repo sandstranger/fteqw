@@ -670,6 +670,70 @@ static struct mouse_s
 	qboolean updated;
 } ptr[MAXPOINTERS];
 static int touchcursor = -1;	//the cursor follows whichever finger was most recently pressed in preference to any mouse also on the same system
+static vec2_t touchcursor_previous[MAXPOINTERS];
+
+static qboolean IN_ProtocolHasToken(const char *protocols, const char *token)
+{
+	char word[128];
+	size_t tokenlen = strlen(token);
+	const char *start;
+	size_t len;
+
+	while (protocols && *protocols)
+	{
+		while (*protocols && *protocols <= ' ')
+			protocols++;
+		start = protocols;
+		while (*protocols && *protocols > ' ')
+			protocols++;
+		len = protocols - start;
+		if (len && len < sizeof(word))
+		{
+			memcpy(word, start, len);
+			word[len] = 0;
+			if (len == tokenlen && !Q_strcasecmp(word, token))
+				return true;
+		}
+	}
+	return false;
+}
+
+static qboolean IN_TouchMenuConfirmGame(void)
+{
+	const char *protocol;
+
+	// An empty/default FTE selection is not a custom game manifest.
+	if (!fs_gamename.string || !*fs_gamename.string ||
+		!Q_strcasecmp(fs_gamename.string, "FTE"))
+		return false;
+
+	protocol = com_protocolname.string;
+	return !(
+		IN_ProtocolHasToken(protocol, "FTE-Quake") ||
+		IN_ProtocolHasToken(protocol, "FTE-QuakeRerelease") ||
+		IN_ProtocolHasToken(protocol, "DarkPlaces-Quake") ||
+		IN_ProtocolHasToken(protocol, "FTE-Hipnotic") ||
+		IN_ProtocolHasToken(protocol, "FTE-Rogue") ||
+		IN_ProtocolHasToken(protocol, "LibreQuake") ||
+		IN_ProtocolHasToken(protocol, "Quake") ||
+		IN_ProtocolHasToken(protocol, "NetQuake") ||
+		IN_ProtocolHasToken(protocol, "Quake2"));
+}
+
+static qboolean IN_TouchFireConfirmsMenu(struct mouse_s *mouse)
+{
+	const char *button;
+	float x, y;
+
+	if (!mouse || !Key_Dest_Has(kdm_menu|kdm_prompt) ||
+		!IN_TouchMenuConfirmGame() || !SCR_ShowPics_HasTouchControls())
+		return false;
+
+	x = mouse->oldpos[0] * vid.width / vid.pixelwidth;
+	y = mouse->oldpos[1] * vid.height / vid.pixelheight;
+	button = SCR_ShowPics_ClickCommand(x, y, true);
+	return button && !strcmp(button, "+attack");
+}
 
 #define MAXJOYAXIS 6
 #define MAXJOYSTICKS 8
@@ -2652,6 +2716,18 @@ static void IN_Commands_Internal(qboolean deliverpaste)
 					Key_Event(ev->devid, i, 0, false);
 				break;
 			}
+			if (ev->keyboard.scancode == K_TOUCH && ev->devid < MAXPOINTERS &&
+				ptr[ev->devid].type == M_TOUCH && ptr[ev->devid].touchkey == K_MOUSE1)
+			{
+				struct mouse_s *m = &ptr[ev->devid];
+				in_real_held[K_MOUSE1] = false;
+				Key_Event(ev->devid, K_MOUSE1, 0, false);
+				m->touchkey = 0;
+				m->touchtime = 0;
+				m->moveddist = 0;
+				m->updated = false;
+				break;
+			}
 			if ((ev->keyboard.scancode == K_MOUSE1||ev->keyboard.scancode==K_TOUCH) && ev->devid < MAXPOINTERS && (ptr[ev->devid].type == M_TOUCH))
 			{	//touch (or abs clicks)
 				struct mouse_s *m = &ptr[ev->devid];
@@ -2678,6 +2754,27 @@ static void IN_Commands_Internal(qboolean deliverpaste)
 			break;
 		case IEV_KEYDOWN:
 //Con_Printf("IEV_KEYDOWN %i: %i '%c'\n", ev->devid, ev->keyboard.scancode, ev->keyboard.unicode?ev->keyboard.unicode:' ');
+			if (ev->keyboard.scancode == K_TOUCH && ev->devid < MAXPOINTERS &&
+				ptr[ev->devid].type == M_TOUCH && IN_TouchFireConfirmsMenu(&ptr[ev->devid]))
+			{
+				struct mouse_s *m = &ptr[ev->devid];
+				mousecursor_x = touchcursor_previous[ev->devid][0];
+				mousecursor_y = touchcursor_previous[ev->devid][1];
+				if (touchcursor == ev->devid)
+					touchcursor = -1;
+				m->touchtime = 0;
+				m->moveddist = 0;
+				m->touchkey = K_MOUSE1;
+				m->updated = false;
+
+				// The Fire control confirms the item already under the cursor.
+				in_real_keydown = false;
+				if (!ev->synth && !in_real_held[K_MOUSE1])
+					in_real_keydown = in_real_held[K_MOUSE1] = true;
+				Key_Event(ev->devid, K_MOUSE1, 0, true);
+				in_real_keydown = false;
+				break;
+			}
 			if ((ev->keyboard.scancode == K_MOUSE1||ev->keyboard.scancode==K_TOUCH) && ev->devid < MAXPOINTERS && (ptr[ev->devid].type == M_TOUCH))
 			{	//touch (or abs clicks)
 				struct mouse_s *m = &ptr[ev->devid];
@@ -2758,8 +2855,13 @@ static void IN_Commands_Internal(qboolean deliverpaste)
 			break;
 		case IEV_MOUSEABS:
 //Con_Printf("IEV_MOUSEABS %i: %f %f\n", ev->devid, ev->mouse.x, ev->mouse.y);
+			if (ev->devid < MAXPOINTERS)
+			{
+				touchcursor_previous[ev->devid][0] = mousecursor_x;
+				touchcursor_previous[ev->devid][1] = mousecursor_y;
+			}
 			/*mouse cursors only really work with one pointer*/
-			if (!vrui.enabled)
+			if (!vrui.enabled && !(ev->devid < MAXPOINTERS && ptr[ev->devid].touchkey == K_MOUSE1))
 			if (ev->devid == touchcursor || (touchcursor < 0 && ev->devid < MAXPOINTERS && (ptr[ev->devid].oldpos[0] != ev->mouse.x || ptr[ev->devid].oldpos[1] != ev->mouse.y)))
 			{
 				float fl;
@@ -2796,8 +2898,11 @@ static void IN_Commands_Internal(qboolean deliverpaste)
 				if (ev->mouse.x != m->oldpos[0] ||
 					ev->mouse.y != m->oldpos[1])
 				{
-					m->updates++;
-					m->updated = true;
+					if (m->touchkey != K_MOUSE1)
+					{
+						m->updates++;
+						m->updated = true;
+					}
 				}
 
 				m->oldpos[0] = ev->mouse.x;
