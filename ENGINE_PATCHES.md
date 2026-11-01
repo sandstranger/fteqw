@@ -1,5 +1,182 @@
 # Engine patches (fteqw `fteqw64.exe`)
 
+## Patch 1174 — KSF site maps get pictures; Momentum zones on nine KSF builds
+
+**Problem.** Of 415 KSF builds the 1 Nov audit counted without a picture, 398 are
+second builds the menu folds under their base row (P652), which has one. The 17
+rows players see alone had none: mapmeta.py and ksfshots.py read only KSF's sheet
+(928 maps), which lacks 16 maps on KSF's site, ksfshots refused surf_froots2's real
+WEBP served as .jpg, and surf_parrot_selector_h has no KSF picture. Nine KSF builds
+that share their world with a Momentum map had no zones.
+
+**Change.** Tools only (QC c9e5262d): mapmeta.py and ksfshots.py also take
+data/mapdl.txt's KSF rows under KSF's own name (no `of`) that the sheet lacks;
+ksfshots accepts WEBP bytes; mapthumbs.py gives a byte-identical BSP the other map's
+picture (parrot_selector_h, sha1 72c859a2). Atlas page 10 (20 cells), refreshed and
+published with the existing mapmedia tools. Zone data: nine files from the Momentum
+builds -- five unchanged, devil/lore/wasteland2_css with each restart renamed to the
+CS:S entity at the donor's exact origin and yaw (lore stage1: explicit teleDestPos),
+fast_css main only -- installed fresh-name-only to the lobbies' maps/zones/local,
+ftesurf-site/zones and C:\FTESurf's shipped library (manifest rows `donation`).
+
+**Verified.** KSF's WR replays: our main start is left and end entered on the same
+tick as KSF's own bookmarks on all nine (wasteland2's end one tick early), every
+gate entered in order; bonuses likewise except pyzire b1 (end 5 ticks early, kept)
+and fast_css's (dropped). Wrong-map controls never reach the end; compulsive_njv_h
+(+7/-30 ticks), aquaflow_css (+4), race_final and beyer2_css (a gate off KSF's
+route) were held back. zonefit FIT and restart-on-donor-point for all nine; the
+dedicated server (patch-1173) loads each from maps/zones/local with no zone error;
+the live catalogue reads zoned 1 for all nine. Scratch mapmeta adds exactly 16 rows;
+the scratch atlas page shows 20 real pictures; test_mapmedia.py 11 OK.
+
+## Patch 1173 — held duck after a standing save load
+
+**Problem.** Loading a standing save with duck held left `BUTTON_DUCK` in the
+restored `oldbuttons`, so `PMSrc_Duck` saw no press edge and the body stayed
+standing until duck was released and pressed again. On the operator's airborne
+save the held-before body sat 8.5 units lower than pressing duck after the load.
+
+**Change.** When authoritative `run_forceduck` (`SV_RunCmdPart`) or the prediction
+pre-input (`PM_ApplyPreInput`) forces standing (value 1), also clear `BUTTON_DUCK`
+from `oldbuttons`. Jump and other latches, restored crouch (value 2), absent
+fields, formats and eligibility are unchanged. Backported onto the installed
+native 520ba3ca (P1162); main's pending TAS/lease work is not part of it.
+
+**Verified.** `tools/test_saveload_duck.py` compiles the real restore blocks with
+`PMSrc_Duck`/`FinishDuck` and the header's bit values: held-before equals
+pressed-after on ground and in air, other latches kept, absent field and
+unselected payload inert. It fails at `pmove.ducked` against 520's `sv_user.c`
+alone and its `pmove.c` alone. The 8.5-unit figure came from a private native
+replay of the parked combined candidate (fa0ea099c), not this build.
+
+## Patch 1172 — retain managed content lease binding through completion
+
+**Problem.** Initial descriptor validation did not establish that later scope use
+and completion still referred to the configured managed-content file and record.
+
+**Change.** Backend only: validate canonical parent, held/named identity and exact
+expected record before admission/reentry and at completion. Refuse unexpected
+state rather than completing or repairing it. Preserve cooperative namespace
+ownership, kernel lock lifetime, ordinary nested publication and exception epochs.
+Zone puts distinguish body/restoration errors from scope-completion errors: a later
+refusal retains partial operator-recovery state, not a safely-restored claim. No
+unfenced rollback or lease repair. Include the lease and existing account-helper
+modules in the isolated zone-service ship set. No native pin/tag, runtime QC, schema,
+capture, eligibility or Build change.
+
+**Verified (isolated; no deployment).** Matched real-kernel binding/record controls
+act on the predecessor and refuse on the subject; healthy nested/partial-exception
+semantics remain. Same-length valid-record regressions discriminate a missing
+expected-record comparison; predecessor zone puts ACT with wrong post-write failed
+classification, while corrected apply/rollback retain partial recovery and admission
+refusals leave files untouched. Content11/publisher11/zonepub155 pass on Windows/Linux
+with explicit POSIX skips; Linux VFS28/Peer42 pass. Installer7 passes on both
+platforms, including isolated import success and independent dependency-omission
+refusals. Current service dependencies plus publisher suites pass184 Linux tests
+with1 platform skip. Actual native borrowed-reader retention,
+selected source reads, excluded writer and post-cleanup publication still act;
+source fixture preserved. Human reader949/0 failed; the byte-identical reader's
+541-run corpus retains348 existing faults, not a clean-corpus claim. Official QC
+NoDeploy adds no warning fingerprints (same two client F333 warnings); both Windows
+install images remain unchanged. An initial compiler-PATH refusal and reader
+infrastructure limits were retained; no product/test weakening. Partial publisher
+coverage remains unqualified: no live bootstrap, activation or canonical permit.
+
+## Patch 1171 — lobby playtime and main/bonus attempts (QC + surfd schema 26)
+
+**Problem.** P1168's profile, map-board and `!time` readers showed tracked playtime
+and course attempts, but no lobby produced them and the backend had nowhere to keep
+them, so every total read "not tracked".
+
+**Change.** Mod and backend only; native pin/tag and qcbuild unchanged.
+`sv_playstats.qc` counts real connected seconds (`gettime`, spectating included,
+host_timescale ignored) and main/bonus starts (leg 0; stages excluded) for a linked
+player whose lobby holds a social capability and activity binding and whose client
+gave the online answer `FS_TERMS_ONLINE` (8). Lex chose (1 Nov) to count that existing
+answer: the first cut's bump to 9 would have reached every released client through
+the lobbies' csprogs and stopped ranked uploads until menus re-asked. The terms page
+discloses the collection. One stream per connection and map; losing permission
+pauses it and the same identity resumes it. Sealed per-owner snapshots
+(FS_FILE_WRITESTREAM), first save 10-29 s after a stream begins, then every 30 s;
+at most 8 POSTs in flight, a 30 s hold after a timeout or backend failure, and 400
+removes the refused snapshot. surfd schema 26 adds P1162's `playstats.py`
+(byte-identical to c83774a7): per-(node, stream) max-merged watermarks, per-map and
+per-attempt sums, and a link generation rotated by keylinks triggers; the route
+needs consent >= 8, the capability and the current binding.
+
+**Verified.** QC 0 warnings with c24ede65; backend suites (playstats 9, social 72,
+inventory 10, accounts, join, board). Native arm on the shipped bytes (native520
+fixture, real dedicated socket, isolated backend), 10/10: the client's answer reaches
+the server as 8/0/8, nothing accrues at 0, three toggles keep one stream and one
+backend row, real seconds under timescale 4, one main plus one bonus, an outage
+leaves a sealed outbox that replays after a native restart, leaving stops time. On
+the Pi, CLOSED candidates on fresh fixtures, then the real primary migrated a private
+snapshot of the live DB: 37 existing tables' schema, counts and account/link/
+inventory digests unchanged, 22/22 link generations; the fallback (cba82980, schema
+26 tables only) starts on it and a down step restores schema 25 exactly. Two
+independent reviews; their defects were fixed and re-measured, quirks are in BACKLOG.
+
+**Delivered (1 Nov 2026).** surfd generation 495537a9 at
+`/srv/nvme/agent-work/profile-activity-1171-01a19370`, primary OPEN 11:37:06Z,
+"schema migrated 25 -> 26", drained pre-26 backup kept privately. Both Windows installs
+and all 12 lobbies 11:46:07Z from QC 3cc4fec7: qwprogs e487377c, csprogs 974f0ce9
+(added to tasrevd's codes.txt), menu 14ecde0a; `.prev` = P1170's pair. Owner check in
+lextest.md; tools/profile-activity-p1171.md.
+
+## Patch 1170 — clean lobby disconnect, distinct weapon Drop (mod-side only)
+
+Reserve QW transport drop/disconnect for existing native teardown; weapon
+presentation uses weapon_drop in both CSQC emitters, user Drop/key unchanged.
+No native/header/API/recorder/movement/timeout/backend change or native build.
+Qualified release sourceca4bcbea0 (docs-only over actual Native520/P1162) is a
+parent of this main integration. Main's separately pending native work remains
+untouched and is NOT qualified/adopted by this mod-only release. QC cohort
+6d132181 reproduces exact prior actual SV/CS/MENU then changes only3 feature files.
+Real localhost old native quit exit0 left ghost; candidate weapon drop stayed
+connected, A->B oldA0, B->B exactlyone, normalquitB0. Five actual logs clean.
+Protect CURRENT full Windows/Pi config/data/parts before paired QC-only install;
+MENU6f and all actual Native520 images remain byte-identical. No deployment
+claim in this source note. Crash/lost network packets retain timeout fallback.
+
+## Patch 1169 — larger native-pixel Maps filter fonts
+
+**Problem.** The Maps filter strip used small shadowed legacy text:12-unit
+labels and15-unit headings. Scaling those fonts made the filters look soft and
+small beside the map list, and merely enlarging text would mismeasure controls.
+
+**Change.** Draw filter labels at16 and display headings at20 through the
+existing physical-font helper. Keep the legacy face selected for bake lookup,
+measure with its native mirror and snapped size, and restore the legacy UI font
+after the strip.32-high controls/40 row pitch and measured mode-switch width
+keep text and hitboxes together and wrap groups on smaller screens. Preserve
+filter IDs, selection logic, tooltips and the rest of the menu/HUD typography.
+No engine code, native pin/tag, protocol, server/client QC, physics or Build change.
+
+**Verified/limits.** Untreated and subject three-program NoDeploy builds have
+zero new warnings: menu/server0, the same two existing client F333 warnings.
+SSQC/CSQC artifacts are byte-identical; menu changes. Actual native menu captures
+at1280x720,1920x1080 and900x600 were read: larger crisp filter text, wrapped
+controls and usable search/list/footer. Existing bootstrap driver ACTED tier3
+and Bhop filtering with the same fixture counts as the control. Offline fixture
+state is not owner consent/acceptance. Two queued-command UI fixtures reached
+the builtin menu before custom menu init and are retained as failures, not
+hit-test passes; the simpler existing bootstrap route supplies the stated
+captures. Source/ID inspection preserves library/sort actions; owner visual and
+click acceptance remains pending in lextest.md. Client-local MENU-only dual
+adoption is separate from these isolated checks; no menu.dat belongs on a lobby.
+At the actual mutation boundary BOTH current menus had changed from the known
+P1168 preimage to unbound6f8760a5/LNOa70ad3cb. Guard refused BEFORE any install
+copy; this feature is NOT installed. A bounded clean public-canonical1d0 control
+did not match; no provenance was invented. All8 actual current/.prev MENU files
+are archived/readback-hashed. Await actual writer source/build handoff or an
+explicit owner supersession decision for just those4 MENU/LNO files. No other
+owner's source, gameplay/native/config/data was reverted to make a test pass.
+
+A separate dated read-only census supplies all578 unzoned held maps with current
+and independent library tiers;117 remain explicitly UNKNOWN. All2179 catalog
+names match held BSP names, zoned positive control excluded. No tiers/zones,
+map pool, backend or player data were edited to produce the roster.
+
 ## Patch 1168 — public inventories, tracked-time readers and board navigation
 
 **Problem.** Public profiles exposed only equipped cosmetics. A sought board page
@@ -28,7 +205,7 @@ caught the fixture's invented endpoint; the query-form URL and strict GUI fixtur
 now act two canonical200 requests. At1Nov2026 05:43:15UTC both Windows MENU/LNO
 were adopted from clean public fba5b68f after exact published fea6969b MENU baseline
 matching; destination/rollback hashes verified, native/CSQC/SSQC/config bytes
-unchanged. Lobby/game-program source ownership remains unresolved. After owner
+unchanged. Lobby/game-program ownership was still unresolved at that earlier boundary. After owner
 namespace admission, inventory-only FCC on frozen DA activated1Nov2026 06:47:08UTC:
 primary OPEN, exact previous-primary fallback CLOSED on SAME schema25 DB, original
 predecessor drained CLOSED. Source82/canonical-entrypoint hashes, actual process /
@@ -37,8 +214,31 @@ routes, momrequests and health200 verified. At06:54:47UTC seven real public
 profiles returned exact persisted owned lists including14 unequipped items;
 unknown-player control404. No grants/equipment changes or fabricated actors.
 An account lacking a public board profile remains404. No schema migration,
-old-DB restoration, native/game-program deployment or counter activation.
+old-DB restoration or counter activation at that inventory-only boundary.
 Owner appearance/interaction acceptance and real collection remain pending.
+
+The former game-source blocker was resolved by the already completed noclip
+c79ee297/native520ba3ca delivery receipt, not by discarding unknown work. Clean
+published reader cohort14aef133 (deploy/profile-noclip-1168) retains that
+movement/placement/body-fence code, existing native pin/tag, accepted crown/aura
+and qcbuild. Both game images exactly equal659ea5b4's six freshly acted
+native520 socket/UI/HTTP arms, zero NEW warnings; fixture programs/consent/zone
+restored, own children stopped and shared rig lease released. At1Nov2026
+08:03:29UTC the exact QW/CS pair+matching LNO was adopted in BOTH Windows
+installs and all12 active Pi lobbies via existing Deploy/.prev and complete -Pi
+transaction; all12 occupancy rows0, no PiForce. Concurrent MENU/LNO/prev,
+native/plugins and configs remained byte-identical; changed/unbound MENU was NOT
+promoted. Additive ce4124f3 Windows caches seeded without deleting tmp/dcl; old
+pair and older.prev retained. Independent08:09:01UTC readback verified
+Windows/Pi hashes and Pi rollback,12active restart epochs after preparation,
+actual UDP replies and fresh SSQC heartbeats. Public status omits csprogs here,
+so no per-socket advertised-checksum proof or real-owner acceptance is claimed.
+Inventory-only FCC/schema25 remains unchanged. The separate real-counter owner
+is still ACTIVE/NOT delivered with signer/writer/UI/platform qualification open;
+actual accumulation remains blocked on that qualified handoff, not on this
+completed reader deployment. Native Previous runtime and owner interaction
+acceptance remain pending.
+
 
 ## Patch 1167 — opt-in content epochs at map and zone publication
 
