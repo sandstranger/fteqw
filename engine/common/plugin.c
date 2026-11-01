@@ -1641,6 +1641,10 @@ void Plug_Initialise(qboolean fromgamedir)
 		if (!binaryonly)
 			PM_EnumeratePlugins(Plug_Load_Update);
 	}
+#ifdef ANDROID
+	//the launcher ships ffmpeg: load it for every game (custom ones too), not only where a game's default config asks for it
+	Plug_Load("ffmpeg");
+#endif
 }
 
 void Plug_Tick(void)
