@@ -2180,7 +2180,8 @@ bool needToShowScreenControls() {
 }
 __attribute__((used)) __attribute__((visibility("default")))
 bool needToInvokeMouseButtonsEvents(){
-    return !needToShowScreenControls();
+    //engine and menuqc menus sit in topmenu, csqc interfaces only ask for a free cursor
+    return !needToShowScreenControls() || Key_MouseShouldBeFree();
 }
 __attribute__((used)) __attribute__((visibility("default")))
 void setPathsToResources (const char *pathToHomeDirectory, const char *pathToBaseDirectory,
