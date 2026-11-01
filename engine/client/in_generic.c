@@ -2720,7 +2720,7 @@ static void IN_Commands_Internal(qboolean deliverpaste)
 				ptr[ev->devid].type == M_TOUCH && ptr[ev->devid].touchkey == K_ENTER)
 			{
 				struct mouse_s *m = &ptr[ev->devid];
-				in_real_held[K_MOUSE1] = false;
+				in_real_held[K_ENTER] = false;
 				Key_Event(ev->devid, K_ENTER, 0, false);
 				m->touchkey = 0;
 				m->touchtime = 0;
@@ -2769,8 +2769,8 @@ static void IN_Commands_Internal(qboolean deliverpaste)
 
 				// The Fire control sends Enter to confirm the currently focused menu item.
 				in_real_keydown = false;
-				if (!ev->synth && !in_real_held[K_MOUSE1])
-					in_real_keydown = in_real_held[K_MOUSE1] = true;
+				if (!ev->synth && !in_real_held[K_ENTER])
+					in_real_keydown = in_real_held[K_ENTER] = true;
 				Key_Event(ev->devid, K_ENTER, 0, true);
 				in_real_keydown = false;
 				break;
