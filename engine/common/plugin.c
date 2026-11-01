@@ -1644,6 +1644,8 @@ void Plug_Initialise(qboolean fromgamedir)
 #ifdef ANDROID
 	//the launcher ships ffmpeg: load it for every game (custom ones too), not only where a game's default config asks for it
 	Plug_Load("ffmpeg");
+	Plug_Load("bullet");
+	Plug_Load("openssl");
 #endif
 }
 
