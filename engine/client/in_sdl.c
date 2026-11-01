@@ -27,6 +27,7 @@ extern qboolean vid_isfullscreen;
 
 #if ANDROID
 static bool controlsWereReinit = false;
+static qboolean androidTouchMouseButtonForwarded = false;
 typedef void (*forceLandScapeActivityOrientationDelegate)();
 static forceLandScapeActivityOrientationDelegate activityOrientationChangerInstance = nullptr;
 #endif
@@ -1758,8 +1759,26 @@ SDL_AppResult SDLCALL SDL_AppEvent(void *appstate, SDL_Event *event)
 
 	case SDL_EVENT_MOUSE_BUTTON_DOWN:
 	case SDL_EVENT_MOUSE_BUTTON_UP:
+#if ANDROID
+		if (event->button.which == SDL_TOUCH_MOUSEID)
+		{
+			// Touch-generated mouse clicks are required by FTE menus. Keep suppressing
+			// gameplay touch clicks, which are already delivered as SDL finger events.
+			if (event->button.down)
+			{
+				if (!topmenu)
+					break;
+				androidTouchMouseButtonForwarded = true;
+			}
+			else if (!androidTouchMouseButtonForwarded)
+				break;
+			else
+				androidTouchMouseButtonForwarded = false;
+		}
+#else
 		if (event->button.which == SDL_TOUCH_MOUSEID)
 			break;	//ignore legacy touch events. SDL_FINGER* events above will handle it (for multitouch)
+#endif
 		which = INS_MouseID(event->button.which);
 		//Hmm. SDL allows for 255 buttons, but only defines 5...
 		if (event->button.button > sizeof(tbl_sdltoquakemouse)/sizeof(tbl_sdltoquakemouse[0]))
