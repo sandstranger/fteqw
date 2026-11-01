@@ -2182,12 +2182,6 @@ __attribute__((used)) __attribute__((visibility("default")))
 bool needToInvokeMouseButtonsEvents(){
     return !needToShowScreenControls();
 }
-//true while a menu (engine, menuqc or prompt) or csqc drives a free mouse cursor, unless a console or chat line takes the keys.
-//unlike needToInvokeMouseButtonsEvents this also covers csqc interfaces, which never put anything into topmenu.
-__attribute__((used)) __attribute__((visibility("default")))
-bool isMouseCursorFree(){
-    return Key_MouseShouldBeFree() && !Key_Dest_Has(kdm_console|kdm_cwindows|kdm_message);
-}
 __attribute__((used)) __attribute__((visibility("default")))
 void setPathsToResources (const char *pathToHomeDirectory, const char *pathToBaseDirectory,
                           const char *dllDefaultPath) {
