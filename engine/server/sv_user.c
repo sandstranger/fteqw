@@ -4774,7 +4774,7 @@ void SV_BeginDownload_f(void)
 
 		if (result == 0)
 		{	//if we are allowed and could find it
-			host_client->download = FS_OpenReadLocation(NULL, &loc);
+			host_client->download = FS_OpenReadLocationRaw(name, &loc);
 		}
 	}
 
@@ -8503,9 +8503,8 @@ static enum sv_tas_action SV_TASCommandPlan(usercmd_t *cmd, int kind, eval_t **f
 		"run_tas_pending", "run_tas_done", "run_tas_ready", "run_tas_fault",
 		"run_tas_cmdkey", "rec_gh_on", "run_ms_phase", "run_pmhold",
 		"rec_sl_hold", "rec_wt_hold", "run_t_viewowner"};
-	extern cvar_t pm_physicsmode, pm_ticrate;
 	uint32_t previous = 0;
-	int i, valid, fresh, supported, bodyfree;
+	int i, valid, fresh, supported, bodyfree, clockchanged = 0;
 	eval_t *rewindpin;
 	enum sv_tas_action action;
 
@@ -8525,9 +8524,12 @@ static enum sv_tas_action SV_TASCommandPlan(usercmd_t *cmd, int kind, eval_t **f
 		!PR_FindFunction(svprogfuncs, "SV_RunClientCommand", PR_ANY) &&
 		host_client->protocol == SCP_QUAKEWORLD &&
 		!(host_client->fteprotocolextensions2 & PEXT2_VRINPUTS) &&
-		SV_TASClockSupported(pm_physicsmode.ival == PHYSMODE_SOURCE,
-			pm_ticrate.value > 0 ? pm_ticrate.value : SV_TAS_TICK,
-			sv.gamespeed, host_client->pmsrc.msec_carry);
+		SV_TASClockForClient(host_client,&clockchanged);
+	if (clockchanged && f[TAS_USED]->_float > 0)
+	{
+		f[TAS_PENDING]->_float = 0;
+		f[TAS_FAULT]->_float = 1;
+	}
 	valid = f[TAS_KEY]->_vector[2] == 1 &&
 		isfinite(f[TAS_KEY]->_vector[0]) && isfinite(f[TAS_KEY]->_vector[1]) &&
 		f[TAS_KEY]->_vector[0] >= 0 && f[TAS_KEY]->_vector[0] <= 65535 &&
@@ -8573,6 +8575,23 @@ static enum sv_tas_action SV_TASCommandPlan(usercmd_t *cmd, int kind, eval_t **f
 }
 
 //FTESurf Patch 893: later = a later part of a usercmd split per tick (a parameter, so nothing outlives it)
+// Zero-duration Source commands may run no categorization tick. The physent
+// list was rebuilt for THIS player, so a previous global ground INDEX is not
+// contact evidence. Seed it from this body's authoritative edict identity.
+static void SV_SeedZeroSourceGround(unsigned int groundentity)
+{
+	int i;
+	pmove.groundent = -1;
+	for (i = 0; i < pmove.numphysent; i++)
+		if (pmove.physents[i].info == groundentity)
+		{
+			pmove.groundent = i;
+			return;
+		}
+	// Unknown support must not turn into a different nearby brush or an OOB read.
+	pmove.onground = false;
+}
+
 static void SV_RunCmdPart (usercmd_t *ucmd, qboolean recurse, int kind, float totalmsec, float offsetmsec, qboolean later)
 {
 	edict_t		*ent;
@@ -8670,7 +8689,7 @@ static void SV_RunCmdPart (usercmd_t *ucmd, qboolean recurse, int kind, float to
 	if (tas_action == SV_TAS_STEP)
 	{
 		tas_cmd = *ucmd;
-		tas_cmd.msec = 15; // exactly one Source tick; validated carry is retained
+		tas_cmd.msec = SV_TASTickMsec(SV_TASCurrentTick()); // one admitted tick, preserving carry
 		tas_replay = SV_TASTapeOverlay(host_client, sv_player, &tas_cmd);
 		if (!tas_replay && SV_TASPlanActive(host_client))
 		{
@@ -9175,6 +9194,10 @@ static void SV_RunCmdPart (usercmd_t *ucmd, qboolean recurse, int kind, float to
 	}
 	sv_player->xv->pmove_flags = (int)sv_player->xv->pmove_flags & ~PMF_LADDER;	//assume not touching ladder trigger
 	AddAllLinksToPmove (&sv.world, (wedict_t*)sv_player);
+	if (movevars.physicsmode == PHYSMODE_SOURCE && !held && pmove.pm_type == PM_NORMAL &&
+		pmove.cmd.msec == 0 && pmove.onground)
+		SV_SeedZeroSourceGround(NUM_FOR_EDICT(svprogfuncs,
+			PROG_TO_EDICT(svprogfuncs, sv_player->v->groundentity)));
 
 	if ((int)sv_player->xv->pmove_flags & PMF_LADDER)
 		pmove.onladder = true;

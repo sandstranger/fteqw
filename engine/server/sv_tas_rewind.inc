@@ -36,10 +36,30 @@ typedef struct
 
 static tas_rewind_pool_t *tas_rewind_pool[MAX_CLIENTS];
 static unsigned int tas_rewind_token;
+static sv_tas_clock_t tas_clock_context[MAX_CLIENTS];
+
+static float SV_TASCurrentTick(void)
+{
+	extern cvar_t pm_ticrate;
+	return pm_ticrate.value > 0 ? pm_ticrate.value : SV_TAS_TICK;
+}
+
+static int SV_TASClockForClient(client_t *cl, int *changed)
+{
+	extern cvar_t pm_physicsmode;
+	int index = cl - svs.clients, supported;
+	if (index < 0 || index >= sv.allocated_client_slots || index >= MAX_CLIENTS) return 0;
+	supported = SV_TASClockContextSupported(&tas_clock_context[index],cl->userid,svs.spawncount,
+		pm_physicsmode.ival == PHYSMODE_SOURCE,SV_TASCurrentTick(),
+		sv.gamespeed,cl->pmsrc.msec_carry);
+	if (changed) *changed = tas_clock_context[index].blocked;
+	return supported;
+}
 
 void SV_TASRewindClear(void)
 {
 	unsigned int i;
+	memset(tas_clock_context,0,sizeof(tas_clock_context));
 	for (i = 0; i < countof(tas_rewind_pool); ++i)
 	{
 		if (tas_rewind_pool[i]) Z_Free(tas_rewind_pool[i]);
@@ -55,7 +75,6 @@ static eval_t *SV_TASRewindField(edict_t *e, const char *name, etype_t type)
 
 static client_t *SV_TASRewindClient(edict_t *e)
 {
-	extern cvar_t pm_physicsmode, pm_ticrate;
 	eval_t *f;
 	int slot;
 	if (svs.gametype != GT_PROGS || !svprogfuncs || !e || e != sv_player ||
@@ -69,9 +88,7 @@ static client_t *SV_TASRewindClient(edict_t *e)
 		(host_client->fteprotocolextensions2 & PEXT2_VRINPUTS) || sv_nqplayerphysics.ival ||
 		PR_FindFunction(svprogfuncs, "SV_RunClientCommand", PR_ANY) ||
 		!(e->v->health > 0) ||
-		!SV_TASClockSupported(pm_physicsmode.ival == PHYSMODE_SOURCE,
-			pm_ticrate.value > 0 ? pm_ticrate.value : SV_TAS_TICK,
-			sv.gamespeed, host_client->pmsrc.msec_carry)) return NULL;
+		!SV_TASClockForClient(host_client,NULL)) return NULL;
 	f = SV_TASRewindField(e, "run_tas_mode", ev_float);
 	if (!f || f->_float != 1) return NULL;
 	f = SV_TASRewindField(e, "run_tas_used", ev_float);
@@ -386,13 +403,14 @@ float SV_TASTape(edict_t *e, unsigned int op, float a, float b,
 		SV_TASTapePublish(e, p);
 		return 1;
 	}
+	// Row syntax needs current TAS admission, not an earlier checkpoint pool.
+	if (op == SV_TAPE_VALIDATE && cl) return SV_TASInputDecode(moves, angles, buttons, &in);
 	if (!cl || !(p = SV_TASInputPool(cl)))
 	{
 		SV_TASInputCancel(e); // failed capability must not leave a stage to arm later
 		return 0;
 	}
 	if (op == SV_TAPE_STATUS) return p->tape.state;
-	if (op == SV_TAPE_VALIDATE) return SV_TASInputDecode(moves, angles, buttons, &in);
 	if (op == SV_TAPE_CHECK || op == SV_TAPE_BEGIN)
 	{
 		if (!(a >= 1 && a <= SV_TAS_TAPE_MAX && floorf(a) == a) ||

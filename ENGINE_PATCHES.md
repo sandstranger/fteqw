@@ -1,5 +1,483 @@
 # Engine patches (fteqw `fteqw64.exe`)
 
+## Patch 1168 — public inventories, tracked-time readers and board navigation
+
+**Problem.** Public profiles exposed only equipped cosmetics. A sought board page
+could not fetch ranks above its first row; menu pictures had no profile action.
+Profile/map playtime and main/bonus attempts had no reader surfaces.
+
+**Change.** Expose bounded owned-item snapshots without granting or equipping.
+Show readonly inventories and optional tracked totals in client/menu profiles;
+open the global profile from menu pictures. Existing map catalogue supplies
+main/bonus chips and optional map time/attempts. Add readonly !time/name queries,
+8/12-hex public-handle validation, bidirectional bounded board windows and native
+Previous handling. Missing counters stay explicitly unavailable; collection is
+separate. Preserve private Friends identities, schema, native pins/tags, physics,
+recordings, eligibility and qcbuild. Never backfill invented historical time.
+
+**Verified/limits.** Ten inventory tests pass. Three product programs build with
+zero new warnings (same two existing client F333 warnings). Actual isolated
+socket/GUI/HTTP controls show both unequipped owned items, absent-vs-present
+tracked time, normal say self/name lookup, stage-excluded attempts, earlier
+ranks after seeking, course selection and picture-opened profile. Screenshots
+inspected; a detached menu crown was caught and fixed with SUI point transforms.
+Seven of nine old source guards pass on baseline and subject, with identical two
+stale expectations. Native-table Previous is compile/source-only; real counter
+collection and live totals remain unfinished. A real catalogue200/old-path404
+caught the fixture's invented endpoint; the query-form URL and strict GUI fixture
+now act two canonical200 requests. At1Nov2026 05:43:15UTC both Windows MENU/LNO
+were adopted from clean public fba5b68f after exact published fea6969b MENU baseline
+matching; destination/rollback hashes verified, native/CSQC/SSQC/config bytes
+unchanged. Lobby/game-program source ownership remains unresolved. After owner
+namespace admission, inventory-only FCC on frozen DA activated1Nov2026 06:47:08UTC:
+primary OPEN, exact previous-primary fallback CLOSED on SAME schema25 DB, original
+predecessor drained CLOSED. Source82/canonical-entrypoint hashes, actual process /
+namespace, all closed-boundary schema/count/identity+inventory digests, four cron
+routes, momrequests and health200 verified. At06:54:47UTC seven real public
+profiles returned exact persisted owned lists including14 unequipped items;
+unknown-player control404. No grants/equipment changes or fabricated actors.
+An account lacking a public board profile remains404. No schema migration,
+old-DB restoration, native/game-program deployment or counter activation.
+Owner appearance/interaction acceptance and real collection remain pending.
+
+## Patch 1167 — opt-in content epochs at map and zone publication
+
+**Problem.** A content snapshot lease cannot fence a publisher that does not
+participate, and independently replaced files or rollback can span observations.
+
+**Change.** Backend only: mapwatch rename/link and active-zone retirement, paired
+existing BSP/zone replacement, and zone publisher multi-file put/rollback can use
+SURFD_TAS_CONTENT_LEASE. Absent or explicitly empty retains ordinary unmanaged
+behavior; configured unavailable state aborts rather than publishing unlocked.
+Keep staging/downloads and long warning/reload workflows outside the content lease.
+These two hooks do not establish complete writer coverage or canonical approval.
+No native/runtime QC, recording, eligibility, schema, Build or activation change.
+
+**Verified (isolated source; no deployment).** Windows/Linux focused publisher
+suite6 passes, with4 POSIX cases explicitly skipped on Windows. Actual Linux
+multi-file writes, acted rollback and mapwatch fresh/replacement callbacks remain
+inside one odd epoch; completed publication advances the epoch, dirty state prevents
+writes. Existing mapwatch falsifier reports0 failed on both platforms with Windows
+platform skips. Zone publisher155 passes on Windows; Linux152 passed initially and
+the3 marker-source cases pass after staging their missing committed QC fixture.
+Original sparse-fixture failure retained, no unrelated source repair. Content core7
+passes with platform skips. Official QC NoDeploy builds pass with the same two
+pre-existing client warnings and zero new warning fingerprints; both Windows
+install images remain unchanged. Native pin/tag remain Patch1165. No live epoch bootstrap,
+service activation, full source census, canonical permit or queue promotion claimed.
+
+## Patch 1165 — bounded native TAS source components and profile preparation
+
+**Problem.** A loose-file inventory cannot establish the engine's actual VFS
+ordering, provider ancestry, lookup winners or bytes. Complete supported static
+profiles can also exceed an ordinary replay job's deliberately smaller budget.
+Reading such assets must not grant configuration/script execution permission.
+
+**Change.** Record native provider construction; add bounded native lookup and
+component exports with strict framing, winners, hashes and flat bytes. Unsupported
+or opaque cases fail closed. Separate internal readonly-data purpose from code
+opens and bind directory declarations to actual opened files. Command and server
+VM readers explicitly request execution independently of the selected name.
+Exports and lookup hashes retain raw selected bytes; trusted entfix and download
+readers retain logical names without changing their raw-read behavior. Reject
+nonadjacent file/descendant aliases before writing any file bodies. Add a distinct
+fixed-budget preparation frame/reader and operator-only Linux preparation Peer;
+ordinary component/replay limits stay unchanged. The preparation child inherits
+both custody and the actual managed-content shared-reader description through
+cleanup, with explicit source/private namespaces and isolated HOME/XDG discovery.
+No physical mover, human recording grammar, eligibility or queue enablement change.
+
+**Verified (local integration; not deployment).** Official Windows Full NoDeploy
+build passes; full/full warning comparison adds no warning fingerprints. Exact
+native/progs images in both Windows installs remain unchanged. Current Python
+suites pass:28 VFS,7 managed-content and42 Peer tests, with3/6/9 POSIX skips
+respectively; Linux passes28/7/42 with only the Windows-only managed-content
+case skipped. Acting ARM controls retain private/trusted script execution while
+refusing source execution, preserve both empty and nonempty gzip bodies, and
+refuse ambiguous PAK names before copying bodies. A real BSP/QC control reproduces
+the old scoped entfix refusal; the repaired loader applies the trusted edit without
+a policy error. Manifest readers reject orphaned/cyclic archive ancestry. Human
+reader tests remain949/0 failed; the same541-run corpus retains348 faults in both
+unchanged baseline and subject readers, not a clean-corpus claim. Review findings
+were repaired; synthetic byte/grammar checks are not canonical qualification.
+Complete source census, actual publisher participation, source/private equality,
+legal finish and promotion remain required. QC tools/tas-native-source.md records
+component scope and limits. No canonical permit, service activation or release.
+
+## Patch 1164 — cylindrical paper party crown with upward points
+
+**Problem.** The owner envisioned a cylindrical party hat with upward-pointing
+tips; the existing cone did not match that shape.
+
+**Change.** CSQC only: replace the cone by a sixteen-sided open cylindrical paper
+band and eight triangular crown points. Give the inventory slot a matching
+three-point crown icon and Paper party crown label. Keep item2, its saved colour,
+server-authoritative equipment and the P1163 soft aura unchanged. No native
+source/pin/tag, backend/schema/grants, movement or qcbuild change.
+
+**Verified.** Isolated fleet471fa957 plus this change builds with zero new warnings
+(the same two existing F333 argument227 warnings). Reused real dedicated fixture
+acts OFF/ON, retains the supplied hat colour and both selected items; inspected
+native preview shows cylindrical crown and matching slot icon, with aura still
+rendered. Source/packet/ownership paths unchanged. Owner confirmed1Nov2026 that
+the crown appearance matches the intended design exactly (manual acceptance in
+lextest.md); other-avatar appearance, aura and performance remain unconfirmed.
+Actual1Nov2026 01:44:06UTC: fleet69fdb328 Pi pair/.prev exact,12healthy/fresh/UDP
+lobbies, backend25 primaryOPEN/compatibilityCLOSED preserved. Both Windows caches
+seeded e1d884ef, but localVM/native adoption BLOCKED: intervening changed cohorts
+have no established source/owner. No unknown cohort overwrite or restore; their
+VM/native/config preimages remain exact. Used supported equalSurfDir/QuakeDir
+entrypoint for independent Pi-only deployment, PiForce with0players. Source,
+artifact hashes, rollback and local-adoption limits: tools/profile-crown-p1164.md.
+
+## Patch 1163 — soft outward falloff for the inventory ice aura
+
+**Problem.** Owner confirmed the P1160 inventory grid and toggles but reported
+that its constant-alpha scaled shell looked like a line stroke, not a soft aura.
+
+**Change.** CSQC only: sixteen normal-expanded, backface-only additive shells
+have integrated squared-falloff weights, so brightness decreases outward to
+zero rather than ending at one bright rim. Preserve frame blending, body depth
+occlusion and independent party-hat state. Name the item Ice aura. No native
+source/pin/tag, backend schema, ownership, privileges or qcbuild change.
+
+**Verified.** Isolated fleet source84a8ff1a + this change compiles with zero new
+warnings (two existing F333 argument227 warnings). Retained dedicated fixture
+proves inventory OFF/ON acted, both items stayed selected, inline shader compiled,
+and actual screenshots were inspected. The first single-shell view-angle shader
+compiled but still drew flat strokes on the low-poly player: retained as a failed
+visual control, not a pass. Layered subject shows an outward cyan fade with body
+still opaque. Existing server/menu binaries remain byte-identical. Wall testing
+is retained by the pass, not a measured behind-wall acceptance; owner appearance,
+other-avatar occlusion and ordinary playing smoothness remain in lextest.md.
+No numerical performance, pixel-width invariance or JFA equivalence claim.
+Delivered/read back1Nov2026 00:57:55UTC from clean fleet471fa957: both Windows
+installs six DAT/LNO files + exact.prev, native/config unchanged; Pi pair + exact
+.prev,12healthy/fresh/UDP lobbies. Empty-lobby UDP replies omit CSQC checksums,
+so no advertised-checksum claim. PiForce used with0players. Backend25 primaryOPEN
+and compatible rollbackCLOSED preserved. QC tools/profile-aura-p1163.md records
+artifact hashes, rollback, target-assumption correction and acceptance limits.
+
+## Patch 1161 — cold TAS project validation and replay admission
+
+**Problem.** A fresh matching-clock TAS session could not validate a nonempty
+base-save project until native rewind history had created its input pool.
+Removing that accidental decoder dependency also exposed a legal-start caller
+using validation as a pool probe, and a base-load path lacking early body/hold
+admission before placement.
+
+**Change.** Decode rows after current native actor admission but before the
+pool requirement, without allocating history, staging input or granting replay.
+Keep failed-admission cancellation and all native execution gates. Legal
+placement initializes its recording serial before a one-row CHECK and uses the
+existing explicit live-plan allocator only when needed, checking its result.
+Project loading applies the shared living/unheld walk-body preflight before
+reading or placing either project kind. Preserve published P1158/P1160; no
+physical movement, capture/recording format or human-eligibility change.
+
+**Verified/limits.** Isolated Windows source builds have no new warnings; two
+independent source reviews accept both caller corrections. Actual dedicated
+socket controls reproduce the old-VM legal failure, execute corrected cold
+pre-start replay and verify its exact target on the next step. The same immutable
+nonempty base project cold-loads and completes its exact native row delta.
+Canonical malformed input and actual unsupported 20ms context refuse before
+placement. Noclip and a real save hold preserve body/timer/recorder/project state;
+normal no-op movement clocks still advance, while an explicit owned-world pause
+also proves unchanged request/movement/completion counters around the refusal.
+Body/velocity observations are printed precision only. Production C headers pass
+100262 checks. Seventeen compiled production dispatcher/context/cancellation
+checks, with controlled engine admission/pool/field adapters, stop a staged tape
+and reject its old token after support returns; a compiled broken-admission
+control fails that exact requirement. These are component controls, not full
+protocol/identity, canonical-world, board or final-image/deployment approval.
+Final integrated tagged Windows/ARM images and delivery remain separately gated.
+
+**Qualification update (31 Oct 2026).** Frozen source `844619bcf`, tag `patch-1161`,
+version `git-8077-patch-1161-0-g844619bcf`: final Full Windows build/metadata pass;
+actual final cold base/legal/unsupported socket cases pass. ARM server/HL2 build
+and metadata pass. Both platforms pass native1448, header100262 and the scoped
+production-dispatch17/broken-guard controls. Later published prose merges leave
+all compilation inputs and that tag unchanged. These are not canonical/fleet or
+ARM actual-client replay approval; deployment is still not claimed. Detailed
+scope/failure history: FTESurf `tools/tas-cold-p1161.md`.
+
+## Patch 1158 — retain gravity-use status through finite-stamina takeoff
+
+**Problem.** The existing default-jump counterfactual accepted only fully
+recovered stamina. Admitting finite fatigue also requires the native pre-cost
+vertical scale; evaluating that model after the real jump debits the pool would
+observe a different input.
+
+**Change.** Admit a known finite stamina scale, evaluate the pure default model
+before the native jump, and retain it only when that jump actually succeeds.
+Apply the same whole-vertical scale before the stock path's inner gravity half.
+Keep the existing posture, finite/default-context, clear-path, sanitization and
+actual-use proof. Stock crouch and ground-duck transition remain excluded.
+Physical movement, captured fields, APIs, formats, flags and tiers are unchanged.
+Preserve the published P1152/P1156 and 10/15ms TAS-clock source. Build tooling
+serializes Windows plugin metadata packaging after reproduced parallel ZIP
+temporary-file failures; engine compilation still uses the requested job count.
+
+**Verified/limits.** Frozen native `793ee161a` / `patch-1158` / actual
+`git-8072-patch-1158-0-g793ee161a`, with producer QC `d620045b`, passes all 1448
+native checks on BOTH Windows and ARM64, including 249 new checks and nine
+explicitly updated finite-admission expectations. The untreated current-header
+Windows control actually passes 1428 and fails exactly the 20 predicted new
+requirements. Native jump-oracle, pre/post-cost, zero/half/three-quarter scale,
+body/config preservation, accepted-jump, posture, speculative/no-use and actual
+earlier-use controls execute. All 60 full five-map rows match across platforms
+using byte-identical test programs, and match the retained P1152 rows exactly.
+Clean final-tag Full Windows builds all seven images with fresh serial metadata
+in all five plugins; aligned offsets, CRCs and DECOMPRESSED metadata version are
+verified. ARM64 server, HL2 plugin and symbols are built from all 1124 verified
+canonical Git blobs and read back off-box. Two independent whole-feature review
+lenses accept the code; two factual documentation findings were corrected and
+confirmed. Reader self-tests pass 949/949 and the stable runs-only sweep has no
+fault-count increase. Original failed packaging, expectation and caller-domain
+checks remain failed evidence, not renamed passes. Stable test programs are not
+deployment inputs; no full-bank, human feel or ranked-finish claim.
+
+**Delivery (31 Oct UTC).** The exact frozen seven Windows images are installed
+in both installs with their approved P1156 predecessors retained. Native server
+and HL2 plugin are installed in all 12 positively empty NanoPi lobbies, each
+restarted once without force. Before staging/restart, every current native-part
+and suffix-part archive member was verified on and off box; strict original
+actor/FD and part identities were rechecked at the locked execution boundary.
+Old player data, actual programs, configs and backend remain unchanged at the
+delivery boundary. Fresh copies of both installed clients naturally exit after
+joining, downloading the then-served CSQC and drawing the board without QC errors.
+The first cold harness passes. The second original harness fails its mutable
+local-CS expectation during a concurrent program rollout; the original same-actor
+post-cold gate also refuses the changed lobby process epochs. Read-only diagnosis
+retains those failures and verifies our native/predecessor pairs, old data and
+parts, and unchanged backend. No healthy restart, client replay, data restore or
+verifier downgrade was used to hide them.
+
+A separate fresh current-program cohort now passes both installed-image/menu
+cold checks against an immutable off-box copy of actual Pi-served CSQC, rather
+than mutable Windows CSQC. The same current12 native/plugin process epochs,
+programs/configs, strict13 actor FD census, old data/parts and backend hold
+before/after; current Windows preimages and native/predecessor pairs also hold.
+The first fresh post-empty census refusal is retained; a separate positive-empty
+live/directory and no-FD control precedes the unchanged postgate on fresh census
+input, without repeating either client or restarting a healthy lobby. Its
+original transient cause was not captured. All original failures remain failed.
+Empty-board/unaccepted-terms screenshots do not establish human feel or ranking.
+
+## Patch 1160 — Steam-profile inventory, cosmetics and role badges (QC/backend)
+
+**Problem.** Player customization had no persistent item ownership/equipment or
+profile role badges, and the Maps mode strip exposed unwanted gamemodes.
+
+**Change.** Add an account-owned 4×4 inventory with server-authoritative grants
+and revision-checked equip/remove. Linked Steam accounts receive Tester, an ice
+blue additive aura and a paper cone hat with a persistent random colour. Public
+server-reserved presentation keys replicate selected equipment; ownership and
+session capabilities stay private. Authenticated, CSRF-checked account controls
+grant/revoke items and cosmetic Zoner/Developer badges (no gameplay/editor/admin
+permissions). Draw selected equipment in the profile preview and remote bodies.
+Replace the Maps strip with one Surf/Bhop switch; old multi/other filters migrate
+to Surf. Additive schema25 retains all existing player/run/link/history rows.
+No engine code, native pin, recording grammar, mover version or Build change.
+
+**Verified (automated; delivery/acceptance limits below).** Nine inventory route/persistence/
+authority tests, existing accounts/social/board/join suites, eight schema/future-
+refusal tests, and acted POSIX transition-guard schema25 dependency controls pass.
+QC builds have zero new warnings (two existing viewmodel F333 warnings). Real
+separate dedicated/client sockets show OFF→ON inventory state, coloured badges,
+aura and hat in the preview and on the second client. A native loopback mock
+separately sees nonempty inventory-opt-in rosters and two real equip posts,
+with revision5 / both-equipped acknowledged in CSQC (authentication remains the
+separate signed-account test). The actual map filter
+selects one Surf row then one Bhop row from a four-category fixture; legacy511
+normalizes to Surf. The consent gate correctly remains in front of that fresh
+fixture's menu, so visual/click and cosmetic-feel acceptance remain human checks.
+The aura is an occluded additive shell, not a through-wall/JFA port. Game shipping
+is isolated to the installed P1151 VM baseline; pending P1154 source stays out.
+Backend source is backported to the inspected fleet baseline, with a schema25-
+compatible data-retaining rollback. Both complete 82-file runtime cohorts also
+cold-start against fresh schema25 fixtures, own their measured listeners, and
+pass CLOSED-candidate acceptance, OPEN then drained CLOSED; primary exposes the
+inventory route while compatibility does not. Game-side files are installed/hash-
+verified in both Windows roots and all12 lobbies (PiForce with one player); native
+executables are unchanged. Backend activated1Nov2026 00:33:44UTC after the owner's
+protected configuration install: real systemd namespace/listener/source checks
+pass, schema25 primary OPEN, predecessor/compatibility CLOSED, scheduled routes
+and request worker rebound. At the drained boundary pre-existing table counts,
+schema definitions and full account/link/viewmodel digests match. Private backup
+retained; no stale data restore. All13 eligible linked profiles received starter
+items; Mark's Zoner and explicitly confirmed owner's Developer persist and appear
+in the live public profile API. All12 directory rows refresh. The owner confirms
+the grid and item toggles, but reports the aura as a hard stroke instead of a
+soft fade: visual correction remains in scope. QC `tools/profile-inventory-p1160.md`
+records provenance/limits; `lextest.md` distinguishes confirmed and pending checks.
+
+## Patch 1156 — preserve installed P1152 with the paired roof/duck camera
+
+**Problem.** P1152 was installed while the P1155 camera candidate was being
+validated. The original before-snapshot guard refused the advanced installed
+bytes; shipping that earlier candidate would now discard the installed status
+change. P1155 was never installed and its tag/proofs remain historical.
+
+**Change.** Forward-integrate the unchanged paired slow-practice feet/eye-height
+camera with byte-exact published P1152 mover-status source. Preserve the actual
+installed status behavior, current programs and all protected data. The camera
+still uses the configured zero-floor duck pair and unchanged presented-roof cap.
+No additional physical movement, input, eligibility, API or format change beyond
+the separately published and installed P1152 source.
+
+**Verification boundary.** All three camera files and their 16-case literal
+harness are byte-identical to the qualified P1155 snapshot; those controls remain
+valid without healthy reruns. Fresh whole integrated-source review, final seven
+native images, native regression, same-transaction generated-preimage continuation
+and post-install cold checks are required. The exact owner save14 roof feel is
+not asserted. No Pi/native/QC/backend rollout is part of this local camera task.
+
+## Patch 1155 — keep slow-practice feet and duck eye height on one sample
+
+**Problem.** Ordinary duck/roof eye-height changes and the standing/duck hull pair
+were treated as camera discontinuities below speed1, repeatedly discarding
+otherwise smooth movement history. Owner reports this while moving under a roof.
+
+**Change.** Store and interpolate eye height with the existing camera-only feet
+and velocity samples. Carry the paired height through rebase and normal-speed
+release and consume it before the unchanged presented-world roof cap. Admit only
+the configured native-codec Source standing/duck pair with decoded floor zero;
+other hull/model/world/owner/teleport/epoch/jump fences remain. Stationary holds
+retain the entire old pair even when the incoming eye changes. No physics,
+commands, eligibility, evidence or network-format changes; ordinary steady1
+outside an active/retiring practice presentation uses its existing view height.
+
+**Verified/limits.** Final16 literal-source cases pass. The old eye-reset and
+two first-candidate idle/translated-hull failures are retained. Both fresh whole
+source reviews clear. Official header-Full7 baseline and final-source incremental
+targets completed; the final incremental has no native compiler warnings. Tests
+use controlled trace/predicate seams, not a real geometry/packet proof. Final
+image delivery and the exact owner roof/save14 feel remain separately gated.
+
+**Image scope.** The frozen camera-only image is tag `patch-1155` at `d1bc17875`.
+Current main also retains the subsequently published P1152 source below, but this
+qualified pre-P1152 image deliberately does not activate that separately pending
+status change. Source integration and the inspected image are different clocks;
+existing installed P1151 movement/status and actual live programs are preserved.
+
+## Patch 1154 — TAS native 10ms and 15ms clock contexts
+
+**Problem.** TAS admitted only a 15ms Source clock and injected a fixed 15ms
+command. Simply admitting 10ms would leave the grant duration, fractional carry,
+retained checkpoints and queued inputs inconsistent. The map timer is also
+latched at map load, independently of a later mover-cvar change.
+
+**Change.** Admit exactly 10ms or 15ms Source clocks, validate carry against the
+selected interval, and grant one actual interval. Share a connection/map-bound
+clock latch with checkpoint/input entrypoints. An observed rate change faults and
+clears marked pending work; returning to the old rate cannot revive it. SSQC
+refuses authoring when the last admitted mover interval differs from the map's
+latched timer; status exposes both intervals and checkpoint capability. Defaults,
+ordinary movement math, recording formats and human eligibility are unchanged.
+
+**Verified.** Portable actual-C controls pass 100262 admission/input/queue checks,
+including exact/adjacent/invalid rates, carry bounds and identity/map/change/revert
+cases. Windows header-full isolated build has no new native or QC warnings.
+Actual owned dedicated-socket 15ms controls and 10ms subjects preserve paused
+counts/carry, grant exactly 1/7 native ticks, restore printed pose/carry through
+back7 and repeat the printed endpoint. Active queued work cancels on rate change,
+stays stopped after revert, and recovers only in a fresh matching context. A
+mixed mover/map-timer control is refused before grants; normal movement remains
+live when the TAS clock is unsupported. Additional 10ms airborne controls exercise
+manual/directional input, retained native tape replay and a bounded 22-candidate
+optimizer with monotone native movement/completion counters.
+
+These socket proofs are airborne movement components at printed pose precision,
+not grounded/collision, cold-project, whole-world or byte-state equality proofs.
+A real-map route that reentered the start correctly refused back; it is not a
+rewind pass. Canonical source qualification and TAS-board admission remain held;
+backend verification's supported profile is unchanged. Review, final-tag builds,
+installation and owner feel are separate checks, not claimed by these controls.
+
+## Patch 1152 - retain recovered-stamina stock standing takeoff status
+
+**Problem.** The ordinary standing-jump gravity-carry observer refused any enabled
+stamina mode, including a fully recovered jump whose actual multiplier is one.
+Testing the pool after the jump is too late because the accepted jump spends it.
+
+**Change.** Share the existing finite pre-cost identity predicate between stock
+standing and normalized takeoff. Keep stock crouch/duck transitions and non-unit
+fatigue excluded, and retain the accepted jump, current hull, neutral clear-path,
+source provenance and late-use guards. Preserve all P1151 practice-return changes.
+No physical mover, captured field, API, format, flag, tier, Build or release change.
+
+**Verified.** A test-only insertion into the untouched current P1151 production
+source failed exactly the four predicted admission/use checks; the other 1,195
+checks passed, including real takeoff, stamina spending, exact body, neutral,
+blocked-path and refusal controls. The fixed Windows native selftest passes all
+1,199 checks (128 new). The old enabled-stamina negative now uses genuine fatigue;
+the two old stock-standing posture probes intentionally accept while ducked and
+transition probes still refuse. Windows baseline and subject match all 60 named
+full-content five-map physical rows using the explicitly test-only stable QC;
+this is not current-VM runtime acceptance. All 17,104 files in that test's protected
+Windows data/config/native/program domain remained unchanged with no new members.
+Current P1151 literal pose/return/client-prediction/support harnesses pass. Reader
+949/0 passes; the mandatory runs-only sweep retains existing faults with identical
+reader/input dependencies, not a fault-free corpus. A separate default sweep is
+blocked by an existing protected save prefix and remains unqualified.
+
+**Final qualification/delivery, 31 Oct 2026.** Two fresh whole-source reviews are
+clear with scoped notes; the exact reviewed source and evidence remained held.
+The final tagged Windows and clean ARM64 natives each pass all 1,199 checks;
+all 60 full physical rows match across platforms and the current P1151 control.
+The stable QC remains explicitly test-only, not current-VM/packet acceptance.
+Native source `c36bc6b06` / `patch-1152` (actual 8064) and QC declaration `f9d1ad84`
+are published. Both Windows installs received the exact seven native images and
+matching predecessor copies. All 17,608 protected old files, including twelve
+actual VM/symbol files, remained unchanged; all 28 rollback members were verified.
+No owner/peer process was killed. Later P1156 source forward-preserves this exact
+mover-status source; its camera qualification and installation are separate.
+
+Pi native-only preparation refused a newly occupied lobby before any part archive,
+payload, canonical stage, swap or restart; only owned source artifacts were kept.
+Fresh part/actor/FD/on-off-box/execution-boundary checks remain required. No backend
+change. Installed-client cold/current-VM/human/rank acceptance and the wider bank
+remain open; none is inferred from source, selftests or physics controls.
+
+## Patch 1151 — server-confirmed clean return from slow practice
+
+**Problem.** Restoring normal speed retained the connection's slow-practice history.
+Clearing that history alone would let an old attempt, prediction queue or native
+movement carry leak into a nominally clean run. A reset also needs fresh support
+identity when its neutral command advances no Source tick.
+
+**Change.** Returning to 1 can prepare a fresh zero-motion attempt at the same
+eligible grounded start pose, while still practice. Completion requires the
+client's native prediction reset for the matching neutral server snapshot and a
+subsequent decoded neutral command from the same live attempt. Native client
+history fences reject pre-return replay/interpolation bases and clear prediction
+carry; SSQC closes old evidence before reset and clears practice history only at
+confirmed completion. Missing support or an old/missing client hook fails closed.
+Zero-duration grounded Source commands resolve the supporting edict against the
+current command's rebuilt physents before observation and mover writeback.
+No mover-version, recording grammar or ordinary movement change.
+
+**Verified.** Two independent whole-patch source reviews have no remaining
+findings. Literal SSQC/CSQC/native harnesses include refusal, stale history,
+sequence/ring identity and zero-tick world/moving-support controls; the previous
+native ground overwrite fails before the fix and passes after it. A real dedicated
+client/server pair preserved the pose, cleared charged old client landing carry
+(76 to 0), confirmed the new attempt, then accepted a fresh jump and later slow
+practice. An old native client remained practice. Final-tag listen routing passed;
+disabling CSQC timed out without clearing practice. Header-full Windows build
+baseline plus the final source compiled all seven official targets; ARM64 server
+and HL2 plugin compiled. The five-map gate matches all 60 named physical rows
+exactly across Windows/ARM, both native selftests pass, and declared reconstructed
+historical-world pin2/pin7 controls pass on both platforms (4418/4418 and
+9194/9192 ticks/rows). Final tag-only binaries preserve the Windows .text and ARM
+.text/.init/.fini sections from those qualified images; all six QC program/line-number
+files are byte-identical. Reader suite 949 checks passes; unchanged-reader corpus outcomes
+and old bytes match the captured baseline. This is not whole-corpus native replay,
+archived historical VM byte identity, loss/split-seat or every start-bank runtime
+coverage. Human feel/first-jump acceptance remains in lextest.md. Delivery is
+recorded separately; these checks do not claim installation.
+
 ## Patch 1148 - retain neutral-stamina normalized takeoff coverage
 
 **Problem:** The normalized ground-takeoff status gate refused stamina even when
