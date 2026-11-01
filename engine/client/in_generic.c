@@ -2717,11 +2717,11 @@ static void IN_Commands_Internal(qboolean deliverpaste)
 				break;
 			}
 			if (ev->keyboard.scancode == K_TOUCH && ev->devid < MAXPOINTERS &&
-				ptr[ev->devid].type == M_TOUCH && ptr[ev->devid].touchkey == K_MOUSE1)
+				ptr[ev->devid].type == M_TOUCH && ptr[ev->devid].touchkey == K_ENTER)
 			{
 				struct mouse_s *m = &ptr[ev->devid];
 				in_real_held[K_MOUSE1] = false;
-				Key_Event(ev->devid, K_MOUSE1, 0, false);
+				Key_Event(ev->devid, K_ENTER, 0, false);
 				m->touchkey = 0;
 				m->touchtime = 0;
 				m->moveddist = 0;
@@ -2764,14 +2764,14 @@ static void IN_Commands_Internal(qboolean deliverpaste)
 					touchcursor = -1;
 				m->touchtime = 0;
 				m->moveddist = 0;
-				m->touchkey = K_MOUSE1;
+				m->touchkey = K_ENTER;
 				m->updated = false;
 
-				// The Fire control confirms the item already under the cursor.
+				// The Fire control sends Enter to confirm the currently focused menu item.
 				in_real_keydown = false;
 				if (!ev->synth && !in_real_held[K_MOUSE1])
 					in_real_keydown = in_real_held[K_MOUSE1] = true;
-				Key_Event(ev->devid, K_MOUSE1, 0, true);
+				Key_Event(ev->devid, K_ENTER, 0, true);
 				in_real_keydown = false;
 				break;
 			}
@@ -2861,7 +2861,7 @@ static void IN_Commands_Internal(qboolean deliverpaste)
 				touchcursor_previous[ev->devid][1] = mousecursor_y;
 			}
 			/*mouse cursors only really work with one pointer*/
-			if (!vrui.enabled && !(ev->devid < MAXPOINTERS && ptr[ev->devid].touchkey == K_MOUSE1))
+			if (!vrui.enabled && !(ev->devid < MAXPOINTERS && ptr[ev->devid].touchkey == K_ENTER))
 			if (ev->devid == touchcursor || (touchcursor < 0 && ev->devid < MAXPOINTERS && (ptr[ev->devid].oldpos[0] != ev->mouse.x || ptr[ev->devid].oldpos[1] != ev->mouse.y)))
 			{
 				float fl;
@@ -2898,7 +2898,7 @@ static void IN_Commands_Internal(qboolean deliverpaste)
 				if (ev->mouse.x != m->oldpos[0] ||
 					ev->mouse.y != m->oldpos[1])
 				{
-					if (m->touchkey != K_MOUSE1)
+					if (m->touchkey != K_ENTER)
 					{
 						m->updates++;
 						m->updated = true;
