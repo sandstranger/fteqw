@@ -1758,9 +1758,19 @@ SDL_AppResult SDLCALL SDL_AppEvent(void *appstate, SDL_Event *event)
 
 	case SDL_EVENT_MOUSE_BUTTON_DOWN:
 	case SDL_EVENT_MOUSE_BUTTON_UP:
+#if !ANDROID
 		if (event->button.which == SDL_TOUCH_MOUSEID)
 			break;	//ignore legacy touch events. SDL_FINGER* events above will handle it (for multitouch)
+#endif
 		which = INS_MouseID(event->button.which);
+#if ANDROID
+		//Android's SDL only turns touches into mouse presses when the launcher asks for it, which it never does for FTE
+		//(SDL_FINGER* above handles touches), so presses with the touch mouse id come from its on-screen mouse buttons.
+		//They have to click where the cursor is, but their device slot may still hold the spot of an older finger, and
+		//a press on a touch device puts the cursor back there.
+		if (event->button.which == SDL_TOUCH_MOUSEID && event->button.down && vid.width && vid.height)
+			IN_MouseMove(which, true, mousecursor_x * vid.pixelwidth / vid.width, mousecursor_y * vid.pixelheight / vid.height, 0, 0);
+#endif
 		//Hmm. SDL allows for 255 buttons, but only defines 5...
 		if (event->button.button > sizeof(tbl_sdltoquakemouse)/sizeof(tbl_sdltoquakemouse[0]))
 			event->button.button = sizeof(tbl_sdltoquakemouse)/sizeof(tbl_sdltoquakemouse[0]);
