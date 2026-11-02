@@ -1,5 +1,660 @@
 # Engine patches (fteqw `fteqw64.exe`)
 
+## Patch 1203 — zone_edit handles: drag a zone's corners, edges and faces
+
+**Problem.** Lex (2 Nov), after P1197: "highlight and grab vertex points with your mouse, and
+then drag it around in 3d, with unit snap 16x16x16 8x8x8 ect and also edge snap ... same with
+grabbing edges and faces".
+
+**Change.** CSQC only (cl_zoneedit*.qc). Panel "Edit shape" (`zone_edit edit`) puts the
+selected zone in a crosshair edit state: a corner within 14 screen units lights, else an edge
+(a corner's vertical edge counts as the corner), else the face the aim passes through; Mouse1
+held drags, Mouse2 cancels, Esc returns, a click on another zone selects it. A zone is a flat
+ring pulled up, so corners and edges move in XY and the top and bottom faces move the whole
+ceiling or floor. A dragged corner takes Edge snap's point (P1197) when that is near its level,
+else the aim on its level, on the grid; a corner's vertical edge, or a side taken above the
+eye, takes the world hit; an edge moves by the grab's rounded offset, a side along its outward
+normal, top/bottom by the height the aim passes nearest (bottom floored to the grid). A move
+that would leave the outline not simple is refused. The drag holds its zone index and the
+table it began on (count, points, first point, zone_crc) and is cancelled and restored on every
+way out of the state; a replaced table lets it go unwritten. Handles are drawn on screen
+(filled squares, dotted edges and outline): a zone's bottom is at or under the floor, and
+ftesurf_zone_xray lines did not show through it in the arm's screenshots (cause not found).
+
+**Verified.** tools/p1203handles.py on surf_sinsane_ez with `zone_edit aimfix` standing in for
+the view: 23/23 graded on the final build and on the shipped lobby bytes (handle per aim,
+map-corner snap exact, grid 16/8, edge, side, top, bottom, crossing refused, Mouse2 cancel,
+pick, real view lit/held with screenshots looked at, and the review cases). Each review round's
+fixes failed on the build before them: review 1's four (top corner jumped to the floor's map
+corner; another panel left the zone moved; zone_reload got the dragged corner written into the
+reloaded zone; close then reopen mid-drag: "Progs boundcheck failed. Value is -1", csqc error),
+review 2's vertical-edge snap, review 3's floor aim (the corner had jumped to the eye), review
+4's side above the eye. Review 4's bottom-face gate is unmeasured (its case did not discriminate).
+Four review rounds; shipped as deploy/p1203-handles b826c9ba.
+
+## Patch 1207 — prederror reports skip a game this PC hosts; a reset sent unpredicted says why
+
+**Problem.** Lex's first report (surf_anubis, 2 Nov 17:18 local): `!r` at seq 429 moved him
+2992 u to the start; the client had him standing still. It was a local game, and there the client
+predicts nothing the QC drives: pr_csqc.c returns from CSQC_PredictPlayerPreMove (and every CSQC
+prediction hook) while sv.state != ss_dead. So P753's warp op, which needs the pre-move hook within
+0.5 s, fell back to the plain command, and the meter called the reset a prederror. P1195's local
+guard read cvar("sv_running"), which the engine does not have (always 0), so the box was offered and
+F6 sent the report to his own listen server. The report named the cause but not why the reset was
+not predicted.
+
+**Change.** CSQC only (cl_prederr.qc, cl_warpop.qc). No report while this PC hosts the game
+(serverkey("ip") is QLoopBack), or while cl_predict_qchook is on and the hook has not run for 0.5 s;
+a context note says which. The box and F6 skip a QLoopBack server. WarpOp_Reset (now a wrapper
+round WarpOp_ResetTry) notes why it fell back, one reason per gate (wop_why). The context file
+names the csprogs (*csprogs crc and size), whether the game was local, and cl_predict_qchook.
+
+**Verified.** fteqcc c24ede65, 0 warnings x3. Lex's case reproduced with copies of his Desktop 0.1.35
+exe and progs and his zone file: every `reset` snapped ~3000 u, with or without his saves; a
+diagnostic-only csprogs showed fs_wop 1, the destination published (WOPRANG z 2) and the pre-move
+hook 3.7 then 23.7 s old. Over the network (dedicated server, sv_minping 80) the same `reset`
+rode warp op 201 with no prederror. With this patch: the local game prints the engine's prederr
+lines but keeps no report (the 0.1.35 progs kept one each time); over the network with cl_warpop 0
+the report is kept, its context reads "warpop 201 not predicted: off (cl_warpop 0, or the server
+has no fs_wop)" at the error's seq, plus the csprogs line; with cl_predict_qchook 0 too it is still
+kept. One review (predicate, callers, engine paths) found the hosting rule above and two smaller
+issues (qchook 0 suppressed real reports; a predicting flag always 1); both fixed and re-measured.
+
+## Patch 1202 — the 3D skybox's entities are sent; sky props animate (surf_shape)
+
+**Problem.** Lex (2 Nov): surf_shape's moving 3D-sky background never showed. It is one prop_dynamic in
+the sky room (skybox_mdl, sand_dunes.mdl, anim "@move", 361 frames at 5 fps). The server sends a client
+only what its PVS sees and a sky room is sealed off from it; Source always sends the sky camera's area
+(gameinterface.cpp CheckTransmit, "Always send entities in the player's 3d skybox"). Props were also static.
+
+**Change.** SSQC only (deploy/p1202-skyroom 90821a52; FTESurf main 5b93ccbe..0f175292). sky_camera's
+origin is kept (the edict still removed at spawn: entity numbers feed the physent digest). On the first
+frame SV_SkyRoomAll gives PVSF_IGNOREPVS to every modelled entity the camera's PVS holds, whose point (a
+model's origin then box centre, a brush's centre) sees the camera and sees no spawn point -- the point
+tests move a model-less spawn point to the camera / the entity's point and back, because checkpvs on a
+big entity falls back to its headnode (VBSP_EdictInFatPVS) and passed main-map triggers. Every point in
+solid keeps the coarse answer; trigger_*, func_occluder, func_clip*, func_areaportal* are skipped; over 256
+or a camera in solid sends none. Point-placed SOLID_NOT sky props play DefaultAnim / SetAnimation
+(frametoname, case-insensitive, "@"+name), so an animation never moves a collision shape.
+
+**Verified.** 0 warnings (fteqcc c24ede65), csprogs/menu unchanged. surf_shape rig of the 0.1.35 files, live
+qwprogs vs the fix: dunes and sculptures behind the map where the control shows the 2D sky; the same view
+4 s apart changes 15298 px (control 73); views aimed at the sky room's real location from the route equal
+the control (no 1:1 copy leaks into the main view; r_ignoreentpvs 0 the same). Two review rounds (no crash
+or corruption): round 1's headnode false marks and round 2's coarse spawn test / buried-prop animation
+fixed and re-measured per entity on 12 maps (surf_ab 21 -> 0, all main-map triggers and bowser_ghost.mdl;
+surf_colony keeps its in-wall sky canister train). Census 179 of 297 sky_camera maps: 113 mark 0, max 217.
+Live on all 12 lobbies 2 Nov 08:30Z (qw e2fa9632). Residuals in FTESurf BACKLOG.
+
+## Patch 1201 — surf_view_style: edges and translucent planes for surf_view and ent_view
+
+**Problem.** Lex (2 Nov): surf_view is "sort of hurt by the dithering, it's hard to tell depth".
+Patch 776's fill is Patch 331's screen-space Bayer stipple: every face at one coverage lights the
+same screen pixels, so a ramp in front of another merges with it into one flat pattern, and at the
+default 4/16 it is close to invisible on a textured wall. Lex asked for edges on the dither, flat
+translucent planes as an option, the same setting for ent_view, and whether the dither is faster.
+
+**Change.** cl_ents.c only. `surf_view_style` (archived, default 1): 0 dither, 1 dither and every
+face's edges, 2 translucent planes, 3 translucent planes and edges. `surf_view_fill` is the
+coverage or the opacity. ent_view's clip hulls, hover and in-view set use the same fill; style 1/3
+also edges the in-view set (the hover and the clip hulls were always edged). r_showbrushes keeps
+the dither. The planes are `blendfunc blend` with no depth write and `sort additive`: with
+`polygonoffset` alone Shader_Finish makes them SHADER_SORT_DECAL, drawn before glass and water,
+which then painted over any plane in front of them. CLQ1_DrawPolyEdges draws a winding as one
+closed loop of lines, each vertex pulled 1/512 of the way to the eye: `polygonoffset` only offsets
+filled polygons, so an edge lying on a drawn face would z-fight it. surf_view draws every fill and
+then every edge, so batches do not alternate per face.
+
+**Verified.** Owned listen arms (1920x1200) on surf_kitsune, surf_dune and surf_skyhaven: each
+style prints its own line (faces filled and edged that frame); at 1:1 the edges on surf_dune's spawn
+ramps are continuous, and ent_view's trigger fills show in every style. Cost on surf_dune's stage
+pose (389 faces), the engine's show_fps counter read from screenshots 2.5 s apart (`wait N` counts
+66.7 Hz input frames, not render frames), 6 interleaved readings each: off 1.125 ms, dither 1.300,
+dither + edges 1.408, translucent 1.303, translucent + edges 1.263 (sd 0.09-0.22 on a shared
+machine): the dither is not measurably faster than translucent planes at this face count. One
+review (predicate, batching, state) found the decal sort; surf_skyhaven's glass poses, decal build
+against the fix: surf_view off identical (mean |d| 0.00-0.02), translucent styles differ on 16-47%
+of the frame, planes in front of the glass now keep their colour. Known: blended surfaces are not
+sorted per pixel, so a plane behind glass is now drawn over the glass at full strength instead of
+dimmed by it.
+
+## Patch 1197 — zone_edit snaps to the map's own corners and edges
+
+**Problem.** Lex (2 Nov): the corners of surf_sinsane_ez's start could not be hit. Edge snap
+read only existing zones, and the start floor's three corners (11718 8396, 12176 8762.76,
+12176 8029.6) are all off the 16 grid; Lex's local start zone had 11728 8400 for the first.
+
+**Change.** CSQC only (cl_zoneedit*.qc). The world surface under the aim is found with
+getsurfacenearpoint (it walks every world triangle: ~0.5 ms there, so it is asked again only
+when the aim leaves the cached face, at most every 50 ms) and read with getsurfacepoint. A
+corner within 14 screen units of the crosshair and within max(32, 0.2 x distance) of the aim
+wins, its own or an existing zone's (the nearer on screen); else the nearest edge point. A
+corner or edge the compiler cut into one flat floor is refused: a short trace just beyond it
+lands on the same plane (surf_sinsane_ez's x 12176 seam; the floor's real end is the slope at
+x 12198). XY are the face's exactly; with the grid on an edge point is the grid point's foot
+on the edge, and Z keeps the floor-down rule. Displacements (not rings) do not snap. The face
+is outlined, the snap point gets a square on screen, and the placing hint names what the next
+click takes with its coordinates. Edge snap is on by default and `zone_edit edges 0|1` works
+while placing. Read-only hooks: `zone_edit snapprobe`, `wsurf`, `snapcost`.
+
+**Verified.** tools/p1197snap.py, one listen client on surf_sinsane_ez: every corner aim takes
+that corner exactly and the same aims with Edge snap off miss all three; real edges take the
+grid (or surface) point's foot; the seam is refused in both modes; the slope edge snaps on the
+grid; one search per face; a real click places the corner; polygon placing snaps the same;
+screenshots looked at. 15/15 on the review-1 build; the review-0 build fails exactly the four
+review checks. Shipped as deploy/p1197-zonesnap 7bfe2807 (lobbies, both installs; release 0.1.36). One review (non-ranking): grid lost along
+edges, splits snapped, search-rate traps, probes tainting saves -- fixed as review 1.
+
+## Patch 1193 — surf_sirena's script barriers open for the player who earned them
+
+**Problem.** Lex (2 Nov): surf_sirena's barriercollision is never disabled. Its three barriers are
+faceless func_brushes that scripts/vscripts/barriercollision.nut (map pak) opens per player:
+SetPlayerNoCollideBarrier sets the player's m_hOwnerEntity to the barrier, which Source's collision
+filter skips; ClearPlayerNoCollideBarrier clears it. Triggers call it as
+`alpha_script,RunScriptCode,...`. logic_script had no spawn function and nothing ran RunScriptCode,
+so the barriers were solid for everyone.
+
+**Change.** QC only (sv_entities.qc, sv_player.qc, sv_main.qc). logic_script is kept; RunScriptCode
+on it runs that script's two calls (the emissive viewmodel calls are dropped). A grant opens the
+barrier only when the player's own touch made it in their current bank attempt. The barrier is
+SOLID_NOT from the end of that player's PlayerPreThink to the start of their PlayerPostThink
+(StartFrame, the next PreThink, SV_IOEnable and Toggle restore it first; the engine pmove's
+AddLinksToPmove skips owned entities but not owners, so .owner could not do this), and it is not
+sent to that client (customizeentityforclient), so prediction agrees. No engine change.
+
+**Verified.** Listen arm, air-walking at barriercollision_s1, live progs vs the deploy bytes: live
+blocked in every phase; this build blocked before the grant, passed after it, blocked after a save
+load (a new attempt), passed after re-touching the window, blocked after the clear trigger. One
+prederr per walk in both arms (the arm's setpos). Two review rounds (predicate, evidence, attacker):
+round 1 found an end-of-move taint test that fast low-rate crossings skipped on an old grant, a
+Toggle reading the lent solidity and find() returning players; round 2 found the lend running before
+the tick's warp op. All fixed and re-measured. Known: pm_verify rebuilds physents with the barrier
+solid, so a granted pass reads HOLD; saves and resumes do not carry the grant (Lex's call, BACKLOG).
+Live 2 Nov 03:01Z, deploy/p1193-sirena 96f009ed (qw 6955e756).
+
+## Patch 1190 — the server sends a teleport's destination before the crossing
+
+**Problem.** Lex (2 Nov): teleports pop assets in late. The client predicts a teleport at once; the
+destination's networked entities waited for a snapshot built from the new origin (the server's PVS
+is the edict's), a command interval plus a round trip later.
+
+**Change.** QC only (sv_warpop.qc, sv_player.qc, sv_timer.qc). Each playing client gets an
+invisible `tp_view_eye` in `.view2`, which SV_AddCameraEntity unions into its PVS (sv_ents.c ~4382),
+at the destination of a trigger_teleport inside the player's swept box (lookahead
+0.2-0.8 s from the ping), held 1 s after it leaves the sweep, else at the `!r` stat (wop_rorg). The
+replay/ghost/spectate eye outranks it. 20 Hz; the teleport list is rebuilt once a second.
+`sv_tp_pvs 0` detaches it, 2 keeps teleports only.
+
+**Verified.** Listen arm with an arm-only csprogs that counts, per frame after a predicted jump, the
+networked entities that were not there on the jump frame. surf_diverge_css floor teleport,
+sv_minping 150: live progs, 62 arrive after the crossing (144 ms) and 65 by settle; this build, none
+of the destination's (3 at the landing spot 353 ms later, as with `sv_tp_pvs 2`). surf_fortum_fix
+sends all 510 entities everywhere, so it cannot show it. One review (ownership of .view2 sound; it
+fixed an unthrottled path without an eye and tool teleports read as live). Bandwidth not measured.
+Live 2 Nov 03:01Z with P1193.
+
+## Patch 1192 — the whole 2D sky behind a Source map's 3D sky (surf_olivia's hub)
+
+**Problem.** Lex (2 Nov): surf_olivia draws no sky at map_start/the hub. Its sky_camera stands in
+an area holding the lower box; the sky ceiling is another area of the same cluster, and the
+3D-sky pass enables only the camera's area (R_DrawSkyroom). The 2D sky was then painted only over
+the sky faces that pass kept (R_CalcSkyChainBounds before GL_DrawSkyBox), so the hub showed the
+clear colour, with HUD trails smeared through it.
+
+**Change.** gl_warp.c only. Inside a Source map's 3D-sky view (r_skyroomlevel, fg_new), the
+first sky batch draws all six faces whole (GL_DrawSkyBoxFull), as Source's R_DrawSkyBox does: the
+face images for a six-image sky, or the forced sky's own shader for a cubemap or equirect one.
+Once per sky-room view; the sky depth mask still runs per batch. `r_skyroom_fullbox 0` restores
+the old bounds. The main view and water captures are unchanged. Reaches players with the next
+client release (exe only).
+
+**Verified.** Owned rig, 1280x720 window, one build with the cvar as the switch, matched poses
+(map_start looking up, then level). surf_olivia: `r_skyroom_fullbox 0` and the installed exe draw
+black where the sky is; at 1 the mpa115 sky fills it (58% of the frame's pixels change).
+surf_santorini, spawn looking up and level: 0 and 1 pixels differ between 0 and 1. Cost, same
+pose, six alternating samples of r_budget_dump: olivia frame 1.64/1.60/1.60 ms at 0 against
+1.66/1.53/1.52 at 1, GPU busy 0.75/0.75/0.74 against 0.72/0.72/0.70, the 3D-sky GPU pass 0.40 ms
+both; santorini's 3D-sky pass 0.15 ms both. Nothing measurable. Not reviewed.
+
+## Patch 1191 — a material with no VMT draws its reflectivity colour, not the checker (surf_utopia)
+
+**Problem.** Lex (2 Nov): yesh's surf_utopia, without TF2, draws the missing checker on 14,564 of
+16,966 world faces; Momentum draws them as flat colour. Its TF2 sky (sky_dustbowl_01) found no face
+and drew black: Shader_ParseSkySides fills a missing face with r_blackimage, so R_SetSky's "keep
+the sky if one face loaded" test kept it, and r_skybox_default never applied.
+
+**Change.** hl2 plugin (mod_vbsp.c) and gl_warp.c. VBSP_LoadTexInfo keeps each texinfo's dtexdata
+reflectivity (the linear average VBSP read from the VTF), or none for a 0x0 entry, which VBSP
+writes as 0 0 0 when it could not find the material either. VBSP_GenerateMaterials: a texture
+whose image will not load (VBSP_DiffuseMissing) and whose shader is the engine's default wall (no
+VMT, or one that would not parse) gets a 4x4 image of that colour (sRGB-encoded) under its
+lightmap, shader hl2tint_RRGGBB. A VMT that loaded keeps the P780 checker: its shader is not
+finished at load (sort 0), so a translucent one cannot be told apart, and tinting it solid would
+wall off what it shows. Water (#WARP) keeps the checker too. `hl2_missingtint 0` restores the
+checker. R_SetSky: a declared sky whose six faces are all missing (or black-filled) draws
+r_skybox_default, as a map that declares none does; `sky` says so. Reaches players with the next
+client release (plugin and exe).
+
+**Verified.** Owned rig, basedirs with the install's fs_addons.txt and no mapdeps.txt (no TF2):
+installed exe/plugin against the build, same three poses. utopia: the checker (12 materials, all
+"missing checker" lines) against lit flat walls (concretewall011 b8aea3, computerwall001 b04018,
+...; 98% and 82% of pixels differ); the build at `hl2_missingtint 0` matches the installed one
+(130 and 0 pixels). With TF2 mounted (mapdeps.txt copied) installed and build give the same frame
+(0 and 3 pixels). Sky: the P1191 build without the black-face test draws black sky regions on
+utopia; with it, "sky sky_dustbowl_01: no face found; drawing r_skybox_default sky_cape_hill" and
+cape_hill fills them. surf_olivia's grassdirt_blend_wvt_patch (0x0 texdata) drew black before the
+0x0 rule and keeps the checker after it; santorini's coast_wall01b likewise. Not reviewed.
+
+## Patch 1195 — prederror reports: kept, offered, sent to the lobby
+
+**Problem.** Lex (2 Nov): "when we get prederrors, the game logs it, asks the player if they want
+to upload it, with a side menu box, logs the recording, uploads it, so that we can fix every
+prederror and cause. It sometimes isn't ent related, could be load save related or other game
+mechanics." Patch 335's meter printed one console line per snap and kept nothing around it.
+
+**Change.** Engine (tag patch-1195 = fb3e181d6 on the installed 9e8daa0d0, cl_pred.c only). The
+meter's comparison runs on every pass of the prediction loop, but only the first pass compares the
+server's state; the later ones compare predicted with predicted and are zero by construction. Each
+first-pass comparison now goes into a 512-row ring per seat (origins, velocities, ground flags,
+pm_type, the command), which resets when cl.servercount changes or the sequence falls back on a new
+connection. cl_prederror_count and _last (NOSET) let QC see each printed line.
+`prederr_dump <name>.txt` writes the ring to data/prederr/ only: plain names, 200 per session,
+FS hash flushed so QC can read it back, and the newest 120 files kept by mtime. QC (FTESurf main 9289915f;
+deploy/p1195-prederr 935a7dd3): CSQC waits 1.5 s after a line of 32 u or more, dumps the ring and writes a
+context file (server prints, mirror triggers by seq, gates, warp ops). It then shows a 20 s box,
+and F6 sends both to the lobby in sendevent chunks paced by prederr_ack. The lobby streams the
+report to data/prederr/ with its own header. Caps: 400 x 1 KB; per connection 3 per map, 20 s
+apart; per lobby 12 per map, 10 s apart; nothing past 600 stored files.
+tools/prederr_triage.py reads the reports.
+
+**Verified.** Engine build: one stamp, git-8076-patch-1195-0-gfb3e181d6 (16 hits; 8076 = count +
+29), no warning from cl_pred.c. QC: fteqcc c24ede65, 0 warnings x3. Owned server + client rigs on
+surf_network2008, run without P1196 so it still snaps. Arm 1 caught the upload missing the ring
+(an engine write never flushed the FS hash). Arm 2 caught a ring of all zeros (it recorded the
+predicted-vs-predicted passes). Arm 3 was good: the lobby file holds the header, the context and a
+322-row ring, and triage shows seq 334 jumping 2144.57 u from zero, a teleport the client never
+predicted. Arm 4 measured review 1: the ring after a reconnect is the new connection's (seq 14..234,
+newest row 0.05 s old); 130 old files were pruned to 120, oldest first; and `prederr_dump` refuses
+`../`, `sub/` and names without `.txt`. One reviewer covered two lenses (what a client or server
+can do; the client state machine). It found an unlimited upload through a NaN total, the ring
+freezing after a reconnect, caps that a reconnect resets, header injection, %g sequence numbers
+past a million, and smaller edges. All are fixed; the NaN refusal was checked by reading the code,
+not measured.
+Live 2 Nov ~02:41Z: lobbies and both installs qw bb4bf7e1 / cs 7f6adb64 (the bytes arm 5 tested),
+install client exe ba3cfd5d; arm 6 ran the same csprogs on the 0.1.34 exe: no box, no QC error.
+
+## Patch 1196 — teleports switched by unreplayable outputs follow the server's gate
+
+**Problem.** Lex (2 Nov), surf_network2008: `prederr: seq 464 origin off by 2160.60 (predicted
+1609.6 3048.6 4044.3, server 1952.0 4048.0 5929.0)`. The server position is fall2, the destination
+of the ct_filter trigger_teleport under the spawn. A logic_timer disables both `spawn` teleports
+(and enables `jail`) 30 s after the map loads. The client mirror demotes any trigger that an
+unreplayable Enable/Disable writes, so the server teleported and the client did not.
+
+**Change.** QC only (FTESurf main 86982072; deploy/p1196-telegate 483a0398). Each named brush
+trigger_teleport sends P670's typed gate entity. SV_TrigStateSend also reads StartDisabled, because
+a teleport that is StartDisabled at spawn stays SOLID_BSPTRIGGER. On the client, Trig_NetState takes
+teleports, and a named teleport is netgated when one of its Enable/Disable writers cannot be
+replayed. Its replayable writers still win through the post-ack ring. Every netgated slot is now
+gated: before this, a push whose only writers were unreplayable fired even while the server had it
+off. Zone-tool boxes are never netgated, since they have no model to match.
+
+**Verified.** fteqcc c24ede65, 0 warnings x3. Owned dedicated server + client rig on
+surf_network2008, cfg-driven: a setpos above Lex's point inside the first 30 s, then the same drop
+after the timer. Unfixed (main fe73d3b0): 2144.57 u at the spawn teleport and 1284.71 u at the jail.
+Fixed: the client fires both teleports itself (#19, #14) and logs no prederr. The arm's own setpos
+correction (~1100-1240 u) shows in both builds. One reviewer (control flow, compatibility, cost)
+found steady state correct; it found the mixed-writer staleness and the zone-tool boxes, both fixed
+and re-measured. Two fail-safe notes went to BACKLOG.
+
+## Patch 1189 — the Maps menu sees a new zone within a minute
+
+**Problem.** Lex (2 Nov), after P1180: the in-game Maps menu took up to ~6 minutes to show a map
+as zoned. The menu polls surfd's /api/board?maps=1 every 60 s, and its zoned/enabled columns come
+from map_index() and zone_file_index(), both cached MAPS_TTL (300 s).
+
+**Change.** surfd only (generation 0d72a27c = live 58dbbf40 + P1189; FTESurf main d0b4dc01,
+0ac1c88c). Each read stats the three zone folders (dev, inode, mtime_ns) and rescans when one
+changed; the zone service writes by rename, which moves the folder's mtime. A listing taken while
+a folder's mtime is within 2 s of now is redone after at most 1 s, because a second change in the
+same timestamp tick (3.33 ms on the Pi's ext4) leaves the mtime equal. A map rescan lists the zone
+files itself rather than zone_file_index's cache. MAPS_TTL stays as the backstop and for BSPs.
+
+**Verified.** New test_web/test_mappool checks fail 4 and 1 on 58dbbf40 and pass on Windows and
+on the Pi; five mutants (signature read after the listing, scan via the other cache, settling or
+signature ignored, the waiter's lower bound back) each fail their check. Review round 1 found an
+overtaken map_index waiter scanning again (P829's one scan); fixed in 0d72a27c, round 2 found
+nothing. Code-only generation swap 01:53:23-46Z with the P1175 kit plus the drop-in slot's
+reservation protocol; the maps=1 body was byte-identical across it. Live: touching the lobbies'
+zones/local folder rescanned on the next read, settled after two more, then held. Limit: a copy
+that restores a folder's mtime can hide an added zone until MAPS_TTL (BACKLOG).
+
+## Patch 1188 — Momentum's platform/ folder as a per-map mount (surf_skyhaven's glass)
+
+**Problem.** Lex (2 Nov): surf_skyhaven has a missing texture. Its 55 glass faces name
+fallback/default_glass, and rj_tattarrattat's grate names fallback/default_grate. Both ship as
+loose files in Momentum's platform/materials/fallback/. Nothing mounts platform/, and
+FS_MapDepsNetSpec only lets a per-map table name five fixed specs.
+
+**Change.** fs.c (branch p1188-momplatform 9e8daa0d0 on the installed 117124a41): the allowed
+specs gain "steam:Momentum Mod Playtest/platform". FTESurf tools/mapdeps.py gets the same pack in
+ADDONS, as a loose-files addon (installed means the folder exists; it has no *_dir.vpk).
+mapmedia_refresh's gap check knows that, and the changed addon list forces one full mapdeps scan.
+The menu keeps the new line (Mmm_KnownMount) and labels it MOM. A 0.1.34 menu drops the line and
+a 0.1.34 engine refuses it, which is the same as today. The exe reads `patch-1173-1-g9e8daa0d0`
+because it was built before the tag; the release gate checks only the count and the hash.
+
+**Verified.** Owned rig on surf_skyhaven, with a copied mapdeps.txt that names the pack. The new
+exe logs `fs_automount: surf_skyhaven needs "steam:Momentum Mod Playtest/platform"`,
+fs_automount_state 1, and no material that did not resolve. The installed 117124a41 exe, same
+data: state 0 and "fallback/default_glass -- 55 world face(s)". Three camera poses on the
+panes (found from the v25 face lump): framed glass with the fix, the purple checker without it.
+
+## Patch 1184 — zone editor: a zone's size, typed or wheeled
+
+**Problem.** Lex (2 Nov): "on some maps ... we can't get into the corner to make the zone
+correctly ... allow us to see the zone dimentions and to shift faces/values with a text box or
+click and drag". The editor placed boxes only by aiming at world geometry and showed no size.
+
+**Change.** QC only (client, in QC 4a03e17b on deploy/p1180-zones; main e7f6af7c). The panel's
+inspector shows the selected zone's size and six values (x min/max, y min/max, bottom, top). A
+click opens the editor's text field (Enter applies, Esc cancels), the wheel over a value moves
+it one grid step (1 unit on Surface). An x or y face stretches the outline from the opposite
+face, so a box's face moves exactly and a polygon keeps its proportions; height stays 16-16384.
+`zone_edit face <xmin|xmax|ymin|ymax|bottom|top> <value>` does the same.
+
+**Verified.** build.ps1 0 warnings x3 (fteqcc c24ede65). Hosted surf_dune in a runlines_smoke
+overlay: a box's x max -11328 -> -11200 and top 15260 -> 15300 (status bounds, panel chips, list
+row and crc follow), a 16-point polygon's x min 11360 -> 11000 with x max kept, bottom -99999
+and "abc" refused, an unchanged value leaves the table untouched; repeated on the delivered base.
+A first screenshot showed the frame before the edit (2 s later the panel had the new values).
+
+## Patch 1180 — zone publishing is instant, with a history
+
+**Problem.** Lex (2 Nov): "when we publish a zone, I just want it to be instant ... If the zone
+is bad, then it NEEDs to be updated now, not after people finish their runs. Only have 1 option,
+publish"; "store the user who uploaded the last zone, and also have an ability to browse the
+previously uploaded zones". P815/P1081 waited for a quiet map, or a warning minute, two sweeps
+and every owed verdict; the uploader was stored but nothing showed it.
+
+**Change.** zonepub (QC main 02c91e7a..85ed1a7c, installed by Lex's sudo `install_zonepub.py
+--upgrade` at 85ed1a7c, 6cff6856 kept as the way back): every accepted upload is written by the
+upload's own apply(); each of our lobbies on the map answers serverinfo just before the write
+and then gets say + changelevel in that tick; 55 s rounds confirm by zonecrc and load time. A
+lobby whose pre-write read shows another map is left alone; a write needs 2 free rcon packets
+per target; a held row expires an hour after its first hold; rollbacks reload their lobbies too.
+New public POST /api/zones/history (uploader display names, never SteamIDs; covering index) and
+/api/zones/file, CORS *. Client (csprogs 9138d2ba on all 12 lobbies and both installs): one
+Publish button, a History page in the editor (load any published version as unsaved edits). The
+site's zoning page shows "Recently zoned" and "Zoned by X" from the history.
+
+**Verified.** surfd/test_zonepub.py 169 OK. Five independent review rounds (state machine;
+public surface/abuse; then each fix) found 12 defects, each fixed with a test that fails on the
+commit before. Dry run as proto, then the owner's --apply: unit at 85ed1a7c, history lists 20+
+publishes by Markbeaton54 and Proto (account names read from the sandbox), /api/zones/file of
+#22 equals the live surf_kraken.json (52dae58d514d). Lobbies restarted at 0 players, no QC errors.
+The instant path itself is unit-tested against a fake fleet; the first real publish is the
+owner's check (lextest).
+
+## Patch 1185 — a booster's own re-enable keeps it world-owned
+
+**Problem.** Lex (2 Nov): surf_mesa's booster put the run in practice ("practice -- inherited
+player-origin map effect"). The trigger_push runs `OnEndTouch !self,Disable` and `!self,Enable`
+1 s later; SV_IOEnable recorded the off->on under the leaving attempt's I/O lineage, so once a
+save load or reset started a new attempt the next touch read as inherited (BANK_UNRANKED,
+TF_BANKTAINT). 158 library maps have an activation trigger that re-enables itself.
+
+**Change.** QC only (sv_entities.qc SV_IOEnable, sv_bank.qc). When a player cause switches a
+world-owned activation slot off, an off->on by exactly that cause (player, attempt, bad) leaves
+it world-owned. Any other cause's Disable while it is off cancels that; world causes never
+qualify (they all share one identity). Every other off->on snapshots its cause as before.
+
+**Verified.** surf_mesa listen arm (save, ride, load, ride): live P1177 progs print the practice
+line; this build prints none and logs the rule acting on each ride. Two review rounds: round 1
+(predicate, attacker, evidence) found world causes matching each other, a stale record
+surviving another cause's Disable (an untainted boost in the map's off window) and restores of
+older player owners; round 2 (predicate, attacker) confirmed those closed and found a
+theoretical residual, a player-re-armed world timer carrying their identity, with 0 reachable
+cases in 2204 library BSPs (BACKLOG). Two riders leaving together fall back to the old taint.
+Delivered on deploy/p1185-lexbugs 5729ce47 (live 18:09Z 1 Nov).
+
+## Patch 1183 — one "nothing saved", and Shift+wheel noclip on lobbies
+
+**Problem.** Lex (2 Nov): the load key with no saves printed "save: nothing saved on this map"
+twice (WOP_LOAD runs SV_SaveLocLoad then SV_SaveLocHold, both refusing). Shift+wheel noclip
+tuning on a lobby printed "first local seat only": CSQC_KeyPress sets no seat, so VF_ACTIVESEAT
+read whatever the last engine call left.
+
+**Change.** QC only. SV_SaveLocHold's no-saves refusal is silent (a hold acts only right after a
+load, which already said it). Noclip_Wheel asks about the seat only when numclientseats > 1.
+
+**Verified.** Listen arm, `cmd sl_load; cmd sl_hold` with no saves: live progs twice, this build
+once. The wheel needs a lobby to reproduce: owner check (lextest).
+
+## Patch 1182 — props hide the sun
+
+**Problem.** Lex (2 Nov): the env_sun glow showed through props (surf_pantheon, noclip save).
+cl_sun.qc's probe traced CONTENTBIT_SOLID only; every static prop's triangles carry BODY
+contents (render mesh and .phy hull, mod_hl2.c) and draw-only props sit behind 0x400 in the
+plugin's visual tree, so no prop could hide it.
+
+**Change.** QC only. The probe uses the glares' mask (SOLID|BODY|0x400) and traces once at map
+load, so the plugin builds its visual tree then rather than on the first frame facing the sun.
+
+**Verified.** At Lex's pantheon save pose: live progs log "env_sun: visible" and the glow sits on
+the hubpillar column (vbsp_sun 0 removes it); this build logs "hidden by" and the shot shows no
+glow; the plugin's occluder line now prints at load. Solid see-through props now hide it fully
+(Source's pixel query would not): BACKLOG. Frame cost not measured.
+
+## Patch 1181 — stage resets face the map's own destination
+
+**Problem.** Lex (2 Nov): `!r` on surf_for_shareholder_value stage 2 faced a corner while the
+map's fail teleport faced the right way. The zone editor's automatic spawn (the zone's xy
+centre) stores the zoner's view yaw from while the zone was drawn: 39 spawns on 13 of the
+lobbies' 91 local files face 80-180 degrees off the map's stage info_teleport_destination.
+
+**Change.** QC only (sv_zones.qc SV_ZoneSpawnYaws after Zone_Hash; sh_zones.qc zone_stamped). A
+spawn at its zone's xy centre with exactly one info_teleport_destination inside takes that
+destination's yaw. Momentum-mirrored files (numeric root dataTimestamp) and Set spawns keep
+theirs. Files, zone hashes and the client table are unchanged; reset prediction reads the same
+SV_ZoneDestRead.
+
+**Verified.** Server-only arm: live qwprogs turns nothing; this build turns shareholder_value
+(s2 90, not -46), sirena (5) and midnight (6), and leaves surf_ecosystem and surf_shape alone;
+zone crc unchanged. Two review rounds. Not yet seen in game (lextest).
+
+## Patch 1179 — journals reach surfd again
+
+**Problem.** Lex (2 Nov): `rec_ul_send: journal HTTP not acknowledged (status 503)`. Every POST
+/api/hid since at least 26 Oct failed with "journal upload unavailable (OSError)". surfd.service
+runs with ProtectSystem=strict; the worker's mountinfo shows /srv/nvme read-only, so
+hidupload.py's mkstemp in the lobbies' data/evidence/<map>/ failed. Receipts were fine.
+
+**Change.** A drop-in, /etc/systemd/system/surfd.service.d/20-hid-evidence.conf (FTESurf
+surfd/surfd-hid-evidence.conf), adds the evidence tree to ReadWritePaths. The P1115 installer
+rewrites only 10-guarded-startup.conf, so it needs one root install.
+
+**Verified.** Lex installed the drop-in; daemon-reload and surfd stop/start at 1 Nov 18:57Z
+(same generation 58dbbf40). The new worker's mountinfo shows data/evidence rw; lobbies.json
+answers 200 with 12 rows; an empty POST /api/hid answers 413 (its length guard), and
+zonepub's WAL sidecars came back. A signed upload is the owner's check (lextest). Journals that
+failed meanwhile are not recoverable (the client does not retry; only the player's PC holds the key).
+
+## Patch 1187 — chat goes to everyone by default
+
+**Problem.** Lex (2 Nov) wanted every lobby and the main menu to share one chat. P1010's
+main-menu room reached a lobby only through TAB or the team key (linked players), so lobby
+chat stayed in its lobby and the menu saw none of it. Asked to choose, Lex picked "everyone
+by default" over mirroring every line (unlinked too) or keeping TAB opt-in.
+
+**Change.** cl_chat.qc: a linked player's draft opens "to everyone" (Chat_PickRoom); Enter
+says the line here and posts it to the room, except a !command (one leading quote stripped,
+as cl_warpop.qc does) or a WarpOp line. TAB or the team key is "to this lobby". sv_social.qc:
+the lobby tags a post with its number ("[#4] " from the hostname, else "[lobby] "), gives
+room posts their own one-a-second gate and request so a quick line or a pending post drops
+only the room's copy without a note and never refuses a friend action, and does not relay
+room lines whose `who` is a player here (*ahash, Social_Set's social_who = surfd who_of).
+cl_friends.qc shows "[#4] name: text", and "[menu]" for an untagged line. Unlinked players
+are unchanged. Backend unchanged. Known: if the engine's flood control drops the lobby line,
+the room still gets it.
+
+**Verified.** tools/p1187chat.py: dedicated socket, a TEST-ONLY server fixture linking the
+client (Social_Set; *phash deliberately not the who), Flask standing in for surfd: draft
+target, posts, the lobby's say, quoted and plain !commands, two quick lines plus a DM, and the
+relayed room lines (other lobby, menu, a menu "[afk]" line, this lobby's own). 16/16 on the
+combined deploy build; the delivered tree before P1187 fails 8 of the first 12 and the
+review-0 build fails exactly the four review checks. One review (non-ranking): its four
+fixes are review 1. %s
+
+## Patch 1178 — Maps list: snug rows, map authors, a 160x90 thumbnail atlas
+
+**Problem.** Lex (2 Nov): Maps rows had too much vertical room (128 px for a 90 px photo, 29 px
+empty under it); the map author was shown nowhere, in the list or the HUD's Map info; some
+pictures looked low-res. The atlas cells are 128x72 and P1111 draws them at 160x90. Every source
+picture is 480 px wide or more (2825 measured), so the softness is the scale-up, not the sources.
+
+**Change.** QC + tools/data, no engine change. Rows: wide 106 (photo plus 8 px each side),
+compact 156; Play is centred, or above the MOM/CS:S switch (now inside the row). mapmeta column
+12 is the author: Momentum credit type 0 plus a submission's type-0 placeholders, else KSF's
+mappers (tools/ksfmappers.py caches ksf.surf's /api/maps/search answers in
+data/mapmedia/ksf/). It is one token the released menu's net-table check already accepts
+([A-Za-z0-9_.-], at most 64): letters and digits stand, '_' is a space, '.hh' is one UTF-8
+byte; '^' and control characters are dropped. src/shared/sh_mapauthor.qc decodes it for the
+list ("by X" after the name) and for CSQC, which reads this PC's newer 14-digit-stamped
+data/mapmeta(.net).txt once per map and closes it. tools/mapthumbs.py --hd packs 160x90 cells
+into gfx/mapthumbs/hd<N>.jpg (1920x2016, 12x21 on a 96 px pitch so no JPEG block straddles two
+pictures, padding repeats the bottom row; JPEG 92 4:4:4) and writes columns 13/14. The menu
+takes an hd cell only when the table's `# hd P bytes` matches the page on disk and the cell is a
+whole number 0..251. The 128x72 pages and columns 6/7 are left alone, so older menus keep using
+the same table. mapmedia_refresh's --atlas fills hd cells only (past every hd page on disk),
+gates old and hd cell losses separately, and copies hd pages to the second install and a
+release export; release.ps1 ships hd*.jpg.
+
+**Verified.** fteqcc c24ede65, 0 warnings x3; test_mapmedia 15/15 (4 new; review 1's new
+assertions fail on the reviewed code). The regenerated table keeps the first 12 columns of all
+2831 live rows byte-identical; authors on 2811 (20 KSF maps credit nobody). The hd atlas is 12
+pages, 15.6 MB (the 128x72 PNGs are 36 MB). Owned rig at 1920x1080 and 800x600: snug rows,
+"by Arblarg", switch and Play inside the row, HUD "by Arblarg", "+ 12 hd" pages and sharper
+cells at 1:1; a newer data/mapmeta.net.txt wins in both list and HUD, and an hd cell of 300
+falls back to the row's old cell. Two reviewers (pipeline; QuakeC and untrusted text): seven
+findings, all fixed in review 1 (main 9b0f0dde).
+In both Windows installs 1 Nov ~17:45Z from QC origin/deploy/p1178-mapslist 093fbbe7 (5f4293a7 + P1178): menu 055fda08, csprogs f557a642 (in tasrevd codes.txt), qwprogs unchanged; table 3b9ff363 and hd0-11.jpg installed and the table published to the Pi media; the lobbies get the csprogs with P1187; main 83702b06/9b0f0dde, notes 8fe2bf36.
+
+## Patch 1186 — Enter sends the menu chat on every screen that shows it
+
+**Problem.** Lex (2 Nov): "allow enter key for main menu lobby chat". Menu_InputEvent sent the
+chat field on Enter only on SCREEN_CHAT and SCREEN_MAIN, but MH_Sidebar draws the chat on every
+ui_browser_screen (Maps, Story and Stats as well), so Enter there did nothing; keypad Enter was
+never handled.
+
+**Change.** Menu only (m_main.qc): Enter or keypad Enter with `mc_text` focused calls MC_Send on
+SCREEN_CHAT or any ui_browser_screen, MC_Active's own screen test, so stale focus on another
+screen still leaves Enter alone. MC_Send's guards (linked, online, not in a lobby) are unchanged.
+
+**Verified.** Builds 0 warnings (fteqcc c24ede65); on the delivered branch qwprogs/csprogs come
+out byte-identical to live (f0e66da4/310caf73), so only menu.dat changed (21934e39, both
+installs, `.prev` 14ecde0a; QC origin/deploy/p1186-menuchat 5f4293a7, main 8d61d912). Not run
+end to end: a send needs a linked account and posts to the live public room, so the send is
+an owner check (lextest). Public players get it with the next release (menu.dat is client-local).
+
+## Patch 1177 — hud_player colours survive a restart
+
+**Problem.** Lex (2 Nov): the colours picked in hud_player were forgotten every time they joined
+a lobby; equipped items came back. The look keys (lobbycolor, lobbyrgb, lobbymark, lobbybody,
+lobbyfx, lobbylen, lobbytrail) are userinfo set with `setinfo`, and FTESurf runs
+`cfg_save_infos 0` (cfg/default.cfg: a saved `serverinfo` line once froze sv_airaccelerate),
+so no userinfo reaches ftesurf.cfg and every new game process joined with none. A reconnect
+inside one process kept them: the engine clears cls.userinfo only at shutdown (cl_main.c:8526).
+Equipped items survive because surfd stores them. sv_lobby.qc's comment over Lobby_ColourFor
+claimed userinfo archives itself.
+
+**Change.** CSQC only (cl_avatar.qc). Every panel write goes through Av_Put, which also sets
+an archived `cl_<key>` cvar. Av_RegisterCvars (CSQC init) registers the seven cvars and sends
+a saved value only when `getlocaluserinfo(0, key)` is empty, so a map change or reconnect
+sends nothing and a command-line setinfo wins; values other than digits, space, '.' and '-'
+are not sent (they go inside a quoted setinfo). Review 1 replaced a non-archived
+once-a-launch cvar: with `cfg_save_all 1` the quit-time save writes it, and the next launch
+never restored. `hud_player swatch <n>` / `hud_player look` are arm hooks. Server behaviour
+is unchanged: Lobby_Frame already re-reads the keys every second, so for about a second after
+joining a returning player shows the random colour.
+
+**Verified.** tools/p1177look.py on a dedicated socket with the installed exes (= 0.1.34):
+pick 5, the lobby grants lc 5, a reconnect keeps it and sends nothing, the quit-time save
+with cfg_save_all 1 keeps `seta cl_lobbycolor "5"` and no setinfo lines, the next launch has
+no lobbycolor in userinfo before CSQC, CSQC sends exactly one setting, the lobby grants 5,
+and a hand-edited `cl_lobbylen "x"` is not sent: 16/16 on the deploy build. The review-0
+build is the control: its saved config holds `set _av_looksent "1"` and the restore never
+runs. Builds 0 warnings (fteqcc c24ede65). One review (non-ranking feature).
+Live 1 Nov 17:13Z on all 12 lobbies and both installs from QC origin/deploy/p1177-look 28bbd501 (3cc4fec7 + P1177): qwprogs f0e66da4, csprogs 310caf73 (in tasrevd codes.txt); main 1d54d35d/6553ff6a, notes acf037a3.
+
+## Patch 1176 — site: cleaner front page, rainbow BETA, zoning page
+
+**Problem.** Lex (2 Nov) wanted the front page's version line ("0.1.34 · Free and open
+source"), tagline and install/requirements notes gone, a BETA on the title's line in the
+board's Perfect rainbow, and P1174's zoning worklist on the site in its own style, live as
+zoners (Lex, Markbeaton54) publish.
+
+**Change.** Site only (QC 89454799), re-rendered for 0.1.34 with sitepage.ps1.
+page.template.html drops the eyebrow, lede, launch and requirements notes; the build details
+(version, date, QuakeC build, engine patch) move to the BETA badge's title, so the receipt
+token contract is unchanged. BETA sits on SURF's baseline (SURF ends at x 552 of 720, baseline
+y 293 of 320; Bebas at line-height .8) and each letter cycles 0.15 + 0.85 * Milk_Rainbow at
+0.65 cycles/s, 0.09 behind the one before, as cl_hud.qc HUD_BoardGrade draws Perfect.
+zoning.html/zoning.js list the catalogue's KSF rows with zoned 0 (445 on 2 Nov, plus
+surf_sinister kept) from tools/zoningpage.py: KSF API facts (linear, stages, bonuses, plays,
+mappers, main WR) cached per map, P1174's related-build notes, one 128x72 webp sheet (444
+pictures, 342 KB). The page polls board/api/maps every 60 s and drops maps whose `have` is 1
+(BSP and zones on the Pi; surfd's map_index cache adds up to 300 s).
+
+**Verified.** test_site_copy.py 7/7, with HEAD as the control failing 7 + 1 error; sitepage
+dry run renders every token; headless Edge at 1280 px and in a 390 px frame (headless windows
+stop at 496 px, which cropped the first phone shots); a local board copy with two of the maps
+marked zoned dropped both and read "443 maps to zone · 2 zoned since 2 Nov". Live: every file
+served byte for byte, and the page read "444 maps to zone · 1 zoned since 2 Nov".
+
+## Patch 1175 — zone publishing reads accounts again (surfd idle read-only DB holder)
+
+**Problem.** Every zone upload from 1 Nov answered "Zone uploads unavailable" (first reported
+for Markbeaton54). The zone service looks the signer up in surfd.db with `mode=ro` from a
+ProtectSystem=strict sandbox that cannot write the DB's directory. In WAL mode a read-only open
+needs `-wal`/`-shm` to exist, and SQLite unlinks them when the last connection closes. surfd
+connects per request and nothing else held the DB any more, so the sidecars were absent ~90%
+of a 20 s sample. Reproduced in a read-only bind mount on the Pi: 8/8 "unable to open database
+file" without a holder, 15/15 with one. The zone service's DB access is identical in 66ed6677
+and 6cff6856. Its P1172 readback probed only `/api/zones/challenge`, which never opens the
+account DB.
+
+**Change.** Backend only (QC 27e2369e..3f64e685, deploy 58dbbf40):
+- Each gunicorn worker keeps one idle `mode=ro` connection (autocommit, no open statement).
+  It is opened after `migrate()` at import, under gunicorn only, and by `get_db()`. The
+  key is recorded only on success; a failure retries after 60 s.
+- Read-only, so its close never checkpoints or unlinks.
+- `connect()` sets `journal_size_limit` 16 MiB, since the WAL is no longer deleted when idle.
+- Crons and the requests watcher import surfd but hold nothing, so stopping surfd still
+  releases every holder. While a worker lives, journal_mode changes and EXCLUSIVE locking from
+  other processes get "database is locked".
+
+**Verified.** test_dbkeeper.py on the Pi, 9/9:
+- From another process, a reader that cannot write the directory or the sidecars opens the
+  DB; the control without the keeper fails.
+- The idle keeper does not hold back a TRUNCATE checkpoint; a reader in a transaction does.
+- A 40 MB WAL burst is trimmed to the limit; a writer without the limit leaves it.
+- The keeper's close as the last connection leaves the sidecars in place.
+- A failed open is retried, and a plain import holds nothing.
+- Seven mutants each fail their test.
+
+playstats 9, social 72, inventory 10, accounts, board and join pass on the Pi and Windows. Three
+independent review rounds:
+1. Worker-recycle gap, permanent disable on one failed open, WAL never shrinking.
+2. Import-time holders in crons outliving a surfd stop.
+3. Nothing serious; a real gunicorn worker held, its master did not.
+
+**Delivered (1 Nov 2026).** Generation 58dbbf40 at
+`/srv/nvme/agent-work/zonepub-dbhold-1175-01a19370`, code only (schema 26, no backup). API down
+14:29:57-14:30:20Z. Fallback is the exact P1171 primary 495537a9 on the same DB. With only the
+surfd worker holding, the sandboxed lookup passed 15/15. A bridge process held the DB from
+13:41Z until the swap.
+
 ## Patch 1174 — KSF site maps get pictures; Momentum zones on nine KSF builds
 
 **Problem.** Of 415 KSF builds the 1 Nov audit counted without a picture, 398 are

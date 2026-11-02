@@ -29,6 +29,7 @@ static void R_CalcSkyChainBounds (batch_t *s);
 static void GL_DrawSkySphere (batch_t *fa, shader_t *shader);
 static void GL_SkyForceDepth(batch_t *fa);
 static void GL_DrawSkyBox (texid_t *texnums, const float *tscale, batch_t *s);
+static void GL_DrawSkyBoxFull (batch_t *s, texid_t *texnums, const float *tscale, shader_t *shader);
 
 static void GL_DrawSkyGrid (texnums_t *tex);
 
@@ -138,21 +139,51 @@ texid_t R_GetDefaultEnvmap(void)
 	return r_nulltex;
 }
 
+static void R_LoadSky(const char *sky);
+//no forced sky, or a six-face one where every face is missing (Shader_ParseSkySides fills
+//each with r_blackimage, so the "even one face" test in R_LoadSky keeps it)
+static qboolean R_ForcedSkyEmpty(void)
+{
+	extern texid_t missing_texture, r_blackimage;
+	int i;
+	if (!forcedsky)
+		return true;
+	if (!forcedsky->skydome)
+		return false;	//an equirect or cubemap image loaded
+	for (i = 0; i < 6; i++)
+		if (forcedsky->skydome->farbox_textures[i] != missing_texture && forcedsky->skydome->farbox_textures[i] != r_blackimage)
+			return false;
+	return true;
+}
 void R_SetSky(const char *sky)
 {
-	int i;
-	const char *shadername;
 	extern cvar_t r_skyboxname;
+	qboolean mapsky;
 	if (sky)
 		Q_strncpyz(cl.skyname, sky, sizeof(cl.skyname));
 	else
 		sky = cl.skyname;
 	if (qrenderer <= QR_NONE)
 		return;	//not ready yet...
+	mapsky = !*r_skyboxname.string && *sky;
 	if (*r_skyboxname.string)	//override it with the user's preference
 		sky = r_skyboxname.string;
 	else if (!*sky)				//FTESurf Patch 211: the map declared none -- fill the hole
 		sky = r_skybox_default.string;
+
+	R_LoadSky(sky);
+	//FTESurf Patch 1191: a declared sky with not one face found (surf_utopia's TF2 sky
+	//without TF2) gets the same fill as a map that declares none.
+	if (R_ForcedSkyEmpty() && mapsky && *r_skybox_default.string && Q_strcasecmp(sky, r_skybox_default.string))
+	{
+		Con_DPrintf("sky %s: no face found; drawing r_skybox_default %s\n", sky, r_skybox_default.string);
+		R_LoadSky(r_skybox_default.string);
+	}
+}
+static void R_LoadSky(const char *sky)
+{
+	int i;
+	const char *shadername;
 
 	shadername = va("skybox_%s", sky);
 	if (!forcedsky || strcmp(shadername, forcedsky->name))
@@ -326,7 +357,8 @@ static void R_ForceSky_f(void)
 		if (*r_skyboxname.string)
 			Con_Printf("Current user skybox is %s\n", r_skyboxname.string);
 		else if (*cl.skyname)
-			Con_Printf("Current per-map skybox is %s\n", cl.skyname);
+			Con_Printf("Current per-map skybox is %s%s\n", cl.skyname,
+				(forcedsky && Q_strcasecmp(forcedsky->name+7, cl.skyname)) ? " (not found; drawing r_skybox_default)" : "");	//+7: "skybox_"
 		else if (*r_skybox_default.string)
 			Con_Printf("Map declares no sky; using r_skybox_default %s (loaded: %s)\n", r_skybox_default.string, forcedsky?"yes":"no");
 		else
@@ -410,6 +442,19 @@ static qboolean R_SkyCameraOrigin(vec3_t out)
 }
 
 int r_skyroomlevel = -1;	//FTESurf Patch 1018: the recursion level the 3D sky room is drawing at, else -1
+/*
+FTESurf Patch 1192: Source draws its whole 2D box behind the 3D sky (R_DrawSkyBox), not only
+where the sky room's own sky faces drew.  surf_olivia's sky camera stands in an area holding
+the lower box; the sky ceiling is another area of the same cluster, which the sky pass never
+enables, so the hub showed the clear colour where the sky should be.
+*/
+cvar_t r_skyroom_fullbox = CVARD("r_skyroom_fullbox", "1", "FTESurf Patch 1192: inside a Source map's 3D sky, draw the whole 2D skybox behind the sky room, as Source does. 0: only where the sky room's own sky faces drew (surf_olivia's hub then shows no sky).");
+static qboolean r_skyroom_boxdrawn;	//this sky room view has drawn the whole box
+static qboolean R_SkyroomFullBox(void)
+{
+	return r_skyroom_fullbox.ival && r_skyroomlevel >= 0 && r_refdef.recurse == r_skyroomlevel &&
+		r_worldentity.model && r_worldentity.model->fromgame == fg_new;
+}
 qboolean R_DrawSkyroom(shader_t *skyshader)
 {
 	float vmat[16];
@@ -602,6 +647,7 @@ qboolean R_DrawSkyroom(shader_t *skyshader)
 		double vst0;
 		int vsd0;
 		R_ViewStatsEnter(r_refdef.recurse, &vst0, &vsd0);	//FTESurf Patch 868
+		r_skyroom_boxdrawn = false;
 		Surf_DrawWorld ();
 		R_ViewStatsLeave(r_refdef.recurse, vst0, vsd0, 4);
 	}
@@ -745,10 +791,19 @@ qboolean R_DrawSkyChain (batch_t *batch)
 		{	//cubemap skies!
 			//this is just a simple pass. we use glsl/texgen for any actual work
 			batch_t b = *batch;
-			b.shader = forcedsky;
-			b.skin = NULL;
-			b.texture = NULL;
-			BE_SubmitBatch(&b);
+			if (R_SkyroomFullBox())
+			{	//Patch 1192: the six whole faces, once per sky room view
+				if (!r_skyroom_boxdrawn)
+					GL_DrawSkyBoxFull(batch, NULL, NULL, forcedsky);
+				r_skyroom_boxdrawn = true;
+			}
+			else
+			{
+				b.shader = forcedsky;
+				b.skin = NULL;
+				b.texture = NULL;
+				BE_SubmitBatch(&b);
+			}
 			//nettest Patch 126b: mask here too.  This branch returns above BOTH
 			//of the function's existing GL_SkyForceDepth calls, so a map that
 			//sets worldspawn `skyname` -- which is every They Hunger and most
@@ -809,8 +864,17 @@ qboolean R_DrawSkyChain (batch_t *batch)
 	}
 	else if (skyboxtex && TEXVALID(*skyboxtex))
 	{	//draw a skybox if we were given the textures
-		R_CalcSkyChainBounds(batch);
-		GL_DrawSkyBox (skyboxtex, skyboxscale, batch);
+		if (R_SkyroomFullBox())
+		{	//Patch 1192
+			if (!r_skyroom_boxdrawn)
+				GL_DrawSkyBoxFull(batch, skyboxtex, skyboxscale, NULL);
+			r_skyroom_boxdrawn = true;
+		}
+		else
+		{
+			R_CalcSkyChainBounds(batch);
+			GL_DrawSkyBox (skyboxtex, skyboxscale, batch);
+		}
 
 		if (skyshader->numpasses)
 			GL_DrawSkySphere(batch, skyshader);
@@ -1575,6 +1639,43 @@ static void GL_DrawSkyBox (texid_t *texnums, const float *tscale, batch_t *s)
 	}
 }
 
+//FTESurf Patch 1192: all six faces whole, from the sky's own face images (texnums) or with a
+//shader that samples by direction (a cubemap or equirect forcedsky).
+static void GL_DrawSkyBoxFull (batch_t *s, texid_t *texnums, const float *tscale, shader_t *shader)
+{
+	int i;
+	vecV_t v[4];
+	vec2_t tc[4];
+	index_t idx[6] = {0, 1, 2, 0, 2, 3};
+	vec4_t col[4] = {{1,1,1,1},{1,1,1,1},{1,1,1,1},{1,1,1,1}};
+	mesh_t m = {0};
+
+	for (i = 0; i < 6; i++)
+	{
+		skymins[0][i] = skymins[1][i] = -1;
+		skymaxs[0][i] = skymaxs[1][i] = 1;
+	}
+	if (texnums)
+	{
+		GL_DrawSkyBox(texnums, tscale, s);
+		return;
+	}
+	m.indexes = idx;
+	m.st_array = tc;
+	m.xyz_array = v;
+	m.colors4f_array[0] = col;
+	m.numindexes = 6;
+	m.numvertexes = 4;
+	for (i = 0; i < 6; i++)
+	{
+		GL_MakeSkyVec(-1, -1, i, v[0], tc[0]);
+		GL_MakeSkyVec(-1,  1, i, v[1], tc[1]);
+		GL_MakeSkyVec( 1,  1, i, v[2], tc[2]);
+		GL_MakeSkyVec( 1, -1, i, v[3], tc[3]);
+		R_DrawSkyMesh(s, &m, shader);
+	}
+}
+
 //===============================================================
 
 /*
@@ -1757,6 +1858,7 @@ void R_Sky_Register(void)
 	Cvar_Register (&r_sky_forcedepth_scale,	groupname);	//Patch 990
 	Cvar_Register (&r_skyboxname,			groupname);
 	Cvar_Register (&r_skybox_default,		groupname);	//FTESurf Patch 211
+	Cvar_Register (&r_skyroom_fullbox,		groupname);	//FTESurf Patch 1192
 	Cvar_Register (&r_skybox_orientation,	groupname);
 	Cvar_Register (&r_skybox_autorotate,	groupname);
 	Cvar_Register (&gl_skyboxdist,			groupname);
