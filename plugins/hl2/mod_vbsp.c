@@ -143,8 +143,9 @@ extern int vmt_stat_twoframes, vmt_stat_twoframesdecl;	//FTESurf Patch 286
 extern int vmt_stat_imposter;
 extern int vmt_stat_hdrenvmap;	//FTESurf Patch 264
 extern int vmt_stat_ignorez;	//FTESurf Patch 290
-extern int vmt_stat_addprog, vmt_stat_addpass;	//FTESurf Patch 300
+extern int vmt_stat_addprog, vmt_stat_addpass, vmt_stat_unlitprog;	//FTESurf Patch 300, 1213
 extern cvar_t *hl2_additivefog;	//FTESurf Patch 300
+extern cvar_t *hl2_unlitprogram;	//FTESurf Patch 1213
 extern int vmt_stat_unknown;	//FTESurf Patch 263, materials whose shader class is unimplemented
 extern char vmt_stat_unknown_name[4][64];
 extern char vmt_stat_waterargs[];	//Water program diagnostics (owned by mat_vmt.c)
@@ -634,6 +635,8 @@ typedef struct vbspinfo_s
 	{
 		float fademindist;
 		float fademaxdist;
+		unsigned int *pvsclusters;	//FTESurf Patch 1235: the lump's own clusters, when they overflow pvscache
+		unsigned int numpvsclusters;
 		qboolean solid;
 		struct bihtransform_s transform;
 		vec3_t	lightorg;
@@ -4350,7 +4353,7 @@ static qboolean VBSP_LoadFaces (model_t *mod, qbyte *mod_base, vlump_t *lumps, i
 		}
 		if (out->texinfo->flags & TI_WARP)
 		{
-			out->flags |= SURF_DRAWTURB|SURF_DRAWTILED;
+			out->flags |= SURF_DRAWTURB;	//FTESurf Patch 1250: DRAWTILED only when unlit, below
 		}
 		if ((out->texinfo->flags & TI_NODRAW) && hl2_hidetools->ival)
 		{
@@ -4388,7 +4391,15 @@ static qboolean VBSP_LoadFaces (model_t *mod, qbyte *mod_base, vlump_t *lumps, i
 	// set the drawing flags
 
 		if (out->texinfo->flags & TI_WARP)
+		{
 			out->flags |= SURF_DRAWTURB;
+			//FTESurf Patch 1250: a warp face VRAD lit keeps its lightmap. DRAWTILED denied one to every
+			//warp face (the Quake loaders' rule), so a LightmappedGeneric water sheet (surf_bikini_bottom's
+			//windows, nature/water_dx70_beneath) sampled white x overbright and clipped to flat white.
+			//Water/Refract programs have no lightmap stage; Mod_LightmapAllocSurf still refuses those.
+			if (!out->samples)
+				out->flags |= SURF_DRAWTILED;
+		}
 	}
 
 #ifdef HAVE_CLIENT
@@ -5689,6 +5700,12 @@ static qboolean VBSP_LoadStaticProps(model_t *mod, qbyte *offset, size_t size, i
 		leafcount = LittleShort(*(unsigned short*)prop);				prop += sizeof(unsigned short);
 		sent->solid = *prop;											prop += sizeof(qbyte);
 		propflags = *prop;												prop += sizeof(qbyte);
+		//FTESurf Patch 1249: SDK 2013's v10 72-byte record (gamebspfile.h:208-227) pads byte 31 and keeps
+		//m_Flags as the uint at 64; byte 31 is junk there (surf_pantheon: 0x3f/0xbf set USE_LIGHTING_ORIGIN
+		//over leftover origins, and four pillars lit warm from the world-origin leaf came out yellow).
+		//The 80-byte CS:GO layout does carry its flags in byte 31.
+		if (version == 10 && !propextra)
+			propflags = (qbyte)LittleLong(*(unsigned int*)(propbase + i*propsize + 64));
 		ent->skinnum = LittleLong(*(unsigned int*)prop);				prop += sizeof(unsigned int);
 		sent->fademindist = LittleFloat(*(float*)prop);					prop += sizeof(float);
 		sent->fademaxdist = LittleFloat(*(float*)prop);					prop += sizeof(float);
@@ -5861,7 +5878,7 @@ static qboolean VBSP_LoadStaticProps(model_t *mod, qbyte *offset, size_t size, i
 			Alpha zero is the tell: a modulation that makes the prop invisible
 			is not one the mapper asked for.
 			*/
-			if (prop[3])
+			if (prop[3] && !(version == 10 && !propextra))	//P1249: SDK 2013 v10 holds m_Flags here
 				VectorScale(prop, 1/255.0, ent->shaderRGBAf);
 			prop += sizeof(qbyte)*4;
 		}
@@ -6003,6 +6020,24 @@ static qboolean VBSP_LoadStaticProps(model_t *mod, qbyte *offset, size_t size, i
 		//the end of the lump's own array would otherwise read whatever follows it.
 		//It degrades to the same -2 path as an overflow, which recomputes the leaf
 		//set from the bounding box once the model is up -- a safe answer, not a guess.
+		if (leafcount > countof(ent->pvscache.leafnums) && leafrefidx + leafcount <= numleafrefs)
+		{	//FTESurf Patch 1235: Source culls a big prop by this list. The radius box's headnode test
+			//passed surf_remeanian's windows1 (138 clusters, none in the PVS) through the sky at save 18.
+			unsigned int *cl = plugfuncs->GMalloc(&mod->memgroup, sizeof(*cl) * leafcount), n = 0, k;
+			for (l = 0; l < leafcount; l++)
+			{
+				unsigned int lf = VBSP_SprpLeafRef(leafref, leafrefsize, leafrefidx + l);
+				int c = (lf < (unsigned int)mod->numleafs) ? mod->leafs[lf].cluster : -1;
+				if (c < 0)
+					continue;
+				for (k = 0; k < n && cl[k] != (unsigned int)c; k++)
+					;
+				if (k == n)
+					cl[n++] = c;
+			}
+			sent->pvsclusters = cl;	//the packed slot: skipped props put it behind i (bhop_maya, what_is_this)
+			sent->numpvsclusters = n;
+		}
 		if (leafcount > countof(ent->pvscache.leafnums) ||
 			leafrefidx + leafcount > numleafrefs)
 			ent->pvscache.num_leafs = -2;	//overflow. calculate it later once its loaded.
@@ -7769,6 +7804,22 @@ Collision Stuff.
 ===============================================================================
 */
 
+//FTESurf Patch 1235: a big prop's own clusters (see the loader) against the view's cluster PVS.
+static qboolean VBSP_PropClustersVisible(const struct staticprop_s *sp, const qbyte *pvs)
+{
+	unsigned int i, c;
+	for (i = 0; i < sp->numpvsclusters; i++)
+	{
+		c = sp->pvsclusters[i];
+		if (pvs[c >> 3] & (1 << (c & 7)))
+		{
+			vbsp_pvs_why = VBSP_PVSWHY_VISIBLE;
+			return true;
+		}
+	}
+	vbsp_pvs_why = VBSP_PVSWHY_LEAFS;
+	return false;
+}
 static void VBSP_BuildBIHSubmodel(model_t *mod, int submodel)
 {
 	vbspinfo_t	*prv = (vbspinfo_t*)mod->meshinfo;
@@ -8910,9 +8961,9 @@ static void VBSP_BuildBIHMain(void *ctx, void *unusedp, size_t unuseda, size_t u
 	patch is active on a map will get the wrong answer on exactly the map it was
 	written for; read the per-material [shader] lines instead.
 	*/
-	if (vmt_stat_addprog || vmt_stat_addpass)
-		Con_DPrintf("%s: %i additive material(s) on vmt/unlit so they fog to black, %i left on a pass (world materials only, so far)\n",
-			mod->name, vmt_stat_addprog, vmt_stat_addpass);
+	if (vmt_stat_addprog || vmt_stat_addpass || vmt_stat_unlitprog)
+		Con_DPrintf("%s: %i additive material(s) on vmt/unlit so they fog to black, %i left on a pass, %i other UnlitGeneric on vmt/unlit (world materials only, so far)\n",
+			mod->name, vmt_stat_addprog, vmt_stat_addpass, vmt_stat_unlitprog);
 
 	if (vmt_stat_unknown)
 	{
@@ -10562,7 +10613,8 @@ static void VBSP_PrepareFrame(model_t *mod, refdef_t *r_refdef, int area, int cl
 			//PVS/area cull, exactly like the displacement loop above (VBSP_EdictInFatPVS at ~3587).
 			//Only valid when we actually have view PVS: surfvis==NULL means portal-recursion / novis / no model vis, where everything must draw.
 			//src->pvscache.leafnums hold CLUSTERS, and surfvis is the cluster-PVS from VBSP_MarkLeaves, so this is index-consistent (same as displacements).
-			if (surfvis && !VBSP_EdictInFatPVS(mod, &src->pvscache, surfvis, areas))
+			if (surfvis && (sent->numpvsclusters ? !VBSP_PropClustersVisible(sent, surfvis) :
+			                !VBSP_EdictInFatPVS(mod, &src->pvscache, surfvis, areas)))
 			{
 				sent->lastpvswhy = vbsp_pvs_why;	//FTESurf Patch 257: set by the call above
 				PROP_VERDICT(PROPV_PVS);
@@ -13083,7 +13135,7 @@ static void VBSP_PropCensus_f(void)
 		if (vbsp_propstat.leafoverflow)
 			Con_Printf("  %6u prop(s) had a lump leaf list longer than MAX_ENT_LEAFS and were re-derived\n"
 					   "         from a bounding box at first draw; %u of those ended up on the weaker\n"
-					   "         headnode visibility test rather than a cluster list.\n",
+					   "         headnode test there.  Their PVS cull uses the lump's own clusters (P1235).\n",
 					   vbsp_propstat.leafoverflow, vbsp_propstat.headnodetested);
 		if (prv->lit_foreign)	//FTESurf Patch 1096
 			Con_Printf("  %6u bake(s) dropped at first light: made for another model (checksum)\n",
@@ -13179,6 +13231,8 @@ static void VBSP_PropCensus_f(void)
 			(src->pvscache.num_leafs == -1) ? " (headnode test -- leaf list overflowed)" :
 			(src->pvscache.num_leafs == -2) ? " (not yet re-derived; prop has never been reached)" :
 			(src->pvscache.num_leafs ==  0) ? " (NO VISIBLE LEAVES -- this prop can never pass the PVS test)" : "");
+		if (sent->numpvsclusters)	//FTESurf Patch 1235
+			Con_Printf("    own clusters       : %u (the PVS test uses these, not the leaf state above)\n", sent->numpvsclusters);
 		{
 			vec3_t sp;
 			VBSP_PropSamplePoint(mod, sent, sp);
@@ -13715,6 +13769,7 @@ qboolean VBSP_Init(void)
 		cvarfuncs->GetNVFDG("hl2_colour_luts", "0", CVAR_NOSAVE, "Active global Source LUT count for the current map (loader output).", MAPOPTIONS);
 		cvarfuncs->GetNVFDG("hl2_colour_maphue", "0", CVAR_NOSAVE, "Default hue rotation for the current Source map (loader output).", MAPOPTIONS);
 		hl2_additivefog = cvarfuncs->GetNVFDG("hl2_additivefog", "1", CVAR_SHADERSYSTEM, "Draw ADDITIVE Source materials with a real GLSL program, so that fog fades them toward BLACK instead of toward the fog colour.\nA shader with no top-level program gets fixed-function GL fog, which mixes toward GL_FOG_COLOR on RGB and cannot know the surface is additive.  On a gl_one/gl_one sprite the only mask is black -- light_glow02/03.vtf are BGR888 with no alpha channel at all -- so a masked-out texel picks up fogcolour*(1-f) and is then ADDED, and the sprite draws as a flat translucent rectangle instead of a glow.  surf_tensor2 is the reported case: a negative fogstart (-2500) makes its fog factor 0.857 even at zero depth, so the lift is there at every distance.\nOnly ADDITIVE materials move, which is what keeps surf_boreas's cloud layer (Patch 266) out of it -- cloods.vmt has its $additive line commented out and is alpha-blended, so it never enters this path.\n0: keep every additive material on a pass, i.e. the pre-P300 behaviour, fog artefact included.\n1: give them vmt/unlit and the correct fog4additive (default).  1,659 additive UnlitGeneric and 838 additive Sprite materials in the library are eligible.", MAPOPTIONS);
+		hl2_unlitprogram = cvarfuncs->GetNVFDG("hl2_unlitprogram", "1", CVAR_SHADERSYSTEM, "Draw non-additive UnlitGeneric materials with vmt/unlit rather than a fixed-function pass, so they fog per pixel (by distance from the eye, see r_fog_radial) and on maps with a fogmaxdensity cap.\n0: keep them on a pass (pre-P1213).", MAPOPTIONS);	//FTESurf Patch 1213
 
 		hl2_twoframes = cvarfuncs->GetNVFDG("hl2_twoframes", "1", CVAR_SHADERSYSTEM, "The DISTANCE-DRIVEN FLIPBOOK on an UnlitTwoTexture material.  comshieldwall.vtf is 31 frames and its proxy chain picks one by how far away you are -- frame 0 inside 120 units, frame 30 beyond 270 -- so a combine shield gets DENSER as you approach and not merely brighter.\nOnly materials that point $basetexture and $texture2 at the SAME file can take it (7 of the 48 in the mounted packs), because a 2DArray sampler has to be filled by a pass and only a one-sampler shader has ever worked here; the rest are counted as declined in the map's census line.\n0: draw frame 0, which is the close-up frame and the right one to be stuck on.\n1: sample the frame the distance asks for (default).", MAPOPTIONS);
 

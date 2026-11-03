@@ -260,6 +260,7 @@ static void CSQC_FindGlobals(qboolean nofuncs)
 		csqcg.predinput_apply = csqcg.predinput_origin = csqcg.predinput_velocity = NULL;
 		csqcg.predinput_onground = csqcg.predinput_pmtype = csqcg.predinput_forceduck = NULL;
 		csqcg.predinput_sequence_lo = csqcg.predinput_sequence_hi = csqcg.predinput_held = NULL;
+		csqcg.predinput_entgravity = csqcg.predinput_version = NULL;
 		csqcg.CSQC_PredictGroundVelocity = 0;
 		csqcg.predground_active = NULL;
 		csqcg.CSQC_PredictPlayerMove = 0;	//FTESurf P335: an untrusted module must not rewrite predicted movement
@@ -2659,12 +2660,14 @@ void QCBUILTIN PF_R_SetViewFlag(pubprogfuncs_t *prinst, struct globalvars_s *pr_
 
 	case VF_ORIGIN:
 		VectorCopy(p, r_refdef.vieworg);
-		if (csqc_playerview)
+		//FTESurf Patch 1230: a view into a render target (the aura's mask) is not the player's
+		//view, and zeroing its stair smoothing every frame stopped the smoothing. screenshot_mega's is.
+		if (csqc_playerview && (!*r_refdef.rt_destcolour[0].texname || !strcmp(r_refdef.rt_destcolour[0].texname, "megascreeny")))
 			csqc_playerview->crouch = 0;
 		break;
 
 	case VF_ORIGIN_Z:
-		if (csqc_playerview)
+		if (csqc_playerview && (!*r_refdef.rt_destcolour[0].texname || !strcmp(r_refdef.rt_destcolour[0].texname, "megascreeny")))
 			csqc_playerview->crouch = 0;
 	case VF_ORIGIN_X:
 	case VF_ORIGIN_Y:
@@ -2866,6 +2869,10 @@ void R_DrawNameTags(void);
 static void QCBUILTIN PF_R_RenderScene(pubprogfuncs_t *prinst, struct globalvars_s *pr_globals)
 {
 	qboolean scissored;
+	//FTESurf Patch 1230: not screenshot_mega's target, which is the screen view at another size
+	qboolean rtview = *r_refdef.rt_destcolour[0].texname && strcmp(r_refdef.rt_destcolour[0].texname, "megascreeny");
+	vrect_t oldvrect = r_refdef.vrect;
+	pxrect_t oldpxrect = r_refdef.pxrect;
 
 	if (R2D_Flush)
 		R2D_Flush();
@@ -2962,6 +2969,12 @@ static void QCBUILTIN PF_R_RenderScene(pubprogfuncs_t *prinst, struct globalvars
 			R2D_Flush();
 
 		BE_Scissor(NULL);
+	}
+	if (rtview)
+	{	//FTESurf Patch 1230: project() before the next screen view reads vrect; leave it the screen's.
+		r_refdef.vrect = oldvrect;
+		r_refdef.pxrect = oldpxrect;
+		csqc_rebuildmatricies = true;
 	}
 }
 
@@ -10678,7 +10691,8 @@ qboolean CSQC_PredictsHeld(void)
 int CSQC_PredictPlayerPreMove(int seat, const usercmd_t *cmd, float offsetmsec)
 {
 	pmpreinput_t input;
-	float flags, value;
+	float flags, value, gravity = 0;
+	qboolean setgravity = false;
 	void *pr_globals;
 	int slot;
 
@@ -10707,6 +10721,12 @@ int CSQC_PredictPlayerPreMove(int seat, const usercmd_t *cmd, float offsetmsec)
 		*csqcg.predinput_pmtype = pmove.pm_type;
 	if (csqcg.predinput_forceduck)
 		*csqcg.predinput_forceduck = 0;
+	/* P1211: the server's gravity (svc_entgravity, sent with every frame since P1211) is
+	   right for the first command after an ack; QC's mirror owns the ones after it. */
+	if (csqcg.predinput_entgravity)
+		*csqcg.predinput_entgravity = movevars.entgravity;
+	if (csqcg.predinput_version)
+		*csqcg.predinput_version = 1211;
 	pr_globals = PR_globals(csqcprogs, PR_CURRENT);
 	((float *)pr_globals)[OFS_PARM0] = seat;
 	((float *)pr_globals)[OFS_PARM1] = cmd->sequence;
@@ -10716,8 +10736,19 @@ int CSQC_PredictPlayerPreMove(int seat, const usercmd_t *cmd, float offsetmsec)
 
 	/* Check floats before casting; NaN/Inf/out-of-range casts are undefined. */
 	flags = *csqcg.predinput_apply;
-	if (IS_NAN(flags) || flags < 0 || flags > PMPI_ALL || flags != (int)flags)
+	if (IS_NAN(flags) || flags < 0 || flags > (PMPI_ALL | PMPI_GRAVITY) || flags != (int)flags)
 		goto invalid;
+	if ((int)flags & PMPI_GRAVITY)
+	{
+		if (!csqcg.predinput_entgravity)
+			goto invalid;
+		value = *csqcg.predinput_entgravity;
+		if (IS_NAN(value) || value < -1000 || value > 1000)
+			goto invalid;
+		gravity = value;
+		setgravity = true;
+		flags = (int)flags & ~PMPI_GRAVITY;
+	}
 	memset(&input, 0, sizeof(input));
 	input.flags = (int)flags;
 	if (input.flags & PMPI_BODY)
@@ -10751,6 +10782,8 @@ int CSQC_PredictPlayerPreMove(int seat, const usercmd_t *cmd, float offsetmsec)
 	}
 	if (!PM_ApplyPreInput(&pmove, &input))
 		goto invalid;
+	if (setgravity)
+		movevars.entgravity = gravity;	/* this piece only: cl_pred.c resets it before the next */
 
 	if (input.flags & PMPI_CLEARCARRIER)
 	{

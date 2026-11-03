@@ -259,7 +259,7 @@ typedef struct
    Patch 888: version 9 traces a .phy hull whose 16-bit indices wrapped as it really is.
    Patch 882: version 10 honours momlimit/momcool/momslide (Momentum's limitmovement and slide triggers).
    Patch 916: version 11 adds Source water-lip assist and ceiling eye clearance. */
-#define PMSRC_VERSION 11
+#define PMSRC_VERSION 12
 
 typedef struct {
 	//standard quakeworld
@@ -371,6 +371,10 @@ extern	playermove_t	pmove;
 #define PMPI_HOLD          8   // zero command duration, not a universal body freeze
 #define PMPI_CLEARCARRIER 16
 #define PMPI_ALL          31
+/* P1211: movevars, not playermove_t, so CSQC_PredictPlayerPreMove applies it and
+   PM_ApplyPreInput never sees it. QC sets it only when predinput_version >= 1211:
+   an older engine rejects the whole mask over an unknown bit. */
+#define PMPI_GRAVITY      32
 
 typedef struct
 {

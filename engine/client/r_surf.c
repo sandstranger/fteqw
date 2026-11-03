@@ -1520,6 +1520,10 @@ static void Surf_BuildLightMap (model_t *model, msurface_t *surf, int map, int s
 			/*fullbright if map is not lit. but not overbright*/
 			for (i=0 ; i<size*3 ; i++)
 				blocklights[i] = 128*256;
+			//FTESurf Patch 1222: record the style, as the L8 path does, or Surf_RenderDynamicLightmaps
+			//rebuilds every visible face of an unlit map every frame (surf_leet_xl_beta7z: 3.2 ms a frame).
+			surf->cached_light[0] = d_lightstylevalue[0];
+			surf->cached_colour[0] = cl_lightstyle[0].colourkey;
 		}
 		else if (!surf->samples)
 		{
@@ -1804,6 +1808,21 @@ static void Surf_BuildLightMap_Worker (model_t *wmodel, msurface_t *surf, int sh
 			{
 				blocklights[i] = r_fullbright.value*255*256;
 			}
+			//FTESurf Patch 1222: recorded as Surf_BuildLightMap does, or r_fullbright 0 leaves a face cached
+			//before it fullbright (R_AnimateLight restores the same style 0 value and key)
+			if (!surf->samples)
+			{
+				surf->cached_light[0] = d_lightstylevalue[0];
+				surf->cached_colour[0] = cl_lightstyle[0].colourkey;
+			}
+			else
+			{
+				for (maps = 0 ; maps < MAXCPULIGHTMAPS && surf->styles[maps] != INVALID_LIGHTSTYLE ; maps++)
+				{
+					surf->cached_light[maps] = d_lightstylevalue[surf->styles[maps]];
+					surf->cached_colour[maps] = cl_lightstyle[surf->styles[maps]].colourkey;
+				}
+			}
 		}
 		else if (!wmodel->lightdata)
 		{	/*fullbright if map is not lit. but not overbright*/
@@ -1811,6 +1830,8 @@ static void Surf_BuildLightMap_Worker (model_t *wmodel, msurface_t *surf, int sh
 			{
 				blocklights[i] = 128*256;
 			}
+			surf->cached_light[0] = d_lightstylevalue[0];	//FTESurf Patch 1222, as Surf_BuildLightMap
+			surf->cached_colour[0] = cl_lightstyle[0].colourkey;
 		}
 		else
 		{
@@ -1929,6 +1950,19 @@ static void Surf_BuildLightMap_Worker (model_t *wmodel, msurface_t *surf, int sh
 		{
 			for (i=0 ; i<size ; i++)
 				blocklights[i] = 255*256;
+			if (!surf->samples)	//FTESurf Patch 1222, as the RGB branch above
+			{
+				surf->cached_light[0] = d_lightstylevalue[0];
+				surf->cached_colour[0] = cl_lightstyle[0].colourkey;
+			}
+			else
+			{
+				for (maps = 0 ; maps < MAXCPULIGHTMAPS && surf->styles[maps] != INVALID_LIGHTSTYLE ; maps++)
+				{
+					surf->cached_light[maps] = d_lightstylevalue[surf->styles[maps]];
+					surf->cached_colour[maps] = cl_lightstyle[surf->styles[maps]].colourkey;
+				}
+			}
 		}
 		else if (!wmodel->lightdata)
 		{
@@ -2765,6 +2799,11 @@ void Surf_GenBrushBatches(batch_t **batches, entity_t *ent)
 		bef |= BEF_FORCETRANSPARENT;
 	if (ent->flags & RF_NODEPTHTEST)
 		bef |= BEF_FORCENODEPTH;
+	//FTESurf Patch 1250: a Source brush entity's rendercolor (QC colormod, RF_FORCECOLOURMOD) reaches
+	//e_colourident only with BEF_FORCECOLOURMOD; brush draws never set it, so func_brush tints were
+	//dropped (surf_bikini_bottom's cyan water windows drew grey). Quake/HL brush content unchanged.
+	if ((ent->flags & RF_FORCECOLOURMOD) && (model->engineflags & MDLF_SOURCEBSP))
+		bef |= BEF_FORCECOLOURMOD;
 	if (ent->flags & RF_NOSHADOW)
 		bef |= BEF_NOSHADOWS;
 	//nettest: r_shadows_bmodels 0 - only MODELS cast shadows, not brush entities.
@@ -4777,6 +4816,8 @@ void Surf_BuildModelLightmaps (model_t *m)
 
 				Surf_BuildLightMap (m, surf, j, shift, r_ambient.value*255, d_lightstylevalue);
 			}
+			if (!(i & 63))
+				SCR_LoadingPump();	//FTESurf Patch 1244: a big world builds for ~1 s (surf_eternity 917 ms)
 		}
 	}
 	m->lightmaps.first = newfirst;

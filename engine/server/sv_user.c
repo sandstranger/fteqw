@@ -111,8 +111,8 @@ void SV_FS_ResetFieldCaches(void)
 /*
   FTESurf Patch 346 -- THE PIN: every value PM_PlayerMove is handed that the usercmd
   does not carry, snapshotted per move from the variables the mover actually reads
-  (movevars/pmove after SV_SetSourceMoveVars), never from cvars: entgravity/maxspeed
-  lag by a send frame (six movevars were spawn-latched until Patch 977).  One table, one
+  (movevars/pmove after SV_SetSourceMoveVars), never from cvars: maxspeed
+  lags by a send frame (entgravity did until P1211, SV_ClientGravityRefresh) (six movevars were spawn-latched until Patch 977).  One table, one
   order, one text form, shared by the recorder's infokeys and by pm_recsim.
   APPEND ONLY: a reader matches tokens by name, but the fill order is the table.
 */
@@ -157,7 +157,7 @@ int SV_PMSrcVer(const float *pin)
 	//Patch 813: v8 recovers a fraction-0 retrace onto a plane already clipped since the last progress.
 	//Patch 888: v9 traces .phy hulls whose old 16-bit indices wrapped as they are.
 	//Patch 882: v10 honours momlimit/momcool/momslide.
-	if (pin[0] == 3 || pin[0] == 4 || pin[0] == 5 || pin[0] == 6 || pin[0] == 7 || pin[0] == 8 || pin[0] == 9 || pin[0] == 10 || pin[0] == 11)
+	if (pin[0] == 3 || pin[0] == 4 || pin[0] == 5 || pin[0] == 6 || pin[0] == 7 || pin[0] == 8 || pin[0] == 9 || pin[0] == 10 || pin[0] == 11 || pin[0] == 12)
 		return pin[0];
 	return f >= 2 ? 2 : f < 2 ? 1 : 0;
 }
@@ -8693,6 +8693,7 @@ static void SV_RunCmdPart (usercmd_t *ucmd, qboolean recurse, int kind, float to
 		tas_replay = SV_TASTapeOverlay(host_client, sv_player, &tas_cmd);
 		if (!tas_replay && SV_TASPlanActive(host_client))
 		{
+			SV_ClientGravityRefresh(host_client);	//P1211: as the mover below
 			SV_SetQWClientMoveVars(host_client);
 			tas_planned = SV_TASPlanOverlay(host_client, sv_player, &tas_cmd);
 		}
@@ -9184,6 +9185,9 @@ static void SV_RunCmdPart (usercmd_t *ucmd, qboolean recurse, int kind, float to
 	pmove.skipent = -1;
 	pmove.capsule = (sv_player->xv->geomtype == GEOMTYPE_CAPSULE);
 
+	//FTESurf Patch 1211: the gravity PlayerPreThink and the last move's touches left, not the
+	//last send's: a map's write takes the next move, as Source's does.
+	SV_ClientGravityRefresh(host_client);
 	SV_SetQWClientMoveVars(host_client);
 
 // should already be folded into host_client->maxspeed

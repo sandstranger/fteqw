@@ -94,6 +94,7 @@ void (APIENTRY *qglDeleteFramebuffersEXT)(GLsizei n, const GLuint* ids);
 void (APIENTRY *qglBindFramebufferEXT)(GLenum target, GLuint id);
 void (APIENTRY *qglDeleteRenderbuffersEXT)(GLsizei n, const GLuint* ids);
 void (APIENTRY *qglFramebufferTexture2DEXT)(GLenum target, GLenum attachmentPoint, GLenum textureTarget, GLuint textureId, GLint  level);
+void (APIENTRY *qglBlitFramebufferEXT)(GLint sx0, GLint sy0, GLint sx1, GLint sy1, GLint dx0, GLint dy0, GLint dx1, GLint dy1, GLbitfield mask, GLenum filter);	//FTESurf Patch 1237: gl3 / EXT_framebuffer_blit, may be NULL
 FTEPFNGLVERTEXATTRIBPOINTERPROC			qglVertexAttribPointer;
 FTEPFNGLVERTEXATTRIB4FPROC				qglVertexAttrib4f;
 FTEPFNGLGETVERTEXATTRIBIVPROC			qglGetVertexAttribiv;
@@ -712,6 +713,7 @@ static qboolean GL_CheckExtensions (void *(*getglfunction) (char *name))
 	qglBindRenderbufferEXT		= NULL;
 	qglRenderbufferStorageEXT	= NULL;
 	qglFramebufferTexture2DEXT	= NULL;
+	qglBlitFramebufferEXT		= NULL;
 
 #endif
 
@@ -1291,6 +1293,8 @@ static qboolean GL_CheckExtensions (void *(*getglfunction) (char *name))
 		qglFramebufferRenderbufferEXT	= (void *)getglext("glFramebufferRenderbuffer");
 		qglCheckFramebufferStatusEXT	= (void *)getglext("glCheckFramebufferStatus");
 		qglGetFramebufferAttachmentParameteriv	= (void *)getglext("glGetFramebufferAttachmentParameteriv");
+		if (gl_config.glversion >= 3 || GL_CheckExtension("GL_ARB_framebuffer_object"))
+			qglBlitFramebufferEXT	= (void *)getglext("glBlitFramebuffer");	//FTESurf Patch 1237: not in gles2
 
 		gl_config.arb_framebuffer_srgb = GL_CheckExtension("GL_ARB_framebuffer_sRGB");
 	}
@@ -1308,6 +1312,8 @@ static qboolean GL_CheckExtensions (void *(*getglfunction) (char *name))
 		qglFramebufferRenderbufferEXT	= (void *)getglext("glFramebufferRenderbufferEXT");
 		qglCheckFramebufferStatusEXT	= (void *)getglext("glCheckFramebufferStatusEXT");
 		qglGetFramebufferAttachmentParameteriv	= (void *)getglext("glGetFramebufferAttachmentParameterivEXT");
+		if (GL_CheckExtension("GL_EXT_framebuffer_blit"))
+			qglBlitFramebufferEXT	= (void *)getglext("glBlitFramebufferEXT");	//FTESurf Patch 1237
 	}
 /*	//I don't think we care about the differences, so this code should be safe, but I have no way to test that theory right now
 	else if (GL_CheckExtension("GL_OES_framebuffer_object"))
@@ -1595,7 +1601,7 @@ static const char *glsl_hdrs[] =
 
 				/*viewer properties*/
 				"uniform vec3 v_eyepos;"
-				"uniform vec4 w_fog[2];\n"
+				"uniform vec4 w_fog[3];\n"
 				"#define w_fogcolour	w_fog[0].rgb\n"
 				"#ifdef FOG\n"
 				"#define w_fogalpha		w_fog[0].a\n"
@@ -1849,21 +1855,29 @@ static const char *glsl_hdrs[] =
 			"#ifdef FRAGMENT_SHADER\n"
 				"#ifdef FOG\n"
 					"#ifndef DEFS_DEFINED\n"
-					"uniform vec4 w_fog[2];\n"
+					"uniform vec4 w_fog[3];\n"
 					"#define w_fogcolour	w_fog[0].rgb\n"
 					"#define w_fogalpha		w_fog[0].a\n"
 					"#define w_fogdensity	w_fog[1].x\n"
 					"#define w_fogdepthbias	w_fog[1].y\n"
 					"#endif\n"
+					//FTESurf Patch 1213: view depth, or (w_fog[2] set) the distance from the eye, as Source
+					//fogs (common_fxc.h CalcRangeFogFactorNonFixedFunction). w_fog[2] rebuilds eye xy/depth from
+					//gl_FragCoord (GLBE_FogRadial); zero when off, so the factor is exactly 1.
+					"float fogdepth(void)"
+					"{"
+						"vec2 t = gl_FragCoord.xy * w_fog[2].xy + w_fog[2].zw;\n"
+						"return (gl_FragCoord.z / gl_FragCoord.w) * sqrt(1.0 + dot(t, t));\n"
+					"}\n"
 
 					"vec3 fog3(in vec3 regularcolour)"
 					"{"
 						"float z, fac;\n"
 						"#if #include \"cvar/r_fog_linear\"\n"
-							"z = gl_FragCoord.z / gl_FragCoord.w;\n"
+							"z = fogdepth();\n"
 							"fac = (w_fogdensity - z) / (w_fogdensity - w_fogdepthbias);\n"
 						"#else\n"
-							"z = w_fogdensity * gl_FragCoord.z / gl_FragCoord.w;\n"
+							"z = w_fogdensity * fogdepth();\n"
 							"z = max(0.0,z-w_fogdepthbias);\n"
 							"#if #include \"cvar/r_fog_exp2\"\n"
 								"z *= z;\n"
@@ -1877,10 +1891,10 @@ static const char *glsl_hdrs[] =
 					"{"
 						"float z, fac;\n"
 						"#if #include \"cvar/r_fog_linear\"\n"
-							"z = gl_FragCoord.z / gl_FragCoord.w;\n"
+							"z = fogdepth();\n"
 							"fac = (w_fogdensity - z) / (w_fogdensity - w_fogdepthbias);\n"
 						"#else\n"
-							"z = w_fogdensity * gl_FragCoord.z / gl_FragCoord.w;\n"
+							"z = w_fogdensity * fogdepth();\n"
 							"z = max(0.0,z-w_fogdepthbias);\n"
 							"#if #include \"cvar/r_fog_exp2\"\n"
 							"z *= z;\n"
@@ -1898,10 +1912,10 @@ static const char *glsl_hdrs[] =
 					"{"	//fog function for additive blends
 						"float z, fac;\n"
 						"#if #include \"cvar/r_fog_linear\"\n"
-							"z = gl_FragCoord.z / gl_FragCoord.w;\n"
+							"z = fogdepth();\n"
 							"fac = (w_fogdensity - z) / (w_fogdensity - w_fogdepthbias);\n"
 						"#else\n"
-							"z = w_fogdensity * gl_FragCoord.z / gl_FragCoord.w;\n"
+							"z = w_fogdensity * fogdepth();\n"
 							"z = max(0.0,z-w_fogdepthbias);\n"
 							"#if #include \"cvar/r_fog_exp2\"\n"
 							"z *= z;\n"
@@ -1915,10 +1929,10 @@ static const char *glsl_hdrs[] =
 					"{"	//fog function for regular alpha blends (uses the blend for fading, to avoid fighting the surface behind)
 						"float z, fac;\n"
 						"#if #include \"cvar/r_fog_linear\"\n"
-							"z = gl_FragCoord.z / gl_FragCoord.w;\n"
+							"z = fogdepth();\n"
 							"fac = (w_fogdensity - z) / (w_fogdensity - w_fogdepthbias);\n"
 						"#else\n"
-							"z = w_fogdensity * gl_FragCoord.z / gl_FragCoord.w;\n"
+							"z = w_fogdensity * fogdepth();\n"
 							"z = max(0.0,z-w_fogdepthbias);\n"
 							"#if #include \"cvar/r_fog_exp2\"\n"
 							"z *= z;\n"
@@ -3327,6 +3341,7 @@ void GL_ForgetPointers(void)
 	qglBindRenderbufferEXT		= NULL;
 	qglRenderbufferStorageEXT	= NULL;
 	qglFramebufferTexture2DEXT	= NULL;
+	qglBlitFramebufferEXT		= NULL;
 #endif
 
 	//no GL_EXT_stencil_two_side

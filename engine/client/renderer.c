@@ -489,6 +489,9 @@ cvar_t r_renderscale						= CVARFD("r_renderscale", "1", CVAR_ARCHIVE, "Provides
 cvar_t r_fxaa								= CVARFD("r_fxaa", "0", CVAR_ARCHIVE, "Runs a post-procesing pass to strip the jaggies.");
 cvar_t r_graphics							= CVARFD("r_graphics", "1", CVAR_ARCHIVE, "Turning this off will result in ascii-style rendering.");
 cvar_t r_postprocshader						= CVARD("r_postprocshader", "", "Specifies a custom shader to use as a post-processing shader");
+//FTESurf Patch 1230: machine-set by CSQC while a pass tests against the scene (the aura glow).
+cvar_t r_scenedepth							= CVARD("r_scenedepth", "0", "1 keeps the 3D view's depth as the texture rt/$lastgameviewdepth, rendering through a texture if nothing else does, so CSQC passes can test against the scene. Set by the game while it needs it.");
+cvar_t r_scenedepth_drawn					= CVARFD("r_scenedepth_drawn", "0", CVAR_NOSAVE|CVAR_NOTFROMSERVER, "Set by the engine at every screen view: 1 when that view wrote rt/$lastgameviewdepth. A pass that tests against it must not trust an older frame's depth.");
 /*
 FTESurf Patch 288: the colour-correction stage's shader name.
 
@@ -805,6 +808,9 @@ cvar_t gl_texturemode2d						= CVARFCD("gl_texturemode2d", "GL_LINEAR",
 												CVAR_ARCHIVE | CVAR_RENDERERCALLBACK, Image_TextureMode_Callback,
 												"Specifies how 2d images are sampled. format is a 3-tupple ");
 cvar_t r_font_linear						= CVARF("r_font_linear", "1", CVAR_ARCHIVE);
+//FTESurf Patch 1236: coverage curve for antialiased glyphs, applied when a glyph is baked (vid_reload to see a change).
+cvar_t r_font_gamma						= CVARFD("r_font_gamma", "1.4", CVAR_ARCHIVE, "Exponent for antialiased glyph coverage: 1 leaves it as rasterised, above 1 fills edges in (light text on dark then reads as if blended in linear light; dark text on light gets heavier too). Not applied while vid_srgb 1 or 2 has the renderer blend in linear light. Applies to glyphs baked after a change; vid_reload re-bakes.");
+cvar_t r_font_kerning						= CVARFD("r_font_kerning", "1", CVAR_ARCHIVE, "Pair kerning from the font's GPOS kern feature (U+0020 to U+00FF) for QC drawstring and stringwidth. Takes effect at once.");	//FTESurf Patch 1236
 cvar_t r_font_postprocess_outline			= CVARFD("r_font_postprocess_outline", "0", 0, "Controls the number of pixels of dark borders to use around fonts.");
 cvar_t r_font_postprocess_mono				= CVARFD("r_font_postprocess_mono", "0", 0, "Disables anti-aliasing on fonts.");
 
@@ -954,6 +960,9 @@ cvar_t r_fog_permutation					= CVARFD ("r_fog_permutation", "1", CVAR_SHADERSYST
 //FTESurf Patch 266: r_fog_permutation only reaches shaders that HAVE a program.
 //This covers the ones that do not, which until now were never fogged at all.
 cvar_t r_fog_progless						= CVARFD ("r_fog_progless", "1", CVAR_ARCHIVE, "Fog surfaces whose material has no GLSL program (Source UnlitGeneric, q3 shaders, anything drawn through the fixed-function path) using fixed-function fog. 0 restores the pre-Patch-266 behaviour, in which those surfaces took no distance fog.");
+//FTESurf Patch 1213: Source fogs by distance from the eye (common_fxc.h CalcRangeFogFactorNonFixedFunction:
+//distance(eyePos, worldPos)), FTE by view depth; they part toward the screen edges.
+cvar_t r_fog_radial						= CVARFD ("r_fog_radial", "1", CVAR_ARCHIVE, "Fog distance. 0: view depth (FTE). 1: distance from the eye, as Source, on Source maps only. 2: distance from the eye everywhere. GLSL passes only; a pass with no program keeps view depth.");
 
 extern cvar_t gl_dither;
 cvar_t	gl_screenangle = CVAR("gl_screenangle", "0");
@@ -1057,6 +1066,7 @@ void GLRenderer_Init(void)
 	Cvar_Register (&r_fog_exp2, GLRENDEREROPTIONS);
 	Cvar_Register (&r_fog_permutation, GLRENDEREROPTIONS);
 	Cvar_Register (&r_fog_progless, GLRENDEREROPTIONS);	//FTESurf Patch 266
+	Cvar_Register (&r_fog_radial, GLRENDEREROPTIONS);	//FTESurf Patch 1213
 
 	Cvar_Register (&r_tessellation, GRAPHICALNICETIES);
 	Cvar_Register (&gl_ati_truform_type, GRAPHICALNICETIES);
@@ -1556,6 +1566,8 @@ void Renderer_Init(void)
 	Cmd_AddCommandD("r_viewstats", R_ViewStats_f, "FTESurf Patch 850: per top-level view since the last call -- views by depth, 3D skies drawn and skipped, entities a nested view passed over, 3D skies from the sky camera, screen copies and their megapixels.");
 	Cvar_Register (&r_refractreflect_scale, GRAPHICALNICETIES);
 	Cvar_Register (&r_postprocshader, GRAPHICALNICETIES);
+	Cvar_Register (&r_scenedepth, GRAPHICALNICETIES);	//FTESurf Patch 1230
+	Cvar_Register (&r_scenedepth_drawn, GRAPHICALNICETIES);
 	Cvar_Register (&r_colourcorrection, GRAPHICALNICETIES);	//FTESurf Patch 288
 	Cvar_Register (&r_underwateroverlay, GRAPHICALNICETIES);	//FTESurf Patch 1013
 	Cvar_Register (&r_fxaa, GRAPHICALNICETIES);
@@ -1661,6 +1673,9 @@ void Renderer_Init(void)
 	Cvar_Register (&gl_texturemode, GLRENDEREROPTIONS);
 	Cvar_Register (&gl_texturemode2d, GLRENDEREROPTIONS);
 	Cvar_Register (&r_font_linear, GLRENDEREROPTIONS);
+	Cvar_Register (&r_font_gamma, GLRENDEREROPTIONS);	//FTESurf Patch 1236
+	Cvar_Register (&r_font_kerning, GLRENDEREROPTIONS);	//FTESurf Patch 1236
+	Cmd_AddCommandD("r_font_kerndump", Font_KernDump_f, "Lists each loaded face's baked kerning pairs (codepoint, codepoint, font units), optionally only faces whose name contains the argument.");	//FTESurf Patch 1236
 	Cvar_Register (&r_font_postprocess_outline, GLRENDEREROPTIONS);
 	Cvar_Register (&r_font_postprocess_mono, GLRENDEREROPTIONS);
 #if defined(HAVE_LEGACY) && defined(AVAIL_FREETYPE)

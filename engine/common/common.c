@@ -4372,7 +4372,7 @@ conchar_t *COM_ParseFunString(conchar_t defaultflags, const char *str, conchar_t
 					ext = extstack[extstackdepth];
 				}
 			}
-			else if (str[1] == 'U')	//unicode (16bit) char ^Uxxxx
+			else if (str[1] == 'U' && ishexcode(str[2]) && ishexcode(str[3]) && ishexcode(str[4]) && ishexcode(str[5]))	//unicode (16bit) char ^Uxxxx. FTESurf Patch 1236: all four digits, else "^U" at a string's end read and skipped past it
 			{
 				if (!keepmarkup)
 				{
@@ -6670,6 +6670,25 @@ void COM_WorkerPartialSync(void *priorityctx, int *address, int value)
 //			Con_Printf("Might be in for a long wait for %s\n", (char*)priorityctx);
 		}
 	}
+
+#ifdef HAVE_CLIENT
+	{	//FTESurf Patch 1244: while a gamecode loading screen is up, poll instead of sleeping on
+		//the condition, so the screen keeps moving through a long worker job.
+		extern qboolean SCR_LoadingPumpWanted(void);
+		extern void SCR_LoadingPump(void);
+		if (SCR_LoadingPumpWanted())
+		{
+			while (*address == value && !com_workererror)
+			{
+				qboolean did = COM_DoWork(WG_MAIN, false);
+				SCR_LoadingPump();	//throttled: after a run of uploads as well as while idle
+				if (!did)
+					Sys_Sleep(0.004);
+			}
+			return;
+		}
+	}
+#endif
 
 	Sys_LockConditional(com_workercondition[WG_MAIN]);
 	do
