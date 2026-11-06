@@ -45,6 +45,34 @@ texid_t r_whiteimage, r_blackimage;
 texid_t r_envcubemap_tex;
 qboolean shader_reload_needed;
 static qboolean shader_rescan_needed;
+//FTESurf Patch 1267: Shader_NeedReload(true) is a filesystem change, and a shader parsed after the last
+//one read the files as they are now.  A reload asked for by the filesystem alone (no cvar or other full
+//request since the last reload) leaves those alone unless a script defined them then (the cache is only
+//rescanned at the reload) or defines them now.  Generators' other inputs ask for full reloads: shader
+//cvars, and the watervis permission (CL_CheckServerInfo).
+//Measured on map changes: only shaders from before the change differ (the old map's, losing their pack).
+static unsigned int shader_fsgen = 1;
+static qboolean shader_reload_full = true;
+static struct
+{
+	unsigned int gen;	//the shader_fsgen its last parse saw
+	qboolean script;	//that parse read a script
+} *shader_parsegen;	//by shader id
+static int shader_parsegen_max;
+static void Shader_StampParse(int id)
+{
+	if (id < 0)
+		return;
+	if (id >= shader_parsegen_max)
+	{
+		int n = max(max(id + 1, shader_parsegen_max * 2), 256);
+		shader_parsegen = BZ_Realloc(shader_parsegen, n * sizeof(*shader_parsegen));
+		memset(shader_parsegen + shader_parsegen_max, 0, (n - shader_parsegen_max) * sizeof(*shader_parsegen));
+		shader_parsegen_max = n;
+	}
+	shader_parsegen[id].gen = shader_fsgen;
+	shader_parsegen[id].script = false;
+}
 
 sh_config_t sh_config;
 
@@ -55,6 +83,230 @@ cvar_t r_forceprogramify = CVARAFD("r_forceprogramify", "0", "dpcompat_makeshitu
 cvar_t dpcompat_nopremulpics = CVARFD("dpcompat_nopremulpics", "0", CVAR_SHADERSYSTEM, "By default FTE uses premultiplied alpha for hud/2d images, while DP does not (which results in halos with low-res content). Unfortunately DDS files would need to be recompressed, resulting in visible issues.");
 #endif
 cvar_t r_glsl_precache = CVARFD("r_glsl_precache", "0", CVAR_SHADERSYSTEM, "Force all relevant glsl permutations to load upfront.");
+cvar_t r_glsl_warm = CVARFD("r_glsl_warm", "1", CVAR_ARCHIVE, "FTESurf Patch 1277: while a map loads, compile the shader permutations earlier play had to compile mid-run (remembered in data/glslwarm.txt), so a shader the driver has not cached does not stall a frame while you surf. 0 compiles each permutation when it is first drawn, as before.");
+
+//FTESurf Patch 1277: the warm list. A program permutation first drawn mid-run compiles in that frame: 25-190 ms when
+//the driver's shader cache lacks it (the first play after an update changes the GLSL; NVIDIA's OpenGL cache also
+//evicts at its size cap), ~1 ms when it holds it (RTX 2080 SUPER: boreas, phantasia, monolith). Each permutation
+//compiled lazily is remembered; CL_MakeActive, after its shader reload and behind the loading screen, compiles the
+//remembered ones of every program the loaded shaders use (GLSLWarm_MapActive). The file is written there and at
+//shutdown only: opening a file mid-run is a stall too. data/glslwarm.txt: a header line, then
+//"<permutation hex> <program name>" (the name is the rest of the line).
+#define GLSLWARM_FILE "data/glslwarm.txt"
+#define GLSLWARM_BACKUP "data/glslwarm.bak"	//the old file while the new one is renamed in
+#define GLSLWARM_BYTES (4*1024*1024)		//written and read, at most
+#define GLSLWARM_SEED "glsl/warmseed.txt"	//FTESurf Patch 1282: the release's starter list, read beside this PC's
+#define GLSLWARM_MAX 65536					//permutations kept, all programs together
+cvar_t r_mapready_budget = CVARFD("r_mapready_budget", "2", CVAR_ARCHIVE, "Soft seconds (0..10) for registered models/images and remembered active GLSL permutations at activation. A single upload/driver compile cannot be preempted. Expiry is incomplete, NOT server timer admission; see r_mapready_info.");
+static struct
+{
+	qboolean observing, warming, invalidated, budgethit, overflow;
+	int programs, eligible, available, compiled, failed, pending, unavailable;
+	int models, modelpending, modelfailed, modelunrequested;
+	int images, imagepending, imagefailed, imageunrequested;
+	unsigned int latecompiles, latefailed, lateimages, lateimagefailed;
+	double seconds, lateseconds, lateimageseconds;
+	char lastprogram[MAX_QPATH], lastimage[MAX_QPATH];
+	unsigned int lastperm;
+	const char *state;
+} mapready;
+
+static void MapReady_Compiled(program_t *prog, unsigned int perm, double start, qboolean failed)
+{
+	if (!mapready.observing || mapready.warming)
+		return;
+	mapready.latecompiles++;
+	mapready.latefailed += failed;
+	mapready.lateseconds += Sys_DoubleTime() - start;
+	Q_strncpyz(mapready.lastprogram, prog->name ? prog->name : "<unnamed>", sizeof(mapready.lastprogram));
+	mapready.lastperm = perm;
+}
+
+double R_MapReadyImageStart(void)
+{
+	return (mapready.observing && !mapready.warming && Sys_IsMainThread()) ? Sys_DoubleTime() : -1;
+}
+
+void R_MapReadyImageDone(const char *name, double start, qboolean failed)
+{
+	if (start < 0 || !mapready.observing || mapready.warming || !Sys_IsMainThread())
+		return;
+	mapready.lateimages++;
+	mapready.lateimagefailed += failed;
+	mapready.lateimageseconds += Sys_DoubleTime() - start;
+	Q_strncpyz(mapready.lastimage, name, sizeof(mapready.lastimage));
+}
+
+typedef struct glslwarm_s
+{
+	bucket_t bucket;
+	struct glslwarm_s *next;
+	unsigned int bits[(PERMUTATIONS + 31) / 32];
+	char name[1];
+} glslwarm_t;
+static hashtable_t glslwarm_hash;
+static void *glslwarm_mem;
+static glslwarm_t *glslwarm_list;
+static int glslwarm_count;
+static qboolean glslwarm_loaded, glslwarm_dirty;
+static void GLSLWarm_Header(char *out, size_t outsize)
+{	//the version and every permutation bit: another build's layout is ignored, not misread
+	Q_snprintfz(out, outsize, "glslwarm 1 %x %x %x %x %x %x %x %x %x %x %x", PERMUTATIONS, PERMUTATION_BUMPMAP,
+		PERMUTATION_FULLBRIGHT, PERMUTATION_UPPERLOWER, PERMUTATION_REFLECTCUBEMASK, PERMUTATION_SKELETAL, PERMUTATION_FOG,
+		PERMUTATION_FRAMEBLEND, PERMUTATION_LIGHTSTYLES, PERMUTATION_VC, PERMUTATION_INSTANCED);
+}
+static qboolean GLSLWarm_Add(const char *name, unsigned int perm)
+{
+	glslwarm_t *w;
+	perm &= PERMUTATIONS - 1;
+	if (!perm || !*name || glslwarm_count >= GLSLWARM_MAX)
+		return false;
+	if (!glslwarm_mem)
+	{
+		glslwarm_mem = Z_Malloc(Hash_BytesForBuckets(4096));
+		Hash_InitTable(&glslwarm_hash, 4096, glslwarm_mem);
+	}
+	w = Hash_Get(&glslwarm_hash, name);
+	if (!w)
+	{
+		w = Z_Malloc(sizeof(*w) + strlen(name));
+		strcpy(w->name, name);
+		w->next = glslwarm_list;
+		glslwarm_list = w;
+		Hash_Add(&glslwarm_hash, w->name, w, &w->bucket);
+	}
+	if (w->bits[perm >> 5] & (1u << (perm & 31)))
+		return false;
+	w->bits[perm >> 5] |= 1u << (perm & 31);
+	glslwarm_count++;
+	return true;
+}
+static void GLSLWarm_Read(const char *name, const char *fallback)
+{	//the gamedir's own loose file (a package or download cannot supply it), merged into the list; else the fallback
+	//(the .bak a crash mid-swap left)
+	vfsfile_t *f = FS_OpenVFS(name, "rb", FS_GAMEONLY);
+	char header[128], *buf, *s, *e, *sp;
+	qofs_t len;
+	size_t l;
+	if (!f && fallback)
+		f = FS_OpenVFS(fallback, "rb", FS_GAMEONLY);
+	if (!f)
+		return;
+	len = VFS_GETLEN(f);
+	if (len > GLSLWARM_BYTES)
+		len = GLSLWARM_BYTES;	//its first whole lines: the cut last one is dropped below
+	buf = BZ_Malloc(len + 1);
+	if (VFS_READ(f, buf, len) != (int)len)
+	{
+		BZ_Free(buf);
+		buf = NULL;
+	}
+	VFS_CLOSE(f);
+	if (!buf)
+		return;
+	buf[len] = 0;
+	GLSLWarm_Header(header, sizeof(header));
+	for (s = buf; (e = strchr(s, '\n')); s = e)
+	{	//an unterminated last line is a cut one: "defaultwall#BUMP" cut short names another program
+		*e++ = 0;
+		l = strlen(s);
+		if (l && s[l-1] == '\r')
+			s[l-1] = 0;
+		if (s == buf)
+		{
+			if (strcmp(s, header))
+				break;		//another version or permutation layout: start again
+			continue;
+		}
+		sp = strchr(s, ' ');
+		if (sp && sp != s)
+		{
+			*sp = 0;
+			GLSLWarm_Add(sp + 1, strtoul(s, NULL, 16));
+		}
+	}
+	BZ_Free(buf);
+}
+static void GLSLWarm_Load(void)
+{
+	if (!glslwarm_loaded)
+	{
+		glslwarm_loaded = true;
+		GLSLWarm_Read(GLSLWARM_FILE, GLSLWARM_BACKUP);
+		GLSLWarm_Read(GLSLWARM_SEED, NULL);	//a fresh install's first plays of the maps it was built from
+	}
+}
+//gl_backend.c's lazy compile (BE_RenderMeshProgram)
+void GLSLWarm_Note(const char *name, unsigned int perm)
+{
+	if (!r_glsl_warm.ival || qrenderer != QR_OPENGL || !name)
+		return;
+	GLSLWarm_Load();
+	if (GLSLWarm_Add(name, perm))
+		glslwarm_dirty = true;
+}
+//GLSLWarm_MapActive and Shader_Shutdown
+void GLSLWarm_Save(void)
+{
+	vfsfile_t *f;
+	glslwarm_t *w;
+	unsigned int p, salt;
+	char tmp[64], *buf;
+	size_t size, len;
+	qboolean ok;
+	if (!glslwarm_dirty)
+		return;
+	GLSLWarm_Read(GLSLWARM_FILE, GLSLWARM_BACKUP);	//another instance may have written since: keep its entries too
+	size = 128;
+	for (w = glslwarm_list; w; w = w->next)
+		for (p = 1; p < PERMUTATIONS; p++)
+			if (w->bits[p >> 5] & (1u << (p & 31)))
+				size += strlen(w->name) + 16;
+	if (size > GLSLWARM_BYTES + 128)
+		size = GLSLWARM_BYTES + 128;
+	buf = BZ_Malloc(size);
+	GLSLWarm_Header(buf, size);
+	len = strlen(buf);
+	buf[len++] = '\n';
+	for (w = glslwarm_list; w; w = w->next)
+		for (p = 1; p < PERMUTATIONS; p++)
+			if (w->bits[p >> 5] & (1u << (p & 31)))
+			{
+				if (len + strlen(w->name) + 16 > GLSLWARM_BYTES)
+					break;	//what fits; the rest stays in memory for this session
+				Q_snprintfz(buf + len, size - len, "%x %s\n", p, w->name);
+				len += strlen(buf + len);
+			}
+	//one write, checked (VFSW32_Close cannot report a short one); a temp of this process's own (two clients can share
+	//a gamedir)
+	if (!Sys_RandomBytes((qbyte*)&salt, sizeof(salt)))
+		salt = (unsigned int)(Sys_DoubleTime() * 1000000) ^ (unsigned int)(size_t)buf;
+	Q_snprintfz(tmp, sizeof(tmp), "data/glslwarm.%08x.tmp", salt);
+	f = FS_OpenVFS(tmp, "wb", FS_GAMEONLY);
+	if (!f)
+	{
+		BZ_Free(buf);
+		return;	//still dirty: tried again at the next load
+	}
+	ok = VFS_WRITE(f, buf, len) == (int)len;
+	if (!VFS_CLOSE(f))
+		ok = false;
+	BZ_Free(buf);
+	if (ok && !FS_Rename(tmp, GLSLWARM_FILE, FS_GAMEONLY))
+	{	//true is success; MoveFileW will not replace a file, so the old one steps aside and comes back on a failure
+		FS_Remove(GLSLWARM_BACKUP, FS_GAMEONLY);
+		FS_Rename(GLSLWARM_FILE, GLSLWARM_BACKUP, FS_GAMEONLY);
+		ok = FS_Rename(tmp, GLSLWARM_FILE, FS_GAMEONLY);
+		if (ok)
+			FS_Remove(GLSLWARM_BACKUP, FS_GAMEONLY);
+		else
+			FS_Rename(GLSLWARM_BACKUP, GLSLWARM_FILE, FS_GAMEONLY);
+	}
+	if (!ok)
+		FS_Remove(tmp, FS_GAMEONLY);	//still dirty: the list in memory is tried again at the next load
+	else
+		glslwarm_dirty = false;
+}
 cvar_t r_halfrate = CVARFD("r_halfrate", "0", CVAR_ARCHIVE|CVAR_SHADERSYSTEM, "Use half-rate shading (where supported by gpu).");
 
 extern cvar_t r_glsl_offsetmapping_reliefmapping;
@@ -835,6 +1087,8 @@ qboolean Shader_ParseSkySides (char *shadername, char *texturename, texid_t *ima
 		"materials/skybox/%s%s"	//nettest: explicit materials/ prefix (matches how Source .vpk paths are mounted)
 	};
 
+	char texname[MAX_QPATH];	//FTESurf Patch 1259: texturename is com_token, and the pump below may parse
+
 	if (*texturename == '$')
 	{
 		cvar_t *v;
@@ -844,9 +1098,13 @@ qboolean Shader_ParseSkySides (char *shadername, char *texturename, texid_t *ima
 	}
 	if (!*texturename)
 		texturename = "-";
+	Q_strncpyz(texname, texturename, sizeof(texname));
+	texturename = texname;
 
 	for ( i = 0; i < 6; i++ )
 	{
+		if (i)
+			SCR_LoadingPump();	//Patch 1259: each face loads now (IF_LOADNOW), ~70 ms apiece for a Source sky
 		if ( texturename[0] == '-' )
 		{
 			images[i] = r_nulltex;
@@ -1904,6 +2162,7 @@ struct programpermu_s *Shader_LoadPermutation(program_t *prog, unsigned int p)
 	char defines[8192];
 	size_t offset;
 	qboolean fail = false;
+	double ready_start = (mapready.observing && !mapready.warming) ? Sys_DoubleTime() : 0;
 
 	extern cvar_t r_glsl_pbr, gl_specular, gl_specular_power;
 	extern cvar_t r_shadows_throwfade;	//nettest: contact-shadow gap fade, injected alongside FAKESHADOWS
@@ -2067,6 +2326,7 @@ struct programpermu_s *Shader_LoadPermutation(program_t *prog, unsigned int p)
 		cvarnames[i] = NULL; //no more
 		sh_config.pProgAutoFields(prog, pp, cvarnames, cvartypes);
 	}
+	MapReady_Compiled(prog, p, ready_start, fail);
 	if (fail)
 	{
 		Z_Free(pp);
@@ -2906,6 +3166,11 @@ void Shader_WriteOutGenerics_f(void)
 {
 	int i;
 	char *name;
+	if (Cmd_IsInsecure())
+	{
+		Con_Printf("%s is not permitted from untrusted commands\n", Cmd_Argv(0));
+		return;
+	}
 	for (i = 0; *sbuiltins[i].name; i++)
 	{
 		name = NULL;
@@ -2986,6 +3251,7 @@ struct shader_field_names_s shader_unif_names[] =
 	{"m_invviewprojection",		SP_M_INVVIEWPROJECTION},//inverted vp matrix
 	{"m_invmodelviewprojection",SP_M_INVMODELVIEWPROJECTION},//inverted mvp matrix.
 	{"m_invmodelview",			SP_M_INVMODELVIEW},//inverted mv matrix.
+	{"m_capturefix",			SP_M_CAPTUREFIX},//FTESurf Patch 1245: clip space to a reused capture's
 /**///m_modelinv
 
 	/*viewer properties*/
@@ -5166,6 +5432,7 @@ qboolean Shader_Init (void)
 	}
 
 	Shader_NeedReload(true);
+	Shader_NeedReload(false);	//Patch 1267: everything, not only what predates a filesystem change
 	shader_reload_why = "Shader_Init";
 	Shader_DoReload();
 	return true;
@@ -5421,6 +5688,7 @@ static void Shader_Reset(parsestate_t *ps)
 
 	s->remapto = s;
 	s->id = id;
+	Shader_StampParse(id);	//Patch 1267
 	s->width = w;
 	s->height = h;
 	s->model = mod;
@@ -5449,11 +5717,195 @@ static void Shader_Regenerate(parsestate_t *ps, const char *shortname)
 		ps->s->generator(ps, shortname, ps->s->genargs);
 }
 
+static void MapReady_Model(model_t *mod, const char *name)
+{
+	if (!name || !*name)
+		return;
+	mapready.models++;
+	if (!mod || mod->loadstate == MLS_NOTLOADED)
+		mapready.modelunrequested++;
+	else if (mod->loadstate == MLS_FAILED)
+		mapready.modelfailed++;
+	else if (mod->loadstate != MLS_LOADED)
+		mapready.modelpending++;
+}
+
+static void MapReady_Resources(void)
+{
+	int i;
+	mapready.models = mapready.modelpending = mapready.modelfailed = mapready.modelunrequested = 0;
+	for (i = 0; i < MAX_PRECACHE_MODELS; i++)
+		MapReady_Model(cl.model_precache[i], cl.model_name[i]);
+	for (i = 0; i < MAX_CSMODELS; i++)
+		MapReady_Model(cl.model_csqcprecache[i], cl.model_csqcname[i]);
+	for (i = 0; i < MAX_VWEP_MODELS; i++)
+		MapReady_Model(cl.model_precache_vwep[i], cl.model_name_vwep[i]);
+	Image_Readiness(&mapready.images, &mapready.imagepending, &mapready.imagefailed, &mapready.imageunrequested);
+}
+
+static void MapReady_Drain(double deadline)
+{
+	for (;;)
+	{
+		MapReady_Resources();
+		if (!mapready.modelpending && !mapready.imagepending)
+			break;
+		if (Sys_DoubleTime() >= deadline)
+		{
+			mapready.budgethit = true;
+			break;
+		}
+		// COM_HasWork omits executing workers. Poll actual resource states instead.
+		// One completion per deadline check; never an unbounded full worker sync.
+		if (!COM_DoWork(0, false))
+			Sys_Sleep(0.001);
+	}
+}
+
+static int QDECL MapReady_ComparePrograms(const void *a, const void *b)
+{
+	quintptr_t x = (quintptr_t)*(program_t *const *)a;
+	quintptr_t y = (quintptr_t)*(program_t *const *)b;
+	return (x > y) - (x < y);
+}
+
+void R_MapReadyInfo_f(void)
+{
+	const char *state = mapready.invalidated ? "invalidated" :
+		(mapready.latecompiles || mapready.lateimages) ? "late-work" : mapready.state;
+	Con_Printf("mapready: %s activation %s time %.3f budget-hit %i overflow %i\n",
+		state ? state : "not-started", mapready.state ? mapready.state : "not-started",
+		mapready.seconds, mapready.budgethit, mapready.overflow);
+	Con_Printf("mapready: programs %i unavailable %i eligible %i available %i compiled %i failed %i pending %i\n",
+		mapready.programs, mapready.unavailable, mapready.eligible, mapready.available, mapready.compiled, mapready.failed, mapready.pending);
+	Con_Printf("mapready: activation models %i pending %i failed %i unrequested %i images %i pending %i failed %i unrequested %i\n",
+		mapready.models, mapready.modelpending, mapready.modelfailed, mapready.modelunrequested,
+		mapready.images, mapready.imagepending, mapready.imagefailed, mapready.imageunrequested);
+	Con_Printf("mapready: late compiles %u failed %u ms %.3f last %s perm %u\n", mapready.latecompiles, mapready.latefailed,
+		mapready.lateseconds*1000, mapready.lastprogram, mapready.lastperm);
+	Con_Printf("mapready: late image completions %u failed %u upload-ms %.3f last %s\n",
+		mapready.lateimages, mapready.lateimagefailed, mapready.lateimageseconds*1000, mapready.lastimage);
+	Con_Printf("mapready: closure excludes future registrations, render targets, audio, driver first-draw and route coverage; NOT timer admission\n");
+}
+
+// CL_MakeActive: bounded known closure, not a universal loading/residency promise.
+void GLSLWarm_MapActive(void)
+{
+	unsigned int i, j, perm, p;
+	int count = 0, capacity;
+	unsigned int seen[(PERMUTATIONS + 31) / 32];
+	shader_t *s;
+	program_t *prog, **programs;
+	glslwarm_t *w;
+	double start = Sys_DoubleTime();
+	double deadline = start + bound(0, r_mapready_budget.value, 10);
+	memset(&mapready, 0, sizeof(mapready));
+	mapready.state = "incomplete";
+	mapready.warming = true;
+	MapReady_Resources();
+	if (!r_glsl_warm.ival || qrenderer != QR_OPENGL || !r_shaders)
+		mapready.state = !r_glsl_warm.ival ? "disabled" : "unsupported";
+	else
+	{
+		GLSLWarm_Load();
+		MapReady_Drain(deadline);
+		capacity = min(r_numshaders, 32768) * (SHADER_PASS_MAX + 1);
+		programs = malloc(max(1, capacity) * sizeof(*programs));
+		if (!programs || !glslwarm_mem)
+			mapready.overflow = true;
+		else
+		{
+			for (i = 0; i < r_numshaders; i++)
+			{
+				s = r_shaders[i];
+				if (!s || s->uses <= 0)
+					continue;
+				for (j = 0; j <= (unsigned int)s->numpasses && j <= SHADER_PASS_MAX; j++)
+				{
+					prog = j ? s->passes[j-1].prog : s->prog;
+					if (!prog)
+						continue;
+					if (count == capacity)
+					{
+						mapready.overflow = true;
+						break;
+					}
+					programs[count++] = prog;
+				}
+				if (mapready.overflow)
+					break;
+			}
+			qsort(programs, count, sizeof(*programs), MapReady_ComparePrograms);
+			for (i = 0; i < (unsigned int)count; i++)
+			{
+				prog = programs[i];
+				if (i && prog == programs[i-1])
+					continue;
+				mapready.programs++;
+				if (!prog->name || !prog->permu[0])
+				{
+					mapready.unavailable++;
+					continue;
+				}
+				w = Hash_Get(&glslwarm_hash, prog->name);
+				if (!w)
+					continue;
+				memset(seen, 0, sizeof(seen));
+				for (perm = 1; perm < PERMUTATIONS; perm++)
+				{
+					if (!(w->bits[perm >> 5] & (1u << (perm & 31))))
+						continue;
+					p = perm & prog->supportedpermutations;
+					if (!p || (seen[p >> 5] & (1u << (p & 31))))
+						continue;
+					seen[p >> 5] |= 1u << (p & 31);
+					mapready.eligible++;
+					if (prog->permu[p])
+					{
+						if (prog->permu[p] == prog->permu[0])
+							mapready.failed++;
+						else
+							mapready.available++;
+						continue;
+					}
+					if (Sys_DoubleTime() >= deadline)
+					{
+						mapready.budgethit = true;
+						mapready.pending++;
+						continue;
+					}
+					prog->permu[p] = Shader_LoadPermutation(prog, p);
+					if (!prog->permu[p])
+					{
+						prog->permu[p] = prog->permu[0];
+						mapready.failed++;
+					}
+					else
+						mapready.compiled++;
+				}
+			}
+		}
+		free(programs);
+		MapReady_Drain(deadline);
+		if (!mapready.overflow && !mapready.unavailable && !mapready.failed && !mapready.pending &&
+			!mapready.modelpending && !mapready.modelfailed && !mapready.modelunrequested &&
+			!mapready.imagepending && !mapready.imagefailed && !mapready.imageunrequested)
+			mapready.state = "ready-closure";
+	}
+	mapready.seconds = Sys_DoubleTime() - start;
+	mapready.invalidated = shader_reload_needed;
+	mapready.warming = false;
+	mapready.observing = true;
+	GLSLWarm_Save(); // loading boundary only, never late-work telemetry
+	Con_DPrintf("mapready: %s compiled %i pending %i failed %i in %.1fms%s\n", mapready.state,
+		mapready.compiled, mapready.pending, mapready.failed, mapready.seconds*1000, mapready.budgethit ? " (budget)" : "");
+}
 void Shader_Shutdown (void)
 {
 	int i;
 	shader_t *shader;
 
+	GLSLWarm_Save();	//FTESurf Patch 1277
 	if (!r_shaders)
 		return;	/*nothing needs freeing yet*/
 	for (i = 0; i < r_numshaders; i++)
@@ -8658,6 +9110,8 @@ static qboolean Shader_ParseShader(parsestate_t *ps, const char *parsename)
 			}
 
 			Shader_Reset(ps);
+			if (ps->s->id < shader_parsegen_max)
+				shader_parsegen[ps->s->id].script = true;	//Patch 1267
 
 			Shader_ReadShader(ps, file, sourcefile);
 
@@ -9422,6 +9876,19 @@ void Shader_TouchTextures(void)
 */
 const char *shader_reload_why = "?";
 
+//Patch 1267: whether the scripts define a shader under a name its reparse tries.
+static qboolean Shader_HasScript(const char *cleanname, const char *shortname)
+{
+	if (sh_config.shadernamefmt)
+	{
+		char drivername[MAX_QPATH];
+		Q_snprintfz(drivername, sizeof(drivername), sh_config.shadernamefmt, cleanname);
+		if (Shader_LocateSource(drivername, NULL, NULL, NULL, NULL))
+			return true;
+	}
+	return Shader_LocateSource(cleanname, NULL, NULL, NULL, NULL) || Shader_LocateSource(shortname, NULL, NULL, NULL, NULL);
+}
+
 void Shader_DoReload(void)
 {
 	shader_t *s;
@@ -9455,8 +9922,9 @@ void Shader_DoReload(void)
 	one clock read otherwise.
 	*/
 	double t0 = Sys_DoubleTime();
-	unsigned int reparsed = 0, regenerated = 0, live = 0;
+	unsigned int reparsed = 0, regenerated = 0, live = 0, skipped = 0;
 	qboolean rescanned = shader_rescan_needed;
+	qboolean targeted = shader_rescan_needed && !shader_reload_full;	//Patch 1267
 
 	if (shader_rescan_needed)
 	{
@@ -9501,6 +9969,12 @@ void Shader_DoReload(void)
 		if (argsstart)
 			*argsstart = 0;
 		COM_StripExtension (cleanname, shortname, sizeof(shortname));
+		if (targeted && s->id < shader_parsegen_max && shader_parsegen[s->id].gen == shader_fsgen
+			&& !shader_parsegen[s->id].script && !Shader_HasScript(cleanname, shortname))
+		{
+			skipped++;	//Patch 1267: parsed after the last filesystem change
+			continue;
+		}
 		TRACE(("reparsing %s\n", s->name));
 		if (ruleset_allow_shaders.ival && !(s->usageflags & SUR_FORCEFALLBACK))
 		{
@@ -9538,9 +10012,10 @@ void Shader_DoReload(void)
 	}
 
 	if (developer.ival)
-		Con_Printf("^5shaders^7 %6.0fms  %s from %s, %u live of %u ever: %u reparsed, %u regenerated\n",
+		Con_Printf("^5shaders^7 %6.0fms  %s from %s, %u live of %u ever: %u reparsed, %u regenerated, %u parsed since the files changed\n",
 			(Sys_DoubleTime() - t0) * 1000, rescanned?"RESCAN+reload":"reload",
-			shader_reload_why, live, (unsigned)r_numshaders, reparsed, regenerated);
+			shader_reload_why, live, (unsigned)r_numshaders, reparsed, regenerated, skipped);
+	shader_reload_full = false;
 }
 
 /*
@@ -9560,11 +10035,18 @@ const char *shader_needreload_why = "?";
 
 void Shader_NeedReload(qboolean rescanfs)
 {
+	if (mapready.observing && !mapready.warming)
+		mapready.invalidated = true;
 	if (!shader_reload_needed && developer.ival >= 2)
 		Con_DPrintf("^5shaders^7 reload requested by %s%s\n",
 			shader_needreload_why, rescanfs?" (+filesystem rescan)":"");
 	if (rescanfs)
+	{
 		shader_rescan_needed = true;
+		shader_fsgen++;	//Patch 1267
+	}
+	else
+		shader_reload_full = true;
 	shader_reload_needed = true;
 }
 

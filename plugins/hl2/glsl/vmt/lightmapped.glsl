@@ -11,6 +11,7 @@
 !!samps =LIGHTSTYLED lightmap1 lightmap2 lightmap3
 
 !!samps =BUMP normalmap
+!!samps =DELUXE deluxemap
 !!samps =FULLBRIGHT fullbright
 
 // envmaps only
@@ -18,6 +19,7 @@
 
 !!permu FAKESHADOWS
 !!cvardf r_glsl_pcf
+!!cvardf r_lightmap_bicubic_world=0
 !!cvarf r_renderscale
 !!samps =FAKESHADOWS shadowmap
 
@@ -183,13 +185,34 @@ uniform float cvar_r_renderscale;
 	#include "sys/pcf.h"
 #endif
 
-	#ifdef LIGHTSTYLED
-		#define LIGHTMAP0 texture2D(s_lightmap0, lm0).rgb
-		#define LIGHTMAP1 texture2D(s_lightmap1, lm1).rgb
-		#define LIGHTMAP2 texture2D(s_lightmap2, lm2).rgb
-		#define LIGHTMAP3 texture2D(s_lightmap3, lm3).rgb
+	//FTESurf Patch 1275: a cubic B-spline over the lightmap in four bilinear taps, as HL2's 20th-anniversary
+	//update filters it. Each face's block has a one-texel copy of its edge around it (r_surf.c SURF_LMPAD).
+	#if r_lightmap_bicubic_world
+	vec3 lm_bicubic(sampler2D s, vec2 c)
+	{
+		vec2 p = c * e_lmsize.xy - 0.5;
+		vec2 f = fract(p);
+		vec2 f2 = f * f, f3 = f2 * f;
+		vec2 w0 = (1.0 - 3.0*f + 3.0*f2 - f3) / 6.0;
+		vec2 w1 = (4.0 - 6.0*f2 + 3.0*f3) / 6.0;
+		vec2 w3 = f3 / 6.0;
+		vec2 g0 = w0 + w1, g1 = 1.0 - g0;
+		vec2 b = p - f + 0.5;
+		vec2 h0 = (b - 1.0 + w1 / g0) * e_lmsize.zw, h1 = (b + 1.0 + w3 / g1) * e_lmsize.zw;
+		return g0.y * (g0.x * texture2D(s, h0).rgb + g1.x * texture2D(s, vec2(h1.x, h0.y)).rgb) +
+		       g1.y * (g0.x * texture2D(s, vec2(h0.x, h1.y)).rgb + g1.x * texture2D(s, h1).rgb);
+	}
+	#define LMSAMPLE(s,c) lm_bicubic(s, c)
 	#else
-		#define LIGHTMAP texture2D(s_lightmap, lm0).rgb 
+	#define LMSAMPLE(s,c) texture2D(s, c).rgb
+	#endif
+	#ifdef LIGHTSTYLED
+		#define LIGHTMAP0 LMSAMPLE(s_lightmap0, lm0)
+		#define LIGHTMAP1 LMSAMPLE(s_lightmap1, lm1)
+		#define LIGHTMAP2 LMSAMPLE(s_lightmap2, lm2)
+		#define LIGHTMAP3 LMSAMPLE(s_lightmap3, lm3)
+	#else
+		#define LIGHTMAP LMSAMPLE(s_lightmap, lm0)
 	#endif
 
 	vec3 lightmap_fragment()
@@ -218,6 +241,40 @@ uniform float cvar_r_renderscale;
 	#define SEAMSAMP(s) texture2D(s, tex_c)
 #endif
 
+#ifdef BUMP
+	//FTESurf Patch 1264: Source's bump basis (common_fxc.h:36), the tangent space of its normal maps,
+	//ssbumps and the deluxemap mod_vbsp.c VBSP_BuildRNM writes.
+	const vec3 rnm_b0 = vec3(0.81649661, 0.0, 0.57735026);
+	const vec3 rnm_b1 = vec3(-0.40824833, 0.70710677, 0.57735026);
+	const vec3 rnm_b2 = vec3(-0.40824822, -0.70710683, 0.57735026);
+#endif
+#if defined(DELUXE) && defined(BUMP)
+	//FTESurf Patch 1264: radiosity normal mapping (lightmappedgeneric_ps2_3_x.h:433-466).  The
+	//deluxemap is the luxel's three basis-map luminances as one direction, so each map's share is
+	//dot(dir, basis); the lightmap is their mean (VBSP_BuildRNM), so Source's weighted sum is the mean
+	//times 3 * dot(weights, share) / sum(share).  A normal map weighs by its squared, clamped dots
+	//with the basis, normalized; an ssbump IS the three weights, unnormalized.  That ratio is linear
+	//light and the lightmap is sRGB-encoded (VBSP_ConvertLuxel), hence the 1/2.2.  A zero direction is
+	//a luxel with no basis data (or no static light): left alone.
+	float rnm_fragment()
+	{
+		vec3 share = max(vec3(dot(texture2D(s_deluxemap, lm0).rgb * 2.0 - 1.0, rnm_b0),
+		                      dot(texture2D(s_deluxemap, lm0).rgb * 2.0 - 1.0, rnm_b1),
+		                      dot(texture2D(s_deluxemap, lm0).rgb * 2.0 - 1.0, rnm_b2)), 0.0);
+		vec3 w = SEAMSAMP(s_normalmap).rgb;
+	#ifndef SSBUMP
+		w = w * 2.0 - 1.0;	//Source's DX space, as the deluxemap: no green flip
+		w = clamp(vec3(dot(w, rnm_b0), dot(w, rnm_b1), dot(w, rnm_b2)), 0.0, 1.0);
+		w *= w;
+		w /= max(dot(w, vec3(1.0)), 0.0001);
+	#endif
+		float total = dot(share, vec3(1.0));
+		if (total < 0.01)
+			return 1.0;
+		return pow(3.0 * dot(w, share) / total, 1.0 / 2.2);
+	}
+#endif
+
 	vec3 env_saturation(vec3 rgb, float adjustment) {
 	    vec3 intensity = vec3(dot(rgb, vec3(0.2126,0.7152,0.0722)));
 	    return mix(intensity, rgb, adjustment);
@@ -234,11 +291,20 @@ uniform float cvar_r_renderscale;
 #else
 		diffuse_f = SEAMSAMP(s_diffuse);
 #endif
-		diffuse_f.rgb *= e_colourident.rgb * vec3(COLOR);
+		//FTESurf Patch 1288: LightmappedGeneric multiplies by $color raw between an sRGB read and an sRGB write
+		//(lightmappedgeneric_dx9_helper.cpp: no GammaToLinear, unlike VertexLitGeneric), so in linear light; on
+		//the gamma values here that is ^(1/2.2). surf_eternity's $color .103 walls drew 3.5x too dark.
+		diffuse_f.rgb *= e_colourident.rgb * pow(vec3(COLOR), vec3(1.0/2.2));
 
 #ifdef MASKLT
+	#ifdef FTE_ALPHACOVERAGE	// FTESurf Patch 1262: under MSAA the test's edge is a pixel of coverage, not a cut
+		float a2c = (diffuse_f.a - float(MASK)) / max(fwidth(diffuse_f.a), 0.0001) + 0.5;
+		if (e_alphacoverage > 0.0 ? a2c <= 0.0 : diffuse_f.a < float(MASK))
+			discard;
+	#else
 		if (diffuse_f.a < float(MASK))
 			discard;
+	#endif
 #endif
 
 		//ftesurf (P232): the per-vertex tint and opacity the material asked for.
@@ -256,17 +322,26 @@ uniform float cvar_r_renderscale;
 		diffuse_f.rgb *= ShadowmapFilter(s_shadowmap, vtexprojcoord);
 #endif
 
-		/* deluxemapping isn't working on Source BSP yet */
 		diffuse_f.rgb *= lightmap_fragment();
+#if defined(DELUXE) && defined(BUMP)
+		diffuse_f.rgb *= rnm_fragment();	//FTESurf Patch 1264
+#endif
 
 /* CUBEMAPS ONLY */
 #ifdef REFLECTCUBEMASK
 	/* We currently only use the normal/bumpmap for cubemap warping. move this block out once we do proper radiosity normalmapping */
 	#ifdef BUMP
-		/* Source's normalmaps are in the DX format where the green channel is flipped */
 		vec4 normal_f = SEAMSAMP(s_normalmap);
+		#ifdef SSBUMP
+		{	//FTESurf Patch 1264: three basis weights, and Source reflects off their sum (ps2_3_x.h:447)
+			vec3 n = normalize(rnm_b0 * normal_f.r + rnm_b1 * normal_f.g + rnm_b2 * normal_f.b);
+			normal_f.rgb = vec3(n.x, -n.y, n.z);	//into the green-flipped space below
+		}
+		#else
+		/* Source's normalmaps are in the DX format where the green channel is flipped */
 		normal_f.g = 1.0 - normal_f.g;
 		normal_f.rgb = normalize(normal_f.rgb - 0.5);
+		#endif
 	#else
 		vec4 normal_f = vec4(0.0,0.0,1.0,0.0);
 	#endif
@@ -388,5 +463,9 @@ uniform float cvar_r_renderscale;
 			gl_FragColor = vec4(fog3(diffuse_f.rgb), diffuse_f.a);
 		#endif
 	#endif
+#if defined(MASKLT) && defined(FTE_ALPHACOVERAGE)
+	if (e_alphacoverage > 0.0)
+		gl_FragColor.a = min(a2c, 1.0);
+#endif
 	}
 #endif

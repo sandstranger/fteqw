@@ -434,6 +434,10 @@ static void ASMCALL ThinkTimeOp (pubprogfuncs_t *prinst, edict_t *ed, float var)
 #endif
 
 static int SV_ParticlePrecache_Add(const char *pname);
+//FTESurf Patch 1259: PR_FindFunction ends in a linear scan of every global def, and ran once per
+//unknown key -- 2x170 ms of surf_eternity's spawn.  PR_SpawnInitialEntities looks it up once.
+static qboolean sv_unknownepair_cached;
+static func_t sv_unknownepair;
 static pbool PDECL SV_BadField(pubprogfuncs_t *inst, edict_t *foo, const char *keyname, const char *value)
 {
 	if (!strcmp(keyname, "traileffect"))
@@ -496,7 +500,7 @@ static pbool PDECL SV_BadField(pubprogfuncs_t *inst, edict_t *foo, const char *k
 	//"is not a field" warning — the QC code is responsible for
 	//ignoring keys it doesn't care about.
 	{
-		func_t hookfn = PR_FindFunction(inst, "ED_ParseUnknownEpair", PR_ANY);
+		func_t hookfn = (sv_unknownepair_cached && inst == svprogfuncs) ? sv_unknownepair : PR_FindFunction(inst, "ED_ParseUnknownEpair", PR_ANY);
 		if (hookfn)
 		{
 			globalvars_t *pr_globals = PR_globals(inst, PR_CURRENT);
@@ -1219,6 +1223,7 @@ void PR_LoadGlabalStruct(qboolean muted)
 */
 	pr_teamfield = 0;
 
+	sv_unknownepair_cached = false;	//Patch 1259: a spawn that errored out must not leak into these progs
 	SpectatorConnect = PR_FindFunction(svprogfuncs, "SpectatorConnect", PR_ANY);
 	SpectatorDisconnect = PR_FindFunction(svprogfuncs, "SpectatorDisconnect", PR_ANY);
 	SpectatorThink = PR_FindFunction(svprogfuncs, "SpectatorThink", PR_ANY);
@@ -1484,12 +1489,22 @@ static progsnum_t AddProgs(const char *name)
 
 static void PR_Decompile_f(void)
 {
+	if (Cmd_IsInsecure())
+	{
+		Con_Printf("%s is not permitted from untrusted commands\n", Cmd_Argv(0));
+		return;
+	}
 	if (!svprogfuncs)
 	{
 		Q_SetProgsParms(false);
 		PR_Configure(svprogfuncs, PR_ReadBytesString(pr_ssqc_memsize.string), MAX_PROGS, 0);
 	}
 
+	if (!svprogfuncs->Decompile)
+	{
+		Con_Printf("Decompilation is not available\n");
+		return;
+	}
 
 	if (Cmd_Argc() == 1)
 		svprogfuncs->Decompile(svprogfuncs, "qwprogs.dat");
@@ -1503,6 +1518,16 @@ static void PR_Compile_f(void)
 	double time = Sys_DoubleTime();
 	const char *argv[64] = {"", "-src", pr_sourcedir.string, "-srcfile", "progs.src"};
 
+	if (Cmd_IsInsecure())
+	{
+		Con_Printf("%s is not permitted from untrusted commands\n", Cmd_Argv(0));
+		return;
+	}
+	if (Cmd_Argc() > (int)countof(argv))
+	{
+		Con_Printf("Too many compiler arguments\n");
+		return;
+	}
 	if (Cmd_Argc()>2)
 	{
 		for (argc = 0; argc < Cmd_Argc(); argc++)
@@ -1673,6 +1698,11 @@ static void PR_SSPoke_f(void)
 
 static void PR_SSCoreDump_f(void)
 {
+	if (Cmd_IsInsecure())
+	{
+		Con_Printf("%s is not permitted from untrusted commands\n", Cmd_Argv(0));
+		return;
+	}
 	if (!svprogfuncs)
 	{
 		Con_Printf("Progs not running, you need to start a server first\n");
@@ -2064,7 +2094,12 @@ void PR_SpawnInitialEntities(const char *file)
 	ctx.fulldata = PR_FindGlobal(svprogfuncs, "__fullspawndata", PR_ANY, NULL);
 
 	if (svprogfuncs)
+	{
+		sv_unknownepair = PR_FindFunction(svprogfuncs, "ED_ParseUnknownEpair", PR_ANY);	//Patch 1259
+		sv_unknownepair_cached = true;
 		sv.world.edict_size = PR_LoadEnts(svprogfuncs, file, &ctx, NULL, PR_DoSpawnInitialEntity, NULL);
+		sv_unknownepair_cached = false;
+	}
 	else
 		sv.world.edict_size = 0;
 }
@@ -11602,9 +11637,9 @@ static void QCBUILTIN PF_tas_rewind(pubprogfuncs_t *prinst, struct globalvars_s 
 	G_FLOAT(OFS_RETURN) = 0;
 	if (prinst != svprogfuncs || prinst->callargc != 4) return;
 	slot = G_FLOAT(OFS_PARM1); token = G_FLOAT(OFS_PARM2); op = G_FLOAT(OFS_PARM3);
-	if (!(slot >= 0 && slot < 4000 && floorf(slot) == slot) ||
+	if (!(slot >= 0 && slot <= 4000 && floorf(slot) == slot) ||
 		!(token >= 0 && token <= 16000000 && floorf(token) == token) ||
-		!(op >= 0 && op <= 2 && floorf(op) == op)) return;
+		!(op >= 0 && op <= 3 && floorf(op) == op)) return;
 	G_FLOAT(OFS_RETURN) = SV_TASRewind(G_EDICT(prinst, OFS_PARM0), slot, token, op);
 }
 
@@ -11617,7 +11652,7 @@ static void QCBUILTIN PF_tas_input(pubprogfuncs_t *prinst, struct globalvars_s *
 	slot = G_FLOAT(OFS_PARM1); token = G_FLOAT(OFS_PARM2); field = G_FLOAT(OFS_PARM3);
 	if (!(slot >= 0 && slot < 4000 && floorf(slot) == slot) ||
 		!(token >= 1 && token <= 16000000 && floorf(token) == token) ||
-		!(field >= 0 && field <= 3 && floorf(field) == field)) return;
+		!(field >= 0 && field <= 4 && floorf(field) == field)) return;
 	SV_TASInput(G_EDICT(prinst, OFS_PARM0), slot, token, field, G_VECTOR(OFS_RETURN));
 }
 
@@ -11627,7 +11662,7 @@ static void QCBUILTIN PF_tas_tape(pubprogfuncs_t *prinst, struct globalvars_s *p
 	G_FLOAT(OFS_RETURN) = 0;
 	if (prinst != svprogfuncs || prinst->callargc != 7) return;
 	op = G_FLOAT(OFS_PARM1);
-	if (!(op >= 0 && op <= 9 && op != 7 && floorf(op) == op)) return;
+	if (!(op >= 0 && op <= 10 && op != 7 && floorf(op) == op)) return;
 	G_FLOAT(OFS_RETURN) = SV_TASTape(G_EDICT(prinst, OFS_PARM0), op,
 		G_FLOAT(OFS_PARM2), G_FLOAT(OFS_PARM3), G_VECTOR(OFS_PARM4),
 		G_VECTOR(OFS_PARM5), G_FLOAT(OFS_PARM6));
@@ -11635,9 +11670,9 @@ static void QCBUILTIN PF_tas_tape(pubprogfuncs_t *prinst, struct globalvars_s *p
 
 static BuiltinList_t BuiltinList[] = {				//nq	qw		h2		ebfs
 	{"sourcepractice_reset", PF_sourcepractice_reset, 0, 0, 0, 0, D("float(entity player)", "Trusted server VM: reset this current player's complete Source carry and jump latch at a neutral zero-duration decoded QW command. No world/transport/counter reset or eligibility grant; unsupported contexts return0.")},
-	{"tas_input", PF_tas_input, 0, 0, 0, 0, D("vector(entity player, float slot, float token, float field)", "TAS checkpoint input: availability0, moves1, signed angle words2, compact jump/duck/walk mask3. Not hardware evidence or file import.")},
-	{"tas_tape", PF_tas_tape, 0, 0, 0, 0, D("float(entity player, float op, float a, float b, vector moves, vector angles, float buttons)", "TAS-only movement authoring: cancel0, validate1, preflight2, begin3, put4, arm5, status6, plan-cap8, plan-set9. Native owns presets; no transport/world restore or human eligibility.")},
-	{"tas_rewind", PF_tas_rewind, 0, 0, 0, 0, D("float(entity player, float slot, float token, float op)", "TAS-only bounded native movement checkpoints: capture0, probe1, apply2. Transient map/connection-bound handles; no world/counter or human-proof restore.")},
+	{"tas_input", PF_tas_input, 0, 0, 0, 0, D("vector(entity player, float slot, float token, float field)", "TAS checkpoint input: availability0, moves1, signed angle words2, compact jump/duck/walk mask3, editor mode/amount/follow4. Not hardware evidence or file import.")},
+	{"tas_tape", PF_tas_tape, 0, 0, 0, 0, D("float(entity player, float op, float a, float b, vector moves, vector angles, float buttons)", "TAS-only movement authoring: cancel0, validate1, preflight2, begin3, put4, arm5, status6, plan-cap8, plan-set9, controller-set10(mode,turn amount). No transport/world restore or human eligibility.")},
+	{"tas_rewind", PF_tas_rewind, 0, 0, 0, 0, D("float(entity player, float slot, float token, float op)", "Bounded native movement checkpoints: TAS capture0/probe1/apply2; loopback-only live-base capture3 at slot4000. Apply still requires paused TAS. Transient map/connection-bound handles; no world/counter or human-proof restore.")},
 	{"bank_gravity_source", PF_bank_gravity_source, 0, 0, 0, 0, D("void(entity player, entity source, int attempt, float bad)", "Server VM runtime gravity provenance. No entity fields, file persistence or evidence transport.")},
 	{"fixme",			PF_Fixme,			0,		0,		0,		0,	D("void()", "Some builtin that should never be called. Ends the game with some weird message.")},
 

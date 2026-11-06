@@ -38,6 +38,7 @@ typedef struct
 
 
 extern cvar_t gl_part_flame, r_fullbrightSkins, r_fb_models, ruleset_allow_fbmodels, gl_overbright_models, r_viewmodel_maxlight, r_modellight_fallback, r_modellight_cache;
+extern cvar_t r_viewmodel_lightrate;
 extern cvar_t r_propvertexlight, r_propvertexlight_minlight, r_prop_minlight;	//nettest: baked static-prop per-vertex lighting + world-model minlight floor
 extern cvar_t r_showhitboxes;	//nettest: per-bone hitbox overlay for GoldSrc studio models
 extern cvar_t r_noaliasshadows;
@@ -1400,12 +1401,37 @@ static void R_DrawShadowVolume(mesh_t *mesh)
 typedef struct
 {
 	unsigned int seq;		//0 = empty; must match r_modellight_seq
+	double time;			//FTESurf Patch 1283: when sampled (R_ModelLightSettles)
 	vec3_t origin;			//the ENTITY origin the sample was taken for (not the sample point)
 	vec3_t shadelight;
 	vec3_t ambientlight;
 	vec3_t lightdir;
 } modellightcache_t;
 static modellightcache_t modellightcache[MODELLIGHTCACHE_BUCKETS];
+
+//FTESurf Patch 1283: the hl2 plugin's light cache (hl2_lt_vcache, not 0) answers a repeated sample partly from
+//memory, refining it call by call, so a kept sample is no longer exact: a still model re-samples once a second,
+//the still eye 4 times a second, and r_modellight_cache 2's exactness check stands aside.
+static qboolean R_ModelLightSettles(void)
+{
+	cvar_t *vc;
+	if (!cl.worldmodel || !(cl.worldmodel->engineflags & MDLF_SOURCEBSP))
+		return false;	//review 2: a Quake map's sample is exact whatever the plugin is set to
+	vc = Cvar_FindVar("hl2_lt_vcache");	//by name, as Patch 894's hash does: the plugin owns it
+	return vc && vc->ival;
+}
+
+//FTESurf Patch 1280: every RF_WEAPONMODEL entity (knife, CS:GO arms, sleeve) samples r_refdef.vieworg, and on a
+//Source map each sample traces to every world light in range. One sample serves them all, kept while the eye is
+//still (re-sampled 4 times a second: the plugin's remembered light, Patch 1283, settles) and for up to
+//1/r_viewmodel_lightrate s while it moves (under 256qu). Per-entity clamps and dlights still run.
+static struct
+{
+	qboolean valid;
+	unsigned int seq;
+	vec3_t origin, shadelight, ambientlight, lightdir;
+	double time;
+} vmlightcache;
 
 /*The world-lightmap sample, factored out so the cache-fill path and the r_modellight_cache 2
   self-check can run byte-identical code. Pure function of e->origin (+ the world/styles/cvars
@@ -1499,7 +1525,30 @@ qboolean R_CalcModelLighting(entity_t *e, model_t *clmodel)
 	{
 		if (e->flags & RF_WEAPONMODEL)
 		{
-			cl.worldmodel->funcs.LightPointValues(cl.worldmodel, r_refdef.vieworg, shadelight, ambientlight, lightdir);
+			float rate = r_viewmodel_lightrate.value;
+			vec3_t moved;
+			VectorSubtract(r_refdef.vieworg, vmlightcache.origin, moved);
+			if (r_modellight_cache.ival && vmlightcache.valid && vmlightcache.seq == r_modellight_seq &&
+				((VectorEquals(vmlightcache.origin, r_refdef.vieworg) && (!R_ModelLightSettles() ||
+				  (realtime >= vmlightcache.time && realtime - vmlightcache.time < 0.25))) ||	//Patch 1283
+				 (rate > 0 && realtime >= vmlightcache.time && realtime - vmlightcache.time < 1.0 / rate &&
+				  DotProduct(moved, moved) < 256*256)))	//a teleport or respawn samples at once
+			{
+				VectorCopy(vmlightcache.shadelight, shadelight);
+				VectorCopy(vmlightcache.ambientlight, ambientlight);
+				VectorCopy(vmlightcache.lightdir, lightdir);
+			}
+			else
+			{
+				cl.worldmodel->funcs.LightPointValues(cl.worldmodel, r_refdef.vieworg, shadelight, ambientlight, lightdir);
+				vmlightcache.valid = true;
+				vmlightcache.seq = r_modellight_seq;
+				vmlightcache.time = realtime;
+				VectorCopy(r_refdef.vieworg, vmlightcache.origin);
+				VectorCopy(shadelight, vmlightcache.shadelight);
+				VectorCopy(ambientlight, vmlightcache.ambientlight);
+				VectorCopy(lightdir, vmlightcache.lightdir);
+			}
 			for (i = 0; i < 3; i++)
 			{	/*viewmodels may not be pure black*/
 				if (ambientlight[i] < 24)
@@ -1527,14 +1576,16 @@ qboolean R_CalcModelLighting(entity_t *e, model_t *clmodel)
 			if (r_modellight_cache.ival)
 			{
 				cache = &modellightcache[(unsigned int)e->keynum & (MODELLIGHTCACHE_BUCKETS-1)];
-				if (cache->seq == r_modellight_seq && VectorEquals(cache->origin, e->origin))
+				if (cache->seq == r_modellight_seq && VectorEquals(cache->origin, e->origin) &&
+					(!R_ModelLightSettles() || (realtime >= cache->time &&
+					 realtime - cache->time < 1 + (e->keynum & 63) * (1/64.0))))	//Patch 1283; spread, not all in one frame
 				{
 					VectorCopy(cache->shadelight, shadelight);
 					VectorCopy(cache->ambientlight, ambientlight);
 					VectorCopy(cache->lightdir, lightdir);
 					cachehit = true;	//fall through to the per-frame dlight/clamp tail
 
-					if (r_modellight_cache.ival == 2)
+					if (r_modellight_cache.ival == 2 && !R_ModelLightSettles())
 					{	/*self-check: re-sample and prove the cached value is EXACT. Any
 						  hit here is a real cache bug (a missed invalidation), not a
 						  rounding difference -- both sides run the same code on the same
@@ -1567,6 +1618,7 @@ qboolean R_CalcModelLighting(entity_t *e, model_t *clmodel)
 					VectorCopy(shadelight, cache->shadelight);
 					VectorCopy(ambientlight, cache->ambientlight);
 					VectorCopy(lightdir, cache->lightdir);
+					cache->time = realtime;
 					cache->seq = r_modellight_seq;	//publish last: the entry is only valid once filled
 				}
 			}
@@ -3758,6 +3810,9 @@ void BE_GenModelBatches(batch_t **batches, const dlight_t *dl, unsigned int bemo
 	model_t *emodel;
 	unsigned int orig_numstris = cl_numstris;
 	unsigned int orig_numvisedicts = cl_numvisedicts;
+	qboolean countcensus = (bemode == BEM_STANDARD && developer.ival && !r_secondaryview &&
+		!r_refdef.recurse && r_refdef.playerview &&
+		(!*r_refdef.rt_destcolour[0].texname || !strcmp(r_refdef.rt_destcolour[0].texname, "megascreeny")));
 //	unsigned int orig_numstrisidx = cl_numstrisidx;
 //	unsigned int orig_numstrisvert = cl_numstrisvert;
 	extern cvar_t r_ignoreentpvs; //legacy value is 1...
@@ -3812,26 +3867,12 @@ void BE_GenModelBatches(batch_t **batches, const dlight_t *dl, unsigned int bemo
 	}
 
 	/*
-	  FTESurf build 19: the void census, and it is the evidence that removed two
-	  cvar modes rather than a leftover from them.
-
-	  r_voidvis shipped in build 17 with two entity-dropping modes here -- one
-	  that skipped non-brush models and one that skipped everything -- on the
-	  reasoning that the props are what the void costs you.  This counter is what
-	  disproved that: aimed straight at the map from outside it, at EVERY mode
-	  including the one where no gate runs, it reads zero.  There are no entities
-	  out there; VBSP's own PVS and radius culls have already rejected them.  So
-	  both gates were inert and both are gone; see the essay on r_voidvis in
-	  renderer.c for the numbers.
-
-	  Kept, because the next person to propose dropping entities in the void
-	  should be able to read the answer off one frame instead of spending two
-	  benchmark runs on it.  STANDARD pass only -- the shadow and depth passes
-	  walk this same list for their own reasons, and folding them in would triple
-	  the number and make it mean nothing -- and developer-gated, because it is a
-	  whole extra walk of the visedict list for a print nobody is reading.
+	  Developer census: PRIMARY screen STANDARD candidates, not drawn models.
+	  Nested/offscreen views must not overwrite the observation after BE_DrawWorld.
+	  Skip ranges, PVS/frustum and model-specific culls still run below. Historical
+	  zero counts on one map did not prove the absence of effects on other maps.
 	*/
-	if (bemode == BEM_STANDARD && developer.ival)
+	if (countcensus)
 	{
 		r_voidvis_edicts = cl_numvisedicts - r_refdef.firstvisedict;
 		r_voidvis_brush = 0;
@@ -3867,6 +3908,15 @@ void BE_GenModelBatches(batch_t **batches, const dlight_t *dl, unsigned int bemo
 			continue;
 		}
 		ent = &cl_visedicts[i];
+		if (r_refdef.flags & RDF_WORLDONLY)
+		{
+			if (ent->rtype != RT_MODEL || !ent->model || ent->model->type != mod_brush)
+			{
+				if (countcensus)
+					r_voidvis_dropped++;
+				continue;
+			}
+		}
 
 		if ((r_refdef.externalview || chase_active.ival) && (ent->flags & RF_FIRSTPERSON))
 			continue;
@@ -4000,7 +4050,7 @@ void BE_GenModelBatches(batch_t **batches, const dlight_t *dl, unsigned int bemo
 		}
 	}
 
-	if (cl_numstris && !(r_refdef.flags & RDF_DISABLEPARTICLES))
+	if (cl_numstris && !(r_refdef.flags & (RDF_DISABLEPARTICLES|RDF_WORLDONLY)))
 		BE_GenPolyBatches(batches);
 
 	if (r_batchsort.ival == 2)

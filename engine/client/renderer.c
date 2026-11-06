@@ -126,6 +126,8 @@ cvar_t gl_shadeq1_name						= CVARD  ("gl_shadeq1_name", "*", "Rename all surfac
 extern cvar_t r_vertexlight;
 extern cvar_t r_forceprogramify;
 extern cvar_t r_glsl_precache;
+extern cvar_t r_glsl_warm;	//FTESurf Patch 1277
+extern cvar_t r_mapready_budget;
 extern cvar_t r_halfrate;
 extern cvar_t dpcompat_nopremulpics;
 #ifdef PSKMODELS
@@ -243,6 +245,10 @@ cvar_t r_waterskyroom						= CVARD ("r_waterskyroom", "0", "Whether a water refl
 cvar_t r_waterviews						= CVARD ("r_waterviews", "1", "FTESurf Patch 879: how many water reflection/refraction captures a view renders.\n0: one for every water batch, as before.\n1: one pair, as Source (viewrender.cpp DrawWorldAndEntities: one fog volume per view), for the level water that most fills the screen on the eye's side of it (tops from above, undersides from in the water) and that the eye can see past the world; every level water facing the same way samples it, as every Source water material samples the same _rt_WaterReflection/_rt_WaterRefraction. Water facing the other way, sloped water and water on brush entities capture their own.\n2: one pair per plane: a plane's batches share a capture, other planes render their own.");
 cvar_t r_capturelog						= CVARD ("r_capturelog", "0", "FTESurf Patch 879: for this many top-level views (a frame's, or each eye/face/renderscene), print each view's water choice (and any plane rejected as hidden) and every water reflection/refraction capture and share (level, kind, shader, plane, the plane that placed it, meshes).");
 cvar_t r_nearestsort						= CVARD ("r_nearestsort", "1", "FTESurf Patch 878: how panes that refract the screen (Refract at hl2_refract 1) are ordered.\n1: the world's first, sharing the view's most recent copy of the screen (Patch 895; Source's brushes never copy), then models' back to front, each over a fresh copy, as Source draws its models.\n0: in the order they were submitted, world first, each over its own copy (the engine's order and copies before Patches 878 and 895; not a pre-878 picture, since the plugin's depth rule stays). Either way a model pane that Source draws opaque writes depth, and a world or brush pane does not. GL only.");
+cvar_t r_alphacoverage					= CVARFD ("r_alphacoverage", "1", CVAR_ARCHIVE, "FTESurf Patch 1262: under vid_multisample, surfaces cut out by an alpha test (leaves, fences, grates) spread the cut edge over the samples instead of cutting it (alpha-to-coverage), as MSAA smooths a polygon's edge. 0: cut, as without MSAA. Source maps' materials (the hl2 plugin's vmt shaders).");
+cvar_t r_reflectmultisample			= CVARFD ("r_reflectmultisample", "-1", CVAR_ARCHIVE, "FTESurf Patch 1276: MSAA samples for the main view's water and glass reflection captures (drawn at r_refractreflect_scale of the view). -1: as vid_multisample. 0: none.");
+cvar_t r_capturehalfrate				= CVARD ("r_capturehalfrate", "0", "FTESurf Patch 1245: the main view's water and glass reflection/refraction captures are reused for this many frames after each one rendered, turned with the camera in between (what they show is taken as distant: a turn lines up, a slide shows the frame-old view of nearby things). 0: every frame. 1: every second frame (surf_eternity's glass 201 -> 294 fps). Ignored while r_capturerate is set: both at 0 renders every capture.");
+cvar_t r_capturerate				= CVARFD ("r_capturerate", "144", CVAR_ARCHIVE, "FTESurf Patch 1281: on Source maps, the main view's water and glass captures are redrawn about this many times a second (at least 20), whatever the frame rate; between, the last one is reused and turned with the camera (as r_capturehalfrate keeps it), and past 128 units or 30 degrees it is redrawn at once. At or below this frame rate every frame captures. 0: r_capturehalfrate's frame count instead.");
 cvar_t r_waterforcereflectentities			= CVARD ("r_waterforcereflectentities", "0", "Source's cvar. 0: a water reflection draws entities and props only if its material says $reflectentities, as Source does -- most Source water reflects only the world and the 2D sky. 1: every water reflection draws them, as before Patch 868.");
 cvar_t r_drawviewmodel						= CVARF  ("r_drawviewmodel", "1", CVAR_ARCHIVE);
 cvar_t r_drawviewmodelinvis					= CVAR  ("r_drawviewmodelinvis", "0");
@@ -256,11 +262,12 @@ cvar_t r_fb_bmodels							= CVARAFD("r_fb_bmodels", "1",
 cvar_t r_fb_models							= CVARAFD  ("r_fb_models", "1",
 													"gl_fb_models", CVAR_SEMICHEAT, "Enables the use of lumas on models. Note that if ruleset_allow_fbmodels is enabled, then all models are unconditionally fullbright in deathmatch, because cheaters would set up their models like that anyway, hurrah for beating them at their own game. QuakeWorld players suck.");
 cvar_t gl_overbright_models					= CVARFD("gl_overbright_models", "0", CVAR_SEMICHEAT|CVAR_ARCHIVE, "Doubles the brightness of models, to match QuakeSpasm's misfeature of the same name.");
+cvar_t r_viewmodel_lightrate				= CVARFD("r_viewmodel_lightrate", "60", CVAR_ARCHIVE, "FTESurf Patch 1280: how many times a second the first-person viewmodel re-samples the world's light at your eye. Every viewmodel entity (a knife, its arms, a sleeve) shares the sample; on a Source map each one traces to every world light in range. 0 = every frame.");
 cvar_t r_viewmodel_maxlight					= CVARFD("r_viewmodel_maxlight", "0", CVAR_ARCHIVE, "Per-channel ceiling on the ambient/shade light sampled at the player's eye for the first-person viewmodel. 0 = off (engine default — viewmodel takes the full lightmap value, which can blow out the gun on bright floors / lava / white tiles). Try 96..160 to soften the brightening without losing low-light response.");
 cvar_t r_modellight_fallback				= CVARFD("r_modellight_fallback", "1", CVAR_ARCHIVE, "Model lighting is sampled 24qu above the entity origin, which lands inside the ceiling for roof-mounted models and makes them render pure black. When the standard sample comes back black, retry at the origin and then 24/48qu below it so ceiling/wall-mounted models pick up the light of the space they hang in. 0 = engine default (single sample).");
 cvar_t r_modellight_bilinear				= CVARFD("r_modellight_bilinear", "1", CVAR_ARCHIVE, "Bilinearly filter the world lightmap when sampling light for models/particles, matching how the GPU filters lit surfaces. 0 = nearest-luxel (engine default), which makes models catch isolated black luxels on dense/decoupled lightmaps where the surface beside them is lit.");
 cvar_t r_modellight_worlddir				= CVARFD("r_modellight_worlddir", "1", CVAR_ARCHIVE, "Decode the deluxemap light DIRECTION correctly when sampling light for models. The bakers store it in the face's TANGENT basis (s, t, facenormal) pointing TOWARD the light, but the legacy code aliased those onto world x/y/z and negated the third component -- so on a deluxemapped map every model was lit from BELOW, with a scrambled azimuth on rotated/sloped faces. 1 = rotate it into world space with the real face basis (correct). 0 = the legacy decode (use if you have content authored against the old inverted lighting). NOTE: with 1 the model light dir finally points TOWARD the light, so a shader must not negate it before use.");
-cvar_t r_modellight_cache					= CVARFD("r_modellight_cache", "1", CVAR_ARCHIVE, "Cache each model entity's world-lightmap sample across frames instead of re-walking the BSP every frame for models that have not moved. The sample is a pure function of the entity origin and the lightstyle state, so the cached value is exact, not an approximation: it is dropped the moment the entity moves, a lightstyle changes, the map reloads, or any r_modellight_*/mod_lightpoint_distance setting changes. Dynamic lights are added AFTER the cache and are unaffected. 0 = re-sample every frame (engine default). 2 = validate: use the cached value but re-sample anyway and print a console error if they ever disagree (slower than 0; for proving a suspected stale-lighting bug). Prop-dense maps are dominated by this sample.");
+cvar_t r_modellight_cache					= CVARFD("r_modellight_cache", "1", CVAR_ARCHIVE, "Cache each model entity's world-lightmap sample across frames instead of re-walking the BSP every frame for models that have not moved. The sample is a pure function of the entity origin and the lightstyle state, so the cached value is exact, not an approximation: it is dropped the moment the entity moves, a lightstyle changes, the map reloads, or any r_modellight_*/mod_lightpoint_distance setting changes. Dynamic lights are added AFTER the cache and are unaffected. 0 = re-sample every frame (engine default). 2 = validate: use the cached value but re-sample anyway and print a console error if they ever disagree (slower than 0; for proving a suspected stale-lighting bug; on Source maps only with hl2_lt_vcache 0, whose remembered answers refine). Prop-dense maps are dominated by this sample.");
 cvar_t r_propvertexlight						= CVARFD("r_propvertexlight", "1", CVAR_ARCHIVE, "Apply baked static-prop per-vertex lighting from the map's RGBPROPLIGHT BSPX lump (produced by protoanus-tools 'light -propvertexlight'). Each placed prop's baked lighting is multiplied over its live (PBR) lighting per vertex via the VC shader permutation, so a prop's sunlit top stays brighter than its shadowed underside instead of the whole model reading one light sample. 0 = off (no change). Contrast/clamps are r_propvertexlight_contrast/_min/_max (applied at map load).");
 cvar_t r_propvertexlight_contrast			= CVARFD("r_propvertexlight_contrast", "1", CVAR_ARCHIVE, "Exponent applied to the baked static-prop per-vertex multiplier (>1 exaggerates the sunlit/shadowed contrast, <1 flattens it). Applied when the map loads; change it then reload the map to re-tune. See r_propvertexlight.");
 cvar_t r_propvertexlight_min				= CVARFD("r_propvertexlight_min", "0.3", CVAR_ARCHIVE, "Lower clamp on the baked static-prop per-vertex multiplier, so shadowed vertices cannot go fully black. Applied at map load. See r_propvertexlight.");
@@ -297,6 +304,14 @@ cvar_t r_fullbright							= CVARFD ("r_fullbright", "0",
 cvar_t r_fullbrightSkins					= CVARFD	("r_fullbrightSkins", "0.8", /*don't default to 1, as it looks a little ugly (too bright), but don't default to 0 either because then you're handicapped in the dark*/
 												CVAR_SEMICHEAT|CVAR_SHADERSYSTEM, "Force the use of fullbright skins on other players. No more hiding in the dark.");
 cvar_t r_lightmap_saturation				= CVAR	("r_lightmap_saturation", "1");
+static void QDECL R_LightmapBicubic_Changed(struct cvar_s *var, char *oldvalue)
+{	//FTESurf Patch 1275: the shaders read it as a preprocessor define, which must be an integer
+	const char *v = var->ival ? "1" : "0";
+	if (strcmp(var->string, v))
+		Cvar_ForceSet(var, v);
+}
+cvar_t r_lightmap_bicubic				= CVARFCD ("r_lightmap_bicubic", "1", CVAR_ARCHIVE, R_LightmapBicubic_Changed, "FTESurf Patch 1275: Source maps' lightmaps filtered bicubically (as HL2's 20th-anniversary update does): smoother shadow and light edges than bilinear on coarse lightmaps. Applies when a map's lightmaps are built (the next new map, or vid_restart; a reload of the same map keeps its own). 0: bilinear.");
+cvar_t r_lightmap_bicubic_world			= CVARFD ("r_lightmap_bicubic_world", "0", CVAR_NOSAVE|CVAR_NOSET|CVAR_SHADERSYSTEM, "FTESurf Patch 1275: 1 when the active Source world's lightmap blocks were built with the border bicubic sampling needs (set by Surf_NewMap); the vmt shaders read this, not r_lightmap_bicubic.");
 cvar_t r_lightstylesmooth					= CVARF	("r_lightstylesmooth", "0", CVAR_ARCHIVE);
 cvar_t r_lightstylesmooth_limit				= CVAR	("r_lightstylesmooth_limit", "2");
 cvar_t r_lightstylespeed					= CVAR	("r_lightstylespeed", "10");
@@ -372,6 +387,9 @@ cvar_t r_voidvis							= CVARFD ("r_voidvis", "1", CVAR_ARCHIVE,
 												"0: Patch 138 -- keep the last visible cluster you could see from.\n"
 												"1: Draw the whole world, with the frustum and area culls kept.\n"
 												"Has no effect anywhere except in the void while noclipping.");
+//FTESurf P1345: independent suppression control keeps identical world visibility for A/B.
+cvar_t r_voidscene = CVARFD("r_voidscene", "1", 0,
+	"Fast noclip-void overview: world and structural brush models, no props, entities, particles, decals or 3D skyroom. 0 retains the old effects for comparison; does not change r_voidvis or saved quality settings.");
 /*
 FTESurf Patch 329: no fog while the view is in the void.
 
@@ -763,7 +781,9 @@ cvar_t gl_max_size							= CVARFD  ("gl_max_size", "8192", CVAR_RENDERERLATCH, "
 cvar_t gl_menutint_shader					= CVARD  ("gl_menutint_shader", "1", "Controls the use of GLSL to desaturate the background when drawing the menu, like quake's dos software renderer used to do before the ugly dithering of winquake.");
 
 //by setting to 64 or something, you can use this as a wallhack
-cvar_t gl_mindist							= CVARAD ("gl_mindist", "1", "r_nearclip",
+//FTESurf Patch 1257: 2, twice the depth precision of 1 and Source's 3D-sky value (main view: 7); review 1:
+//4 put the rewind chase camera's and replay eyes' near walls and ceilings through the near plane
+cvar_t gl_mindist							= CVARAD ("gl_mindist", "2", "r_nearclip",
 												"Distance to the near clip plane. Smaller values may damage depth precision, high values can potentialy be used to see through walls...");
 
 cvar_t gl_motionblur						= CVARF ("gl_motionblur", "0",
@@ -1343,6 +1363,7 @@ void Shader_NeedReload(qboolean rescanfs);	//nettest: declared in gl/shader.h, n
 static void R_FlushShaders_f(void)
 {
 	Shader_NeedReload(true);
+	Shader_NeedReload(false);	//FTESurf Patch 1267: every shader, as the command always meant
 }
 
 void Renderer_Init(void)
@@ -1425,6 +1446,7 @@ void Renderer_Init(void)
 
 	Cvar_Register (&r_novis, GLRENDEREROPTIONS);
 	Cvar_Register (&r_voidvis, GLRENDEREROPTIONS);
+	Cvar_Register (&r_voidscene, GLRENDEREROPTIONS);
 	Cvar_Register (&r_voidfog, GLRENDEREROPTIONS);	//FTESurf Patch 329
 	Cvar_Register (&r_blendsort, GLRENDEREROPTIONS);
 #ifdef GLQUAKE
@@ -1560,10 +1582,20 @@ void Renderer_Init(void)
 	Cvar_Register (&r_waterskyroomcapture, GRAPHICALNICETIES);	//FTESurf Patch 1018
 	Cvar_Register (&r_watertargetsize, GRAPHICALNICETIES);
 	Cvar_Register (&r_waterforcereflectentities, GRAPHICALNICETIES);
+	Cvar_Register (&r_capturehalfrate, GRAPHICALNICETIES);	//FTESurf Patch 1245
+	Cvar_Register (&r_capturerate, GRAPHICALNICETIES);	//FTESurf Patch 1281
+	Cvar_Register (&r_reflectmultisample, GRAPHICALNICETIES);	//FTESurf Patch 1276
+	Cvar_Register (&r_alphacoverage, GRAPHICALNICETIES);	//FTESurf Patch 1262
 	Cvar_Register (&r_capturelog, GRAPHICALNICETIES);	//FTESurf Patch 879
 	Cvar_Register (&r_waterviews, GRAPHICALNICETIES);
 	Cvar_Register (&r_nearestsort, GRAPHICALNICETIES);
 	Cmd_AddCommandD("r_viewstats", R_ViewStats_f, "FTESurf Patch 850: per top-level view since the last call -- views by depth, 3D skies drawn and skipped, entities a nested view passed over, 3D skies from the sky camera, screen copies and their megapixels.");
+	{
+		extern void R_VoidSceneInfo_f(void);
+		extern void R_MapReadyInfo_f(void);
+		Cmd_AddCommandD("r_mapready_info", R_MapReadyInfo_f, "Bounded activation closure and late GLSL compile diagnostics. Not universal residency or timer admission.");
+		Cmd_AddCommandD("r_voidscene_info", R_VoidSceneInfo_f, "P1345: untimed current-view gate, exact camera and world mesh-shape counts; developer 1 enables the last primary offered-model census, before culling. Not a frame-time sampler.");
+	}
 	Cvar_Register (&r_refractreflect_scale, GRAPHICALNICETIES);
 	Cvar_Register (&r_postprocshader, GRAPHICALNICETIES);
 	Cvar_Register (&r_scenedepth, GRAPHICALNICETIES);	//FTESurf Patch 1230
@@ -1685,6 +1717,8 @@ void Renderer_Init(void)
 	Cvar_Register (&gl_texture_lodbias, GLRENDEREROPTIONS);
 	Cvar_Register (&gl_texture_anisotropic_filtering, GLRENDEREROPTIONS);
 	Cvar_Register (&r_deluxemapping_cvar, GRAPHICALNICETIES);
+	Cvar_Register (&r_lightmap_bicubic, GRAPHICALNICETIES);	//FTESurf Patch 1275
+	Cvar_Register (&r_lightmap_bicubic_world, GRAPHICALNICETIES);
 	Cvar_Register (&r_max_gpu_bones, GRAPHICALNICETIES);
 	Cvar_Register (&r_drawflat, GRAPHICALNICETIES);
 	Cvar_Register (&r_lightmap, GRAPHICALNICETIES);
@@ -1694,6 +1728,7 @@ void Renderer_Init(void)
 	Cvar_Register (&r_fb_models, GRAPHICALNICETIES);
 	Cvar_Register (&gl_overbright_models, GRAPHICALNICETIES);
 	Cvar_Register (&r_viewmodel_maxlight, GRAPHICALNICETIES);
+	Cvar_Register (&r_viewmodel_lightrate, GRAPHICALNICETIES);	//FTESurf Patch 1280
 	Cvar_Register (&r_modellight_fallback, GRAPHICALNICETIES);
 	Cvar_Register (&r_modellight_bilinear, GRAPHICALNICETIES);
 	Cvar_Register (&r_modellight_cache, GRAPHICALNICETIES);
@@ -1744,6 +1779,8 @@ void Renderer_Init(void)
 
 	Cvar_Register (&r_forceprogramify, GLRENDEREROPTIONS);
 	Cvar_Register (&r_glsl_precache, GLRENDEREROPTIONS);
+	Cvar_Register (&r_glsl_warm, GLRENDEREROPTIONS);
+	Cvar_Register (&r_mapready_budget, GLRENDEREROPTIONS);
 	Cvar_Register (&r_halfrate, GRAPHICALNICETIES);
 #ifdef HAVE_LEGACY
 	Cvar_Register (&dpcompat_nopremulpics, GLRENDEREROPTIONS);

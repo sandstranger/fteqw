@@ -630,7 +630,8 @@ static void R_SetupGL (const float eyematrix[12]/*can be null*/, const vec4_t fo
 				if (sh_config.stencilbits && Sh_StencilShadowsActive())
 					maxdist = 0;	//if we're using stencil shadows then force the maxdist to infinite to ensure the shadow volume is sealed.
 				Matrix4x4_CM_Projection_Offset(r_refdef.m_projection_std, fov_l, fov_r, fov_d, fov_u, r_refdef.mindist, maxdist, false);
-				Matrix4x4_CM_Projection_Offset(r_refdef.m_projection_view, -fovv_x/2, fovv_x/2, -fovv_y/2, fovv_y/2, r_refdef.mindist, maxdist, false);
+				//FTESurf Patch 1257: viewmodels keep a near plane of 1 under a farther gl_mindist (Source's zNearViewmodel, view.cpp:560)
+				Matrix4x4_CM_Projection_Offset(r_refdef.m_projection_view, -fovv_x/2, fovv_x/2, -fovv_y/2, fovv_y/2, min(r_refdef.mindist, 1), maxdist, false);
 
 				r_refdef.m_projection_std[8] += r_refdef.projectionoffset[0];
 				r_refdef.m_projection_std[9] += r_refdef.projectionoffset[1];
@@ -759,7 +760,8 @@ static void R_RenderScene_Internal(void)
 //	R_DrawDecals();
 
 	TRACE(("dbg: calling R_RenderDlights\n"));
-	R_RenderDlights ();
+	if (!(r_refdef.flags & RDF_WORLDONLY))
+		R_RenderDlights ();
 
 	if (r_refdef.recurse)
 		RQ_RenderBatch();
@@ -2265,16 +2267,31 @@ int gldepthfunc = GL_LEQUAL;
 qboolean depthcleared;
 void R_Clear (qboolean fbo)
 {
+	// P1345: forced void visibility leaves uncovered pixels, even with decoration on.
+	// Clear both modes consistently; never erase another seat, eye, inset or target.
+	qboolean clearoverview = false;
+	model_t *w = cl.worldmodel;
+	int cluster, area;
+	unsigned int contents;
+	if (!r_secondaryview && cl.splitclients <= 1 && r_refdef.stereomethod == STEREO_OFF &&
+		cls.state == ca_active && !r_refdef.recurse && !*r_refdef.rt_destcolour[0].texname &&
+		!(r_refdef.flags & RDF_NOWORLDMODEL) && r_voidvis.ival && r_refdef.playerview &&
+		(r_refdef.playerview->pmovetype == PM_SPECTATOR || r_refdef.playerview->pmovetype == PM_OLD_SPECTATOR) &&
+		w && w->loadstate == MLS_LOADED && w->funcs.InfoForPoint)
+	{
+		w->funcs.InfoForPoint(w, r_refdef.vieworg, &area, &cluster, &contents);
+		clearoverview = (cluster == -1);
+	}
 	/*tbh, this entire function should be in the backend*/
 	{
-		if (!depthcleared || fbo)
+		if (!depthcleared || fbo || clearoverview)
 		{
 			GL_ForceDepthWritable();
 			//we no longer clear colour here. we only ever (need to) do that at the start of the frame, and this point can be called multiple times per frame.
 			//for performance, we clear the depth at the same time we clear colour, so we can skip clearing depth here the first time around each frame.
 			//but for multiple scenes, we do need to clear depth still.
 			//fbos always get cleared depth, just in case (colour fbos may contain junk, but hey).
-			if ((fbo && r_clear.ival) || r_refdef.stereomethod==STEREO_RED_BLUE||r_refdef.stereomethod==STEREO_RED_GREEN)
+			if (clearoverview || (fbo && r_clear.ival) || r_refdef.stereomethod==STEREO_RED_BLUE||r_refdef.stereomethod==STEREO_RED_GREEN)
 			{
 				qglClearColor(0, 0, 0, 1);
 				qglClear (GL_COLOR_BUFFER_BIT|GL_DEPTH_BUFFER_BIT);
@@ -3022,6 +3039,8 @@ void GLR_RenderView (void)
 		forcedfb = false;
 	else if (renderscale != 1)
 		forcedfb = gl_config.ext_framebuffer_objects && sh_config.texture_non_power_of_two_pic;
+	else if (!(r_refdef.flags & RDF_NOWORLDMODEL) && r_refdef.stereomethod != STEREO_QUAD && GLBE_SceneMSAA_Samples())	//FTESurf Patch 1260: the samples live in an FBO (quad stereo draws to the window's buffers)
+		forcedfb = sh_config.texture_non_power_of_two_pic;
 
 	/* FTESurf Patch 208: belt and braces.  A portal clip only ever lives inside
 	   GLR_DrawPortal, which restores it on the way out, but this is the top of
@@ -3088,6 +3107,7 @@ void GLR_RenderView (void)
 		unsigned int rtflags = IF_NOMIPMAP|IF_CLAMP|IF_RENDERTARGET|IF_NOSRGB;
 		enum uploadfmt fmt;
 		unsigned int fboflags = 0;
+		int msaakey;	//FTESurf Patch 1260: the two formats, so a change rebuilds the multisampled target
 
 		r_refdef.flags |= RDF_RENDERSCALE;
 
@@ -3144,6 +3164,7 @@ void GLR_RenderView (void)
 		}
 
 		sourcetex = R2D_RT_Configure("rt/$lastgameview", vid.fbpwidth, vid.fbpheight, fmt, rtflags);
+		msaakey = fmt;
 		if (fbdepth)
 		{
 			if (sh_config.texfmt[PTI_DEPTH24_8] && !r_shadow_shadowmapping.ival)
@@ -3162,6 +3183,7 @@ void GLR_RenderView (void)
 			fboflags = FBO_RB_DEPTH;
 
 		oldfbo = GLBE_FBO_Update(&fbo_gameview, fboflags, &sourcetex, 1, sourcedepth, vid.fbpwidth, vid.fbpheight, 0);
+		GLBE_SceneMSAA_Begin(sourcetex, sourcedepth, msaakey * 1024 + fmt);
 		dofbo = true;
 	}
 	else if (vid.framebuffer)
@@ -3258,7 +3280,10 @@ void GLR_RenderView (void)
 	GLBudget_Set(GPUB_POSTPROC);	//FTESurf Patch 782
 	//update stuff now that we're not rendering the 3d scene
 	if (dofbo)
+	{
+		GLBE_SceneMSAA_End();	//FTESurf Patch 1260: into rt/$lastgameview, under this bucket
 		GLBE_FBO_Pop(oldfbo);
+	}
 
 	GLBE_RenderToTextureUpdate2d(false);
 	GL_Set2D (2);

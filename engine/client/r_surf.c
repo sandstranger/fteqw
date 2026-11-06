@@ -622,6 +622,7 @@ static void Surf_BuildDeluxMap (model_t *wmodel, msurface_t *surf, qbyte *dest, 
 	vec3_t temp;
 
 	int stride;
+	size_t lmextra;
 
 	if (!dest)
 		return;
@@ -630,6 +631,9 @@ static void Surf_BuildDeluxMap (model_t *wmodel, msurface_t *surf, qbyte *dest, 
 	tmax = (surf->extents[1]>>surf->lmshift)+1;
 	size = smax*tmax;
 	lightmap = surf->samples;
+	//FTESurf Patch 1264: the per-style stride Surf_BuildLightMap walks (Patch 268 D1); a bumped Source
+	//face's deluxe data (mod_vbsp.c VBSP_BuildRNM) is one set per style, so only the lightmap skips.
+	lmextra = size * (size_t)((surf->flags & SURF_LMSTRIDE_MASK) >> SURF_LMSTRIDE_SHIFT);
 
 	// set to full bright if no light data
 	if (!wmodel->deluxdata)
@@ -669,7 +673,7 @@ static void Surf_BuildDeluxMap (model_t *wmodel, msurface_t *surf, qbyte *dest, 
 					blocknormals[i][1] += intensity*(deluxmap[i*3+1]-127);
 					blocknormals[i][2] += intensity*(deluxmap[i*3+2]-127);
 				}
-				lightmap += size*4;	// skip to next lightmap
+				lightmap += size*4 + lmextra;	// skip to next lightmap
 				deluxmap += size*3;
 			}
 			break;
@@ -1361,6 +1365,22 @@ R_BuildLightMap
 Combine and scale multiple lightmaps into the 8.8 format in blocklights
 ===============
 */
+//FTESurf Patch 1275: a SURF_LMPAD block's edge texels copied into the one-texel border around it, so a
+//bicubic tap past the face reads the face's own light. dest: the block's first texel; stride: the page width.
+static void Surf_PadLightmapBlock(qbyte *dest, int smax, int tmax, int stride, int pixbytes)
+{
+	ptrdiff_t row = (ptrdiff_t)stride * pixbytes;
+	int t;
+	memcpy(dest - row, dest, (size_t)smax * pixbytes);
+	memcpy(dest + tmax * row, dest + (tmax-1) * row, (size_t)smax * pixbytes);
+	for (t = -1; t <= tmax; t++)
+	{
+		qbyte *r = dest + t * row;
+		memcpy(r - pixbytes, r, pixbytes);
+		memcpy(r + (size_t)smax * pixbytes, r + (size_t)(smax-1) * pixbytes, pixbytes);
+	}
+}
+
 static void Surf_BuildLightMap (model_t *model, msurface_t *surf, int map, int shift, int ambient, int *d_lightstylevalue)
 {
 	int			smax = (surf->extents[0]>>surf->lmshift)+1;
@@ -1374,7 +1394,7 @@ static void Surf_BuildLightMap (model_t *model, msurface_t *surf, int map, int s
 	unsigned	*bl;
 	glRect_t	*theRect;
 	void		*dest;
-	void		*deluxedest;
+	void		*deluxedest = NULL;
 	void		*stainsrc;
 	lightmapinfo_t *lm = lightmap[surf->lightmaptexturenums[map]];
 	qbyte		*src = surf->samples;
@@ -1385,9 +1405,11 @@ static void Surf_BuildLightMap (model_t *model, msurface_t *surf, int map, int s
 	//0 for every non-VBSP surface and for any VBSP map whose layout the loader could not
 	//prove against its lighting lump (see VBSP_ProbeLightmapStride, mod_vbsp.c).
 	size_t		lmextra = size * (size_t)((surf->flags & SURF_LMSTRIDE_MASK) >> SURF_LMSTRIDE_SHIFT);
+	int			pad = (surf->flags & SURF_LMPAD) ? 1 : 0;	//FTESurf Patch 1275
 
 	shift += 7; // increase to base value
-	surf->cached_dlight = (surf->dlightframe == r_dlightframecount);
+	// Zero means no dynamic-light touch, not a contribution to remove on first draw.
+	surf->cached_dlight = (surf->dlightframe != 0 && surf->dlightframe == r_dlightframecount);
 
 	if (size > maxblocksize)
 	{	//fixme: fill in?
@@ -1402,14 +1424,14 @@ static void Surf_BuildLightMap (model_t *model, msurface_t *surf, int map, int s
 
 	//make sure we flag the output rect properly.
 	theRect = &lm->rectchange;
-	if (theRect->t > surf->light_t[map])
-		theRect->t = surf->light_t[map];
-	if (theRect->l > surf->light_s[map])
-		theRect->l = surf->light_s[map];
-	if (theRect->r < surf->light_s[map]+smax)
-		theRect->r = surf->light_s[map]+smax;
-	if (theRect->b < surf->light_t[map]+tmax)
-		theRect->b = surf->light_t[map]+tmax;
+	if (theRect->t > surf->light_t[map]-pad)
+		theRect->t = surf->light_t[map]-pad;
+	if (theRect->l > surf->light_s[map]-pad)
+		theRect->l = surf->light_s[map]-pad;
+	if (theRect->r < surf->light_s[map]+smax+pad)
+		theRect->r = surf->light_s[map]+smax+pad;
+	if (theRect->b < surf->light_t[map]+tmax+pad)
+		theRect->b = surf->light_t[map]+tmax+pad;
 
 	dest = lm->lightmaps + (surf->light_t[map] * lm->width + surf->light_s[map]) * lm->pixbytes;
 	if (!r_stains.value || !surf->stained)
@@ -1423,14 +1445,14 @@ static void Surf_BuildLightMap (model_t *model, msurface_t *surf, int map, int s
 		lightmapinfo_t *dlm = lightmap[surf->lightmaptexturenums[map]+1];
 		dlm->modified = true;
 		theRect = &dlm->rectchange;
-		if (theRect->t > surf->light_t[map])
-			theRect->t = surf->light_t[map];
-		if (theRect->l > surf->light_s[map])
-			theRect->l = surf->light_s[map];
-		if (theRect->r < surf->light_s[map]+smax)
-			theRect->r = surf->light_s[map]+smax;
-		if (theRect->b < surf->light_t[map]+tmax)
-			theRect->b = surf->light_t[map]+tmax;
+		if (theRect->t > surf->light_t[map]-pad)
+			theRect->t = surf->light_t[map]-pad;
+		if (theRect->l > surf->light_s[map]-pad)
+			theRect->l = surf->light_s[map]-pad;
+		if (theRect->r < surf->light_s[map]+smax+pad)
+			theRect->r = surf->light_s[map]+smax+pad;
+		if (theRect->b < surf->light_t[map]+tmax+pad)
+			theRect->b = surf->light_t[map]+tmax+pad;
 
 		deluxedest = dlm->lightmaps + (surf->light_t[map] * dlm->width + surf->light_s[map]) * dlm->pixbytes;
 
@@ -1624,7 +1646,7 @@ static void Surf_BuildLightMap (model_t *model, msurface_t *surf, int map, int s
 		}
 
 		// add all the dynamic lights
-		if (surf->dlightframe == r_dlightframecount)
+		if (!(r_refdef.flags & RDF_WORLDONLY) && surf->dlightframe == r_dlightframecount)
 			Surf_AddDynamicLights_RGB (surf);
 
 		Surf_StoreLightmap_RGB(dest, blocklights, smax, tmax, shift, stainsrc, lm);
@@ -1726,11 +1748,17 @@ static void Surf_BuildLightMap (model_t *model, msurface_t *surf, int map, int s
 				}
 			}
 // add all the dynamic lights
-			if (surf->dlightframe == r_dlightframecount)
+			if (!(r_refdef.flags & RDF_WORLDONLY) && surf->dlightframe == r_dlightframecount)
 				Surf_AddDynamicLights_Lum (surf);
 		}
 
 		Surf_StoreLightmap_Lum(dest, blocklights, smax, tmax, shift, stainsrc, lm->width);
+	}
+	if (pad)
+	{
+		Surf_PadLightmapBlock(dest, smax, tmax, lm->width, lm->pixbytes);
+		if (deluxedest)
+			Surf_PadLightmapBlock(deluxedest, smax, tmax, lightmap[surf->lightmaptexturenums[map]+1]->width, lightmap[surf->lightmaptexturenums[map]+1]->pixbytes);
 	}
 }
 
@@ -2387,7 +2415,7 @@ loader believed it emitted.
 */
 int r_voidvis_edicts;		/*visedicts offered to the batch generator*/
 int r_voidvis_brush;		/*...of which are brush models*/
-int r_voidvis_dropped;		/*...dropped before drawing.  Zero since build 19*/
+int r_voidvis_dropped;		/*...rejected by the same primary STANDARD world-only gate*/
 
 /*
 An all-visible PVS, handed to the world through r_refdef.forcedvis.
@@ -2427,12 +2455,24 @@ static qbyte *Surf_VoidVis(model_t *w)
 	return surf_voidvis;
 }
 
-static qboolean Surf_PlayerIsNoclipping(void)
+static qboolean Surf_PlayerIsNoclipping(playerview_t *pv)
 {
-	if (!r_refdef.playerview)
+	return pv && (pv->pmovetype == PM_SPECTATOR || pv->pmovetype == PM_OLD_SPECTATOR);
+}
+
+//P1345: CSQC asks after its final camera, before submitting entities/effects.
+qboolean Surf_WorldOnlyView(playerview_t *pv)
+{
+	int area, cluster;
+	unsigned int contents;
+	model_t *w = cl.worldmodel;
+	if (!r_voidscene.ival || !r_voidvis.ival || !Surf_PlayerIsNoclipping(pv) || r_refdef.recurse ||
+		(r_refdef.flags & RDF_NOWORLDMODEL) || !w || w->loadstate != MLS_LOADED || !w->funcs.InfoForPoint)
 		return false;
-	return r_refdef.playerview->pmovetype == PM_SPECTATOR ||
-		   r_refdef.playerview->pmovetype == PM_OLD_SPECTATOR;
+	if (*r_refdef.rt_destcolour[0].texname && strcmp(r_refdef.rt_destcolour[0].texname, "megascreeny"))
+		return false;
+	w->funcs.InfoForPoint(w, r_refdef.vieworg, &area, &cluster, &contents);
+	return cluster == -1;
 }
 
 /*
@@ -2467,9 +2507,9 @@ static void Surf_VoidVisReport(qboolean fired)
 	lastvv = r_voidvis.ival;
 	lastfired = fired;
 
-	Con_Printf("voidvis: cluster %i  pmovetype %i (noclip %i)  r_voidvis %i  -> %s\n",
-		lastcluster, lastpm, Surf_PlayerIsNoclipping()?1:0, lastvv,
-		fired?"VOID VIEW":"off");
+	Con_Printf("voidvis: cluster %i  pmovetype %i (noclip %i)  r_voidvis %i  -> %s frame %i\n",
+		lastcluster, lastpm, Surf_PlayerIsNoclipping(r_refdef.playerview)?1:0, lastvv,
+		fired?"VOID VIEW":"off", host_framecount);
 	/*
 	  Build 19.  LAST FRAME'S counts, deliberately: this runs in Surf_SetupFrame,
 	  before BE_GenModelBatches has touched them this frame.  One frame stale is
@@ -2477,11 +2517,55 @@ static void Surf_VoidVisReport(qboolean fired)
 	  reasoning is printed -- and the numbers that matter here are steady-state,
 	  not per-frame transients.
 
-	  "entities N (brush B), dropped D" reads directly: D of 0 with N large is a
-	  mode doing nothing, and B tells you what mode 2 alone could ever add.
+	  Offered primary STANDARD candidates, before PVS/frustum and other culls.
+	  Not rendered-model totals; nested/offscreen passes cannot overwrite them.
 	*/
 	Con_Printf("        entities %i (brush %i) -- world counts are r_speeds\n",
 		r_voidvis_edicts, r_voidvis_brush);
+}
+
+//P1345: sample transient batches in the next primary view, before PopChains clears them.
+static qboolean voidscene_infopending;
+void R_VoidSceneInfo_f(void)
+{
+	if (!cl.worldmodel || cl.worldmodel->loadstate != MLS_LOADED)
+		Con_Printf("voidscene: no loaded world\n");
+	else
+		voidscene_infopending = true;
+}
+static void Surf_VoidSceneInfo(void)
+{
+	model_t *w = cl.worldmodel;
+	batch_t *b;
+	mesh_t *m;
+	int i, j, meshes = 0, batches = 0, verts = 0, indexes = 0, area = -1, cluster = -1;
+	unsigned int contents = 0, shape = 2166136261u;
+	if (!w || w->loadstate != MLS_LOADED)
+	{
+		Con_Printf("voidscene: no loaded world\n");
+		return;
+	}
+	if (w->funcs.InfoForPoint)
+		w->funcs.InfoForPoint(w, r_refdef.vieworg, &area, &cluster, &contents);
+	for (i = 0; i < SHADER_SORT_COUNT; i++)
+		for (b = w->batches[i]; b; b = b->next)
+			if (b->meshes > b->firstmesh)
+			{
+				batches++;
+				for (j = b->firstmesh; j < b->meshes; j++)
+				{
+					m = b->mesh[j];
+					meshes++; verts += m->numvertexes; indexes += m->numindexes;
+					shape = (shape ^ (unsigned int)m->numvertexes) * 16777619u;
+					shape = (shape ^ (unsigned int)m->numindexes) * 16777619u;
+				}
+			}
+	Con_Printf("voidscene: mode %i active %i predicate %i cluster %i area %i recurse %i rt '%s'\n",
+		r_voidscene.ival, !!(r_refdef.flags & RDF_WORLDONLY), Surf_WorldOnlyView(r_refdef.playerview),
+		cluster, area, r_refdef.recurse, r_refdef.rt_destcolour[0].texname);
+	Con_Printf("  eye %.3f %.3f %.3f angles %.3f %.3f %.3f\n", r_refdef.vieworg[0], r_refdef.vieworg[1], r_refdef.vieworg[2], r_refdef.viewangles[0], r_refdef.viewangles[1], r_refdef.viewangles[2]);
+	Con_Printf("  world meshes %i batches %i verts %i indexes %i shape %08x; census %i brush %i rejected %i (primary offered candidates before culling; developer 1)\n",
+		meshes, batches, verts, indexes, shape, r_voidvis_edicts, r_voidvis_brush, r_voidvis_dropped);
 }
 
 //most of this is a direct copy from gl
@@ -2558,7 +2642,7 @@ void Surf_SetupFrame(void)
 	*/
 
 	/*
-	  Cleared for EVERY view, including the recursive ones, and cleared before
+	  The legacy r_voidview predicate is cleared for EVERY view, including the recursive ones, before
 	  anything below can set it.  A skyroom or a mirror renders with its own
 	  pvsorigin that may legitimately be in solid (see the note at the top of
 	  this function), and it must not inherit the main view's answer -- but it
@@ -2566,6 +2650,10 @@ void Surf_SetupFrame(void)
 	  true here would silently drop every entity out of the reflection.
 	*/
 	r_voidview = false;
+	//Map-only is an explicit parent policy, not the recursive view's void predicate.
+	//Keep it in reflection children; fresh primary/named scenes rederive it below.
+	if (!r_refdef.recurse)
+		r_refdef.flags &= ~RDF_WORLDONLY;
 
 	/*
 	  And the forced vis with it, for the primary view only.
@@ -2601,9 +2689,11 @@ void Surf_SetupFrame(void)
 		  Without the noclip test it would fire on the ordinary fall into the
 		  void, which is the exact case Patch 138 exists to keep playable.
 		*/
-		if (r_viewcluster == -1 && r_voidvis.ival && Surf_PlayerIsNoclipping())
+		if (r_viewcluster == -1 && r_voidvis.ival && Surf_PlayerIsNoclipping(r_refdef.playerview))
 		{
 			r_voidview = true;
+			if (Surf_WorldOnlyView(r_refdef.playerview))
+				r_refdef.flags |= RDF_WORLDONLY;
 
 			/*
 			  All bits set, so every cluster is "visible" and the world falls
@@ -3993,11 +4083,11 @@ void Surf_DrawWorld (void)
 				areas[1] = r_viewarea;
 				CL_LinkStaticEntities(entvis, areas);
 				TRACE(("dbg: calling R_DrawParticles\n"));
-				if (!r_refdef.recurse && !(r_refdef.flags & RDF_DISABLEPARTICLES))
+				if (!r_refdef.recurse && !(r_refdef.flags & (RDF_DISABLEPARTICLES|RDF_WORLDONLY)))
 					P_DrawParticles ();
-				if (!r_refdef.recurse)
+				if (!r_refdef.recurse && !(r_refdef.flags & RDF_WORLDONLY))
 					CL_EmitPersistentDecals ();	//nettest: persistent lit decals (before BE_DrawWorld consumes cl_stris)
-				else if (!(r_refdef.flags & RDF_DISABLEPARTICLES))
+				else if (r_refdef.recurse && !(r_refdef.flags & (RDF_DISABLEPARTICLES|RDF_WORLDONLY)))
 					CL_PersistentDecals_PortalView ();	//FTESurf Patch 772
 
 				TRACE(("dbg: calling BE_DrawWorld\n"));
@@ -4075,11 +4165,11 @@ void Surf_DrawWorld (void)
 		{
 			CL_LinkStaticEntities(entvis, r_refdef.sceneareas);
 			TRACE(("dbg: calling R_DrawParticles\n"));
-			if (!r_refdef.recurse && !(r_refdef.flags & RDF_DISABLEPARTICLES))
+			if (!r_refdef.recurse && !(r_refdef.flags & (RDF_DISABLEPARTICLES|RDF_WORLDONLY)))
 				P_DrawParticles ();
-			if (!r_refdef.recurse)
+			if (!r_refdef.recurse && !(r_refdef.flags & RDF_WORLDONLY))
 				CL_EmitPersistentDecals ();	//nettest: persistent lit decals
-			else if (!(r_refdef.flags & RDF_DISABLEPARTICLES))
+			else if (r_refdef.recurse && !(r_refdef.flags & (RDF_DISABLEPARTICLES|RDF_WORLDONLY)))
 				CL_PersistentDecals_PortalView ();	//FTESurf Patch 772
 		}
 
@@ -4092,6 +4182,12 @@ void Surf_DrawWorld (void)
 		r_refdef.scenevis = surfvis;
 		BE_DrawWorld(cl.worldmodel->batches);
 
+		if (voidscene_infopending && !r_secondaryview && !r_refdef.recurse && r_refdef.playerview &&
+			(!*r_refdef.rt_destcolour[0].texname || !strcmp(r_refdef.rt_destcolour[0].texname, "megascreeny")))
+		{
+			voidscene_infopending = false;
+			Surf_VoidSceneInfo();
+		}
 		Surf_PopChains(cl.worldmodel->batches);
 
 		/*FIXME: move this away*/
@@ -4998,8 +5094,11 @@ void Surf_NewMap (model_t *worldmodel)
 	char *s;
 #endif
 	int		i;
+	extern cvar_t r_lightmap_bicubic_world;
 
 	cl.worldmodel = worldmodel;
+	if (worldmodel && (worldmodel->engineflags & MDLF_SOURCEBSP))	//FTESurf Patch 1275: the vmt shaders follow this world's atlas
+		Cvar_ForceSet(&r_lightmap_bicubic_world, (worldmodel->engineflags & MDLF_LMPADDED) ? "1" : "0");
 
 	/*Patch 105: every cached model-light sample belongs to the OLD world's lightdata.*/
 	if (!++r_modellight_seq)

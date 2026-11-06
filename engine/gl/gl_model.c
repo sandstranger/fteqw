@@ -792,6 +792,7 @@ qboolean Mod_PurgeModel(model_t	*mod, enum mod_purge_e ptype)
 	}
 	ZG_FreeGroup(&mod->memgroup);
 	mod->loadstate = MLS_NOTLOADED;
+	BIH_CollisionChanged();	//FTESurf Patch 1266: cached traces may have walked it
 
 	mod->submodelof = NULL;
 	mod->pvs = NULL;
@@ -1300,6 +1301,7 @@ void Mod_ModelLoaded(void *ctx, void *data, size_t a, size_t b)
 
 	previouslyfailed = mod->loadstate == MLS_FAILED;
 	mod->loadstate = a;
+	BIH_CollisionChanged();	//FTESurf Patch 1266: a trace that skipped it while loading is stale now
 
 #ifdef TERRAIN
 	if (mod->terrain)
@@ -2864,6 +2866,11 @@ static void Mod_SaveEntFile_f(void)
 	model_t *mod = NULL;
 	char *n = Cmd_Argv(1);
 	const char *ents;
+	if (Cmd_IsInsecure())
+	{
+		Con_Printf("%s is not permitted from untrusted commands\n", Cmd_Argv(0));
+		return;
+	}
 	if (*n)
 		mod = Mod_ForName(n, MLV_WARN);
 #ifndef CLIENTONLY
@@ -4074,6 +4081,9 @@ static void Mod_Batches_BuildModelMeshes(model_t *mod, int maxverts, int maxindi
 				mesh->vbofirstelement = 0;
 
 				build(mod, surf, bd);
+#ifndef SERVERONLY
+				SCR_LoadingPump();	//FTESurf Patch 1259: the hl2 world's batches run as one main-thread job
+#endif
 
 				if (lmmerge != 1)
 				{
@@ -4547,6 +4557,7 @@ static void Mod_Batches_SplitLightmaps(model_t *mod, int lmmerge)
 static void Mod_LightmapAllocSurf(model_t *mod, lmalloc_t *lmallocator, msurface_t *surf, int surfstyle)
 {
 	int smax, tmax;
+	int pad = (surf->flags & SURF_LMPAD) ? 1 : 0;	//FTESurf Patch 1275
 	smax = (surf->extents[0]>>surf->lmshift)+1;
 	tmax = (surf->extents[1]>>surf->lmshift)+1;
 
@@ -4554,7 +4565,7 @@ static void Mod_LightmapAllocSurf(model_t *mod, lmalloc_t *lmallocator, msurface
 		(surf->texinfo->texture->shader && !(surf->texinfo->texture->shader->flags & SHADER_HASLIGHTMAP)) || //fte
 		(surf->flags & (SURF_DRAWSKY|SURF_DRAWTILED)) ||	//q1
 		(surf->texinfo->flags & TEX_SPECIAL) ||	//the original 'no lightmap'
-		smax > lmallocator->width || tmax > lmallocator->height || smax < 0 || tmax < 0)	//bugs/bounds/etc
+		smax+2*pad > lmallocator->width || tmax+2*pad > lmallocator->height || smax < 0 || tmax < 0)	//bugs/bounds/etc
 	{
 		//nettest r_texdiag: name WHY a surface was denied a lightmap. A denied surface samples a
 		//black lightmap and draws black however good its texture is, and the five conditions
@@ -4596,7 +4607,9 @@ static void Mod_LightmapAllocSurf(model_t *mod, lmalloc_t *lmallocator, msurface
 		return;
 	}
 
-	Mod_LightmapAllocBlock (lmallocator, smax, tmax, &surf->light_s[surfstyle], &surf->light_t[surfstyle], &surf->lightmaptexturenums[surfstyle]);
+	Mod_LightmapAllocBlock (lmallocator, smax+2*pad, tmax+2*pad, &surf->light_s[surfstyle], &surf->light_t[surfstyle], &surf->lightmaptexturenums[surfstyle]);
+	surf->light_s[surfstyle] += pad;	//the face inside its border
+	surf->light_t[surfstyle] += pad;
 }
 
 /*
@@ -4612,19 +4625,32 @@ static void Mod_Batches_AllocLightmaps(model_t *mod)
 	int sty;
 
 	size_t samps = 0;
+	extern cvar_t r_lightmap_bicubic;
+	qboolean lmpad = false;	//FTESurf Patch 1275: the vmt shaders' bicubic reads a texel past the face
+
+	if (mod->engineflags & MDLF_SOURCEBSP)
+		lmpad = r_lightmap_bicubic.ival != 0;	//decided as its lightmaps are built, and kept with the model
+	if (lmpad)
+		mod->engineflags |= MDLF_LMPADDED;
+	else
+		mod->engineflags &= ~MDLF_LMPADDED;
 
 	//small models don't have many surfaces, don't allocate a smegging huge lightmap that simply won't be used.
 	for (i=0, j=0; i<mod->nummodelsurfaces; i++)
 	{
 		surf = mod->surfaces + mod->firstmodelsurface + i;
+		if (lmpad)
+			surf->flags |= SURF_LMPAD;
+		else
+			surf->flags &= ~SURF_LMPAD;
 		if (surf->texinfo->flags & TEX_SPECIAL)
 			continue;	//surfaces with no lightmap should not count torwards anything.
-		samps += ((surf->extents[0]>>surf->lmshift)+1) * ((surf->extents[1]>>surf->lmshift)+1);
+		samps += ((surf->extents[0]>>surf->lmshift)+1+2*lmpad) * ((surf->extents[1]>>surf->lmshift)+1+2*lmpad);
 
-		if (j < (surf->extents[0]>>surf->lmshift)+1)
-			j = (surf->extents[0]>>surf->lmshift)+1;
-		if (j < (surf->extents[1]>>surf->lmshift)+1)
-			j = (surf->extents[1]>>surf->lmshift)+1;
+		if (j < (surf->extents[0]>>surf->lmshift)+1+2*lmpad)
+			j = (surf->extents[0]>>surf->lmshift)+1+2*lmpad;
+		if (j < (surf->extents[1]>>surf->lmshift)+1+2*lmpad)
+			j = (surf->extents[1]>>surf->lmshift)+1+2*lmpad;
 	}
 	samps /= 4;
 	samps = sqrt(samps);
@@ -4666,6 +4692,9 @@ static void Mod_Batches_AllocLightmaps(model_t *mod)
 
 		for (j = 1; j < batch->maxmeshes; j++)
 		{
+#ifndef SERVERONLY
+			SCR_LoadingPump();	//Patch 1259: Mod_LightmapAllocBlock was a third of a 0.5 s stall on surf_eternity
+#endif
 			surf = (msurface_t*)batch->mesh[j];
 			Mod_LightmapAllocSurf (mod, &lmallocator, surf, 0);
 			for (sty = 1; sty < MAXRLIGHTMAPS; sty++)
@@ -4722,6 +4751,9 @@ static void Mod_Batches_AllocLightmaps(model_t *mod)
 	}
 
 	Mod_LightmapAllocDone(&lmallocator, mod);
+	if (lmpad && !mod->submodelof)	//FTESurf Patch 1275
+		Con_DPrintf("%s: %i lightmap pages of %ix%i, blocks %s\n", mod->name, mod->lightmaps.count,
+			mod->lightmaps.width, mod->lightmaps.height, "padded for bicubic sampling");
 }
 #endif
 

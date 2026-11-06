@@ -477,6 +477,7 @@ typedef struct {
 		SP_M_INVVIEWPROJECTION,
 		SP_M_INVMODELVIEWPROJECTION,
 		SP_M_INVMODELVIEW,
+		SP_M_CAPTUREFIX,	//FTESurf Patch 1245: this view's clip space to a reused capture's (identity when fresh)
 
 		SP_RENDERTEXTURESCALE,	/*multiplier for currentrender->texcoord*/
 		SP_SOURCESIZE,			/*size of $sourcecolour*/
@@ -556,6 +557,10 @@ struct programpermu_s
 #ifdef GLQUAKE
 	int factorsuniform;
 	int instuniform[3];	//FTESurf Patch 831: s_instdata, s_instvc, e_instbase
+	int a2cuniform;		//FTESurf Patch 1262: e_alphacoverage, for an alpha-testing program (GLSlang_ProgAutoFields)
+	int a2cval;			//the value last written to it, -1 none
+	int lmsizeuniform;	//FTESurf Patch 1275: e_lmsize, the batch's lightmap page (w, h, 1/w, 1/h)
+	int lmsizew, lmsizeh;	//the size last written to it, 0 none
 #endif
 	unsigned int permutation;
 	unsigned int attrmask;
@@ -987,6 +992,16 @@ int GLBE_FBO_Push(fbostate_t *state);
 void GLBE_FBO_Pop(int oldfbo);
 void GLBE_FBO_Destroy(fbostate_t *state);
 int GLBE_FBO_Update(fbostate_t *state, unsigned int enables, texid_t *destcol, int colourbuffers, texid_t destdepth, int width, int height, int layer);
+int GLBE_SceneMSAA_Samples(void);	//FTESurf Patch 1260
+void GLBE_SceneMSAA_Begin(texid_t col, texid_t depth, int key);
+void GLBE_SceneMSAA_End(void);
+#ifndef GL_STATIC
+qboolean GLBE_SceneMSAA_ReadBegin(int x, int y, int w, int h, qboolean depth);
+void GLBE_SceneMSAA_ReadEnd(void);
+#else
+#define GLBE_SceneMSAA_ReadBegin(x,y,w,h,d) false
+#define GLBE_SceneMSAA_ReadEnd()
+#endif
 
 qboolean GLBE_BeginShadowMap(int id, int w, int h, uploadfmt_t encoding, int *restorefbo);
 void GLBE_EndShadowMap(int restorefbo);

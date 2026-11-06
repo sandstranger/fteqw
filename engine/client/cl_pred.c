@@ -64,6 +64,7 @@ static struct
 	float	cmdf, cmds, cmdu;
 	vec3_t	fromvel, tovel, simvel;
 	vec3_t	fromorg, toorg, simorg;
+	float	vhr, crouchr;	/*P1301: after the roof rewrite and CL_CalcCrouch: the drawn eye is simorg + crouchr + vhr*/
 	float	viewheight, crouch;	/*Patch 269b: the reported symptom is "position
 								  flickers 0-4", and these two are the only
 								  per-frame offsets between simorg and the eye.
@@ -102,10 +103,76 @@ typedef struct
 	short			ang[3];
 	int				fm, sm, um;
 	unsigned int	buttons;
+	qboolean cmdvalid, predvalid;
+	int predpm, seedseq, phasehit, parts, ticks;
+	float seedcarry;
 } pring_t;
+
+typedef struct {
+	qboolean valid;
+	int sequence, phasehit, parts, ticks;
+	float carry;
+} pred_diag_seed_t;
+
+static void CL_PredictionDiagAnchor(pred_diag_seed_t *d, int sequence, float carry, qboolean phasehit)
+{
+	if (d->valid)
+		return;
+	d->valid = true;
+	d->sequence = sequence;
+	d->carry = carry;
+	d->phasehit = phasehit;
+}
+
+static void CL_PredictionDiagKeep(playerview_t *pv, int sequence, int pmtype, int seedseq, float seedcarry, qboolean phasehit, int parts, int ticks)
+{
+	pv->prop.diag.valid = !IS_NAN(seedcarry);
+	pv->prop.diag.sequence = sequence;
+	pv->prop.diag.pmtype = pmtype;
+	pv->prop.diag.seedseq = seedseq;
+	pv->prop.diag.seedcarry = seedcarry;
+	pv->prop.diag.phasehit = phasehit;
+	pv->prop.diag.parts = parts;
+	pv->prop.diag.ticks = ticks;
+}
+
+static void CL_PredictionDiagCopy(pring_t *r, const playerview_t *pv, int sequence, qboolean cmdvalid)
+{
+	r->cmdvalid = cmdvalid;
+	r->predvalid = pv->prop.diag.valid && pv->prop.diag.sequence == sequence;
+	r->predpm = r->predvalid ? pv->prop.diag.pmtype : 0;
+	r->seedseq = r->predvalid ? pv->prop.diag.seedseq : 0;
+	r->seedcarry = r->predvalid ? pv->prop.diag.seedcarry : 0;
+	r->phasehit = r->predvalid ? pv->prop.diag.phasehit : 0;
+	r->parts = r->predvalid ? pv->prop.diag.parts : 0;
+	r->ticks = r->predvalid ? pv->prop.diag.ticks : 0;
+}
+
 static pring_t pring[MAX_SPLITS][PRING_MAX];
 static int pring_head[MAX_SPLITS], pring_n[MAX_SPLITS], pring_lastseq[MAX_SPLITS], pring_dumps, pring_firsti;
 static int pring_server[MAX_SPLITS];	//cl.servercount the rows belong to
+
+/* P1301: each full predicted command's Source eye height after P916's roof clip, by sequence.
+   A rendered frame lerps the feet between two ticks; the clipped eye must follow, or under a
+   sloping roof it holds one tick's limit and then steps (surf_classics: 2-13 units at 66 Hz). */
+#define SRCEYE_RING 64
+typedef struct
+{
+	int			frame, servercount;
+	vec3_t		feet;	//a kept eye is used only while from.state is still here
+	float		eye;	//world z, as P917's limit
+	qboolean	clipped;
+} srceye_t;
+static srceye_t srceye[MAX_SPLITS][SRCEYE_RING];
+static void CL_SourceEyeKeep (int seat, int frame, const vec3_t feet)
+{
+	srceye_t *e = &srceye[seat][frame & (SRCEYE_RING-1)];
+	e->frame = frame;
+	e->servercount = cl.servercount;
+	VectorCopy(feet, e->feet);
+	e->eye = feet[2] + pmove.viewheight;
+	e->clipped = pmove.pm_type == PM_NORMAL && pmove.viewheight < PMSrc_UnclippedViewHeight();
+}
 #define PRING_KEEP 120		//report files kept in data/prederr/ (a report is two)
 static cvar_t	cl_pushlatency = CVAR("pushlatency","-999");
 
@@ -463,6 +530,7 @@ CL_PredictUsercmd
   is keyed on the chain's sequences.  Set around the two calls in
   CL_PredictMovePNum and tested beside the hook.*/
 static qboolean cl_pred_localchain;
+static int cl_pred_diag_parts, cl_pred_diag_ticks;
 /* P924: packet snapshots never contained msec_carry. A player's last rendered
    prop is not an authoritative command's phase. One string stat keeps its tag
    and value atomic even when the stat sender runs out of packet space. */
@@ -501,26 +569,27 @@ void CL_CacheSourcePhase(int seat, const char *text)
 	cl.sourcephase[seat][slot].valid = true;
 }
 
-static void CL_PredictSourcePhase(int seat, int sequence, player_state_t *state)
+static qboolean CL_PredictSourcePhase(int seat, int sequence, player_state_t *state)
 {
 	unsigned int slot, localowner = cl.playerview[seat].playernum + 1;
 	float phase, tick = movevars.ticrate < 0.001f ? 0.015f : movevars.ticrate;
 
 	if (movevars.physicsmode != PHYSMODE_SOURCE || IS_NAN(tick) ||
 		strcmp(InfoBuf_ValueForKey(&cl.serverinfo, "fs_sourcephase"), "1"))
-		return;
+		return false;
 	if (cl.playerview[seat].source_return.minack && sequence <= cl.playerview[seat].source_return.minack)
-		return; // the neutral prepared seed has reset phase, even if a stat string is stale
+		return false; // the neutral prepared seed has reset phase, even if a stat string is stale
 	CL_CacheSourcePhase(seat, cl.playerview[seat].statsstr[STAT_FS_SOURCEPHASE]);
 	// Keep phases at receipt, including packets read between rendered frames.
 	slot = (unsigned int)sequence & UPDATE_MASK;
 	if (!cl.sourcephase[seat][slot].valid ||
 		cl.sourcephase[seat][slot].sequence != (unsigned int)sequence ||
 		cl.sourcephase[seat][slot].owner != localowner)
-		return;
+		return false;
 	phase = cl.sourcephase[seat][slot].carry;
-	if (phase < 0 || phase >= tick) return;
+	if (phase < 0 || phase >= tick) return false;
 	state->pmsrc.msec_carry = phase;
+	return true;
 }
 
 static void CL_PredictUsercmdPart (int pnum, int entnum, player_state_t *from, player_state_t *to, usercmd_t *u, float offsetmsec, qboolean *carrier_cleared, qboolean later)
@@ -653,6 +722,11 @@ static void CL_PredictUsercmdPart (int pnum, int entnum, player_state_t *from, p
 	VectorCopy(pmove.origin, preorigin);
 	preground = pmove.onground;
 	PM_PlayerMove (cl.gamespeed);
+	if (cl_pred_localchain)
+	{
+		cl_pred_diag_parts++;
+		cl_pred_diag_ticks += pmove.ticksrun;
+	}
 	if (cl_pred_localchain && pmove.portalcrossings)
 		CSQC_PredictPortalAngles(pnum, u);
 
@@ -691,6 +765,8 @@ static void CL_PredictUsercmdPart (int pnum, int entnum, player_state_t *from, p
 void CL_PredictUsercmd (int pnum, int entnum, player_state_t *from, player_state_t *to, usercmd_t *u)
 {
 	qboolean carrier_cleared = false;
+	if (cl_pred_localchain)
+		cl_pred_diag_parts = cl_pred_diag_ticks = 0;
 	CL_PredictUsercmdPart(pnum, entnum, from, to, u, 0, &carrier_cleared, false);
 }
 
@@ -1785,6 +1861,11 @@ void CL_PredictMovePNum (int seat)
 	float		pt_f = -1;			/*the blend fraction, -1 if no blend happened*/
 	qboolean	source_eye_clipped = false;
 	float		source_eye_raw = 0, source_eye_limit = 0;
+	qboolean	source_eye_valid = false;
+	float		source_eye_f = -1;	/*P1301: the fraction the feet were lerped by, -1 if they were not*/
+	int			pt_rec = -1;		/*P1301: this frame's cl_predtrace record, if any*/
+	qboolean diag_phasehit;
+	pred_diag_seed_t diag = {0};
 
 	/* Clear even on the early-return paths (disconnect/demo/pause/seat swap). */
 	if (!CL_SourcePracticeContext(pv))
@@ -2199,14 +2280,19 @@ void CL_PredictMovePNum (int seat)
 					r->pground = pv->prop.onground;
 					r->sground = from.state->onground;
 					r->pmtype = from.state->pm_type;
-					if (from.cmd)
+					CL_PredictionDiagCopy(r, pv, from.frame,
+						cl.outframes[from.frame & UPDATE_MASK].cmd_sequence == from.frame);
+					// Diagnostic inputs belong to this acknowledged move and local seat.
+					const outframe_t *cmdframe = &cl.outframes[from.frame & UPDATE_MASK];
+					const usercmd_t *reportcmd = cmdframe->cmd_sequence == from.frame ? &cmdframe->cmd[seat] : NULL;
+					if (reportcmd)
 					{
-						r->msec = from.cmd->msec;
-						VectorCopy(from.cmd->angles, r->ang);
-						r->fm = from.cmd->forwardmove;
-						r->sm = from.cmd->sidemove;
-						r->um = from.cmd->upmove;
-						r->buttons = (unsigned int)from.cmd->buttons;
+						r->msec = reportcmd->msec;
+						VectorCopy(reportcmd->angles, r->ang);
+						r->fm = reportcmd->forwardmove;
+						r->sm = reportcmd->sidemove;
+						r->um = reportcmd->upmove;
+						r->buttons = (unsigned int)reportcmd->buttons;
 					}
 					else
 					{
@@ -2269,12 +2355,17 @@ void CL_PredictMovePNum (int seat)
 			//FTESurf Patch 754: the posture the hull states, propagated or not (a
 			//resume after a no-prediction stretch seeds a zeroed pmsrc).  Our own
 			//predicted frames carry a matching hull, so this only acts on a snapshot.
-			CL_PredictSourcePhase(seat, from.frame, from.state);
+			diag_phasehit = CL_PredictSourcePhase(seat, from.frame, from.state);
 			PMSrc_ReconcileHull(&from.state->pmsrc, from.state->szmins, from.state->szmaxs, pv->statsf[STAT_VIEWHEIGHT]);
+			CL_PredictionDiagAnchor(&diag, from.frame, from.state->pmsrc.msec_carry, diag_phasehit);
 			cl_pred_localchain = true;	//FTESurf Patch 335
 			CL_PredictUsercmd (seat, trackent, from.state, to.state, to.cmd);
 			cl_pred_localchain = false;
+			diag.parts += cl_pred_diag_parts;
+			diag.ticks += cl_pred_diag_ticks;
 			pt_replays++;	//FTESurf Patch 269
+			if (movevars.physicsmode == PHYSMODE_SOURCE && movevars.sourceversion >= 11)
+				CL_SourceEyeKeep(seat, to.frame, to.state->origin);	//P1301; extrapolated partial commands are not kept
 			if (i <= validsequence && simtime >= to.time)
 			{	//this frame is final keep track of our propagated values.
 				pv->prop.onground = pmove.onground;
@@ -2286,6 +2377,8 @@ void CL_PredictMovePNum (int seat)
 				VectorCopy(pmove.velocity, pv->prop.velocity);	//FTESurf Patch 269c
 				VectorCopy(to.state->origin, pv->prop.origin);	//FTESurf Patch 335: for cl_prederror
 				pv->prop.sequence = i;
+				CL_PredictionDiagKeep(pv, i, to.state->pm_type, diag.sequence, diag.carry,
+					diag.phasehit, diag.parts, diag.ticks);
 			}
 		}
 
@@ -2362,6 +2455,7 @@ void CL_PredictMovePNum (int seat)
 				source_eye_raw = PMSrc_UnclippedViewHeight();
 				source_eye_clipped = (pmove.viewheight < source_eye_raw);
 				source_eye_limit = pmove.origin[2] + pmove.viewheight;
+				source_eye_valid = true;
 			}
 			if (movevars.sourceversion >= 4)
 			{
@@ -2471,6 +2565,7 @@ void CL_PredictMovePNum (int seat)
 			else
 				VectorCopy(from.state->velocity, blendfromvel);
 
+			source_eye_f = f;	//P1301
 			for (i=0 ; i<3 ; i++)
 			{
 				pv->simorg[i] = (1-f)*from.state->origin[i]   + f*to.state->origin[i];
@@ -2563,6 +2658,7 @@ void CL_PredictMovePNum (int seat)
 		if (pt_count < want)
 		{	//record only -- no console traffic inside the measured window.
 			int n = pt_count++;
+			pt_rec = n;
 			if (!n)
 				pt_time0 = realtime;	//so the verdict can state a real framerate
 
@@ -2660,12 +2756,12 @@ void CL_PredictMovePNum (int seat)
 			else
 			{
 			Con_Printf("^5cl_predtrace: %i rendered frames\n", pt_count);
-			Con_Printf("^5ptcols: seq f nopred replays extrap cmdmsec btn cmdf cmds simvel3 fromvel3 tovel3 simorg3 vh crouch\n");
+			Con_Printf("^5ptcols: seq f nopred replays extrap cmdmsec btn cmdf cmds simvel3 fromvel3 tovel3 simorg3 vh crouch vhr crouchr\n");
 			for (n = 0; n < pt_count; n++)
 			{
 				Con_Printf("ptr %i %.4f %i %i %i %i %i %.2f %.2f "
 						"%.4f %.4f %.4f %.4f %.4f %.4f %.4f %.4f %.4f "
-						"%.3f %.3f %.3f %.3f %.3f\n",
+						"%.3f %.3f %.3f %.3f %.3f %.3f %.3f\n",
 						pt_recs[n].seq, pt_recs[n].f, pt_recs[n].nopred,
 						pt_recs[n].replays, pt_recs[n].extrap,
 						pt_recs[n].cmdmsec, pt_recs[n].btn,
@@ -2674,7 +2770,7 @@ void CL_PredictMovePNum (int seat)
 						pt_recs[n].fromvel[0], pt_recs[n].fromvel[1], pt_recs[n].fromvel[2],
 						pt_recs[n].tovel[0], pt_recs[n].tovel[1], pt_recs[n].tovel[2],
 						pt_recs[n].simorg[0], pt_recs[n].simorg[1], pt_recs[n].simorg[2],
-						pt_recs[n].viewheight, pt_recs[n].crouch);
+						pt_recs[n].viewheight, pt_recs[n].crouch, pt_recs[n].vhr, pt_recs[n].crouchr);
 			}
 			}
 			pt_count = 0;
@@ -2704,10 +2800,33 @@ void CL_PredictMovePNum (int seat)
 	CL_CalcCrouch (pv);
 	/* P917: the roof limit belongs to world space, not the last mover tick.
 	   Feet/stair interpolation must not turn it into a per-frame eye sawtooth.
-	   Do this after the legacy categorizer, which overwrites pmove.origin. */
-	if (source_eye_clipped)
-		pv->viewheight = PMSrc_ClipRenderEye(source_eye_raw, source_eye_limit,
-			pv->simorg[2] + pv->crouch);
+	   Do this after the legacy categorizer, which overwrites pmove.origin.
+	   P1301: when the feet were lerped and either tick clipped, lerp the limit too,
+	   from the from-tick's kept world eye to the to-tick's. An unclipped end only bounds the
+	   limit from below, so it carries a step-down's positive crouch. */
+	if (source_eye_valid)
+	{
+		srceye_t *e = &srceye[seat][from.frame & (SRCEYE_RING-1)];
+		vec3_t moved;
+		VectorSubtract(e->feet, from.state->origin, moved);
+		if (source_eye_f >= 0 && e->frame == from.frame && e->servercount == cl.servercount &&
+			DotProduct(moved, moved) < 1 && (e->clipped || source_eye_clipped))
+		{
+			float up = max(0, pv->crouch);
+			float fromeye = e->clipped ? e->eye : e->eye + up;
+			float toeye = source_eye_clipped ? source_eye_limit : source_eye_limit + up;
+			pv->viewheight = PMSrc_ClipRenderEye(source_eye_raw,
+				fromeye + (toeye - fromeye) * source_eye_f, pv->simorg[2] + pv->crouch);
+		}
+		else if (source_eye_clipped)
+			pv->viewheight = PMSrc_ClipRenderEye(source_eye_raw, source_eye_limit,
+				pv->simorg[2] + pv->crouch);
+	}
+	if (pt_rec >= 0)
+	{
+		pt_recs[pt_rec].vhr = pv->viewheight;
+		pt_recs[pt_rec].crouchr = pv->crouch;
+	}
 	pv->waterlevel = pmove.waterlevel;
 	if (!DotProduct(pmove.gravitydir,pmove.gravitydir))
 		VectorSet(pmove.gravitydir, 0, 0, -1);
@@ -2853,18 +2972,19 @@ static void CL_PredErrDump_f(void)
 	}
 	pring_dumps++;
 	n = pring_n[seat];
-	VFS_PRINTF(f, "FTESURF-PREDRING 1\n# engine %s\n# rows %i seat %i now %.4f\n"
-		"# t seq porg(3) sorg(3) pvel(3) svel(3) pground sground pmtype msec pitch yaw roll fwd side up buttons\n",
+	VFS_PRINTF(f, "FTESURF-PREDRING 2\n# engine %s\n# command_identity ack-seat-tag-v1\n# rows %i seat %i now %.4f\n"
+		"# t seq porg(3) sorg(3) pvel(3) svel(3) pground sground pmtype msec pitch yaw roll fwd side up buttons cmdvalid predvalid predpm seedseq seedcarry phasehit parts ticks\n",
 		version_string(), n, seat, realtime);
 	for (k = 0; k < n; k++)
 	{
 		const pring_t *r = &pring[seat][(pring_head[seat] - n + k + 2 * PRING_MAX) % PRING_MAX];
-		VFS_PRINTF(f, "%.4f %i %.2f %.2f %.2f %.2f %.2f %.2f %.1f %.1f %.1f %.1f %.1f %.1f %i %i %i %.2f %.3f %.3f %.3f %i %i %i %u\n",
+		VFS_PRINTF(f, "%.4f %i %.2f %.2f %.2f %.2f %.2f %.2f %.1f %.1f %.1f %.1f %.1f %.1f %i %i %i %.2f %.3f %.3f %.3f %i %i %i %u %i %i %i %i %.9g %i %i %i\n",
 			r->t, r->seq, r->porg[0], r->porg[1], r->porg[2], r->sorg[0], r->sorg[1], r->sorg[2],
 			r->pvel[0], r->pvel[1], r->pvel[2], r->svel[0], r->svel[1], r->svel[2],
 			r->pground, r->sground, r->pmtype, r->msec,
 			SHORT2ANGLE(r->ang[0]), SHORT2ANGLE(r->ang[1]), SHORT2ANGLE(r->ang[2]),
-			r->fm, r->sm, r->um, r->buttons);
+			r->fm, r->sm, r->um, r->buttons, r->cmdvalid, r->predvalid, r->predpm,
+			r->seedseq, r->seedcarry, r->phasehit, r->parts, r->ticks);
 	}
 	VFS_CLOSE(f);
 	FS_FlushFSHashWritten(path);	//as COM_WriteFile: else QC's fopen cannot see the new file (P1195 arm 1)

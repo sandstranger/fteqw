@@ -1,5 +1,2702 @@
 # Engine patches (fteqw `fteqw64.exe`)
 
+## Patch 1355 -- bounded local full-line next-face search (QC only)
+
+**Problem.** Observed section navigation did not provide constrained candidate
+search. Endpoint speed alone would reward missing the requested ramp, and partial
+preview/cancellation must not commit or discard the captured future/settings.
+
+**Change.** Explicit selected1..1024 inputs and a later native static-world face
+bind the current whole immutable source/body. Nine small turn/posture candidates
+must match its plane,64unit baseline contact region, travel direction and8tick
+window before horizontal speed/earlier qualified-sample ranking. A bounded17sample
+baseline probe uses the SAME scoring predicate as every candidate; learning its
+goal at target must not discard earlier eligible baseline samples. Native authored
+work remains bounded80000, loader chunks remain existing128, and the best found
+must replay the complete retained future before Keep. Stable non-reused search ID
+protects own-seat Cancel; failed previews cannot become keepable, but explicit
+retained Discard can complete/clear. Reuses the native checked loader, literal
+input mutation, existing invalidation/history and source proof; no pose/world
+injection, new evidence format, public admission, native pin/tag or Build change.
+Published P1351-1353 source/native fixes remain intact.
+
+**Verified.** Final integrated real dedicated-socket34/34 controls ACT: baseline,
+all9 candidates, measured authored work, full-future replay, genuine GUI completion
+and Cancel, stale job1 cannot cancel job2, cancelled Keep disabled, exact Original
+input/settings/future recovery and preview/operation clearing. Baseline was best:
+no speed improvement, changed revision or input credit invented. Initial empty
+Preview recovery setup, invalid QC8/compact2 helper oracle, driver status regex
+and whole-file versus canonical-chain domain failures are preserved/diagnosed,
+not counted as passes. Actual old21helpers covered all72 masks against existing
+editor. Final fair-baseline22production helpers ACT with0failed, including the
+bounded first-qualified-window baseline control; same34native controls pass after
+that change, all own processes quit0. All3VMs compile0warnings. Native component
+profile2f5; no global zero-warning/native/performance claim. >128
+selected rows, changed-winner Keep/history, finish-specific context and owner
+familiar two-ramp acceptance remain unverified. See tools/p1355-tas-solve.md.
+
+## Patch 1354 -- report non-finite similarity output as unavailable
+
+**Problem.** The actual comparison reader can return NaN or infinite optional
+recording tickrate metadata after doing real comparisons. SQLite INSERT OR IGNORE
+silently omits NaN observations; infinities can instead persist despite being
+unusable by the existing admin projection. Neither reported a pair availability
+failure. An initial whole-batch-loss prediction was disproved: good peers survive.
+
+**Change.** Require finite match/cover and both rates before packing an observation.
+Invalid output uses the existing pair-failed/unmeasured path, not a fabricated
+skip, zero score, malformed-player accusation or clean result. Preserve finite
+legacy/mismatched rates, parser, source capture/history/schema, SQL rollback,
+thresholds, ranking, native pin/tag and QC Build. No historical rewrite/backfill.
+
+**Verified.** Clean sourcebf9c7b306bce2c8f538fcf13cc0c3be48e719005: Windows69focused
+cases pass; actual untreated10case suite fails23 assertions and missing-guard
+mutant fails realNaN/80opportunity control. ARM270unitcases/no skips and68standalone
+checks pass. Finite measured zero retains76opportunities; actual collector-step,
+admission, independent writer, captured-byte/old-row and wholeSQL-abort controls
+act. Reader949/0, stable548REC/178VIEW corpus retains351existing faults with reader
+and heldmeta byte-identical to prefeature. Two differently-lensed independent
+clean-source reviews find no blockers. Original disproved hypothesis, fixture/
+wrapper and ARM pre-execution permission/directory refusals retained; not one
+uninterrupted clean run. Actual guarded backend delivery is separately recorded
+in tools/p1354-simcheck-finite.md. This is finite-output availability validation,
+not comprehensive type/range semantics, fleet completeness or hard resource proof.
+
+## Patch 1353 -- reported prediction, line labels, editor and texture fixes
+
+**Problem.** The NanoPi's Q1 snapshot converted negative float skins directly to
+unsigned, losing authored EMPTY contents before P919's client rule could see it.
+Board path switches also suppressed their independently enabled labels. Ramp
+boarding had only its pre-contact label, editor aiming could not query invisible
+clip windings, teleport names used fractional unbaked sizes, and authored point
+textures suppressed mip blending and grazing-angle filtering.
+
+**Change.** Preserve negative Q1 skins via signed conversion while leaving the
+nonnegative unsigned range unchanged. Separate board strokes from number/name
+passes; add a second-row sample-to-sample boarding energy change with full label
+height; query a world collision-brush winding through an optional CSQC builtin
+using surf_view's existing plane cutter and a player-clip-aware editor probe.
+Snap destination labels to the loaded font ladder and integer placement. Keep
+nearest texel magnification while honoring mip blending and opt-in anisotropy on
+mipmapped authored point textures; leave nonmip/UI sampling alone.
+
+**Verified.** Final exact-commit full Windows native and ARM server/HL2 builds
+complete; qualified c24ede65 compiler builds all three VMs with zero warnings.
+The full Windows rebuild has74inherited compiler warnings, no new warning sites;
+the modified-unit PF_resourcestatus address warning is unchanged. Windows and ARM
+pm_selftest each act:1608checks, zero failures;90named physics rows across6maps
+match bit-for-bit. Both documented historical reader controls pass in their
+archived-VM context, not as latest-world admission. Native AArch64 conversion control has five acting original
+failures, ten corrected constant-bit expectations and unchanged nonnegative
+controls. Real dedicated board path on/off preserves two name labels; 32 boarding
+rows agree with the sampled mechanical-energy change after display rounding,
+and the second row is visible below the pre-contact label. Four actual invisible
+clip corners and four same-plane grid controls pass with no render surface;
+the existing render-surface snap regression also passed. Recreated Dragonfall's
+saved view and identified its mipmapped point/alpha-tested material: oblique
+filtering improves on NVIDIA, while a 280,000-pixel magnified crop is identical.
+Destination text is baked-size/pixel-aligned and was inspected in the editor.
+BOTH Windows installed6Nov19:47UTC:28exact targets,18642protected files unchanged,
+52predecessor/prior-prev preimages archived. ALL12lobbies paired-promoted20:30UTC;
+0skipped,48556protected files unchanged, full8part/183resume-member preimages
+verified on/off box before role staging/restart. Final20:35UTC readback proves
+all12native hashes/loaded-plugin inodes, canonical QW/CS/cache and backend health;
+the existing sweep lock is released. A separately published backend changed
+before staging: original refusal/evidence retained, only its volatile boundary
+refreshed after fresh retired-actor/FD/data-equality closure; no pinned handoff
+bypassed. Receipt and corrected full compiler fingerprint are in FTESurf
+`tools/p1353-reported-bugs.md`. Owner feel/other-GPU acceptance remains pending;
+no human acceptance, evidence grammar, mover policy or qcbuild/Build bump.
+
+## Patch 1352 -- bounded retirement of orphan similarity cursors
+
+**Problem.** Store-only similarity scheduling kept each replay's peer position
+indefinitely after that replay row disappeared. Repeated enabled collection and
+process reopen did not reclaim orphan scheduling state, even while real
+comparisons succeeded. This is metadata growth, not a finding against a player.
+
+**Change.** Examine at most64 indexed peer-cursor slots per enabled collection
+pass. A separate position in the existing cursor table crosses live windows and
+survives reopen. Retire only peer state whose replay is still absent at DELETE;
+commit deletion and maintenance position together, including legacy autocommit.
+Source rotation, in-flight recovery and live positions stay intact. No replay,
+observation/history, capture, schema, reader, threshold, ranking/enforcement,
+native pin/tag or QC Build change; no hard total RSS/time/fleet bound is claimed.
+
+**Verified.** Untouched source fails3production-entrypoint controls after actual
+80-opportunity comparisons; missing-late-guard mutant fails real two-connection
+source-resurrection control. Windows72focused/existing tests pass. ARM260unit
+cases and68standalone checks pass in segmented invocations; original discovery
+loader error is preserved (successful standalone SystemExit imported as a test),
+not a product workaround or uninterrupted-clean claim. Fourteen focused controls
+cover bounded restart/wrap progress, protected live/old rows, late resurrection,
+SQL interruption, callback ownership, no disabled/expired/borrowed/read-only
+mutation, and deletion-before-failed-checkpoint rollback. Guarded generation and
+actual delivery recorded separately in tools/p1352-simcheck-cursors.md.
+
+## Patch 1351 -- bounded activation readiness and late resource diagnostics
+
+**Problem.** The remembered-permutation warmer stopped after two seconds without
+reporting the remaining closure, counted failed fallback attempts as warmed, and
+could not explain work first performed after loading. Worker queue emptiness
+also does not prove a resource has finished loading.
+
+**Change.** Inventory named server/CSQC/viewweapon model slots, current-registration
+file images and remembered/seeded supported permutations of active shader/pass
+programs. Share a configurable, clamped two-second soft budget across actual
+pending resource states and additional compiles; check before each completion or
+compile, without full-worker sync. Deduplicate program pointers and masked
+permutations; distinguish available, successfully compiled, pending, failed and
+unrequested resources. Base fallback is not readiness. `r_mapready_info` preserves
+the activation result and reports subsequent GLSL compile and main-thread image
+completion counts/time/last resource. Reload invalidates the snapshot. Late
+telemetry performs no file I/O. Unsupported/disabled and incomplete are explicit.
+
+**Verified.** Full isolated supported Windows client/server/plugin build passed;
+three QC passes, zero warnings, no native warning from changed implementation
+files (untouched baseline warnings retained). Literal-source deterministic C
+controls pass30 checks under `-Wall -Wextra -Werror`: acting compile/completion,
+duplicate/masked aliases, repeat, zero budget, failed/pre-existing fallback,
+executing worker, timeout, failed/unrequested resources, old images/render-target
+exclusions, renderer modes, late work, main-thread/warm exclusions and reset.
+Real Tensor2 client/socket smoke warmed61 known permutations and reported8 failed
+registered image lookups as **incomplete**, not ready. Zero-budget control left
+pending work; subsequent drawing recorded6 late compiles plus image completion;
+PBR setting change invalidated activation. Owned actors quit normally. See
+FTESurf `tools/p1351-mapreadiness.md` for evidence and scope.
+
+**Limits.** Informational closure at the existing loading boundary, NOT server
+timer/start admission or universal map residency. Future/unremembered resources,
+unowned fixed-emulation programs, render targets, audio, driver first-draw work
+and route coverage remain outside it. Optional failed image probes remain
+visible. One synchronous driver call/upload is not preemptible; the soft budget
+does not cover prior reload, history I/O or enumeration. No final performance
+improvement or owner void-transition acceptance is claimed. Initial source-edit
+build failure and detached make stall are retained; synchronous supported build
+succeeded. Release0.1.41 is not rebuilt or republished.
+
+## Patch 1350 -- source-bound native TAS contact observations
+
+**Problem:** A paused full input line lacked native collision annotations for
+ramp sections. Earlier navigation, raw edits or failed retained-file readback
+must not lose the original future or relabel an invalid source as current.
+
+**Change:** Passive optional Source-mover outputs retain only the chosen path's
+world plane and hull endpoint, with explicit unavailable/unsupported states;
+normal-recovery and initial stuck searches abstain without changing movement.
+Bounded complete-source maps back Observed contacts beside Manual markers. Raw edits invalidate independently of
+intent; metadata-only retag and both fresh/cached binding require exact-source
+canonical retained readback. Ordinary/template/share read failures and canonical
+open failures in binding/share preflight invalidate the exact key; readable
+nonportable eligibility refusals do not. Ordinary load reuses its first strict
+read instead of parsing the whole line twice.
+Pages only queue one separate canonical-only Think read when proof is unknown.
+That proof is NOT live-body admission: native command-context/restore gates stay
+unchanged. Pending UI replies are empty and retry finitely. Decode signed normals
+and the native inclusive/configurable ramp band. No input, portable-pose,
+evidence-format or submission authority change. Unpublished prototype renumbered
+forward; published1345/1346/1347/1348 code and receipts are preserved.
+
+**Verified:** Isolated Windows FULL native/three-VM builds, zero VM/new modified-
+native warnings; native20 helper cases include recovery control/abstention/trace
+parity. Real dedicated static BSP checks cover complete planes/extent, earlier
+metadata retag, literal cold/warm edits and divergent-preview/Discard restoration.
+Test-only packet/readback fault variants reproduce both old defects (32checks)
+and pass corrections (35); wall/zero normals refuse, original bytes stay exact.
+Uninstrumented production metadata, literal, preview/Discard and48000-row budget
+pass. Actual96000-row ordinary load and separate validation avoid the reproduced
+old VM runaway; failed ordinary syntax/expected-hash reads invalidate prior proof,
+file existence alone cannot restore it, and actual CSQC pending replies retry to a
+complete map without body/grant work. Fresh949 reader checks pass; stable corpus
+558 CLI inputs retain351 existing faults, no increase. Final merged/tagged delivery
+qualification is separate. Follow-up review found first-validation completion could
+leave an exhausted pending view and initial unsticking could lack an unsupported
+witness. Completion now notifies and actual stuck searches abstain; ten added native
+numeric checks include the same real recovery with/without its report witness and
+unchanged position. Clean current Windows FULL/threeVM builds add0own warning sites;
+ARM2f5c35c6b passes1608/0 numeric checks including those ten real stuck-search
+controls, with exact source/ELFs retained. This is not full native-tick/span or GUI
+acceptance. Legacy6571 reader/UI cache defects now act47/47 checks with the exact
+current native, original bytes/counters unchanged. Whole review6 found two further
+canonical-open exits retaining proof; both now revoke and compile3VM0warnings.
+After the resource blocker cleared, the old open-failure build acted37/37 checks;
+current production d035 passed65/65 real dedicated-socket checks, including failed
+Go/template reads, binder/share opens, exact-source invalidation, automatic UI
+recovery only after strict readback, no-op refusals and unchanged source/counters.
+Both arms stopped their own client/server with rc0. Two final independent
+whole-feature source reviews cleared all28 paths. BOTH Windows installs received
+28 exact qualified targets17:23:49Z6Nov; all12 positive-empty lobbies received the
+paired native/QW/CS transaction17:33:46Z. New native/plugin actor epochs match;
+18642 Windows/48466 Pi protected files and active backend/configs stay unchanged.
+All8 actual recorder parts and183 full resume members/metadata were individually
+rehashed ONBOX/OFFBOX before ANY stage/restart and rechecked at the locked boundary;
+ordinary `.prev` and exact preimages remain. No process killed, data restored or
+backend redeployed. Downloaded-client smoke still lacks the4GiB/quiet admission
+window; owner two-ramp acceptance is pending. Prior ARM1598 remains bound to a439.
+Historical test IDs retain1344/1347 labels.
+No live moving-world/ladder, universal ramp-ID, global optimum, owner comfort or
+public TAS-admission claim.
+
+## Patch 1349 -- preserve compiler output errors and optional capabilities
+
+**Problem.** A failed primary output close only printed and returned from the
+writer, while its caller ignored that return; a requested debug-output close
+was unchecked. Synchronous compilation could therefore report success after a
+required output callback refused its buffer. The trusted decompile command also
+called an optional callback absent from the default VM table.
+
+**Change.** Route only failed required primary/debug closes through the existing
+compiler error/unwind path, retaining legitimate empty/no-output returns. After
+normal lazy VM setup, refuse unavailable decompilation with a diagnostic. Do not
+enable the old decompiler or change command provenance, recording, comparison
+policy, VM layouts, Build or release version. No header change.
+
+**Verified.** Exact real compiler/parser/writer plus actual host write callback
+against an in-memory filesystem spy: 16 original success/refusal/parse-control
+results discriminate both corrections and each branch-removal control. Actual
+program headers/functions/statements and requested debug bytes acted. Output
+failure now returns false through existing unwind without falsely incrementing
+parser-error counts; ordinary successful output is unchanged. Extracted real
+handlers with a safe dispatch spy discriminate four absent-capability paths,
+four valid paths and sixteen untrusted refusals per arm; no original NULL call
+or installed crash was executed. Existing argument/provenance controls remain.
+The real compiler and synthetic handler controls also discriminate on ARM.
+Two independent source reviews found no issues in their assigned scopes. Initial
+clean Windows client/server and ARM server/paired-plugin builds add no warning
+sites; each native image passes 1,578 checks and reaches the unavailable-decompile
+diagnostic. The Windows 4-GiB gate first refused, then passed without terminating
+owner processes. These controls do not establish full VM ABI, real filesystem
+failure handling, allocation balance, asynchronous lifecycle or atomic multi-output
+acceptance. A debug-output failure may follow an already accepted primary file.
+Exact source/build/integration/deployment provenance is recorded separately.
+
+## Patch 1348 -- isolate overview lightmaps and retire hidden weapon feedback
+
+**Problem:** Independent1345 source reviews found current-view dynamic lighting
+leaking through a persistent eligibility flag/unchanged light epoch, packet models
+accepting an unloaded type0/mod_brush, hidden bursts/recoil/events replaying on
+exit, and nonvisual VM preference/profile sync paused with weapon drawing.
+Original1345 source/tag and rejected candidate images remain unchanged. Those
+original binaries were not deployed; no rejected client was admitted. Only the
+qualified compositions recorded below were shipped.
+
+**Change:** Always advance the scene light epoch, reject overview light marking
+and both RGB/luminance additions from CURRENT explicit flags. Restore the original
+base lightmap eligibility assignment and keep its cache/realtime overrides intact;
+blindly reinitializing that global inside light pushing would erase those rules.
+Require MLS_LOADED before the packet brush-type exception. Keep VM_Frame active;
+a lightweight WP_OverviewFrame discards hidden cosmetic bursts/recoil/flash/scope/
+inspect state and consumes the current event, while normal WP calls are unchanged.
+Recompose only TWELVE client files onto deployed218721aa Pi, not superseded9debcfc9.
+Keep zone-editor frame/input/drag maintenance active with an explicit draw flag;
+only its world overlays are suppressed, never deferred clicks at a later camera. No physics formula, input capture, wire/recording format or
+QC Build change. No new probe code, unbounded preload or readiness-barrier claim.
+
+**Verified:** Literal production light-push/caller/RGB+Lum/packet/QC-helper/caller
+fragments with explicit synthetic dependencies:1102checks, original743failures,
+corrected0, both fixture compiles0warnings. Current-scene normal/overview/normal,
+stale-epoch, cache/realtime base-eligibility preservation, unloaded zero-type,
+loaded-positive, hidden sequence/burst/recoil and VM-poll controls ACT. These are
+NOT GPU/pixel/full animation/physics or FPS evidence. A first over-broad assignment
+selector and missing UCRT child-tool PATH were diagnosed at the existing compiler
+seam; original failures retained. Current Pi baseline reproduces CS01815ce0 and
+QWe7b8a26b; corrected main/Pi THREE-VM builds0warnings, Pi QW/menu/source unchanged.
+Native tagged1355 full build74old/74current warnings/no additions. Fresh reviews
+closed all five findings. Editor caller/two production bodies68checks/17control
+failures/0corrected, synthetic UI/geometry and QC->C++ syntax only, NOT native UI
+or file IO. Pi9fcd95b1/main27970c37 THREE VMs0warnings; source pins and guarded
+delivery separately in FTESurf tools/p1348-overview-state.md. Normal unprofiled
+GPU admission was resource-refused, never regraded or weakened. One1348 claim
+follows fresh both-repo/164-tree/335-fixture census max1347; no tag/history rewrite.
+
+**Delivery6Nov2026:** Both Windows installs verified13:40:56UTC, main2f2f3946 /
+CSa45e87ee5133, native1355c256a/tagpatch-1348 through public journal818f3681;
+26destinations/paired previous files and19307protected non-target paths exact.
+Latest compatible Pi490280cc preserves5cb18943 KSF and all12accepted render/
+weapon/editor bodies; actual baseline reproduced, THREE VMs0warnings. All12
+lobbies activated13:51:33UTC, CS2d70a779b200 and BYTE-IDENTICAL current QWe7b8a26b.
+Native/plugin/menu/config/backend preserved;48215old protected data entries
+unchanged,6new entries retained, join capacities restored, rollback retained.
+Actual read-only postflight checked live/previous programs, all12new actors and
+directory, config/native/menu/backend and real code-catalog consumer. Exact public
+source/program provenance: FTESurf tools/p1348-overview-state.md. Fresh graphical
+smoke was resource-refused below4GiB; no launch/relaxed gate or FPS claim. Owner
+out/back-twice feel, final unprofiled timing and broader readiness remain pending.
+
+## Patch 1347: visible KSF fetch and gentler replay retries (6 Nov 2026)
+
+Problem: leaderboard request handlers existed without visible in-game/menu controls.
+Three missing/broken replay files could also be promoted into a six-hour whole-host
+refusal, stalling healthy record boards. HTTP500 is not proof of rate limiting.
+
+Change: Fetch KSF buttons queue the selected course/direction through the existing
+bounded +100-times endpoint and ordinary replay-interest path. Unsupported sources
+and segmented categories hide the control; narrow menu layouts give it its own row.
+Replay requests now default to six-second spacing, with slower probes after transient
+failure. Missing404/410 leaves are deferred per file, never counted as host failures.
+Repeated500/broken bodies and other5xx use a replay-only60s exponential backoff capped
+at30min. Real429/access refusals retain existing host-wide exponential protection;
+Retry-After seconds/HTTP-dates are honored. Existing active parks are not shortened.
+No converter, replay format, PB binding, ranking, schema, native pin/tag or QC Build change.
+
+Verified: actual src/build.ps1 -Jobs8 -NoDeploy, all three VMs, zero warnings
+with qualified compiler c24ede65. Initial older-compiler baseline/candidate both
+had two cl_viewmodel property227 warnings; that compiler was replaced, not waived.
+Actual pointer clicks in CSQC and menu sent style-isolated POST202 requests and
+persisted the intended queues; FW/SW/HSW/BW reads acted. Ranked/segmented controls
+were absent; wide/narrow menu geometry remained on-screen. KSF top-up8/0
+(corrects the earlier17 count; retained unittest log runs8); replay importer84/0
+on Windows AND Linux, including missing files, repeated500 recovery,503/429
+Retry-After, HTTP-date validation and preservation of a pre-existing active park.
+Backend activated11:24:42UTC6Nov2026 with current-data rollback retained; both
+Windows installs verified8UI/symbol destinations plus paired previous files.
+Pi compatible CSQC-only component5cb18943 activated12:27:00UTC: all12warned10s
+and restarted,48122old protected entries unchanged,6new files preserved;
+8recorder parts/183resume files independently verified on/off box, capacities
+restored/no gate left. Native/SSQC/plugin/menu/config/backend unchanged by that
+Pi swap. Fresh installed-native/no-CSQC-cache client downloaded the exact served
+component, drew a board, exit0/no QC error/0smoke failures. Screenshot inspected:
+empty/no-zone kitsune, terms unaccepted; NOT populated KSF click, geometry,
+playback, owner consent/feel or performance evidence. Human check still pending.
+Fresh full provider metadata13:11:35UTC confirms955maps/same43tier7/8 scope.
+Acquisition remains ACTIVE:13:34:30UTC1167/1348boards,39759held times,
+1160ready replay entries; pending/binding/conversion gaps remain explicit.
+Public snapshot/limits: FTESurf tools/p1347-ksf-audit.md. This is NOT a claim that
+all upstream times/replays are acquired; no native pin/tag or Build change.
+
+## Patch 1346 -- recover interrupted similarity source admissions (backend only)
+
+**Problem.** Source rotation was durable before comparison, but an interrupted
+comparison had no durable recovery slot. Later sweeps could rotate past that
+admitted source without first recovering its unfinished comparison.
+
+**Change.** Reuse a distinct source key in existing cursor storage. Atomically
+commit rotation plus reservation before file work; recover an eligible reserved
+source before ordinary bounded keyset/wrap selection; clear only the matching
+reservation after handled completion. Abrupt exits and failed completion retain
+it. Comparisons remain outside owned write transactions. No schema, recording,
+comparison threshold, historical observation, ranking, enforcement, native, VM,
+Build or release-version change; engine commit/tag pins are unchanged.
+
+**Verified.** Exact frozen product diff passed two independent fresh-context
+read-only reviews. Windows and Linux each pass all 28 simcheck test programs,
+including 11 new reservation cases; baseline and admission-removed controls each
+have seven intended failures. Real 80-opportunity comparisons, child interruption,
+reopen, transaction/contender ownership and old capture preservation act. A new
+Windows combined cap/wrap/budget falsifier stores both real 80-opportunity pairs;
+baseline SQL selects but fails recovery order. Its manually seeded reservation
+cannot discriminate the admission-removed control; that is not claimed as new
+mutation coverage. Reader 949 checks pass; primary RUNS corpus faults do not
+increase and protected input bytes are unchanged. Existing saves unreadability,
+legacy test import and baseline warning limits remain explicit, not waived.
+Source validation is not deployment or a fairness/hard-time/exactly-once claim.
+
+## Patch 1343 -- relative teleport enable, lookahead and report parity (QC only)
+
+**Problem.** Enable before Disable changed a relative clip trigger to SOLID_BSP;
+relative destinations were missing from extra-PVS lookahead and server-only snap
+tracking. Merely adding tracking could quiet real same-point prediction errors.
+
+**Change.** Save original BSPTRIGGER solidity at spawn. Generic Enable keeps clip
+triggers invisible without Alpha owning that flag; ordinary brushes still unhide.
+Admission/banking branches unchanged. Reuse center+offset point
+in authoritative touch and PVS; include ordinary/relative callbacks, preserve
+all existing gates/fallback/floor lift. Share client point for touch/registry,
+and refuse quieting if ANY predicted ordinary/relative trigger lands there. No
+banking policy, threshold/quiet-window, evidence/save format, raw capture, native,
+backend, Build or release change. No historical cause or FPS/hitch claim.
+
+**Verified.** Exact production spawn/generic Enable/PVS/client registry/report
+helpers in actual dedicated QC VM:24checks, baseline7intended failures, subject0,
+compiler0warnings, exit0. Positive spawn/toggle/ordinary-eye and actual detach,
+registry/gating/bound/different-destination controls act; same-point guard has an
+acting counterfactual. Touch/zone/render/bank dependencies explicitly stubbed;
+NOT full collision/PVS network/feel evidence. Both profiles' three-VM builds0
+warnings; reader949pass, final primary RUNS548/351fault results equal the true
+baseline, NOT fault-free. Both independent rechecks closed runtime findings.
+Deployed6Nov2026UTC: both Windows verified09:17, all12Pi09:33; new actors,
+paired programs/.prev exact,19340Windows and47924Pi protected paths unchanged.
+All8parts/183resume files byte-exact after ON/OFFBOX capture/restart; native,
+menu/config/backend unchanged; all join capacities restored. Cold served-client/
+UI smoke passed6Nov10:28:42UTC after RAM freed:66squiet/min5212MiB,4096-MiB gate
+unchanged. Exact Pi CS01815ce0download, board cols9/type14, exit0/completion,
+no detected QC runtime errors; screenshot HUD/empty-state inspected, NOT populated
+rows or textured-world correctness. Own rig retired/proof retained/lock released;
+no rebuild/deploy/restart. Native PVS/feel and human check still pending. Limits:
+tools/p1342-save-release.md and tools/p1343-relative-teleports.md; lextest.md.
+
+
+## Patch 1342 -- short save chains and coherent hold release
+
+**Problem.** Only neighboring save rows were published. Unpublished steps left
+release using the previous row's speed; atomic cursor could also outrun HOLDVEL.
+Independent review found that rejected validation leaves cursor and held row
+DIFFERENT, so even a coherent cursor cannot prove settled release speed.
+
+**Change.** Optional stat207 publishes +2/-2/+3/-3 with the COMPLETE original C
+snapshot PLUS actual-held validity/velocity: D42tokens/inner C50,1400-byte cap,
+no mixed packets. Whole D or legacy row fallback; every numeric token uses the
+existing strict finite decimal codec. Far/held-only changes refresh with C unchanged.
+Pending non-rate-refused loads may speculate via virtual row; settled release
+uses actual held speed, NOT a refused load's selected cursor. C-only/unproven
+settled hold is BLIND; numeric-only legacy remains. Refusal/queue/backstop/ring
+behavior retained.
+No native engine/wire type, server physics, evidence/save format, threshold/quiet
+period, raw capture, backend or Build change. Beyond+-3 and historical report
+causes are not claimed; no full999row dump.
+
+**Verified.** Actual dedicated QC VM metadata31/release29/relative24=84/0,
+compiler0warnings/exit0.17added review checks expose12failures in original candidate
+(metadata8/release4), now0. Production server step/release act with explicit accept/
+refuse validation stub (not full file IO); acknowledged refused-cursor release
+matches server600, not cursor700. Same-shape junk/nonfinite/overflow/invalid flag
+are refused; accepted/thaw/legacy/known/unknown controls act. Original43/18baseline
+and relative24/7baseline retained separately, not summed across baselines. Both
+post-fix standard three-VM builds0warnings. Both independent rechecks closed
+prior runtime findings; remaining stale shared D38 comment corrected to D42 with
+same-line comment equivalence, no program rebuilt or evidence redated. Paired
+rollout completed6Nov2026UTC (Windows09:17, all12Pi09:33); full protected/data/
+rollback/actor checks above passed. Reader949pass reused on unchanged source;
+final primary RUNS548/351equals baseline, NOT fault-free. Cold native served-client/
+UI smoke passed6Nov10:28:42UTC: exact Pi CS01815ce0download, board cols9/type14,
+exit0/completion and no detected QC runtime errors; screenshot empty-state inspected.
+66squiet/min5212MiB preserved4096-MiB game gate; unique proof retained, own copied
+rig retired/lock released. Not rapid-save release/packet ordering/physics/PVS/feel
+acceptance; human check still pending. No source rebuild/redeploy/restart.
+Source/program provenance and limits: tools/p1342-save-release.md.
+No full packet/collision/PVS/feel/historical-cause claim; tools/p1342-save-release.md,
+lextest.md.
+
+
+## Patch 1345 -- exact frame reports and smoother map-only noclip
+
+**Problem:** Slow-frame ties could retain an expired slot, use the wrong camera
+location or repeatedly rebuild the ring. Long real stalls were omitted and dump
+histogram tails/ranks were approximate. Full-map noclip also paid for unnecessary
+props/effects. At the first void crossing, recursive reflections cleared the new
+map-only policy and revived static props' cold exact lighting-visibility traces.
+
+**Change:** Retain slot identity/newest-first ties, include long intervals and
+report focus exclusions/coverage. Live histogram estimates stay cheap; an explicit
+dump sorts captured raw samples for exact tails, nearest-rank percentiles and
+median-threshold stutters, with a checked256KiB temporary cap and atomic OOM
+refusal/rebase. Read-only VF_WORLDONLY228 classifies the final primary noclip
+camera. With r_voidvis, nonarchived r_voidscene defaults1: retain BSP, loaded
+structural brushes, authored func_lod eligibility and frustum policy; omit native
+and QC decoration/effects. Preserve the explicit parent's policy in recursive
+reflection children instead of restarting cosmetic prop lighting there. Fresh
+primary/named scenes clear/rederive it; the raw void predicate remains view-local.
+Normal parents never acquire the bit. Keep reflection geometry and exact normal
+lighting; omit the optional3D skyroom only in map-only scenes, not normal views. Clear uncovered
+primary mono single-seat forced-void pixels in both scene modes; exclude native
+secondary/recursive/stereo/named-target/loading contexts and supply every native
+point-query output. Observe scoped primary offered candidates BEFORE culling, not
+rendered-model totals. Avoid sprite name/prefix work without changing trace/cache
+scheduling. No physics formula, wire or recording-format change by this patch.
+
+**Verified:** Actual sampler controls:440/10 original failures,13992/0 corrected;
+pre-exact dump fails58of14100, exact source14100/0 including OOM/ties/ranks/stalls.
+Literal query5760/0, loaded-brush classifier280/0/no loads, color-clear4423680/0
+with acting old/null-output/stereo/secondary controls. Actual candidate-census
+fragments432/0; the legacy nested overwrite control acts. Actual policy-reset
+fragment1280/0; primary clears stale policy, recursive children retain only an
+existing bit, unrelated flags and pure query bodies unchanged. Native three-map
+pixel/geometry controls and complete CSQC profiles are retained separately from
+rejected/print-stalled/one-ULP comparisons. Initial native gate and narrow authored
+LOD callback act; counters are not draw counts. Qualified current-mode1 native
+attribution binds exact EXE/debug/plugin symbols: first boundary161samples,
+154BIH_Trace/156HL2_CalcModelLighting, in recursive reflections. After policy fix,
+first/repeat natural crossing events have no armed12ms spike/sample. Instrumented
+attribution is NOT product FPS or proof of no smaller hitches; one setup outlier
+before the boundary remains explicit. No positive lazy-compile hook control, so
+P0 is not universal no-compilation evidence. Probe source removed from exact owned
+preimages; no diagnostic sampler may ship. Canonical7ccb compiler's two known
+F333227 miscompilations are NOT a safe fleet baseline; final programs use the
+read-only qualified c24ede65 tool in the isolated source tree. Final normal build,
+source pins, compatible Pi CS-only profile and deployment are recorded separately.
+No all-resource readiness barrier or universal numerical FPS gain is claimed.
+See FTESurf tools/p1345-smoothness.md. Unpublished reservation1331 superseded by
+ONE1345 claim after fresh full-worktree census; original evidence identities kept.
+
+## Patch 1341 -- clearing teleports clear the predicted carrier (CSQC only)
+
+**Problem.** Ordinary non-landmark VelocityMode1-3 teleports call SV_ClearCarrier
+on the server but left the client's held push velocity intact after arrival.
+Relative clear also left a queued earlier push and erased a later same-pass push.
+
+**Change.** Share a capability-gated CSQC clear helper: zero the carrier through
+existing BVSET, discard earlier push/accumulator writes, and let a later continuous
+push replace the clear. Keep mode0/landmark/no-destination/gates unchanged. No
+native code/API/pin/tag, SSQC physics, recorder/verifier/format, report threshold,
+backend, QC Build or release change; no historical save-report cause inferred.
+
+**Verified.** Actual dedicated CPU-only QC VM compiles exact production client
+helpers, SV_ClearCarrier and server mode arm:42checks, baseline8failures, subject
+zero, exit0; positive velocity/gate/push controls act. Public fixture entrypoint
+also42/0. Standard clean-source THREE-VM NoDeploy build zero warnings. Test-only
+missing/unused declarations repaired with originals retained, no product waiver.
+Two independent product reviews found no movement defect; two fixture P2s fixed,
+21actual-function guard controls plus independent closure. Native consumer contract
+inspected, NOT executed by QC fixture. Delivered6Nov2026UTC: ALL12lobbies05:06:06
+CS7fda354387f3 only (Pi68597668/C4, QW5e8 unchanged); BOTH Windows05:09:58
+CS0a3a6b762b4b/symbols only (main305df2a5, QW66a6 unchanged). Warning/grace/normal
+disconnect, strict8parts/183resume preimages on/offbox before stage,47,752Pi and
+19,346Windows old protected entries preserved, capacities restored, .prev/exact
+predecessors retained. Wrapper timed out after Windows copies; receipts checked
+then post-preservation completed, no repeated swap/restart. Fresh public-lobby
+client downloaded exact CS, board drew, no QC error, screenshot inspected. No
+native/backend/config/data deployment or gate remains; full teleport network
+physics, measured correction distance, historical save causes and owner feel
+remain unclaimed. tools/p1341-teleport-carrier.md; human check in lextest.md.
+
+## Patch 1340 — Finish the developer writer-command census
+
+**Problem.** The remaining developer export/dump callbacks inconsistently
+validated command provenance before model, VM or filesystem work. Some failure
+paths dereferenced an absent world or failed output handle; compiler output
+plumbing hid write failures and silently truncated output names.
+
+**Change.** Apply the existing trusted-command boundary to thirteen developer
+callbacks, preserving their trusted paths. Refuse absent-world/failed-open cases
+cleanly. Propagate compiler output failures and reject invalid lengths or names
+instead of aliasing a truncated destination. Deliberate game-controlled recording,
+receipt/journal contracts, movement and evidence policy remain unchanged.
+
+**Verified.** Safe actual-callback tests: ten full functions and three bounded
+large-function prologues; trusted effects, 26 untrusted-context checks, missing
+VM/model/world/output and preserved shader-file controls. Untreated source and
+removed-guard controls fail as predicted; compiler callback has three baseline
+failures versus zero after the fix. Initial supported Full Windows build has
+74 inherited warnings and zero new sites. Final tagged source `7e271da76`
+(`1340`) passed the same acting controls on Windows and ARM, 1,578 native checks
+per platform, and ARM's exact 1,131-blob source check; zero new warning sites
+(74 Windows, 16 server + 1 plugin ARM inherited diagnostics).
+
+**Delivered 6 November 2026.** Both Windows installs' ten native/plugin targets
+and their `.prev` hashes verified. All twelve Pi lobbies warned with the default
+ten-second countdown, then restarted to the exact qualified native/plugin pair;
+new process epochs and mapped plugin inodes verified, none skipped. Before any
+canonical staging, the complete recorder/resume preimages were individually
+verified on- and off-box. All 47,758 previously inventoried protected data paths
+stayed unchanged; eleven new files were retained. Configuration and backend
+launch/files stayed unchanged, and the short canonical sweep lock was released.
+No VM/config/backend shipment, data restore, owner-client kill, or whole-engine/
+parser security claim. Frozen images and rollback history remain retained.
+
+## Patch 1339 -- On-request ramp atlases and the Christmas snow model
+
+**Problem.** Two bundled ramp masks do not cover the Story/Event roster. Native
+remote-picture size limits cannot safely transport the larger baked atlases.
+Clipped imports and legacy source tokens can hide available cosmetic poses; snow's
+flake model should live alongside Christmas assets.
+
+**Change.** Read existing recordings, Momentum files and explicitly bound CSS66
+KSF originals for cosmetic baking only; preserve source bytes and count rejected
+inputs and uncovered maps. Full originals supersede their covered KSF clips,
+without collapsing distinct partial captures. Bake hashed PNG/base64 plus strict
+geometry metadata; expose only this public cosmetic namespace. Client request/
+consent, bounded decode, SHA256 verification and QC-sandbox cache reuse the online
+request counter; defaults remain marks0/dirt0. Move the identical flake IQM to
+models/christmas with old-install fallback and update the release allowlist. No
+native API/pin/tag, physics, recorder/verdict/evidence format or QC Build change.
+
+**Verified.** Offline cosmetic/contact and existing KSF tests23/23. Real owned
+loopback dedicated/client HTTPS test downloads the639KB PNG with native picture
+limit131072 unchanged: consent and invalid-geometry refusals act, exact binary
+hash/cache and actual custom-material2048x512 size pass, no QC error. Preserved
+wrong-cache-path and wrong-unflagged-texture-query failures drove the fixes; neither
+is relabeled a pass. Final100/114map bakes are real contacts, not full-coverage
+acceptance; authority reader949/0 and runs-only548/351oldfaults held. Largest-case
+qualification also passes on5MB/17833triangles. BOTHWindows main CSecb6d2c3,
+ALL12Pi compatible CS445abb4c installed; fresh live client downloaded445abb4c,
+board9/type14, screenshot/noQCerror. UTC2026-11-06T07:38:06Z all12epochs,
+47848protected originals0changes/loss;8parts/183resume archived offbox. Native,
+QW/menu/config/backend held, capacities restored; original localSSH180s failure
+retained, successful remote receipt observed READ-ONLY, no repeated restart.
+Full receipts/14coverage gaps: tools/p1339-ramp-atlas.md. No visual/FPS or
+complete upstream-corpus claim.
+
+## Patch 1337 — Validate developer-tool command contexts and arguments
+
+**Problem.** Developer-tool console callbacks did not consistently check the
+caller's command context or validate argument-vector capacity before use.
+
+**Change.** Refuse untrusted compiler/decompiler command contexts before VM or
+filesystem work. Reject excessive compiler arguments before copying them; retain
+trusted defaults, explicit arguments and the existing supported capacity.
+
+**Verified.** Write-free tests compile the actual production handlers with strict
+warnings. Trusted paths, VM-present/absent cases, compiler lifecycle and argument
+boundaries pass; untreated and test-only missing-guard/too-small-cap controls fail
+as predicted. Native m-rel/sv-rel and plugins build with zero new warning sites
+(74 inherited baseline diagnostics). No movement, recording, policy or QC Build
+change. This is a bounded hardening fix, not completion of the native audit.
+
+
+## Patch 1335 -- Christmas master, optional marks and close ramp dirt
+
+**Problem.** Seasonal effects need a Christmas gate; marks/dirt should default
+off. Dirt floats because lift defaults2units while depthpush is not an FTE
+shader keyword. Current live P1329/P1330 APIs must not be downgraded.
+
+**Change.** r_christmas0 gates snow, weather loading/frame/audio, Colin theme,
+props/mist; existing preferences retained. Display Info/reset rows for master,
+marks and dirt. Marks0/dirt0, default lift1/32unit bounded1/8 for old saved2;
+live lift change reloads mesh once, disabled marks skip setup/draw. Supported
+polygonoffset1 replaces ignored depthpush, distinct material cache keys. Exact
+client-defaultcfg hunk only; no peer config overwrite. No native pin/tag/QW/
+menu/backend/media/physics/evidence/QC Build change.
+
+**Verified.**8source-bound master/map/manual cases include acted ON controls;
+load/frame/default/UI/clear-sound/source guards pass. Actual native offset
+function executes with negative units/factor and flag set (parser stubs only).
+Ramp bake/blend4controls and native sampler/colour/flash regressions pass;
+current-main3VM0warnings. Fixture declaration/cache-expectation failures retained,
+not product waivers. Clean C4/D911 qualifications0warnings. Concurrent live
+Windows P1336 pair66/b639 invalidated C4/b7 candidate; guard refused downgrade.
+D911 retains exact own5modules and builds QW66 equal already-installed Windows
+server. BOTH Windows6Nov02:50UTC CSP117d627ace2d/symbols only,4targets/caches
+exact,41protected unchanged,2exact defaults hunks preserve all unrelated bytes.
+ALL12lobbies6Nov03:37:10UTC C4/CSPb7d67c223057; current Pi QW/native/backend/
+configs unchanged,12new actors/0skips and47680protected files unchanged. Warned
+all12ports,10-second grace before normal disconnect, current closed-writer
+parts/resume preimages all rehashed ON/OFF-box before staging/restart. Temporary
+runtime join capacities restored on all12; old captures/refusals retained. Local
+SSH180s timeout did not cancel the actual successful activation: read-only
+receipt/actors verified, no repeated swaps/restarts. Fresh isolated client
+served exact CSb7d67, board drew, no QC error, screenshot inspected. Same-ramp
+grazing/flicker/bleed and seasonal off/on owner acceptance remain manual, no
+native timing/FPS claim. Tools/p1335-christmas-ramp-defaults.md.
+
+## Patch 1336 -- manual full-line TAS sections (QC only)
+
+**Problem:** Named checkpoints existed but there was no practical section browser
+or safe automatic marker-metadata save while paused earlier than the retained
+end. Reusing ordinary forced partial save would discard the future. The existing
+ordinary save correctly refused that operation and must keep doing so.
+
+**Change:** Add a four-row Sections page over manual endpoints and the complete
+retained tail. Input selection uses [body-start+1,body-end] without execution;
+start/end use existing bound seek/replay. Hash/body/request/endpoint-bound add,
+rename, remove and move-to-actual-body clone metadata and write all unchanged
+retained raw inputs/settings through the existing typed writer, with no supplied
+input. Preserve future snapshots, the real retained-head checkpoint and immutable
+original; restore the previous RAM marker map on writer failure. Share the
+existing eight-edit history append with input Keep, including a new branch after
+undo only over known retained editor history, not an unrelated named revision.
+Separate marker/recipe drafts use the existing scan owner, fresh/repeat rules
+and forwarded native key releases. Tab changes blur without clearing held keys.
+Refresh first obtains project metadata so unsaved legacy CP changes cannot trap
+its count guard. After successful marker persistence, synchronize its emitted
+local parent name and recompute made/signed indicators for the child hash before
+publishing; failure rollback remains untouched. Canonical refusal gains its line
+number; strict format is unchanged. Marker transactions now preflight actual
+named/original sizes, reserve stage/child reads, and scope ALL nested strict
+reads to a conservative1440000cumulative opened bytes, including settings/token
+lengths. Optional branch/repair reads consume it, reserve is rechecked BEFORE
+CP RAM staging, zero remaining stays limited, and all exits clear the scope.
+Require unchanged saved input/settings before Freeze to avoid an implicit save.
+Large otherwise-readable projects may explicitly refuse synchronous marker edits;
+no truncation, raised VM limit or complete bulk-stage editing claim. Ordinary
+non-marker reader behavior remains unchanged. No native C, movement, recorder
+format, engine pin/tag, QC Build, API or admission change.
+
+**Verified:** Three actual QC VMs zero warnings. Acting old real-dedicated
+control14; new browser20; metadata58; actual widgets31. Covers exact/final-short
+pages, range selection/no tick, retained future at earlier bodies, full raw and
+authored settings unchanged, exact parent/no input supply, typed writer refusal
+and RAM/file rollback with fixture restored, retained-head name removal, stale
+revision refusal, explicit Undo/Redo and a branch after undo preserving the newer
+immutable node. Marker text/Add/Rename/Remove, independent recipe text/save and
+cross-tab native held-key releases act; screenshot inspected for bounded readable
+layout/no clipping. Independent whole-feature review found three P2 consistency
+issues; actual old-code control24 acts stuck unsaved-CP Refresh and subsequent
+ordinary-save parent loss, corrected subject24 fixes both without changing the
+input/body/credit baseline. Synthetic literal success-tail VM: five old assertions
+fail and unchanged hash/head passes; all six corrected pass, including child
+made/signed flags both directions before event. No real signature is fabricated;
+minimal fixtures finish checks; only their own spawned processes are stopped
+after the quit deadline during later map setup (exit1), NOT normal world acceptance.
+Further whole-feature review found a cumulative-read P1: real old control18 first
+strictly reads/loads a real captured CP and browses a48000-row explicitly authored
+local plan, then marker hits a recorded VM runaway; ONLY owned old test server
+exits1. No fake future pose or signature. Corrected22 refuses BEFORE file/RAM/body/
+grant change, remains responsive and accepts a short marker on the SAME server;
+normal0cl+sv. Corrected metadata58 also passes rollback/undo-branch. Literal actual
+budget helpers16checks pass with SYNTHETIC sizes, exact/over/zero/negative/default/
+optional/different-file cases; own minimal process stopped after later map-setup
+quit deadline, not world/signature acceptance. Other full dedicated pairs normal0.
+Mandatory reader949/0 rerun after scoped-reader change; required primary
+runs/parts548 plus178views retain351existing faulty entries on unchanged bytes;
+10additional views actually parse clean, all726inventory members unchanged. Not
+a clean corpus. Broader legacy kept-save prefix remains separately blocked/unmodified.
+Initial missing internal name-list terminator was correctly rejected by canonical
+read-back; fix was in producer, not validation. Two final independent whole-feature
+reviews cleared the corrected code. Qualified under provisional P1335; renumbered
+before publication to avoid an existing reservation, with no runtime source change.
+Publication/deployment pending. Actual-contact proposals, next-ramp best-FOUND solving,
+public TAS admission/board stages and owner feel are NOT complete.
+
+
+## Patch 1334 — distinguish unmodelled similarity input from malformed input
+
+**Problem.** An existing unsupported clock-model refusal was reported as malformed
+input by both the comparison API and standalone diagnostics. This is an absence
+of a supported measurement, not a demonstrated input defect or measured zero.
+
+**Change.** Add a typed unmodelled refusal without widening parser eligibility;
+project a fixed skip category through collector/summary/authenticated review and
+standalone pair/census. Malformed native/move input and valid comparisons retain
+their old meanings. Existing historical rows are not reclassified or retried.
+No new raw field/format/schema, clock model, threshold/player-verdict/enforcement,
+identity/retention policy, native code/pin/tag or qcbuild change.
+
+**Verified.** Baseline14reader/5collector cases pass; four unsupported-format and
+one collector falsifier fail as predicted. Fixed native structural compare/bad
+witness and seven collector/history cases pass. Initial absent-tag negative fixture
+failures retained; corrected actual hseal mutation asserts changed bytes. Final
+focused30reader+7collector/history pass on Windows and actualLinux. Both platforms
+309 counted unittest cases across34related invocations retain TWO single-assertion
+connection-count failures, reproduced by pristine prefeature94ce7bb9 whole-source
+controls on each platform. Windows7platformskips and Linux7Node-skips, each
+300pass/2fail/7skip; not a clean full-suite claim. The original Linux aggregate
+missed a skipped case in a FAILED summary; corrected from unchanged raw logs,
+original aggregate retained, no tests rerun/regraded. Untouched gap in BACKLOG. ThreeVM0warnings,
+Windows11native/progs hashes held; reader949/0. Fresh548REC178VIEW344/7faults held:
+716exact reports reused with unchanged core reader,10newviews actuallyparsed/clean.
+Initial new-input refusal retained. Canonical census/recsim.py is OUTSIDE the
+collectors84 seal. Two fresh WHOLE re-reviews clear after report corrections.
+Backend9150481fa48de38cdfde9cc6c605a130fcb5492a +separately hash-bound canonical
+reader DELIVERED6Nov00:19:37UTC/audit00:19:38. Actual156sealedorigins/5ROpins/
+2ROruntimes/RWdata/44schemas+nonchurncounts/8identities/defaultenv preserved;
+core26event1 held, primaryOPEN/old+fallbackCLOSED,4cron/MOMactive. Reader exact
+through actualprocessnamespace, configuredtoolspath/heldmeta held; NOTguardsealed.
+Oldreader/SAMEcurrentdata rollback/historicalbackup retained, no DBrestore.
+Interrupted helper-variable transaction restoredoldreader then blockedbothlaunches
+beforeacceptance; repairedparameter and resumed SAMEtransaction's actual existing
+gates after a pre-mutation badalias resume. Failures kept, not an uninterrupted/
+singlepass claim. Collectorholdreleased/sidecar0bytes-nlink1, no reservation;
+liveanon401/health200/directory12. Actual oldpair reread nowunmodelled, storedrow
+unchanged. No native/VM/lobby swap. Requiredproduction/namespace/history roots kept.
+This is not native replay/hardware acceptance or durable historical remeasurement.
+Details: tools/p1334-similarity-unmodelled.md.
+
+## Patch 1333 -- requested current-file consistency (backend only)
+
+**Problem:** Historical similarity captures identify the buffers measured then,
+not whether today's resolved files still contain those bytes. Default review
+correctly did not reread files, but offered no explicit bounded owner check.
+
+**Change:** A captured pair in the bounded authenticated panel gains a requested
+current-file check through the existing session/origin/CSRF control guard. Preserve
+historical A/B orientation and replay-path resolution; at most two regular source
+buffers, each stored length plus one capped at16MiB+1,64KiB reads and before/after
+metadata. Require real EOF/length/SHA agreement for matches; stable differences
+and unavailable/changing/unadmitted work are distinct. No current digests or paths
+projected. Default details, public data, old metrics/captures, schema, verdicts,
+badges, collector selection and historical skips are untouched. No new capture,
+backfill, native code/pin/tag, format, ranking, physics or qcbuild change.
+
+**Verified:** Existing unmodified source-review10cases pass. Windows old/new
+focused25cases0failures/1explicitPOSIXFIFOskip, actualLinux25/0/5Node-absentDOM
+skips; Windows executes actualDOMclick/post, Linux realFIFO. Real byte/EOF and
+extra-byte bounds, restored-mtime difference/orientation, acting mutation,
+unavailable/cap/expiry, auth/origin/CSRF, legacy/off-panel noIO, unchanged DB/public
+projections and borrowed progress handlers are covered. Two initial test-token
+failures retained: the cookie is /admin-scoped, so extract the actual page token
+instead of a test session at /. No guard weakened. Required isolated three-VM
+build0warnings/bothWindowsinstalls held, reader949/0; corpus548REC168VIEW remains
+344/7 faults (exactreader+548unchangedbuffers reused,168pairedREC/VIEW parsed).
+Full existing admin script's two UDP-amplification/snapshot assertions also fail
+with the exact unchanged prefeature admin source; retained, not repaired or called
+clean. Actual Linux full admin controls pass (Node skipped there); the first
+owned overlay lacked board.html and its one404 is retained, then that exact
+public static input fixed the fixture only. Two fresh independent whole-feature
+reviews clear with stated limits. Backend-only generation5bf3bda3b6c69bbc5ef63624ab88984dbc9b8b49
+DELIVERED5Nov22:45:40UTC: actual12f7 predecessor plus ONLYadmin.py/admin_run.html;
+other82runtime and guards/external origins unchanged. Both CLOSED real candidates
+and6closure negatives pass; synthetic login/POST primary200/fallback404 plus
+401/400/403 refusal controls. Real156bound origins/5ROpins/2ROruntimes/RWdata,
+44schemas/nonchurn counts/eight identity tables/default environment held; core26/
+event1 unchanged,4cron/MOMactive, old+fallbackCLOSED/newOPEN. Historical backup
+BEFORE live closure, SAMEdata rollback/no restore. Live anonymous401 and public
+health200/directory12 pass; actual owner panel acceptance pending. Failed observer
+result-key and guessed directory-path probes retained, fixed read-only without a
+second healthy activation/restart. Required production/history roots retained.
+Cooperative admission is not hard kernel/disk/global invocation bounds; requested
+bytes are not authenticity or a coherent global instant. Human readability and
+historical-skip remeasurement remain separate. tools/p1333-similarity-current.md.
+
+## Patch 1329 -- restore historical local TAS controls (QC/tools only)
+
+**Problem:** Literal full-line replay restored the body/input but the controller
+still showed its latest draft. Effective guide yaw could then overwrite the
+historical requested yaw on a new step. Missing intent was not represented as a
+revision-bound optional input property.
+
+**Change:** Version4 local base projects add bounded, canonical optional settings
+ranges to the existing revision hash. Legacy1/2/3 remain literal/unknown; no
+unimplemented legal-start version5 is accepted. Restore completed-tick controls,
+keep requested aim until explicit local look changes, retain Apply-only drafts,
+and carry/invalidate metadata through Preview/Keep/Discard/Undo/Redo. Settings-only
+re-authoring dirties the revision; no-op raw/template rows retain settings. Bounded
+ordinal lookup avoids scanning every authored span for each literal gap input.
+Canonical output normalizes negative zero. Quiet panel refreshes have their own
+rate gate and preserve pending Follow choices; delayed metadata preserves the
+post-acknowledgement local-look anchor. Legacy view clicks do not select a new
+movement algorithm. Settled intent flushes before save serialization and editor
+row/identity comparisons, after arguments are owned; closed-panel durability no
+longer depends on a later event. The paired revision-service reader accepts v4;
+all declared-supply formats are checked against actual known-parent input rows,
+without credit from metadata or mixing base/legal domains. Reader/service support
+precedes any v4 uploads; the unchanged game share guard admits only portablev3,
+so local v4 editor deployment is independent. API budgets are unchanged. The isolated
+TAS installer includes accounts' two current profile dependencies and tests its
+actual release imports outside the checkout. File metadata cannot grant
+body/native/signing/eligibility authority or input-row credit. No native C,
+engine pin/tag, recorder format or QC Build change.
+
+**Verified:** All3 QC VMs0warnings. Actual dedicated mover workflow43 assertions:
+normal physical play/pause, distinct guide/hold spans, backward/forward replay,
+matching body/control readback, original-file preservation, raw-row-only metadata
+invalidation, history round trips, actual GUI Step1 inheritance, explicit local
+view retargeting and canonical tiny amounts. Eleven native/Python parser pairs
+include unchanged legacy2,4096-range/96000-input positives, excess ranges and
+malformed/unsupported refusals; accepted hashes agree. Combined65 assertions.
+Nine follow-up literal-function VM falsifiers pass against acting old failures:
+seven lifecycle/UI-ownership cases, actual old runaway at30000literal inputs before
+4096ranges, and canonical native zero emission. Their state/stat/view sources are
+synthetic; minimal-fixture owned stops are not normal game-exit or body acceptance.
+The full65-assertion workflow also passes the corrected build with both game
+processes quitting code0. A21-check real closed-panel control/subject reproduces
+old final-grant loss on save/native reload and metadata-only freeze/seek; the fixed
+subject retains both with raw rows identical/no input supply, while explicit
+pre-save events act as the positive control. Both pairs quit normally code0.
+Revision-service37tests pass, including3acting old known-parent supply refusal
+failures, v4 inherited credit/input-digest identity, hash tampering, late ancestry
+and base/legal separation. NanoPi37service/21installer tests pass; the actual old
+six-file release closure fails before the two missing dependencies are included.
+Python chain/supply/metadata tests pass with no
+metadata-only input credit. Recorder949/0; primary548runs/parts (716with views) retain351existing faulty
+entries on unchanged bytes; secondary has no corpus. A broader legacy kept-save
+prefix sweep remains access-denied, unmodified and unclaimed.
+**Deployed5Nov2026UTC:** Exact qualified6progs/symbol files BOTH Windows;
+12destination/.prev checks and23native/config hashes preserved. Installed-byte
+real-dedicated7-check smoke passes; both owned games quit code0. Progs-only ALL12
+lobbies QW5e8cd6d1/CS1ca3a29c,12new native/plugin epochs verified, native/config/
+backend unchanged. Before staging/restart,8actual parts and180complete resume
+payload/state members individually rehashed ON/OFFBOX; actual locked FD/actor
+checks pass. All47525old protected paths unchanged. Outer SSH caller timeout is
+retained; original on-box activation succeeded, reconciled read-only with zero
+repeated swaps/restarts and no gate held. Shipped CSQC append-registered without
+losing prior bytes/codes. Standalone v4 API reader remains pending owner sudo;
+normal portable-v3 sharing remains compatible and local v4 cannot upload there.
+No full Windows-data-hash or ACL/workaround claim. This is not owner feel,
+genuine-device signing, cold/shared-world replay or a completed section/next-ramp
+solver. Details and separate provenance: FTESurf tools/p1329-tas-settings.md.
+
+## Patch 1330 — preserve Source phase availability and prediction-report provenance
+
+**Problem:** Replacement-delta stats share32resend entries. Numeric changes can
+consume them before the command-tagged Source timing string is attempted; a
+superseded phase cannot later seed its old acknowledgment. Old comparison dumps
+also cannot show the phase/replay counts used when a prediction was created.
+Missing comparison/SV observations were being described as packet loss or
+commands that never ran, beyond what those bounded snapshots establish.
+
+**Change:** Opportunistically send existing Source phase179 first for advertised
+Source clients, preserving shared byte/slot/seat/pending/resend limits. No new
+wire message or movement formula. Native dumpv2 retains the first25columns and
+adds command validity plus saved prediction mode, FIRST replay anchor/tag/carry/
+exact-phase hit and CUMULATIVE native parts/ticks to that prediction. Missing or
+reset provenance is explicit; later cache contents cannot rewrite it. Native
+counter/cvars and the QC upload path are unchanged. Updated reader supports both
+schemas, prints provenance, removes overclaims and fails ungraded/read/fetch errors.
+
+**Verified:** Actual scheduling-block/wire fixture44checks/0failures versus two
+baseline availability failures; byte/slot/split-seat/pending/newer-tag controls act.
+Saved-state/cache/counter/actual writer-to-reader fixture15/0 with positive and
+unknown33column rows. Command-binding regression25/0; reader15tests/0failures
+versus12legacy failures. Original legacy report numeric/context/SV rows and errors
+are preserved. Actual native compiler flags syntax-check changed client/server
+units. Two frozen-source reviews clear. Full tagged Windows build has the same
+74native warnings (zero additions/removals), all3VMs0warnings;19340old installed
+paths unchanged. Existing Makefile HEADcount+29 yields clean
+`git-8417-patch-1330-0-g538de9265`. The first caller's MSYS argv exclusion failure
+is retained and fixed at the env boundary, not in product source.
+
+**Delivery (5 Nov UTC):** Matching native/plugin cohort installed BOTH Windows
+20:04UTC and native server/HL2 pair on ALL12NanoPi lobbies22:25:25UTC. All12new
+server actors and mapped plugin inodes verified; current P1329 programs/configs/
+backend unchanged. Complete8parts and180resume payload/metadata ON/OFFBOX member
+readbacks preceded canonical staging/restart; all47,542protected files exact,
+zero changed/missing/new, lock released and coupled native.prev retained. ARM
+native1578/0, phase44/0, six-map90rows and existing legacy4 expected outcomes
+(two PASS/two HOLD); actual P1314 predecessor90rows acted and matched. No new
+native warnings on ARM. The missing-fixture-input and superseded-program-source
+refusals remain failed evidence; corrected current published dependency bindings
+were used, not old progs restoration or historical regrading. GPU-only force-gate
+lane remains memory-blocked; owner save/load/TAS and in-game acceptance pending.
+No release, pin/tag or QC Build change for this delivery record. This proves a
+scheduling weakness and bounded metadata/reader correction, NOT that a historical
+save correction was caused by pressure or is now resolved.
+
+## Patch 1332 -- bind snow textures/colours and quicken lightning
+
+**Problem.** Owner sees black snowy grass on Colin; existing flashes look good
+but are too slow. The first clampmap does not advance native program sampler
+slots, so the following map overwrites roof0 and leaves snow1 unbound. Baked
+vertex colours also lacked the native #usemods generation/binding gate.
+
+**Change.** Two ordinary map entries with explicit roof clamp/point flags bind
+roof0/snow1; #usemods plus exactvertex/vertex alpha binds the existing IQM VBO
+without relighting/CPU colour expansion. Distinct runtime material key. Pulse,
+gap and fade run3x faster, retaining3..6strokes/brightness/post-burst thunder.
+No geometry/collision/media/native pin/tag/QW/menu/backend/Build/evidence change.
+
+**Verified.** Actual native3parser-function control reproduces1slot/unbound
+snow in old code vs2correct slots in the subject (texture I/O stubbed). Native
+colour-gate/direct-VBO and proportional3xfaster timing source checks pass;
+existing GPU/mesh/PCM controls pass, qualified3VM0warnings. Native owner black
+snow/cap/quicker-flash acceptance remains separate; source timing is not measured
+frame timing/FPS. No native pin/tag/Build move. Delivered5Nov2026 BOTH Windows
+19:05UTC client/symbols only,41protected unchanged; ALL12lobbies19:13UTC client
+only,12new epochs independently exact, previous8media/heldnative/server/menu/
+backend exact,47,452old protected runtime entries unchanged; direct health200/
+ok/12 and lock release verified. Qualified9b2ba43a4470/CSPf6ead0e677f1; no second
+activation or recovery restart. Actual owner retest remains pending.
+Tools/p1332-snow-binding-flashes.md; prior GPU arithmetic was NOT native binding
+acceptance. Owner confirms prior flash appearance only.
+
+## Patch 1328 -- participating store-only collector ownership
+
+**Problem.** First-winner observation flushes prevent duplicate stored evidence,
+not duplicate concurrent work. Acting two-connection control measures the same
+80-opportunity pair twice while preserving one row and allowing a normal writer.
+
+**Change.** Nonblocking host-local ownership guards direct and whole-pass
+collection before admission. Ordinary single-link SQLite paths share a persistent
+EMPTY OS-lock sidecar; never unlink after release. Unsafe/unknown capabilities
+abstain. Comparison holds no SQLite transaction; existing atomic same/reverse
+flush protection remains for older/nonparticipating writers. No SQL schema,
+player capture, evidence format, thresholds/defaults/ranking, native/game program,
+pin/tag or qcbuild change. Cooperative scheduling, not an untrusted-host fence,
+cross-host lease, hard wall/RSS bound or completed-coverage record.
+
+**Verified.** Exact old source performs two real80comparisons; candidate only one,
+reverse participant explicitly busy/no read, independent writer still commits.
+Windows235cases0failure/error/6explicit platform skips; Linux actual3.11same235/0/0
+and legacy script0.18ownership controls include repeated contention, distinct DB/
+alias behavior, safe-file abstention, empty/noninheritable kernel handles, actual
+child crash after an80comparison/before flush and finite retry of all3fixture pairs.
+Existing nonparticipant reverse-winner/transaction controls remain. Reader949/0;
+548records/168views retain344faultedREC/7faultedVIEW,546priorREC/168VIEWexact and
+two new actual RECparsed clean. Original discovery/injection/import observer
+failures retained. Two independent reviews clear. Actual backend12f7e30e accepted
+5Nov18:38:22UTC on actual55370fb6,83other runtime/156bound origins exact;44existing
+schema/nonchurn counts and8identity hashes preserved. Private1366130688-byte history
+snapshot retained/NOrestore, SAMEdata fallback; oldCLOSED/newOPEN/fallbackCLOSED,
+4cron/MOMactive,5ROpins/2ROruntimes/RWfilesystem.18:48normal-operation canonical
+sidecar0bytes/0600/singlelink/owner observed with no forced job;18:49health12/all12
+actual ftesurf@Nunits active. Wrong receipt-directory and unit-name reader failures
+retained, no healthy redeploy. Both generation roots are mandatory live namespace/
+history dependencies. No native/QC/lobby deployment. Broader coverage/freshness/
+calibration and owner acceptance remain OPEN; not whole-plan completion.
+
+## Patch 1327 — lit textured snow, Source steps and multi-flash owner weather
+
+**Problem.** Owner sees plain/fullbright Colin snow and no recognizable caps,
+wants Source snow footsteps, more observable lightning with several strokes before
+thunder, and supplied weather WAVs are too large. The snow shader ignored map
+lighting; the old caps were a0.35unit overlay, and the bolt axis used an unrelated
+GPU clock. Disk Opus is not enabled in this build (voice Opus is separate).
+
+**Change.** Reference mounted Source snowfloor001a/003a, bake actual HDR RGBExp32
+face samples into normalized IQM vertex colour, remove snow fullbright, and add
+2..5unit cap depth/exposed boundary skirts. Use mounted6CS:S snow steps, fallback
+to12Momentum snow steps; do not redistribute Valve media. Convert only the owner's
+three weather recordings to mono64kbps Vorbis (native decoder), keep originals.
+Use randomized3..6strokes, then delayed thunder; cached world bolt direction is
+chosen near the viewing direction at event start, not following the camera.
+Repeat-preview, interval and ambient-loop controls reuse existing weather inputs.
+No dynamic lights, hot lightstyle writes, collision, movement or evidence change.
+
+**Verified.** Actual3VM build0warnings after a retained reserved-local failure.
+Actual production WGL: old fullbright control0.97386/0.97386 bright/dark; lit
+subject0.89804/0.18039; sky0.28105->1.0. Roof/cull negative controls pass. Actual
+meshes344/11326CW,3774boundary skirts,8076face-light samples/12ambient fallback.
+Owner4,825,180B ->235,151B, all3native Vorbis mono44100Hz/64kbps decoded finite
+with bounded peaks; originals intact. Shared writer/render controls4pass after
+restoring the actionable info-command spelling. Existing broad ship-policy check
+blocked by absent base `ftesurf/particles` in the source-only tree; targeted new
+ship-selector/signed-path checks are separate, not a fabricated broad pass.
+Timeline checks structural only; native preview/look/listening/FPS pending.
+Delivered5Nov2026: BOTH Windows18:11UTC, guarded client/symbols+8media each;
+ALL12lobbies18:25UTC, exact client+8media, independent12new epochs/direct health
+verified. Actual client0dcee70e132d; server/menu/native/backend unchanged,
+47,420old protected entries unchanged. Original producer completed after caller
+observation timeout; no repeated activation/recovery restart. Qualified source
+2f7ececcf766 retains released native/API pins. Locks released; human-only checks
+remain in lextest.md. Native pin/tag/Build unchanged.
+FTESurf tools/p1327-lit-snow-weather.md.
+
+## Patch 1326 — bind prediction-report inputs to the acknowledged move/seat
+
+**Problem:** With only one eligible incoming snapshot, an interpolation endpoint
+can retain a null command pointer and fall back to incoming-packet/player-slot
+indexing. The diagnostic row has already been remapped to an acknowledged move
+sequence, so its command duration, angles, movement and buttons can describe a
+different command. This is a reporter defect, not proof of faulty movement.
+
+**Change:** Read diagnostic inputs directly from that acknowledged outgoing
+frame's local-seat command, validating the ring slot's sequence tag. Unknown
+slots clear all command fields. Prediction inputs, movement/replay math, native
+report format, counters, recorder/verifier and APIs are unchanged.
+
+**Verified:** Literal production-block fixture: 25 cases, baseline 11 failures
+and 14 passing controls; candidate 25/0. Bypassing only the sequence guard fails
+only the poisoned stale-slot case. Standard Windows full native NoDeploy build
+passes with the same 74 baseline native warnings, zero additions; all three QC
+VMs pass with zero warnings using the previously qualified compiler. Two fresh
+independent reviews and a follow-up cleared the repaired stale-case test.
+These are source-bound metadata/compile checks, not live-network, movement or
+FPS evidence. Runtime deployment/acceptance is not claimed by this entry.
+
+## Patch 1324 -- ship complete winter media and readable Colin weather
+
+**Problem.** The release's nonrecursive asset allowlist omitted holiday/weather
+subdirectories and the Kenney notice. Colin's theme producer also emitted an
+eight-token `wxroof` header rejected by the existing ten-token `weather` reader.
+
+**Change.** Add seven narrow, nonrecursive runtime globs and the exact license
+file. Both weather producers share the existing header formatter; Colin supplies
+actual bounded sky/ice counts while preserving its conservative fine32-derived
+roof reduction. No native, movement, evidence-format, pin/tag or Build change.
+
+**Verified.** All three QC VMs compile with zero warnings at the combined public
+base. Standard isolated full Windows native build and clean pinned Linux build
+pass (Linux gates G1-G10). Original missing-asset preflight is retained; the fixed
+full release asset/policy preflight passes. All58 previously qualified corrected
+runtime media members are individually rehashed against their retained archive;
+tracked source is never replaced by old media. Four existing/extended theme tests
+pass, including legacy/Strata/cycle controls and old-header rejection. The actual
+producer reruns against exact inspected Colin BSP ce40b496; header now has10tokens
+and actual IQM1542/270counts. All131072roof payload bytes and corrected grass/caps
+IQMs remain byte-identical. Native appearance/audio/FPS acceptance is not claimed.
+
+## Patch 1323 -- named historical input templates for local TAS (5 Nov 2026)
+
+**Problem:** A captured selection could not be reused independently of its source
+body/context. Pre-shipment review also found keyboard ownership and unreadable
+staged-file preservation defects. Earlier unpublished labels1317/1319/1321
+collided with winter/expected-reset claims; a149-worktree census assigns1323.
+Historical receipts retain original labels; reviewed product code is unchanged.
+
+**Change:** QC-only named references copy admitted, exact-count/fixed-clock input
+rows onto the target's own warm base, preserving future rows and immutable
+Preview/Keep/Discard/Undo/Redo. No source body/token/recorder prefix/authority is
+imported. Direct per-scan tracking pairs owned QC edges, keeps repeats ahead of
+later capture, types before chat binds and forwards native stored releases even
+across unobserved original presses. Both destination names require confirmed
+uncached absence before freeze/write. No native C/pin/tag/format/qcbuild change.
+
+**Verified:** Three VMs zero warnings. Same-line14/widget16/fresh-process20 pass;
+corrected input/name/read-denied-stage19/0 and actual native-binding/capture7/0
+pass against retained acting failures. Windows stage bytes/native/body/workfile
+survive and ACL restores exactly. Reader949/0;544 input/view byte sets retain
+identical findings,352 stored entries in each. Details and failed observers:
+FTESurf tools/p1323-tas-recipes.md. Two independent reviews clear; actual declared
+client18 also passes merged7/0. Existing qualified server14 support is required
+on older dedicated receivers (server source matches18). BOTH Windows/all12lobbies
+installed5Nov12:53/13:58UTC, primary18retained. ALL8parts+180complete resume files
+ON/OFFBOX before staging;46856old Pi files unchanged, all12live pairs/targets/.prev
+verified, backend unchanged, lock released. Owner feel/real Sign still pending.
+No hardware/OOM/VM-reload, concurrent-writer, cold-world,
+command-time, procedural-intent, long-history, section or next-ramp completion
+claim. A null allocation latches disabled; native allocation errors can abort QC.
+
+## Patch 1322 -- bounded store-only similarity rotation
+
+**Problem.** Boolean cursor ordering sorted the eligible replay set before a
+bounded selection. In a finite50000-row synthetic control the default selected-SQL
+allowance expired before any candidate/admission/comparison, although the same
+actual reader/data produced an80-opportunity comparison with a larger allowance.
+
+**Change.** Backend source/peer rotation selects the ascending range above its
+cursor and only the remaining disjoint lower/equal wrap. Preserve original order,
+eligibility, limit, pair exclusion, whole-query SQL abstention and reader/flush
+boundaries. No new index/table/schema, capture/format/API/default/threshold/badge/
+tier/ranking, game program, native source/pin/tag or Build change. Separate reads
+are not a coherent snapshot, work reservation/completion or global hard budget.
+
+**Verified.** Acting untouched interruption and actual reader on synthetic buffers;
+fixed default reaches same80-opportunity pair with independent writer
+committing during files and exact source capture.217unittests0failures/errors,
+4known Windows skips; Linux3.11same217/0/0, legacy scripts0 on both; exact old-query
+ordering across48cursor/limit
+combinations, real sparse-selection cap/positive, required-wrap actual interruption
+without partial result/advance and legacy read-only schema. Reader949/0;546-record
+corpus344REC7VIEWfaults unchanged via545exact prior records/168views plus1new parsed
+clean. Original fixture/observer failures retained, including first sparse Linux
+archive missing the existing heldmeta reader dependency. Read-only actual backend
+module matches acting baseline; no live mutation. Independent reviews, frozen
+runtime and actual delivery recorded separately: tools/p1322-simcheck-selection.md.
+
+**Delivery,5Nov12:38:28UTC.** Two independent reviews clear; actual source55370fb6
+on previous live966781a4, collector84 ONLYsimcheck changed/83exact. Both frozen
+primary/same-data fallback gunicorn cohorts and6negative controls pass. Protected
+44table schema/nonchurn counts and8identity hashes preserved,1.358GBprivate
+historical backup retained, no old-data restore. Actual5ROpins/2ROruntimes/RWfile
+preflight and156bound origins verified, oldCLOSED/primaryOPEN/fallbackCLOSED,
+4cron routes and MOMactive. Guard/dispatch/config/external3 unchanged; no native,
+VM or lobby deployment. Read-only12:40UTChealth12/all12actual units active after
+startup discovery; no healthy redeploy. Active runtime/namespace root retained,
+not cleaned as scratch. General coverage/reservation/freshness/calibration and
+deferred audit remain open; no unrecorded default-env-byte claim.
+
+## Patch 1321 -- retain overlapping expected-reset report context
+
+**Problem.** CSQC kept only the newest unpredicted move request. A second reset
+could replace the first request before its delayed authoritative correction
+arrived, falsely classifying that known correction as a new prediction fault.
+
+**Change.** Keep the last16 requests in a bounded history, testing each against
+P1238's existing time/sequence bounds. The matching request supplies the reason;
+map reset clears the history. Context records its reporter revision, warp-op
+capability and request clock. Native comparison/history, movement, recording,
+ranked evidence, consent, native pins/tag and Build are unchanged.
+
+**Verified.** Exact production helper bodies compiled with qualified compiler
+c24ede65 and executed in the actual headless QC VM:23checks,0failures. The
+legacy one-slot predicate acts for the first request, then misses its delayed
+correction after request2; the subject retains both. Unrelated/pre-request/future
+sequences, expired/future clocks, strict boundaries, map clear and bounded-history
+eviction controls act. The deployed P1319 cohort rebuild matches its live CSQC
+exactly with all3VM0warnings. Changed public/qualified programs and clean committed
+runtime source0b740b6c also build all3VM0warnings; the clean rebuild reproduces all
+tested bytes, with ONLY CSQC changed. Delivery provenance is tracked separately
+in FTESurf tools/p1321-prederr-history.md. This is report
+classification, not a live-network or movement-physics acceptance claim.
+
+## Patch 1320 -- preserve paused slots until discard is authorized
+
+**Problem.** Automatic offered-slot cleanup did not share the manual command's
+ownership gate. An unreadable metadata header also was not permission to remove
+saved state or recording bytes.
+
+**Change.** Server QC re-adopts and re-reads metadata at the common discard seam,
+then applies the existing ownership predicate before any wipe, archival or offer
+clear. Per-connection notification state suppresses repeated automatic messages,
+not authorization checks. Manual requests retain an explicit explanation. All
+internal report booleans are supplied explicitly. Existing permissive modes and
+posted-stage evidence archival are unchanged. No engine/pin/tag/Build, movement,
+capture/format/flag/tier/ranking or account-protocol change.
+
+**Verified.** Untouched dedicated-socket counterpart actually deleted three
+synthetic slot files; fixed source preserves paths, bytes and offer. Final
+native-QC matrix52/0 includes16reset cases, live pending/mismatch/matching
+transitions, repeated-frame silence, running/finished/manual refusal and positive
+cleanup, unavailable headers, permissive modes, no-offer/inflight commands and
+byte-identical posted-stage recording archival. Initial optional-argument and
+chat-window failures retained, not counted passes. Account dependencies are
+controlled, not real cryptographic proof or a cross-lobby atomicity claim.
+Qualification and delivery limits: FTESurf tools/p1320-resume-discard.md.
+
+**Delivery,5Nov.** Two independent reviews complete; corrected product patch field
+without moving native pins/tag/Build. Actual qualified source53040f23 applies
+only this SSQC delta to deployed a79d2ec9; main's separate TAS/native work and a
+peer's newer CSQC were not overwritten. Final3VM0warnings. BOTH Windows4VM/symbol
+targets11:02UTC,18319protected unchanged; Pi ONLYqwprogs.dat11:11UTC,all12restart/
+0skip,46772protected data unchanged/0new. All8parts+180fullresume members
+individually ON/OFFBOX verified before canonical staging, with strict13actor JIT.
+Native/backend/config/peerclient preserved and.prev exact. Read-only11:15UTC
+checks12actual new actor/image pairs, liveVM/.prev, unchanged backend bindings,
+health12 and new-actor journal QC-fault scan. No healthy repeat deployment; genuine
+account/manual acceptance and the broader plan remain separate.
+
+## Patch 1319 -- visible Colin snow, scoped snow steps and ramp clearance
+
+**Problem.** Owner confirmed Colin's props but saw purple snow undersides, not
+snowy grass, and ramp dirt still fought while surfing. The snow IQMs registered
+their missing material before the QC definition reused that same cache name;
+all344nondegenerate grass triangles faced inward, as did3476cap triangles.
+Frost also has ten native type3 snow volumes alongside our replacement snow.
+
+**Change.** Register a distinct runtime snow material BEFORE model precache;
+correct stored-float32 IQM winding and omit degenerate triangles. Keep grass
+fully covered and caps roof-clipped. Add four original quiet snow-crunch samples
+only for Colin's authored snowy grass, including walking with general game Foley
+off. Stop only new native type3 flakes when the installed replacement was
+actually submitted; rain/other effects and native fallback stay intact. Increase
+real ramp-normal lift0.75->2units, bounded reload-applied diagnostic cvar. Retain
+constant non-slope depthpush. No collision, movement, evidence or native change.
+
+**Verified.** All3VM build0warnings. Actual hidden WGL production vertex/fragment
+snow programs: grass/open cap378white-snow pixels each; roofed cap0; reversed
+winding control0. Actual corrected IQMs344/3768CW, no degenerate triangles; old
+meshes retained as acted wrong-winding controls. Four distinct mono22050Hz
+bounded PCM files. Original caps/grass shaders compile on this driver: the initial
+reserved-keyword hypothesis was FALSIFIED, not claimed as root cause. Small native
+look/sound/ride/FPS check remains owner-pending. FTESurf tools/p1319-winter-correction.md.
+Native pin/tag and QC Build unchanged. Actual5Nov delivery: BOTH Windows102
+explicit destinations at10:47UTC (32protected paths unchanged); corrected client
+06585861c9af… and58media verified in current12-lobby fleet11:14UTC. Original
+paired rollout FAILED after5verified restarts on status timeout; subsequent
+remaining-only guard refused FD uncertainty/peer server advancement without
+further restart requests. Peer P1320 advanced all12epochs retaining this client;
+independent read-only endstate proves46,766old protected paths unchanged. Do not
+regrade the failed transaction or overwrite/restart newer healthy peer work.
+
+## Patch 1318 -- do not cache a nonexistent startup dynamic light
+
+**Problem.** During a fresh client's map load, both a surface's untouched
+`dlightframe` marker and `r_dlightframecount` are zero. Their equality falsely
+sets `cached_dlight`, so first visibility rebuilds static lightmaps to remove a
+contribution that never existed. Boreas' first late-route water reflection
+rebuilt647surfaces for44.79ms with no live lightmap dlights or style changes.
+
+**Change.** Require a nonzero surface light marker when remembering a dynamic
+contribution in Surf_BuildLightMap. Real lights are marked only after
+R_PushDlights advances the counter. No lightmap math, quality, settings, shader,
+lightstyle, movement, recorder or protocol change.
+
+**Verified.** Acted frame sampler/census: control647false dlight rebuilds,
+subject0; the same two-pass Boreas route's subject rendered-frame worst6.64/
+7.64ms, versus control's roughly40-50ms first reflection. A36-case marker matrix
+changes only0/0. Real Source GPU light visibly acts and expires: world ROI
+before/live mean absolute RGB change54.23, before/removed0.00071. Source's CPU
+MarkLights callback is absent, so its zero CPU-light census is NOT a positive
+CPU-light test. Nonzero-marker predicate behavior is unchanged. Clean two-map
+candidate passed; collision renumber changes no executable source semantics.
+Final build/route/deployment provenance: FTESurf tools/p1318-lightmap-first-view.md.
+
+## Patch 1317 -- authored Colin Christmas terrain and environment (5 Nov 2026)
+
+**Problem:** Owner chose surf_colin_blaster_69000 for the complete theme. Its
+Strata v25 collision lumps use widened node/leaf/reference/brushside records;
+the old legacy-stride roof walk could loop, so blindly treating it as a usual
+Source map was not valid. The inspected map has103actual grass faces.
+
+**Change:** Fix the same roof reader against native v25 layouts and add bounded
+index/cycle refusal. Reuse weather/roof bakers; generate a true fine32 mask,
+376grass-snow triangles and3986exposed-cap triangles in two static cosmetic draws,
+16distributed grass-edge props,1542sky/270ice triangles, plus scoped falling
+snow/mist/wind/storm. Fine32 roof fragment clipping rejects indoor caps; steep
+ridden surfaces/liquids/sky excluded. Audio's bounded512 cells max-reduce the
+actual fine32 heights so thin roofs are not lost to centre sampling, conservatively
+quiet near edges. r_colin_winter register/default/DisplayInfo row controls ONLY
+this authored map, without writing the owner's global options. Missing fine media
+never opts older clients into unclipped snow; existing renderer-restart callback
+reuses cold Winter/Weather load paths to replace freed force-shader handles.
+No BSP, collision,
+water/lava/damage, native/tag/pin/qcbuild or award-earning change; no takeover of
+P1287's world shader. Actual generator/source binding and data-role allowlist
+preserve every original fine mask on other maps.
+
+**Verified:** Actual18,664,473-byte BSP SHAce40b496c672789f3e93bf998ae45f9376e15a24d0eae58fd0f2f729caee915f;
+all103grass faces,1760cap polygons,356roofed rejections,16provisional positions,
+4096x2048fine32 mask, bounded256x128audio roof. Legacy/Strata no-sky negatives,
+cycle refusal and thin-roof reduction controls pass, as do four rendering and
+three existing weather controls. Original timeout/fixture failures retained; no
+owned bake process survived timeout. Actual all3VM compile zero warnings; native
+appearance/placement/ridden-save2/MAX-FPS remains owner-pending, no time claim.
+Public main's pending P1314 is isolated out of the qualified visual deployment.
+
+**Delivered5Nov:** Published qualified a79d2ec9 has the exact visual-only delta.
+Both Windows08:05:22Z:92destination hashes,32native/config/fine-mask preimages
+unchanged,2client caches seeded. Pi08:59:22Z: single paired progs-only ALL12/0,
+53runtime files read back,46638old protected paths unchanged+3new; native/plugin/
+backend/config preserved, progs.prev retained. Full8part+180resume payload/ms/state
+preimages verified ON/OFFBOX and consumed at locked13actual-actor boundary;
+no old-data restore or failure regrading. Code catalog56->57 preserves prior bytes;
+independent health200/12. Two anonymous checksum reader failures remain failures,
+not a runtime checksum pass or reason to restart healthy units. Native visuals,
+sound, placement/ridden-save2 and measured FPS remain owner-pending. No native
+binary/tag/pin/qcbuild or additional product patch claimed by this ops record.
+
+## Patch 1316 -- preserve diagnostic observations across collector overlap (5 Nov 2026)
+
+**Problem:** Both pair orders were excluded before file comparison, but a reversed
+collector could commit during that comparison; final same-order INSERT OR IGNORE
+then stored/counted the pair again. A connection context alone also failed to own
+an atomic flush in legacy autocommit, and could borrow reader-opened caller work.
+
+**Change:** Backend store-only simcheck explicitly owns its short SQL flush using
+configured isolation, refuses non-idle caller work before BEGIN, and checks both
+orders after the checkpoint has acquired the write lock. Commit/rollback covers
+cursor and actual inserts; comparisons remain outside. Preserve the first current
+participating flush's original values/capture, configured modes and old rows.
+No schema, lease, raw capture, identity, API, defaults, thresholds, verdict, badge,
+consent or ranking-policy change. Published P1314/P1315 retained; no native code,
+pin/tag or QC Build change in this patch.
+
+**Verified:** Untreated exact published writer13cases EXACT3predicted reverse
+failures/10controlsPASS; additional4ownership/mode cases EXACT3predicted failures/
+configured-mode positivePASS, originals retained. Subject17/17PASS with real bounded
+parser/synthetic80row/short controls and two independent real SQLite connections,
+actual reversed competing collector, all-lost/skip preservation, real abort/cursor/
+transaction traces, caller work, configured modes and untouched legacy duplicates.
+Two independent read-only source/evidence reviews return OK with notes, no blocking
+counterexample. Actual Linux Python3.11/SQLite3.40 existing25standalone programs pass:
+202unitcases, no typed-SQLite skips, plus executable legacy checks and untreated
+EXACT6failure control. Reader949/0 after adding the exact committed QC static-test
+dependency; original missing-dependency abort, Windows timeout and failed discovery
+are retained, not passes. All3VM c24 compiler0warnings, NoDeploy only. Published
+implementation QQc6fdd9eb/journalee4f8eb6; actual backend08:11:57UTC5Nov accepted
+source966781a4 on the previous live02a56b32, ONLYsimcheck changed among84runtimefiles.
+Both84cohorts passed fresh guarded fixture handoff and six acting negatives; actual
+staged writer17/17. Actual namespace5pinsRO/2runtimesRO/mutableRW, core26/event1,
+44preexisting schema tables/eight identity digests/non-churn counts preserved.
+PrimaryOPEN/cron4/MOMactive/health/source156binding audit08:26:14UTC; prepared same-
+database prior-runtime fallback, historical private backup never restored. No
+Windows/native/VM/lobby restart or unrelated public-game delta. Default-env byte
+preimage was not captured: no unchanged-env-bytes claim. Fresh RUNS544record/168view bytes, presence
+and meaningful stats match prior classified inputs and unchanged parser helpers:
+344record/7view faults retained, zero drift, NOT clean/new raw reparse/SAVES evidence.
+No full fleet/reservation/hard whole-job budget/current-source/old-external-writer uniqueness
+or human/native/ranked claim. See FTESurf tools/p1316-simcheck-overlap.md.
+
+## Patch 1315 -- winter model, mist, sky and ridden-wear rendering fixes (5 Nov 2026)
+
+**Problem:** Owner saw inward Christmas faces, weak mist with a hard close pop,
+no persistent Frost sky/light change, and ridden ramp-dirt depth fighting.
+OBJ CCW indices were emitted as IQM alias indices without reversal. Mist rejected
+whole fields below192 units or at a coverage threshold. Weather could latch an
+early empty map key and previously drew only brief sky flashes, not a storm sky.
+Driver depthpush alone was insufficient for grazing ridden surfaces.
+
+**Change:** Reverse only imported OBJ triangle indices, retain UV/outward normals,
+and rebuild the six selected CC0 holiday props. Give four mist fields continuous
+projected-size shares and stronger noise opacity, without close hard rejection.
+Lift both wear paths0.75units along normalized face normals once at load. Retry
+pending native/server map identity at0.25s until ready; draw bounded portal storm
+clouds continuously, retain flashes/thunder, and reversibly tint the original
+base lightstyle once rather than adding dynamic lights/shadows. weather_info and
+r_weather_test expose the acted path. No movement/collision/damage/recording,
+native pin/tag or QC Build change. Separate Colin theme processing follows.
+
+**Verified:** Actual inspected snowman source890nondegenerate triangles proves
+old outward-normal/CCW orientation; reversed imported indices retain normals/UV.
+Four source/math controls and three existing weather geometry/roof controls pass.
+Actual all3VM compile with c24/git7809 zero warnings; first varargs diagnostic
+retained and split, not ignored. Native appearance/save2/close-motion/audio/FPS
+acceptance remains PENDING, not inferred from compilation or budget math. Public
+main's separate pending P1314 TAS work is not approved for this visual deployment;
+qualify the visual-only delta on the published fleet-qualified P1313 parent.
+
+## Patch 1314 -- retain an exact ordinary-play base for local TAS editing (5 Nov 2026)
+
+**Problem:** Explicit TAS could retain recent authored native states, but a player
+who first played normally had no exact native base for the earlier captured input
+line. A body-only saved position is not a complete native mover/filter state.
+
+**Change:** Add one separately reserved, owner/map-bound passive native state for
+eligible local buffered ordinary play. Capture neither grants movement nor marks
+TAS; restore still needs explicit paused assistance and the existing native
+context checks. The QC editor binds its saved-prefix hash to that live cookie,
+keeps the full captured line separate from the body cursor, previews without
+replacing its original, and retains immutable revisions for Keep/Discard and
+eight undo/redo pairs. The immutable selected saved pair, not an obsolete dense
+ring buffer mark, supplies recorder restoration. Existing strict rewind checks,
+movement, recording format, ranking policy and QC Build number are unchanged.
+
+**Verified:** Matched predecessor-source dedicated Windows localhost fixture:
+30 acting controls, including unassisted ordinary input, exact original native
+body/velocity checkpoints and grant count, physically different yaw candidate,
+original byte preservation, Keep/Discard/Undo/Redo, seek-to-zero with future line
+retained, Replay head and resumed TAS ancestry with no queued work. Three QC VMs
+zero warnings; actual GUI screenshots inspected. NOT long/warm-ring/cold/all-
+recipe/world/timing coverage. Subsequent FULL native build at f1fe93dd7/tag1314
+includes P1310/P1312, unchanged74 native warning lines and all3VM0warnings;
+actual pm_selftest passes. Corrected QC verifies real immutable-retention denial
+and exact ACL restore,9commits/8Undo/branching, acted cancellation/recovery36 and
+partial-cursor preview35 controls. Reader949/0; paired RUNS544/351faults both
+parent/candidate, exact stable bytes/findings, no clean/SAVES claim. Initial
+independent review findings corrected; corrected-source re-review and delivery
+PENDING. Project uses named tab routing and its own coalesced page pump;13
+completed controls before external-VFS observer failure verify direct entry,
+Checkpoint and throttled reopen without Timeline plus empty non-device Sign.
+Separate11-control arm after acknowledged fs_flush verifies visited-prefix
+DIVERGED/partial result and actual Project pixels with original bytes intact.
+Earlier failed receipts stay failed; real-device hosted Sign remains owner-only
+pending. Published P1313 QC policy and native journal retained. No deployment
+or full-project completion claim.
+Component and limits: FTESurf tools/p1314-tas-history.md; section/recipe/constrained
+next-ramp solver acceptance remains in scope. Raw runtime evidence stays private.
+
+## Patch 1313 -- preserve practice status of unsafe fresh retry starts (SSQC only)
+
+**Problem.** Retry restores saved movement and an armed attempt's status, but did
+not apply the existing horizontal reset-speed boundary after placement.
+A fresh unsafe retry arm could therefore keep a clean status.
+
+**Change.** After successful retry placement ONLY, use the timer's existing armed
+box-group/hull-band containment and Fast reset predicate, then standard practice
+funnel. Keep exact movement and bits; running/outside/direct restores unchanged.
+Existing reset behavior includes hop-disabled bhop modes, ignores vertical-only
+falls/pushes and does not make classification-word mode a ranking bypass. The
+load-forgiveness NotFast proof was too broad and is NOT this rule. No guessed
+phase repair/clamp, native code/pin/tag, capture/API/format/flag/tier/policy/Build.
+
+**Verified.** Actual production wrapper/writer/reader/consumed-latch/deleted-state
+fixture:22explicit cases, untouched public module misses9horizontal reset marks;
+rejected NotFast candidate additionally makes4false vertical-only marks; corrected
+Fast candidate0missing/0false with exact body/bits and mode/direction/continuation
+controls. Existing5normal-load+14grant/EOF unchanged. Qualifiedc24/git-7809 allthree
+arms, actual corrected fullNoDeploy all3VM ZEROwarnings. Syntheticstate ONLY, NOT
+native map_restart/held-jump/dwell/ranked/human. Original7ccb/include-refusal/raw
+reviews and falsified class-off test assumption retained; source contract confirms
+run_class bisects words, not eligibility. No flag/body/API or global helper change.
+Reader949/0 and exact three-glob RUNS544 all prior bytes/classifications unchanged,
+344faultedREC/7faultedVIEW retained, no clean/SAVES claim. TWO independent bounded
+delta reviews clear corrected94e37cf8: original vertical finding fixed, proposed
+mode gate withdrawn under verified reset contract, class-off assertion corrected.
+Original BLOCK/failed predictions retained, not waived. Actual5NovUTC BOTHWindows
+SSQC04:22:03:4DAT/LNO+.prev/8olderarchive/18,548protectedpaths exact; unchangedCSQC/
+menu/native NOTreplaced, no processkill. Pi04:48:48 pairednative1312+QQ486e65bd:
+4hashes+.prev/12newverifiedepochs+plugininodes/0skips/46,488protecteddata exact,
+0new/changed/missing; backendgeneration/unit/OPENactor/156files unchanged. BEFORE
+ANYcanonicalstage ALL8parts+180completeCURRENTresume inclmetadata=188members/
+229,091,723sourcebytes individuallyrehashed ON/OFFBOX, strict13declaredActor FD/
+birth/namespace JIT; protectedPAMSSH NONactorlimits explicit, NOTgeneralwriter
+closure/recovery.8generatedpredecessors/olderprev OFFBOX exact.04:53:05 same12live
+actors/hash/backups;04:54:08 all544records/712rawREC-view/192,188,256bytes and3reader
+blobs atqualified+canonicalroots EXACT ->prior344REC7VIEWclassificationreuse,
+NOTfreshfullparse/SAVES/clean. No force/playerdrop/retainedgate, oldexpiryfailure
+UNWAIVED. Lobbyrestarts NOTnative map_restart/heldjump/dwell/human/rank acceptance.
+Private vectors stay private; details FTESurf tools/p1313-retry-practice.md and
+pending human lextest.md.
+
+## Patch 1312 -- admit finite ignored KTeams context to existing observation (5 Nov 2026)
+
+**Problem:** Source movement ignores the generic KTeams jump blend, but the
+existing shared ordinary/normalized ground-body observer excluded all nonzero
+settings. An accepted existing effect could therefore go unobserved after a
+converged late tail, despite identical movement at zero/nonzero settings.
+
+**Change:** One guard requires finiteness instead of zero. Update the explicitly
+obsolete observer-only fixture and add seven finite/nonfinite checks. All actual
+movement, capture/API/recording format, flag/tier/ranking policy, alternative-world
+and other unsupported-domain checks stay unchanged; broader bank remains partial.
+
+**Verified:** Untreated stock2,725checks EXACT6predicted missing-use failures;
+candidate2,732/0. Both stock/normalized168actual fixed-tick player arms each,
+2,308assertions: guard-only counter3,886 EXACT17predicted admissions/uses, no
+physical/category/debit/clock/config/body failures; candidate3,886/0. All retained
+prior private families10,581/0; uninstrumented1,578/0. Exact clean source175b27c09/
+tagpatch-1312/literal8367: official FULLWindows and ARM EACH10,581expanded/1,578final,
+0NEWwarnings (unchanged74Win/17ARM);90six-map rows exact across architectures and
+predecessor, same archived program. ARMfourhistorical verdicts exact, legacy HOLDs
+retained; Windows historical verdicts NOT claimed. Reader949 at identical three
+source blobs; exact currentRUNS544 all bytes/classifications unchanged (344faultedREC,
+7faultedVIEW), no clean/SAVES claim. Private hooks removed; symbols/outputs frozen.
+Two independent source/physics and evidence/consumer reviews found no blocking
+issues; existing bounded unsupported/general-writer/full-bank limits remain.
+Actual dual-Windows native delivery verified:14primary client/server/plugin targets
+and.prev exact,18,273protected config/program/data/alias paths unchanged,28older
+predecessors archived/rehashed; installed dedicated1,578each, no process kill or
+VM/backend deploy in THAT native-only Windows transaction. ActualNanoPi5Nov
+04:48:48UTC now pairedwithreviewedQQ486e65bd/P1313:4exactfiles+.prev,all12newnative
+actors/mappedplugininodes,46,488protecteddata exact/0newchangedmissing. BEFOREstage
+all8parts+180completeCURRENTresume/188members individuallyON/OFFBOX rehashed,
+strict13declaredActor FD/birth/source JIT; backend156files/unit/OPENactor unchanged,
+no force/drop/gate. Later12responsive/4hashes+backups exact; post544/712byte+3reader
+blob identity preserves prior344REC7VIEW results byexplicitreuse, NOTnewfullparse.
+Original expiryguardfailure unwaived/no datarestore; no generalwriter/nativephase/
+humanranked claim. Raw vectors/original failed logs stay private.
+
+## Patch 1311 -- expand Boreas/Demise shader warm coverage (assets only)
+
+**Problem.** The existing starter list omitted three shader permutations observed
+while traversing surf_boreas and surf_demise replays, leaving their coverage to
+per-PC learning even with the warm loader enabled.
+
+**Change.** Add exactly the observed water, refract and animated permutations
+to the mod's existing loading-time seed. No new shader programs,
+quality reduction, settings migration, native code/pin/tag or QC Build change.
+
+**Verified.** Original fixtures learned two Boreas entries and one Demise entry.
+Expanded-seed isolated fixtures started without a per-PC list and learned no
+additional variants over two traversals of each route; actual scenes/screenshots
+and playback start/stop inspected. Seed syntax/bitmask/cap/dedup and exact delta
+checks pass. This is known-variant coverage, NOT zero runtime compiles or all-map
+readiness: the existing two-second budget and late-created programs remain.
+Boreas' separate 39-40 ms first-traversal gfx hitch persists. Native capture probe
+is diagnostic only and remains unqualified; no no-hitch/numerical FPS claim.
+Details and deployment provenance: FTESurf tools/p1311-map-prewarm.md.
+
+## Patch 1310 — observe accepted shallow full-walk gravity use
+
+**Problem.** Native full-walk movement uses ordinary gravity in dry and shallow
+water, but the existing pure early-body observation required completely dry
+starts and finishes. A real accepted body difference could be missed after the
+late velocity result converged.
+
+**Change.** Admit only the native dry/shallow categories0/1 at the existing start
+and accepted-body fallback gates. Keep swimming, waterjump, invalid categories,
+slide/portal, unsupported/unclear alternative geometry and no-value exclusions.
+No native movement, input capture, API/format/flag, tier or ranking-policy change.
+
+**Verified.** Original Windows native plus128real-fluid controls:7,995checks,
+exactly2predicted missing-use failures, all actual native movement/category/debit/
+body/config controls otherwise pass. Extended identical full-player controls:
+8,266checks; reversing only the2product guards gives exactly7predicted admission/
+use failures, all physical controls still pass; subject8,266/8,266. The21actual
+fixed-tick PlayerMove arms include ground/air, shallow/dry transitions, default
+native alternatives, converged tails, no-value/cap erasure and a blocked
+alternative; whole observer OFF/ON body and config identity hold. Private hooks
+removed; final public1,571/1,571. Two independent whole-feature source reviews
+support the correction; the evidence reviewer identified the airborne/full-entry
+proof gap, now independently re-reviewed and resolved by the extended native arms.
+Clean combined sourcef09/tagpatch-1310 preserves published TAS1308 and winter
+journals. Both Windows/ARM repeat8,266 expanded and1,571 final controls;90six-map
+rows and4historical verdicts exact. Reader949PASS; exact current RUNS544inputs
+have identical old/current-reader findings (344faultedREC,7faultedVIEW), not a
+clean-corpus or SAVES claim. BOTH actual Windows primary client/server/plugin
+sets installed00:21:06UTC5Nov:14destinations/.prev exact,18,273protected paths
+unchanged, installed dedicated1,571each. Secondary primary isfteqw64.exe; the
+optionalftesurf64.exe alias stays protected. Pi build qualified but promotion
+pending a peer preservation reconciliation; no P1310 lobby restart yet.
+No live/ranked/full-bank or general native-writer audit claim. Raw fixture
+values, private vectors and native/failed logs remain private.
+
+## Patch 1309 — bounded winter weather / liquid frost preview (QC/assets only)
+
+**Problem.** The requested winter ambience, sky flash/bolt and frozen-looking
+liquids were still unbuilt. Full-world relighting/captures or runtime roof traces
+would conflict with the owner's MAX-FPS priority; native acceptance is pending.
+
+**Change.** Opt-inOFF cached-roof outdoor/sheltered original PCM wind, delayed
+muffled thunder, one transient actual sky-portal mesh with a sparse baked fork,
+and one static upward liquid frost mesh with a per-face lava bit/view highlight.
+No contents/collision/movement/damage or existing sky/soundscape change. Roof
+float table capped262144bytes, bulk fread once; no per-frame I/O/geometry/trace
+or allocation. Existing loading warm list includes ice/sky/mist variants; cosmetic
+gibs prefix reuses default native convex-decomposition exclusion without cvar
+mutation. Conservative mesh limits hold only oversized features, not the task.
+
+**Verified.** Exact approved c24 compiler, all3 VMs ZERO warnings. Three offline
+surface/roof controls; actual finite/index/size audits: Frost570sky/234ice and
+Christmas1103ice,65536roof cells each. Christmas6306sky held by4096cap; Bluewinter
+no eligible world sky/liquid and skipped, not a false outdoor pass. Original4PCM
+signals nonzero/bounded. Actual bolt671/8192alpha pixels (8.19%) passes preregistered
+10% control after retained12.13% first failure; criteria not weakened. These are
+SOURCE/DATA checks, NOT native renderer/audio/cold/moving-view acceptance. No
+numerical FPS/no-hitch, native pin/tag, QC Build, authority or evidence change.
+No competing P1287 world snow override. Generated coarse snowmask scaffolding
+MUST NOT replace fine falling-snow masks. Details: FTESurf tools/p1309-weather.md.
+Installation/provenance recorded separately after actual delivery.
+
+## Patch 1308 — independent TAS surf controls and precise yaw cache
+
+**Problem.** The workshop coupled movement direction to an air-only selector and
+exposed a command form instead of surf controls. Grounded/crouched combined inputs
+needed their actual mover reference. Real crouch control also exposed a planner
+cache bug: a cast before the naked ANGLE2SHORT macro truncated degrees and made
+negative yaw an invalid unsigned conversion, repeatedly corrupting the turn seed.
+
+**Change.** Bounded native HOLD/GUIDE authoring preserves independent movement
+and held bits. The local gain reference uses effective production wish limits,
+ground friction/crop or air cap; adjustable delta/rate and bounded enable alignment
+are not a route solver. Unsupported states explicitly use the preset. Capture and
+restore the executed incoming recipe rather than today's draft; new capability1308
+and read-only metadata do not grant movement. Preserve fractional body words in
+all three planner seed/capture/post-physics sites, not an engine-wide macro change.
+QC adds a directional pad, fine/coarse turn controls, explicit view/server reload
+and own-body view-only travel pitch. Legacy command interfaces and TAS ancestry,
+grant/counter ownership, evidence format and board policy stay intact.
+
+**Verified.** Pre-integration isolated source:67392 actual-C objective/angle-word/
+low-speed-crouch checks, zero failed; both clocks and existing native admission/
+input/queue controls. Rendered real dedicated socket: GUI20/20;10ms held-crouch/
+restore17/17; rise/apex/fall/manual-override camera16/16; old-native compatibility/
+refusal18/18, current legacy16/16; partial-queue/Duck release/client-input ownership
+8/8. Real15ms default260/5/4/75 interior W+A curve reaches289.5414 standing and
+97.8939 fully crouched after64 guide ticks, with ground-kind2/vz0 each chunk. This
+is not Lex's unspecified W+D/map reproduction or a universal optimum. Original
+88.4018 crouch failure and observer mistakes were preserved; temporary native
+traces were removed. Full Windows build: zero NEW warnings (74/74 normalized
+native warning records; same two CL F333 diagnostics, SV/MENU zero).
+
+Combined-source Windows build and two independent source reviews completed.
+Review corrections restore default1x when native cancellation resets identity,
+and accumulate slow manual pitch before overriding Follow travel. Actual-C67399
+checks pass; the unchanged old cancel body fails exactly2 new lifecycle checks.
+Real100fps/1degree-per-second keyboard look fails on the old camera and passes
+on the corrected camera. The first reconnect observer read native-cap0/default
+UI state and is NOT live reconnect acceptance. Clean ARM source59 passes1557 native self-tests;
+normalized warnings17baseline/17current/0NEW. Exact Windows28-target promotion
+preserves18261 config/data/alias hashes and52 predecessor/prior-prev preimages.
+Installed primary core actor12checks pass; secondary GUI20assertions pass before
+an optional screenshot-name collision (failure retained). All12Pi actors now run
+source59 with exact native/plugin/QW/CS and predecessors, no force. Pi strict old-
+data postflight FAILED: one resume's recording moved byte-identically to evidence,
+and its ms/state metadata disappeared; this matches existing resume cleanup, but
+old metadata/expiry cannot be retrospectively qualified. Other46352 old paths,
+config/backend and all8archived recorder parts preserve their checks. No data was
+restored, no healthy restart repeated, no maintenance gate remains. This is NOT
+an exact-old-path preservation pass. Human ramp/camera feel and full editor remain
+pending. Source59/tag are unchanged; these are subsequent delivery observations. Whole-history normal-play editing, recipe/filter continuity, cold
+replay, sections and constrained solving remain in-scope work, not completed by
+this controller. Details/limits: mod `tools/p1308-tas-controller.md`.
+
+## Patch 1307 — version ramp shader output/blend ABI (QC/assets only)
+
+**Problem.** Tracked assets and ignored progs can advance independently. P1295's
+full-multiplier shader/filter pair and P1300's half-output/double-modulation pair
+shared a filename and material key, so mixed or cached cohorts could be wrongly
+bright/dark. Actual Windows preimages already showed advanced shader source with
+older progs. More replay bakes also needed honest source-output sizing under the
+owner's MAX-FPS priority, not invented frame-time claims.
+
+**Change.** Preserve the exact qualified85254ea5 legacy shader at its old path;
+copy unchanged A84 modern source to `_v2`. New CSP probes v2 once at map load,
+selects matching program/blend and separate legacy/v2 material keys. No added
+per-frame I/O/pass/sample/trace/light. Cache seeder preserves arbitrary pending
+.tmp/.dcl downloads instead of blanket deletion. Existing source CLI prepares
+five provisional bakes using315 local replay instances;10-demo Christmas8024tri
+(one-ring5840) stays staged until moving-view sizing. Reject zero-mask no-op
+pruning before code: actual zero wear is fully dirty. Correct unsupported P1300
+bake counts from retained payloads plus byte-identical fresh regeneration.
+
+**Verified.** Existing3 seam/atlas/strength controls plus one source-ABI control
+pass; golden852 legacy/A84 modern bytes and four old/new client-asset pairing
+math cases include an acting mismatched-brightness negative. SOURCE/MATH, not
+native renderer execution. Actual approved c24ede65 compiles all3 programs with
+ZERO warnings. Old seeder control really seeds but removes both owned pending
+sentinels; subject seeds and preserves both. Both earlier Windows A84 installs
+and backend02 primary are independently hash/protocol verified, not a P1307
+installation claim. Native shader appearance, sky, inspect sound and moving-view
+frame time remain pending; prior guard refusals remain failures. No numeric FPS,
+no-hitch, native pin/tag, QC Build decision, movement or recorder change. Details:
+FTESurf tools/p1307-ramp-assets.md. Actual C95 installed both Windows22:05Z and
+QQ2+29assets all12empty lobbies22:42:09Z4Nov2026, noForce; all8parts2,821,850bytes
+verified ONBOX+OFFBOX before stage and strict13actors at execution. All46300old
+protected paths/config/native/backend unchanged,0new; exact current/.prev and
+actual native/plugin/readiness verified, lock released, known health200. CS identity
+catalog52->53 preserves old bytes, NOT ranked acceptance. Raw receipts private;
+source/installation/visual acceptance distinct. No native change by this task.
+
+## Patch 1306 — faithful stock crouch jump gravity observation
+
+**Problem.** The native stock crouch/transition jump assigns its impulse rather
+than adding it. The pure neutral-gravity model added in every stock posture and
+therefore excluded those postures; an early accepted effect could remain unseen
+once final velocity converged.
+
+**Change.** Mirror the existing native assignment in the pure model, retaining
+the add for standing stock and both normalized modes. Admit the already-captured
+stock postures under unchanged common, stamina, finite and accepted-path guards.
+No native movement, input capture, API/format/flag or ranking-policy change.
+
+**Verified.** Unchanged P1305 native: 1,975 checks, exactly 40 predicted model/
+admission/use failures, all actual jump/contact/debit/body controls otherwise
+passing. Combined Windows candidate: 6,451/6,451 including actual neutral-native
+assignment oracle, observer OFF/ON whole-body/config identity, accepted versus
+blocked-alternative paths and all P1305 controls. Public suite now 1,557; historical
+posture exclusions changed only after actual native proof. Original stale private
+header dependency and intermediate outdated-scope assertions retained.
+
+**Delivery, 4 Nov 2026.** Clean Windows full build and ARM64 server/HL2 build
+pass; both platforms pass 6,451 expanded and 1,557 final public controls. Final
+Windows source7ae5d53b2 preserves published P1301; all server/mover inputs are
+byte-identical to ARM source76acc7c6b/tagpatch-1306. Six-map90-row modern controls,
+72 actual old-fleet shared rows and unchanged historical verifier results pass.
+Both Windows installs received14 exact native files at21:20UTC, with predecessors
+preserved and18,195 protected files unchanged. Both installed servers1557PASS.
+All12Pi native/plugin pairs activated21:34:09UTC, no progs/config/backend deploy.
+All46,259 pre-existing protected files unchanged; actual backend launch/source
+contract156files unchanged. Eight actual recorder parts,2,821,850bytes, archived
+and individually rehashed ON/OFFBOX before any stage/restart; strict13 required
+actors checked again at locked activation. Original FD refusal and SSH caller
+timeout remain recorded; actual remote completion was verified read-only, never
+repeated or rolled back. Two fresh isolated installed clients download the live
+CSQC and draw the board without QC errors. They submit no timed/ranked run and do
+not establish live ranked acceptance, general file-writer audit or full bank
+closure. Public detail and the corrected old-manifest diagnosis:
+mod tools/p1306-gravity-context.md.
+
+## Patch 1305 — gravity observation with ignored finite jump controls
+
+**Problem.** Native stock jumps ignore the normalized-only rise/offset controls;
+normalized jumps skip relocation for a nonpositive offset. The existing gravity
+observer nevertheless rejected those finite configurations and could miss an
+already-modeled early effect when the final velocity no longer distinguished it.
+
+**Change.** Match the actual branches: finite stock rise/offset controls no longer
+disqualify its standing-jump model; finite negative normalized offsets no longer
+disqualify its existing model. Nonfinite settings remain conservatively excluded,
+and stock duck/transition, unsupported contexts and speculative-only use remain
+excluded. No movement, capture/API/format or ranking-policy change.
+
+**Verified.** Same acting native control first: 5,894 checks, exactly 156 predicted
+admission/use failures with unchanged production predicates, no physical/oracle
+failure. Candidate 5,925/5,925 including whole-body observer OFF/ON and ignored/
+zero-setting identity, real jump/debit/contact, neutral and blocked-alternative
+controls. Original fixture-macro failure retained; three historical public scope
+assertions updated only after the actual native proof. Public suite now 1,503.
+Cross-platform qualification and native-only delivery are now completed with
+P1306 under the same scope: see its delivery record and mod
+tools/p1306-gravity-context.md. Actual ranked acceptance and the broader
+provenance bank remain open.
+
+## Patch 1304 — permanent Santa event gift (QC/backend/content only)
+
+**Problem.** A cosmetic preview/party crown is not the requested real Santa hat,
+permanently owned by people who play during Christmas. Entitlement must not come
+from client claims or web reads, and rollback must not delete newly earned data.
+
+**Change.** Original288-triangle native Santa IQM, warmed at client/map setup,
+one no-shadow mesh per wearer; standing/crouch/profile attachment and third
+inventory cell in both VMs. Server validates one headwear slot independently of
+aura. Versioned optional cosmetic payloads retain actual older client/server
+subsets. Trusted authenticated linked lobby presence grants once only while the
+operator enables the Christmas event; defaultOFF. Persistent earn/revoke markers
+prevent refill. Additive event component1, transactional creation/stamp; core
+DB26 and ahead-core refusal unchanged. An actual prior consumer ignores gift
+rows, and modern activity reconciles its later party-head choice without losing
+ownership. No native code/pin/tag, movement, recorder/evidence or QC Build change.
+
+**Verified.**20 inventory authority/persistence/legacy/cut/refusal/revision controls
+and8 existing ahead-schema/WAL controls pass. Generated native mesh header/counts,
+unit normals/bounds and byte-identical regeneration checked; existing asset writer
+controls pass. Actual QC compilation adds zero warnings beyond the2 inherited
+F333 viewmodel227 diagnostics. First prototype/schema and compile failures were
+preserved and fixed before any deployment. This is NOT native appearance, FPS,
+live activation or deployment acceptance: the quiet/4096MiB runtime guard has not
+admitted a subject. Event staysOFF pending dates; human look checks in lextest.md,
+full authority/compatibility details in mod tools/p1304-santa.md.
+
+## Patch 1302 — holiday decorations and bounded GPU mist (QC/content only)
+
+**Problem.** Requested Christmas props and light-adjacent smoke must not introduce
+unbounded particle simulation, light/trace work or blended overdraw during play.
+
+**Change.** Six CC0 Kenney Holiday Kit models converted deterministically to small
+static IQMs with namespaced palette material. Provisional Christmas/Frost/Bluewinter
+manifests place visual-only trees, gifts and snowmen, validating flat floors once
+at map load. Independent mist uses12 GPU-opened wisps/field, at most4 submitted
+fields, radius24..64, range192..1100 and summed coverage proxy<=.12. No frame-time
+simulation, allocation, trace, light query, readback, depth capture or raymarch.
+Ordinary depth/frustum culling remains; the proxy is NOT an fps guarantee. Mist
+is opt-in/default OFF until actual moving-view acceptance. Display Info toggles
+participate in Reset All. No native/API/physics/evidence or QC Build change.
+
+**Verified.** Existing isolated QC build adds zero warnings (only the two baseline
+F333 viewmodel diagnostics). Five offline content/geometry/cap controls pass,
+including nonfinite rejection, winding preservation and deterministic38-vertex/12-triangle mist.
+Inspected original archive SHA and bundled CC0 license; six meshes total5038triangles.
+Actual shader/appearance/moving-view arms remain BLOCKED: bounded shared rig wait
+expired without a quiet/4096MiB interval; no subject ran and no pass is inferred.
+No numerical performance, runtime compatibility or deployment claim. Model and
+source provenance/remaining checks in mod tools/p1302-winter.md. Owner approved
+Kenney choice and provisional map selection; actual placement remains unaccepted.
+
+## Patch 1301 — the roof-clipped eye blends between ticks like the feet (client exe)
+
+**Problem:** P917 held the rendered eye at the newest predicted tick's roof limit for the whole interval the
+feet are lerped across. Under a sloping roof the limit changes every tick, so the eye stood still for a tick and
+then stepped: Lex's surf_classics lobby save 3 (735 u/s under a descending roof) stepped 2-13 units at 66 Hz.
+**Change:** cl_pred.c keeps each full predicted command's feet and world eye (feet + clipped height) by sequence;
+when a frame lerps the feet and either tick clipped, the limit is lerped from the from-tick's kept eye to the
+to-tick's with the same fraction. A flat roof blends two equal limits (P917's steady eye). A kept eye is used only
+while its feet match from.state within 1 unit: a server move the client did not predict (setpos, load, respawn)
+otherwise drew the pre-move eye for a tick. An unclipped end only bounds the limit from below (a step-down's
+positive crouch survives). Snaps and a from-tick with nothing kept use P917; f = 1 (extrapolated) frames reduce
+to it. At a roof step the eye now drops up to one tick late, as P917's rose up to one tick early on the way out.
+cl_predtrace rows gain `vhr crouchr`, the height actually drawn.
+**Verified:** dedicated server + UDP client at Lex's cl_maxfps 1000 / cl_netfps 66.67, the save's position and
+speed, 4096 traced frames each. Second difference of the drawn eye while clipped (feet's in brackets): control
+0.584 (0.046) at 0 ms and 0.654 (0.052) at 80 ms; fix 0.042 (0.044) and 0.057 (0.058). Unclipped frames are
+unchanged in both. Review 1's stale-eye case, server setpos into the clipped spot: 9 of the first 40 frames drew
+the unclipped eye under the roof without the feet check, 0 with it. The positive-crouch case is not measured.
+Owner feel pending in lextest.md.
+
+## Patch 1299 — gravity carry observation through normalized jump offsets
+
+**Problem.** The existing early gravity-use observer excluded every nonzero
+jump-height offset, including supported normalized jumps whose native relocation
+is independent of gravity. A later observation does not cover every earlier use.
+
+**Change.** `engine/common/pm_source.c` only. Move the zero-offset restriction to
+stock-jump admission; normalized admission accepts finite nonnegative offsets.
+The observer continues to use the actual accepted native jump origin and its
+existing clear-path proof. Native jump, trace, stamina, movement and sanitization
+order are unchanged. No new signal, recorder/API/version, tier or ranking policy.
+Negative and nonfinite offsets remain excluded from this bounded extension.
+
+**Verified.** Windows native `sv-rel`: the same isolated native controls on
+untreated production and subject. 1,448 older checks pass on both. The untreated
+parent fails 36 new admission/use assertions; the subject passes all 2,888 checks
+(1,416 private acting controls and 24 new public admission/negative controls).
+Native relocation agrees between gravity alternatives through standing, ducked
+and transitioning normalized jumps, additive/nonadditive modes, stamina off and
+finite enabled, stationary/rising input, successful and refused relocation
+traces. Clear and blocked accepted paths act; observer off/on preserves the entire
+player body and movement configuration byte-for-byte. Original fixture mistakes
+in contact margin and stamina-cost expectations were retained and corrected in
+the tests, not movement. No new compiler warning in changed code; full `sv-rel`
+has 21 pre-existing warnings. Reader suite: 949 checks, zero failed. Corpus
+baseline: 541 recordings, 341 existing structural faults, not a clean-corpus claim.
+
+At this source checkpoint, the final clean full build, ARM qualification, fleet
+and dual-install deployment are pending, not implied by the native unit result.
+The wider provenance bank remains partial; this is not full anti-cheat closure,
+ranked acceptance or a native file-writer audit.
+
+**Continuation (4 Nov).** Official clean full Windows build and clean ARM64
+server/HL2 builds pass. Both platforms pass the 2,888 expanded native controls
+and the final source's 1,472 public native checks. Windows six-map comparison:
+90 exact parent/subject rows with actual prop contacts, also byte-identical to
+ARM64. Corpus after: same 541 files/bytes and 341 pre-existing structural faults.
+Built native source stays `9d0a294bd` / `patch-1299`; subsequent upstream changes
+merged here touch only this journal, not any compiled source.
+
+**Windows delivery, 2026-11-04 18:18:26 UTC.** Both installs received the exact
+frozen client/server and five plugins (14 files), after the active game exited
+naturally. Destination and `.prev` hashes match; older predecessors were archived
+and individually rehashed; 1,441 protected config/program files are unchanged.
+Both installed dedicated binaries pass 1,472/1,472 checks. No process kill or
+progs/config/data/backend deploy.
+
+**Further compatibility / Pi boundary.** All 72 legacy probe rows actually
+available in the live lobby binary match their subject counterparts. The modern
+subject's 18 extra pick/ride probe rows do not exist in that older command module;
+this is not a claim of 90 old-fleet rows. Historical verifier results with the
+qualified archived progs: both known legacy HOLDs unchanged; both gravity
+references PASS, actual fleet and subject. Original parser-profile failure kept.
+
+**Correction / completed Pi continuation, 4 Nov.** The earlier claimed backend
+integrity blocker was a selector error: preparation guessed a manifest beside the
+process cwd and selected the old CLOSED fallback, not the controller named in the
+actual canonical service launcher. Its hashes match its own declared fallback
+source; it was not the live manifest. Resolving the actual fixed launcher,
+state-dir, OPEN admission and declared source home verifies all84 runtime members
+and the complete156-file launch/source contract. No peer repair, manifest
+rebaseline, admission change or backend generation swap was needed or performed.
+Original recorder/FD refusals stay failed, not retrospectively passed. The same
+features are now on all12lobbies with qualified P1305/P1306, preserved actual parts
+and exact old data/config/program bytes; see P1306 delivery above. Cold clients
+verify live CSQC/board compatibility, not a ranked run or full bank closure.
+
+## Patch 1300 — ramp scuff reach/seams, inspect sound warming, sky recovery (QC/tools only)
+
+**Problem.** Ramp grooves disappeared as their rows became sub-pixel; atlas mips
+mixed unrelated faces and the large slope depth bias floated at grazing angles.
+Neighbouring bake grids did not share samples. First knife-event aliases repeatedly
+scanned the whole script string, and an off Milk sky could retain its override on
+maps with no authored sky. Christmas additions are separately requested work.
+
+**Change.** Broad-scuff LOD and configurable 12000-unit range; shared chart lattice,
+power-of-two atlas, neighbouring boarding paint, no cross-chart mip chain; fixed
+renderer-aware depthpush. Single-pass optional polish, not reflection capture.
+Line-based sound-script parsing, per-model 64-entry cache and one inspect event's
+precache per equip frame. Release only stale Milk-owned sky overrides when off or
+unsupported. No C/native pin/tag, movement, evidence, grant or QC Build change.
+
+**Verified.** Isolated existing build entrypoint: zero NEW warnings, same two CL
+F333 viewmodel diagnostics, SV/MENU zero. Three offline bake tests pass; exact old
+paint/pack fail the seam and atlas controls (two failures, no errors). Colin 77
+and Classics3 70 local demos rebaked read-only to owned staging. These are NOT new
+downloads. Renderer/audio/frame-time and original sky symptom acceptance are
+PENDING: original rendered/dedicated control confirms milk_sky=0 retains an
+explicit stale r_skybox=milk after reconnect; subject remained blocked at the same
+shared quiet/4-GiB gate (control waited 544 seconds). Verified own subject waiter
+stopped without children or an owned gate left behind. Source published in mod
+7dd89457 (asset-candidate docs ea72a344); NOT DEPLOYED, no visual/no-stutter claim. Detailed limits and next controls: mod repository
+tools/p1300-visuals.md; human acceptance pending in lextest.md. Snow/ice/cosmetics,
+weather/lightning and bounded independent smoke remain in ROADMAP.md; existing
+P1287 snow-cover ownership is preserved.
+
+## Patch 1298 — TAS workshop remembers the last tab (CSQC only)
+
+**Problem.** Closing Timeline or Shared always reset the workshop to Next input.
+The dated TAS roadmap also obscured later delivered editor/signing/clock work.
+
+**Change.** Remember the client tab across close/reopen, retaining the existing
+close-time timeline invalidation, cursor release and widget reset. Reopen Timeline
+through the existing guarded request; Shared keeps its current browser/consent
+behavior. Add the tab to the existing status observer and a current TAS status map.
+No native pin/tag, qcbuild, movement, recorder, signatures or public admission change.
+
+**Verified.** Clean isolated QC builds: zero new warnings (same two existing CSQC
+F333 viewmodel diagnostics; SSQC/MENU zero). Real dedicated Windows socket and
+rendered production client: control resets Timeline/Shared, subject retains both
+and returns to Timeline; 14 checks per arm, cursor release, actual drawn frames,
+empty-timeline non-authority and terms refusal. Subject screenshot inspected;
+owned peers stopped. This is not populated-timeline, owner-feel or canonical
+replay qualification. Public queue/board and full source qualification remain
+unfinished; tools/tas-status.md and tools/p1298-tas-reopen.md in the mod describe
+scope. Deployment readback4Nov2026 17:47UTC: clean QC0fbcc763 programs match the
+acted subject and both Windows destinations; approved -PiForce warned10seconds
+with three players before restarting12lobbies. All12advertise CSQC78f388a3;
+cold download SHA517849e5, rendered board and live Timeline close/reopen act.
+Native/backend untouched; full receipt in the mod's tools/p1298-tas-reopen.md.
+
+## Patch 1292 — the QuakeC temp-string collector no longer makes the main thread wait (client exe)
+
+**Problem.** Lex (4 Nov): remove the dips, then lift the 1% and 0.1% lows. After Patches 1282-1284 the largest frames
+left on heavy maps were the QC VMs' temp-string collector. The P1277 probe with its GC timings (surf_boreas,
+surf_voyager, surf_monolith replays): each collection copies 7-12 MB of the VM's string-bearing memory on the main
+thread (1.4-3.5 ms), every 2-3.5 s for one VM (a 21504-slot table, ~4k temps/s) and every ~10 s for the other (1M
+slots). A table that filled while a collection ran made PR_AllocTempStringLen wait for it (COM_WorkerPartialSync):
+up to 6.7 ms in that run, 17-30 ms frames on the installed exe (PF_digest_hex -> PR_AllocTempString ->
+Sys_ConditionWait). It waited because the worker's sweep nulled the live table itself.
+
+**Change.** qclib/initlib.c, the threaded collector only.
+- PR_QCGC_Thread marks its snapshot and lists the dead slots (gc->dead); it frees nothing and writes nothing of the
+  VM's. PR_RunGC's done branch clears each listed slot whose live pointer still equals the snapshot's, then queues
+  PR_QCGC_FreeJob (WG_LOADER), which frees those pointers through the host allocator's function. A cleared slot reads
+  "", never freed memory.
+- PR_AllocTempStringLen expands a full table at once; nothing waits on a collection.
+- A threaded table keeps at least 131072 slots after a collection (about 6x fewer collections for the small VM);
+  growth is the original rule (livetemps after the collection).
+- The same-thread sweep (pr_gc_threaded 0) frees before it clears: both names are one array there, and the old
+  order freed NULL and leaked every swept string. The worker's GCTIMINGS print no longer names a missing field.
+
+**Verified.** Rig, Lex's settings, replay passes (no probe), installed exe 23ec25b6 against this:
+
+| map | worst frame | 0.1% low | stutters |
+|---|---|---|---|
+| surf_demise | 30.0 -> 10.0 ms | 125 -> 150 fps | 8 -> 9 |
+| surf_boreas | 17.5 -> 5.3 ms | 177 -> 202 | 15 -> 13 |
+| surf_voyager | 7.4 -> 6.6 ms | 159 -> 175 | 3 -> 1 |
+| surf_monolith | 26.7 -> 6.1 ms | 189 -> 252 | 31 -> 16 |
+
+No tempstring or memory errors in any log. The ship exe (git-8211-patch-1292-0-g82d3bebc5): 0.1% low 155 / 199 / 185 / 258 fps, worst 10.0 / 5.6 / 6.5 /
+9.6 ms; both installs run it (exe 16408c21). Two memory-safety reviews: the first cut freed on the worker
+and left the pointers in the table until the main thread caught up (use-after-free and double free for an index the
+scan cannot see: hash_add, memnostrings blocks, engine state), so the worker now frees nothing; the second found no
+memory-safety defect.
+
+**Left.** The main-thread copy at each collection's start (1.4-3.5 ms) remains, now rarer for the small VM; the floor
+counts slots, not bytes, so up to ~65k dead temps of any size wait for a collection; the done pass is O(dead slots) on
+the main thread. Pre-existing: PR_FreeAllTemps loops if pr_gc_threaded becomes 2 with a collection in flight;
+unchecked mallocs. The in-process server VM (local games) runs this path too; the lobby server binary is unchanged.
+
+## Patch 1283 — a repeated model light sample remembers which world lights it saw (hl2 plugin, client exe)
+
+**Problem.** After Patch 1280, Lex (4 Nov): "I want to remove all dips". A model light sample on a Source map adds
+the direct light of every world light in PVS and range, each tested with a BIH trace (VBSP_AddWorldLightCube ->
+VBSP_WorldLightVisible). At two bhop_ceaseless spots one sample traces 1248-1516 lights (hl2_lightprobe; 86 at the
+spawn), ~10 ms, and every caller pays it every call: the view model, moving models (surf_voyager's movers, 2b's
+P1277 item), lit particles, QC getlight. A dim-light threshold does not help (below 1e-4 loses 2.5% of the visible
+light and still traces 420), and a trace already stops at its first hit.
+
+**Change.** mod_vbsp.c; gl_alias.c; gl_rlight.c (P1289's line).
+- VBSP_LightCacheCube: 64 slots, matched within 64qu of a caller's last point (a new slot seeds from one in the same
+  cluster within 1024qu, answers stale). Per light: visible/blocked and when traced. Each call re-traces
+  hl2_lt_vbudget (32): never-traced first, brightest first, then brightness x age; a burst of 64 when untraced
+  lights carry over 10% of the light, 128 for a first sample. Untraced lights count at the visible share of an even
+  spread of them (4 or more traces), else of the new picks, else the slot's known share: the brightest new lights
+  are nearer and less often blocked (95% visible where the rest let 55% through).
+- Bounded in time: a sample stops after 0.5 ms; once a view has spent 1 ms, later samples in it trace 4. A slot
+  whose caller has stood still since every light was traced is final and traces nothing.
+- Exact as before: the static-prop solve, the census and hl2_lightprobe (prv->wl_exact / report); hl2_lt_vcache 0.
+  hl2_lt_vcache 2 traces every light as well and prints the cube error and the worst sample every 5 s.
+- VBSP_WorldLightRatio is the per-light geometry split out unchanged: hl2_lightprobe output byte-identical (2778
+  lines at the two spots).
+- gl_alias.c R_ModelLightSettles (a Source world and hl2_lt_vcache on): the per-entity cache's sample lasts
+  1 + (keynum & 63)/64 s, the still eye (Patch 1280) re-samples 4 times a second, so remembered answers settle;
+  r_modellight_cache 2's exactness check stands aside then.
+- gl_rlight.c (Patch 1289): r_modellight_seq also hashes hl2_lt_occlusion, hl2_lt_blend, hl2_lt_illumpos,
+  hl2_cubelight and hl2_lt_vcache.
+
+**Verified.** Rig, Lex's settings (renderscale 2), CS:GO hands out.
+- bhop_ceaseless walk through the dense spots: old plugin 1% low 137, 0.1% 102, 175 stutters; P1283 1% 346-397,
+  0.1% 246-323, 0-28 stutters, worst frame 3.6-4.8 ms (several runs). Cache off (control): 1% 137, 207 stutters.
+- Check mode: cube error mean 0.24-0.27%, worst sample 9.5-12.8% (a first sample at a cluster edge).
+- Replay passes (P1277 probe rebuilt on P1283): surf_voyager stutters 377 -> 5, 0.1% low 105 -> 127; surf_hourglass's
+  48 ms frame of light traces gone (worst 10.7 ms, 0.1% 85 -> 163).
+- The ship exe (git-8210-patch-1283-0-g4a864094b, on patch-1284) and plugin d8b18216: walk 0.1% 311/323, voyager 5
+  stutters.
+- Five review rounds (display): an exact-first-sample seed through walls, lockstep re-samples, the heap traced root
+  first under the time cap, one-trace estimates, rope colours sampled once (cl_ropes.qc now samples with the cache off).
+
+**Left.** A still model first lit where many lights are new keeps an estimate until its re-sample settles it (1-2 s);
+callers within 64qu share answers; a frame with several views gets 1 ms each. Other dips found by the survey are
+not this patch: mid-run permutation compiles (P1277/P1282) and first-view lightmap rebuilds (P1284).
+
+## Patch 1284 — a new lightstyle slot carries its colours' key, so a map's lightmaps are not rebuilt on first view (client exe)
+
+**Problem.** P1277's frame-pacing BACKLOG listed lightmap rebuilds on surf_monolith of up to ~85 ms a frame.
+The hitch probe was given rebuild counters: for each slow frame, rebuilds by cause, and the first rebuild's
+style, its cached light and colour key, and the current ones.
+- Every rebuild was style 0, with light 264 -> 264 and colour key 0 -> 0x40100400.
+- surf_monolith has no animated or switched lights: all 19,567 lit faces use style 0 only, and its 781 lights
+  are static.
+
+**Cause.** gl_rlight.c R_BumpLightstyles gives a new slot white colours but leaves its colourkey at 0.
+- The world lightmaps built at load cache key 0.
+- The server's lightstyle(0, "m") then sets white's key, 0x40100400. Every surface then rebuilds an
+  unchanged lightmap the first time it is drawn.
+- Style 0 is on every map. Unlit maps are affected too, because their faces cache the same key (P1222).
+
+**Change.** R_LightStyleColourKey computes the key. R_BumpLightstyles sets the key of the colours it sets.
+R_UpdateLightStyle and R_AnimateLight's fullbright toggle use the same helper.
+
+**Verified.** A/B on the hitch probe, the same build with only the fix added, on Lex's Desktop 0.1.38
+settings and content. Surfaces rebuilt (ms in slow frames):
+
+| pass | control | P1284 |
+|---|---|---|
+| surf_monolith, after load | 626 (2.7) | 0 |
+| surf_monolith, replay viewer | 5,186 (27.7) | 0 |
+| surf_monolith, run drive | 6,522 (54.8) | 0 |
+| surf_leet_xl_beta7z (unlit), spawn | 1,338 (3.6) | 0 |
+
+- Screenshots at two fixed views differ, control against fixed, by 15,750 and 16,868 pixels over 2 levels.
+  That is inside each build's own shot-to-shot floor (19,594/15,683 for the control, 19,541/16,955 for the
+  fix), and the differing pixels lie in the frame graph and fps counter.
+- A third view was the first after the run drive and drifted between its shots (1.4M pixels even within one
+  build), so it is not counted.
+- The ship exe 9eb7aed8 (P1282 + P1284 on patch-1288) is installed in both installs; it carries the same
+  lines (patch-1281's lightmap changes do not touch the rebuild test or the keys).
+
+## Patch 1282 — a starter shader warm list shipped with the game (client exe + ftesurf/glsl/warmseed.txt)
+
+**Problem.** P1277 warms only the permutations this PC has compiled before. So a fresh install, whose driver
+cache is cold too, still compiles each map's first play mid-run.
+
+**Change.** gl_shader.c: GLSLWarm_Read takes a file name.
+- The load reads data/glslwarm.txt (else its .bak), then glsl/warmseed.txt: the gamedir's loose file, same
+  format.
+- Warmed starter entries are written into the PC's list at its next save.
+- The release ships glsl/ whole, so the starter list rides along.
+
+**Generation.** Built with the next release's exe, plugin, glsl and progs (a C:\FTESurf fixture) on default
+settings:
+- a viewer pass of the cached replay of each map;
+- a pass with the CS:GO knife shown (ftesurf-ac's sequence: cl_viewweapon 1, the knife cvars, `knife`), with
+  default arms and with a glove.
+The FTESurf repo's artifacts list the maps.
+
+**Verified.** Fresh fixtures (no per-PC list), the ship exe 9eb7aed8, surf_boreas replay:
+
+| arm | at load | compiled mid-run |
+|---|---|---|
+| starter list present | 58 warmed (464 ms; the plugin's shader text changed today, so the driver cache was cold) | 0 (no list written) |
+| no starter list | none | 28 |
+
+**Left.**
+- The list covers only the maps it replays, because material programs carry per-material defines in their
+  names. Generic programs (sprites, default skins, the knife) are covered on every map.
+- knife_finish was not recorded: the ghost knife has no finish. #WATCHED needs another player to spectate.
+
+## Patch 1288 — Source brush $color applied in linear light, as LightmappedGeneric (hl2 plugin)
+
+**Problem.** Lex (3-4 Nov): surf_eternity's tiled stair room is much darker than in CS:S. His CS:S pair at one pose
+(setpos -7594.77 7642.67 7854.67, setang 1.34 -147.31) with mat_specular 0 and 1 kept the walls' warm glow both
+ways, so it is lighting, not reflection. At that pose our walls read (18, 15, 17) against CS:S's (79, 43, 52),
+unchanged with hl2_bumpmap 0, hl2_rnm 0 or hl2_envmap 0; the faces carry style 0 only and healthy baked light
+(int_p_building_02a's luxels mean linear 0.50 0.26 0.37). That material sets $color [.103 .106 .115].
+
+**Cause.** lightmappedgeneric_dx9_helper.cpp hands $color to the pixel shader raw (ComputeModulationColor times the
+lightmap scale), between an sRGB read of the base texture and an sRGB write, so it multiplies in linear light;
+VertexLitGeneric converts it with GammaToLinear first (SetModulationPixelShaderDynamicState_LinearColorSpace).
+WorldVertexTransition draws through the same DrawLightmappedGeneric_DX9. Our vmt programs work on gamma values
+and multiplied by the raw value, the same as $color^2.2 in linear: 0.103 drew as 0.0067.
+
+**Change.** vmt/lightmapped, vmt/transition and vmt/animated's lightmapped variant multiply by $color^(1/2.2).
+Unlit, two-texture, vertex-lit (model) and imposter programs keep the raw value, which matches their Source shaders.
+
+**Verified.** Same pose, installed exe b89fde71: left wall (18, 15, 17) -> (41, 28, 35), back wall (20, 12, 14) ->
+(52, 34, 43), against CS:S (79, 43, 52) and (75, 44, 62); the stairs ($color-free) unchanged at (56, 39, 46).
+
+**Left.** The room's lit surfaces without $color read about 70% of CS:S (stairs 56 against 81, the back wall now
+52 against 75) while its arch reads brighter (105 against 82): not a $color matter, not measured further.
+## Patch 1280 — one viewmodel light sample shared by every viewmodel entity (client exe)
+
+**Problem.** Lex (4 Nov): the CS:GO hands sink the frame rate "all the time, while rendering". Not skinning (the arms
+are GPU-skinned; forcing r_max_gpu_bones 0 doubled the cost), not the unlit fallback's missing SKELETAL permutation
+(added, no change), not the bone-uniform size (64/128/default equal) and not the QC. Stack-sampled on bhop_ceaseless
+(2b's P1277 probe, 40 s a pass): R_CalcModelLighting -> VBSP_LightPointValues -> VBSP_AddWorldLightCube ->
+VBSP_WorldLightVisible -> BIH_Trace was 25.4% of main-thread samples with the arms, 15.3% without. Every
+RF_WEAPONMODEL entity (knife, arms, sleeve) sampled r_refdef.vieworg itself, every frame, and on a Source map a
+sample traces to each world light in PVS and range.
+
+**Change.** gl_alias.c R_CalcModelLighting, renderer.c.
+- One sample (vieworg, r_modellight_seq, realtime) serves every viewmodel entity: reused while the eye has not
+  moved, and for up to 1/r_viewmodel_lightrate s while it has moved under 256qu (review 1: a teleport or respawn
+  samples at once).
+- r_viewmodel_lightrate, archived, default 60; 0 = every frame (still one sample for all of them). Off with
+  r_modellight_cache 0. The black floor, r_viewmodel_maxlight and dlights still run per entity.
+
+**Verified.** Rig, Lex's settings (renderscale 2), bhop_ceaseless, installed exe against this (r_budget_dump,
+r_frametime over 5 s):
+
+| | installed | P1280 |
+|---|---|---|
+| standing, draw calls CPU, hands | 0.76 ms | 0.36 ms |
+| standing, knife only | 0.55 ms | 0.35 ms |
+| walking, draw calls CPU, hands | 0.98 ms | 0.42 ms |
+| walking, average, hands | 462 fps | 628 fps |
+| walking, average, knife only | 783 fps | 885 fps |
+
+- Walking at r_viewmodel_lightrate 0, the hands' transparent pass (0.42 ms) matched the knife alone (0.45): once
+  shared, the arms add no light sampling. Standing, rate 0 and 60 read the same (the eye-still reuse).
+- Teleport (rate 0.2, 1,893qu): knife-area brightness 0.6 s after: pre-fix 37.0, then 46.4 once the window ran
+  out; fixed 46.5 and 46.5.
+- The ship exe (git-8197-patch-1280-0-g53951ab74, on patch-1281): the same teleport read 46.6 and 46.5, and walking with the hands cost 0.34 ms of draw-call CPU
+  (transparent 0.12). Both installs run it as exe b89fde71 with 48's plugin 5f384232.
+- One review (display feature), one round on its fix.
+
+**Left.** At two spots on bhop_ceaseless one sample traces 1248-1516 lights (hl2_lightprobe; 86 at spawn), ~10 ms:
+the shared sample halves those frames with the hands, and no rate removes them. Skipping dim lights does not either
+(below 1e-4 loses 2.5% of the visible light and still traces 420). That is Patch 1283. Also: r_modellight_seq does
+not hash the plugin's hl2_lt_* cvars (a still viewmodel, like a still prop since Patch 105, keeps its light until it
+moves); split-screen views would share one sample.
+
+## Patch 1281 — water and glass captures redrawn about r_capturerate times a second (client exe)
+
+**Problem.** Lex (4 Nov): "can we lower the reflective/refractive fill rate even lower than 1 per 2 frames? we run
+at 1000fps on some maps." r_capturehalfrate (Patch 1245) counts frames, so its saving scales with the frame rate,
+and Lex's config captured every frame.
+
+**Measured first** (the installed exe, Lex's settings, frame counts): surf_eternity s4 208 / 292 / 388 / 459 fps
+capturing every frame / every 2nd / 4th / 8th; s10 189 / 280 / 367 / 401; surf_boreas s10 447 / 553 / 618 / 679.
+
+**Change.** r_capturerate (archived, default 144, at least 20): a kept capture (GLBE_CaptureKeep) is due once
+3/4 of 1/rate has passed since it rendered (realtime), so frames capped at the rate still all capture (cl_maxfps
+carries each frame's lateness into the next); a clock that went back is due. The 128-unit and 30-degree limits
+still redraw at once. 0 keeps r_capturehalfrate's frame count. r_capturelog prints each keep's age.
+
+**Verified.** Ship exe 9d2e564e, Lex's settings: eternity s4 194 / 203 fps capturing every frame, 281 / 276 at
+144, 420 at 60, 204 at 240 (above the frame rate, so every frame); the capture log shows keeps 5.1 ms old.
+
+**Left.** 3D sky-room water sharing the level-0 targets samples a kept capture without the turn correction
+(m_capturefix is identity at recursion > 0), up to 1/rate old.
+
+## Patch 1275 — Source maps' lightmaps filtered bicubically (client exe + hl2 plugin)
+
+**Problem.** Lex (4 Nov), passing on a chatter: HL2's 20th-anniversary update filters lightmaps bicubically. Ours
+were bilinear, so coarse lightmaps show stepped and diamond-shaped light edges.
+
+**Change.**
+- vmt/lightmapped, vmt/transition and vmt/animated sample their lightmaps through lm_bicubic, a cubic B-spline in
+  four bilinear taps, when r_lightmap_bicubic_world is 1; the deluxemap stays bilinear. e_lmsize (the batch's page,
+  w h 1/w 1/h) is a per-program uniform sent before BE_Program_Set_Attributes's per-entity cache returns, when the
+  page size changes, so the programs stay at !!ver 110 (no textureSize).
+- The kernel reads one texel past a face's luxels, so a padded face's block is allocated two texels larger with the
+  face inside (SURF_LMPAD 0x04000), and Surf_BuildLightMap copies the edge texels into that border (lightmap and
+  deluxe pages) and dirties it.
+- r_lightmap_bicubic (archived, default 1) is read when a model's lightmaps are built; the model keeps the answer
+  (MDLF_LMPADDED 0x8000), and Surf_NewMap sets the read-only r_lightmap_bicubic_world the shaders read, so a world
+  reused by a same-map reload brings its own.
+
+**Verified.** Rig, a copy of Lex's Desktop install and settings:
+- Off: lightstyled surf_affliction and bhop_orgrimmar match the old exe pixel for pixel. (Review 1 found the first
+  cut's SURF_LMPAD on SURF_LMSTRIDE_MASK's low bit, which read every lightstyled face's later styles off.)
+- On against off, GPU ms: affliction 0.37 / 0.38, sedona 0.88 / 0.91, ceaseless 0.72 / 0.72, starvald 1.30 / 1.28,
+  eternity 0.74 / 0.75. CPU stayed within run-to-run noise (0.3 ms); world batches fell (sedona 108 to 68,
+  starvald 40 to 22); eternity gained one 2048x2048 page (about 32 MB).
+- On changed 104,733 of sedona's pixels by more than 2 levels and 1,774 by more than 8 (smoother gradients);
+  bhop_ceaseless's bump relief (Patch 1264) is unchanged.
+- The ship exe 9d2e564e reports r_lightmap_bicubic_world 1 and matches the on run.
+
+**Rejected.** Always padding, so the setting switched live: review 2 measured 1.36-1.42x the lightmap texels at the
+median (8.45x worst) with the feature off. Raising the vmt programs to !!ver 130 for textureSize (animated.glsl's
+note on why they stay at 110).
+
+**Left.** A change of the setting applies when a map's lightmaps are next built (a new map, or vid_restart). An
+exe-only install pads without the plugin's bicubic shaders.
+## Patch 1271 — an unvised Source map culled by area, as Source (hl2 plugin)
+
+**Problem.** Lex (3 Nov), surf_voyager saves 3 and 4: "reverse LOD for things outside the skybox? cutting off
+z-distance". The far stations past the x -3008 sky wall drew partly, and less of them the nearer the wall. The map
+has no vis data, so VBSP_PrepareFrame emitted every world surface and only the sky depth mask
+(r_sky_forcedepth 2 at r_sky_forcedepth_scale 2) hid what lay behind the sky, cut at twice the wall's distance.
+Source culls such a map by area: R_CullNode draws a node of area > 0 only if R_IsAreaVisible, and never
+area-culls area 0. The stations are alone in area 3, the player in area 1, with no areaportal between them.
+
+**Change.** mod_vbsp.c only. When the world has no vis (and not r_novis or a forced vis), the leaves of areas
+in r_refdef->areabits, plus area-0 leaves, mark their surfaces; displacements and static props draw unless every
+area their pair names is hidden (an overflowed record draws; area 0 and an area past numareas never cull);
+the marked surfaces are emitted in surface order. Leaf order split the batches (surf_sunset 77 -> 796 draws). A
+first cut skipped the sky mask on unvised maps instead; review 2 found it drew other areas through the sky
+(surf_sunset's area-19 room over the spawn) and it was reverted. Review 3 added the props and displacements.
+
+**Verified.** Rig, exe_p1268, old plugin against this: voyager s3/s4 the area-3 stations are gone rather than cut;
+surf_sunset's spawn (y90/y180) no longer shows the floating room and is otherwise unchanged. Draws
+1211/1195/95/77 -> 1140/1124/83/65; sunset 673/679 -> 757/775 fps. Sunset's area-19 prop 14 (prop_census):
+drawn -> "rejected by the area walk", 4 props culled, 14 frustum-culled unchanged; surf_pure's spawn 30 -> 29
+draws. 68 of 2204 library maps are unvised. Not compared with a CS:S screenshot.
+
+**Left.** A static prop's pair is its first and last leaf (the loader's FIXME), so one spanning three areas can
+be culled wrongly. Detail props, static entities and PVSF_IGNOREPVS entities are not area-culled here. The sky
+mask still cuts same-area geometry behind a sky face where Source shows it.
+
+Shipped: tag patch-1271 (d32bc2d3e, on patch-1277), both installs exe 2151546b
+(git-8186-patch-1271-0-gd32bc2d3e) and hl2 plugin 02cb49fb.
+
+## Patch 1270 — Modulate reads vertex colour only under $vertexcolor/$vertexalpha (hl2 plugin)
+
+**Problem.** Lex (3 Nov), surf_voyager save 2: "blackness isn't masked". The combine balls' comball_glow1 ($mod2x)
+drew black squares: the generated Modulate pass always took rgbGen vertex, and a model's vertex colours are
+its lighting, dark in space. Source's modulate_dx9.cpp:133 reads vertex colour only under those two flags.
+
+**Change.** mat_vmt.c: rgbGen vertex only when $vertexcolor or $vertexalpha is set to a non-zero value
+(vertexcolor_on, read by value as vertexalpha_on is), otherwise rgbGen identity.
+
+**Verified.** Rig, voyager s2: the squares are gone and the glow keeps its shape.
+
+**Left.** The other arms that read $vertexcolor still switch on the key alone.
+
+## Patch 1269 — a blended displacement lit as the flat face beside it (hl2 plugin)
+
+**Problem.** Lex (3 Nov), surf_starvald save 8: the displacement floor's lightmap "less blended in compared to
+Source" -- a sharp darker wedge. vmt/transition scaled its lightmap by 0.75 and clamped it at 1.5, lines upstream
+removed from vmt/lightmapped in e4c4938ef; the flat _wvt_patch faces (lightmapped) matched CS:S, the displacements
+(transition) drew at 3/4 of them.
+
+**Change.** transition.glsl drops the scale and the clamp; mat_vmt_progs.h regenerated (the plugin compiles the
+header, not the .glsl).
+
+**Verified.** Rig, s8: the displacement region 24.8 -> 33.1, the patch face 24.4 unchanged, and the seam is
+gone; against Lex's CS:S shot the displacement went from 0.66 to about 0.87 of its brightness (poses differ a
+little).
+
+## Patch 1268 — a model's translucent meshes after its Refract mesh draw after the pane (client exe)
+
+**Problem.** Lex (3 Nov), surf_starvald save 7: the start platform's ice differs from Source. Source draws a
+translucent model whole after its own screen copy, meshes in model order (viewrender.cpp:4339-4380); FTE drew
+every refraction pane in the NEAREST sort after all blend batches, so the model's later translucent meshes drew
+under their own pane.
+
+**Change.** gl_backend.c: GLBE_DeferPaneLayers unlinks a pane model's later alias batches from the blend sorts,
+GLBE_SubmitNearest draws them after their pane, GLBE_RestorePaneLayers draws leftovers and relinks; a stack keeps
+nested views apart, reset where the frame's batches restart.
+
+**Verified.** Rig, s7 against Lex's CS:S shot: the layers draw over the ice as in Source.
+
+**Left.** The held-back meshes draw after every blend batch, so translucent things in front of such a model draw
+under them (the pane has done this since Patch 878); two Refract meshes on one model draw in reverse order.
+## Patch 1277 — shader permutations a run had to compile are compiled at the next load instead (client exe)
+
+**Problem.** Lex (4 Nov): "I would love if the game was stable and not randomly loading in shaders and assets
+or whatnot while you're surfing causing stutters". Replays of eight expensive maps (viewer passes, Lex's
+0.1.38 settings, a 1 ms sampler unwinding the main thread in any frame over 8 ms) found no file opens
+mid-run. The largest stalls were GLSL program permutations compiled at their first draw
+(BE_RenderMeshProgram -> Shader_LoadPermutation -> the driver's compiler): 3 to 11 per map the first time a
+session draws them, 0.2-1.3 ms each when NVIDIA's OpenGL cache holds them, 25-191 ms when it does not.
+That happens on the first play after an update changes the GLSL, and whenever the cache evicts them (this game's
+folder on the PC stayed at 560 MB through a day of new compiles: full, by the look of it). r_glsl_precache cannot help: it compiles every supported
+permutation, which is 1024 for vmt/water alone.
+
+**Change.** gl_shader.c, with one line each in gl_backend.c, renderer.c and cl_main.c.
+- Each permutation compiled lazily is remembered per program name in data/glslwarm.txt. That is the
+  gamedir's own loose file. Its header carries the permutation bit values, so another layout is ignored.
+- CL_MakeActive, after its shader reload and before the loading screen ends, walks the loaded shaders and
+  compiles their programs' remembered permutations (GLSLWarm_MapActive), within 2 s.
+- The file is written there and at shutdown only, in one checked write under a random temp name. The old
+  file steps aside to .bak while the new one is renamed in.
+- r_glsl_warm (archived, default 1); 0 neither records nor warms. OpenGL only.
+- Not warmed: a shader first registered mid-run, programs no shader owns (programfixedemu), and anything a
+  later reload deletes (r_shader_reload_afterframe 1, vid_restart).
+
+**Verified.** Rig, surf_boreas viewer pass, a copy of Lex's Desktop 0.1.38 install and settings. A test-only
+salt define (never shipped) made every compile cold:
+
+| arm (cold driver cache) | compiled mid-run | 0.1% low | 1% low |
+|---|---|---|---|
+| no list yet | 11, 237 ms | 62 fps | 209 fps |
+| list, r_glsl_warm 1 | 0 | 163 fps | 268 fps |
+| list, r_glsl_warm 0 | 11, 231 ms | 63 fps | 216 fps |
+
+- With the list, the load printed "27 remembered permutations compiled while loading, 558 ms" (cold).
+- The stamped exe b9fb1679 (git-8180-patch-1277-0-g58a4bf164), unsalted on the PC's real cache, learned the
+  same 27 and warmed them at the next load in 12 ms.
+- No temp or .bak file was left in any arm.
+- Four review rounds: the first saved inside Shader_DoReload, which runs every frame; FS_Rename returns true
+  on success, though common.h says 0; a loading-screen gate never ran for a local map from the menu (the
+  arm showed 0 warmed); the reader's byte cap was below what the writer could write.
+
+**Left.** A fresh install has no list, so its first play of each map still compiles mid-run; a seed list
+built from the census maps would cover it. Other stalls found, not changed here:
+- Lightmap rebuilds on surf_monolith (Surf_RenderDynamicLightmaps, up to ~85 ms).
+- The first view of a portal or water surface on boreas (GLBE_GenerateBatchTextures, ~30 ms).
+- Model lighting traces beside movers on surf_voyager (VBSP_WorldLightVisible, 8-13 ms).
+- Opening a replay (80-380 ms; not during play).
+## Patch 1276 — the main view's water and glass reflections drawn multisampled (client exe)
+
+**Problem.** Lex (4 Nov), passing on a chatter: "would it be cheaper to still do the low res but msaa the
+reflection?" Reflection captures draw at r_refractreflect_scale (0.5) of the view, capped at r_watertargetsize:
+960x600 at Lex's 1920x1200, single-sampled, so reflected edges stair-step. Source's own is a fixed
+1024x1024 render target, without MSAA (baseclientrendertargets.cpp:14-22).
+
+**Change.** gl_backend.c: Patch 1260's scene-MSAA code takes a target (bemsaa_t): the scene's, and a second
+bound only while a recurse-0 reflection capture draws, resolved into tex_reflection before the pop.
+- A copy of the screen inside the capture resolves first (GLBE_SceneMSAA_ReadBegin picks the bound target),
+  and alpha-to-coverage applies there too.
+- The reflection target only grows (a smaller capture draws into its corner rather than rebuilding it), and
+  is freed the frame after it is turned off.
+- r_capturelog prints "reflect target WxH, N samples".
+- r_reflectmultisample (archived): -1 follows vid_multisample (the default), 0 none, N samples.
+
+**Verified.** Rig, a copy of Lex's Desktop 0.1.38 install and settings (vid_multisample 4, 1920x1200), r_budget:
+
+| view | GPU ms, off | 4x (default) | 8x | full-size capture, no MSAA |
+|---|---|---|---|---|
+| surf_eternity s4 | 1.68, 1.67 | 1.73, 1.73 | 1.82 | 1.72 |
+| surf_eternity s10 | 2.16, 2.15 | 2.19, 2.22 | 2.34 | 2.22 |
+| surf_boreas s10 | 1.38, 1.38 | 1.44, 1.44 | 1.45 | 1.51 |
+
+The frames are CPU-bound (4.8-5.1 ms), so fps did not move outside noise. Paused at eternity s10 (world
+region, left of the HUD): repeat shots of one setting identical; 4x changed 38,255 pixels by more than 2 levels
+(8,573 by more than 8), all on the river's reflection, where reflected arches and walls lose their steps; 8x
+changed 12,055 more; a full-size 1024x1024 capture changed as many as 4x but stays stepped. The ship exe
+a9b8a2ec repeats those counts and logs 960x600 at 0/4/8 samples and 1024x1024 at 0.
+
+**Left.** A refused first resolve shows one stale frame (under MSAA the capture's own FBO is not cleared).
+## Patch 1253 — surfd: Momentum Beta boards collected; approval wipes followed only where Momentum's board shows them
+
+**Problem.** Lex (3 Nov), "yes please to all" on P1240's open items, the third of which was split
+out of P1247: collect the boards of held Momentum Beta maps, and at approval drop the Beta leftovers
+(board-cache rows, runs, recordings) so stale testing times stop blocking slower approved ones.
+
+**Change.** FTESurf surfd/mapwatch.py: beta_boards puts held Beta maps' boards into momtracks.tsv;
+approvals() checks each approved map once per approvedDate and drops what predates the approval only
+after two "wiped" reads of Momentum's live board an hour or more apart, every Beta track judged at
+both, under momwatch's lock, from a purge record written first (recordings retired, not deleted;
+a failed purge settles from the record). A read covers only what it saw; served replay hashes,
+post-approval and undated rows are never dropped; a reply that looks filtered or cut short reads
+unknown.
+
+**Measured.** The wipe is not a Momentum rule: the first draft purged by date and a read-only dry
+scan found surf_me (approved Oct 2025) still serving 43 of its top 100 from before approval. On 3 Nov
+13 of 47 approved maps holding Beta data read wiped (all approved in Oct 2026), 32 kept. Momentum's
+ranks are positions (14,592 of 14,592 rows on 32 boards), so a rank gap is a hidden row.
+
+**Verified.** 16 review rounds, three lenses (control flow, stored data, upstream replies); Pi suite
+403 checks; 125 mutants, all killed but 5 guards another check shadows. Live 3 Nov 12:54:52Z
+(generation ea4e8b3c), a 27 s activation after a KSF tick. First purges no earlier than 00:23Z 4 Nov.
+
+## Patch 1266 — exact reuse of repeated collision traces (bih_tracecache)
+
+**Problem.** Lex (3 Nov): faster movement collision, with no ramp bugs and still accurate to Momentum. On
+surf_voyager surfed hands-free, client prediction replays the unacknowledged commands every frame
+(CL_PredictUsercmdPart: 2.5 player moves for 3.9 Source ticks a frame, ~145 world traces, 96.5% from
+PM_TransformedHullCheck), and 13.5% of those traces repeat exactly within the frame. A whole-tick memo is not
+exact: CSQC_PredictPlayerPreMove/PlayerMove run inside each tick on state that changes between frames.
+
+**Change.** Engine com_bih.c, com_bih.h, gl_model.c, common.c, sv_ccmds.c. No plugin change.
+- BIH_Trace becomes a 256-entry direct-mapped cache (~60 KB; 2048 entries measured no better) over the
+  unchanged trace, BIH_TraceUncached. Key: the resolved model (phyfix twin), its cnodes and bounds, contents,
+  hull, capsule, axis, bih_sourceclip/phybrushes/phyfix/phypick, pm_trisoup_bevels, pm_rotatedboxhulls, the
+  start/end/size/axis bytes, and bih_collisionepoch. Full-key memcmp; the hash only picks the slot.
+- The epoch is bumped atomically by BIH_Build, Mod_ModelLoaded and Mod_PurgeModel: a world trace reaches props
+  through BIH_MODEL leaves, waits on one still loading (a zero-length test skips it), and BIH_Build runs on the
+  loader thread before the load is marked done. A result is stored only if the epoch and the tree pointer did
+  not move during its trace (the plugin's occluder and visual builds swap mod->cnodes and put it back).
+- Stands aside for pm_dispprobe and pm_dettest (bih_probe_readers): both read the probe record, which a hit
+  does not write. Also for terrain, models without a tree, and off the main thread.
+- bih_tracecache 0/1/2 (NOSAVE, NOTFROMSERVER): 2 copies the hit out, re-traces it and compares every field
+  (BIH_TraceSame); bih_tracestats prints and resets the counters.
+- Tried and dropped: com_bih.c at -O2 under the release's -Os. No measurable gain on prediction or server
+  frames, and the Pi's compiler was not verified.
+
+**Verified (rig, Lex's settings; two review rounds, the last with no defects).**
+- Voyager hands-free at mode 2 on the final exe: 670324 reused answers re-traced, 0 differed. The smoke run
+  of the stamped exe with plugin c3c9062f: 200055 re-traced, 0 differed.
+- r_budget's prediction line (CL_PredictMove), cache off -> on, three alternating pairs per run:
+  0.130 -> 0.103, 0.133 -> 0.110, 0.130 -> 0.110 ms. Frame time is within noise: on voyager prediction is
+  0.13 of 2.3 ms CPU (draw calls 0.80, CSQC view 0.42, server 0.23).
+- pm_dettest: 90 of 90 lines identical to the installed patch-1257 server (the cache stands aside there).
+- pm_verify, the installed server and P1266 at cache 0/1/2 identical: p492voy.rec HOLD (52 rows differ,
+  first at row 408), surf_boreas 0002871_pb.rec PASS (2871 ticks); mode 2 differed 0 on both.
+
+Tag patch-1266 = 9e6c5806b (P1266 on patch-1267); both installs run exe c3342a2d (git-8171-patch-1266-0-g9e6c5806b) and hl2 plugin c3c9062f.
+
+## Patch 1267 — a map change's shader reload skips what it does not need; the after-frame reload is off (client exe)
+
+**Problem.** Lex (3 Nov), on the loading freezes left after Patch 1259: "do whatever you think you can do". Each map
+load ran two full shader reloads: CL_MakeActive's at activation (the map change's filesystem rescan) and Patch 34a's
+"post-first-frame water fixup" (r_shader_reload_afterframe), a hitch in play. Both re-read every live shader, and
+nothing releases a shader's uses when its model is purged, so every earlier map's materials stay live (1198 by a
+second map).
+
+**Measured first.** A probe build snapshotting each shader before and after each reload (flags, sort, passes'
+programs, bits, blend, gens, tcmods, first texture, base map):
+- the after-frame reload changed 0 of 272, 263 and 1248 shaders over three maps, and 0 of 194 on a first connect
+  onto surf_hourglass (water);
+- the activation reload changed only shaders parsed before the filesystem changed (the previous map's: 58, 52, 860).
+
+**Change.**
+- gl_shader.c: Shader_NeedReload(true) is a filesystem change and bumps shader_fsgen; Shader_Reset stamps each
+  parse with it, and the script branch of Shader_ParseShader marks a parse that read a script.
+- A reload asked for by the filesystem alone (no full request since the last reload) skips a shader stamped in the
+  current generation unless a script defined it then (the cache is rescanned only at the reload) or defines it
+  now, driver name (shadernamefmt) included.
+- Full requests: Shader_NeedReload(false) (shader cvars, the watervis permission), flushshaders, Shader_Init,
+  Vulkan's render-pass rebuild.
+- cl_main.c: r_shader_reload_afterframe defaults 0 (1 brings it back).
+
+**Verified.** Rig, a client joining a dedicated server from the menu onto surf_hourglass, then changelevel to
+surf_bikini_bottom and surf_frey_remake; same route on the installed patch-1264 exe (11994f33) and on 76e78e80:
+
+| map change | before (activation + after-frame) | after |
+|---|---|---|
+| first connect, hourglass | 242 + 227 ms | 248 ms (a first reload is full) |
+| bikini_bottom | 556 + 541 ms | 43 ms (1020 skipped) |
+| frey_remake | 149 + 134 ms | 85 ms (123 skipped; 1062 reparsed are bikini's) |
+
+- A check build that reparses every skipped shader and compares: 0 of 1020 and 0 of 123 changed.
+- Shots of the same viewpoints (hourglass water, bikini glass) differ from the old exe's only at the level two runs
+  of one build do.
+
+**Rejected.** Re-reading old shaders lazily at their next R_LoadShader lookup and skipping them all (frey 85 ->
+36 ms). Review found that shaders held by pointer (world surfaces, fonts, console, post-processing) would stay
+stale after a mid-map file change, and that a resort from inside a lookup could free the world EBO being built.
+
+**Left.** The previous maps' shaders are still re-read at every later map change (~80 ms by the third map): shader
+uses are never released at Mod_Purge.
+## Patch 1264 — Source radiosity normal mapping on bumped brush faces (hl2 plugin + one r_surf.c line)
+
+**Problem.** Lex (3 Nov): bhop_ceaseless's walls have no bump mapping (save 34). vmt/lightmapped drew the
+flat lightmap and used the normal map only to bend the cubemap; Patch 268 D2's "RNM combine" was never
+written, so no bumped world face in any map showed its relief.
+
+**Change.** Plugin mod_vbsp.c VBSP_BuildRNM (hl2_rnm, default 1, map latch; needs r_deluxemapping), after
+VBSP_ProbeLightmapStride. For each face D1 tagged as bumped, on the 4-byte grid: each style's flat set
+becomes the mean of its three basis maps (what Source shows with a flat normal; VRAD's sum/flat runs
+1.8-3.8, median 2.1-3.1 over 1/4 and 2/5 maps), read in linear RGBE from the raw lump and converted by
+VBSP_ConvertLuxel. The model's deluxemap gets one tangent-space direction a luxel, sum(lum_i *
+bumpBasis[i]) (common_fxc.h:36, orthonormal); everything else is the zero vector, read as "no data". No
+deluxemap is built on a map with no such face. glsl/vmt/lightmapped.glsl (DELUXE+BUMP) turns the direction
+back into the three maps' shares and applies Source's weights (lightmappedgeneric_ps2_3_x.h:433-466): a
+normal map by its squared clamped basis dots, normalized; an $ssbump (mat_vmt.c #SSBUMP) by its channels.
+The factor is linear light on an sRGB-encoded lightmap, so it is applied as F^(1/2.2). $ssbump also sets
+the reflection normal (the basis-weighted sum). Engine r_surf.c Surf_BuildDeluxMap: the E5BGR9 style walk
+skips D1's extra sets, as Surf_BuildLightMap does. Per-direction colour is not kept (the mean colour is);
+vmt/transition and vmt/animated faces get the mean brightness but no relief.
+
+**Verified (rig; one review, its findings fixed and measured).** bhop_ceaseless save 34: wall crop 48.9 ->
+53.7 with the cracked-rock relief at 1:1 (hl2_rnm 0 matches the previous build); surf_sedona's sand shows
+its grain, its bumped ground ~12% darker (the basis mean). The 2/5 set order [flat][b0][b1][b2][extra]
+checked over 40 maps (the non-RGBE record last on 5180 faces, elsewhere on under 20). A map change from
+hl2_rnm 1 to 0 recompiles the permutation (sedona after ceaseless == a fresh hl2_rnm 0 run, diff 0.06).
+Tag patch-1264 = 4cdfaff24 on patch-1265; both installs run exe 11994f33 (git-8165-patch-1264-0-g4cdfaff24)
+and hl2 plugin c3c9062f.
+
+## Patch 1265 — scr_loadingmap: the map a load is for (client exe)
+
+**Problem.** Lex (3 Nov): the loading screen should show the map's thumbnail and info. The menu had no
+reliable name for it: a hosted load sets svs.info's "map" near its end (holding the previous map until
+then), and a join reads the old serverinfo until the new one lands.
+
+**Change.** Read-only cvar scr_loadingmap: the base name SCR_ImageName is given (the server's map step,
+the client's model list), cleared with scr_loadingstep at LS_NONE. FTESurf's menu (P1265) draws the map
+list's card for it: thumbnail, name, "by <author> | MOM T | KSF T | stages".
+
+**Verified.** Rig, a dedicated server's changelevel to surf_eternity under a client that joined from the
+menu: scr_loadingmap read surf_eternity from the model list to the end of the load and "" after it; the
+card drew with the thumbnail and "by Hardex | MOM - | KSF T1".
+## Patch 1262 — alpha-to-coverage: alpha-tested Source materials smoothed under MSAA
+
+**Problem.** Lex (3 Nov), after P1260: trees and fences stay jagged under MSAA. An alpha-tested material
+discards below $alphatestreference, so its edge is a cut that multisampling cannot see.
+
+**Change.** Engine gl_backend.c, gl_vidcommon.c, shader.h, renderer.c; plugin glsl/vmt lightmapped,
+vertexlit, transition, unlit, unlitreflect, animated and detail (48's shaders, with their okay).
+- r_alphacoverage (default 1, archived): with P1260's multisampled scene bound, an unblended draw whose
+  program keeps the prelude's e_alphacoverage uniform (programpermu_s a2cuniform; only the alpha-test path
+  reads it, so only alpha-tested permutations keep it) enables GL_SAMPLE_ALPHA_TO_COVERAGE and sets the
+  uniform (GLBE_AlphaCoverage, after BE_SendPassBlendDepthMask). Off for every other draw, at the scene's
+  resolve and at GLBE_Init.
+- The shaders' alpha test becomes, under e_alphacoverage, a = (alpha - MASK) / fwidth(alpha) + 0.5: a
+  discard at a <= 0 and the output alpha min(a, 1) as the coverage, so the edge spreads over about a pixel
+  of samples. FTE_ALPHACOVERAGE guards it for an older exe; without MSAA nothing changes.
+
+**Verified (rig, Lex's settings, fixture; two review rounds, the last clean).** surf_demise s33 trees at render scale 1 + MSAA 4: horizontal edge
+gradient 3.52 cut, 3.13 with coverage, 3.23 at render scale 2 (lower is smoother); 4x crops show the stair
+steps gone. GPU 1.91 ms either way; CPU within 0.07 ms.
+Tag patch-1262 = 4f2114b9f (P1261 + P1262 on patch-1259); both installs run exe 39e00f6e (git-8162-patch-1262-0-g4f2114b9f) and hl2 plugin d500ef70.
+
+## Patch 1261 — the VBSP plugin keeps each view level's static-prop and displacement PVS verdicts
+
+**Problem.** Lex (3 Nov): "build whatever you can" for the CPU, which limits every measured map once
+MSAA replaces render scale 2. A 20 s sampling profile of surf_demise s33 put the plugin's visibility work at
+~23% of the main thread: VBSP_PrepareFrame 6.3%, RecursiveWorldNode 5.1%, EdictInFatPVS 4.2%, MarkLeaves
+3.7%, BoxOnPlaneSide 2.4%. Every static prop and displacement was tested against the PVS and areas every
+frame, in every view, though the answer only changes with the view's clusters, area and area connections.
+
+**Change.** Plugin mod_vbsp.c. VBSP_PVSMemo keeps, per recursion level, a byte per static prop and
+displacement (unknown, or 1 + vbsp_pvs_why) for the level's vis pointer, clusters, area and
+prv->floodvalid; any change clears it. VBSP_PVSMemoTest answers from it or runs the test and records it.
+Forced-vis views (captures, portals) test as before. hl2_pvsmemo 0 is the A/B. The static props'
+nearest-cubemap scan (Mod_CubemapForOrigin) was under 0.3% of the profile: cubemaps never change, and
+the lookup is not worth caching.
+
+**Verified (rig, Lex's settings, fixture, alternating windows; two review rounds, the last clean).** surf_demise s33 PrepareFrame 0.79 ->
+0.60 ms (CPU busy 2.82 -> 2.50; at render scale 2 it waits on the GPU, so fps equal there); eternity s10
+1.22 -> 1.10; garden and boreas within noise. Draw counts equal and pictures equal (garden s4's animated
+water aside).
+Tag patch-1262 = 4f2114b9f (P1261 + P1262 on patch-1259); both installs run exe 39e00f6e (git-8162-patch-1262-0-g4f2114b9f) and hl2 plugin d500ef70.
+
+## Patch 1259 — the loading screen keeps moving through the hl2 world load (client exe + hl2 plugin)
+
+**Problem.** P1244's pumps left the longest stalls of a Source map load. A stack sampler (branch
+p1259-probe, never shipped: a thread suspends the main thread every 2 ms while the loading screen has
+not been swapped for 100 ms and unwinds it from the modules' .pdata; FTESurf tools/loadprof_resolve.py
+names the frames) found them on surf_eternity, hosted and on a dedicated server's changelevel:
+VBSP_BuildBIHMain, one WG_MAIN job (the .phy prop brushes and the tree build), 1.65-1.83 s;
+VBSP_GenerateMaterials with Mod_Batches_Build (a third in Mod_LightmapAllocBlock), 0.52 s; the six sky
+faces, IF_LOADNOW in Shader_ParseSkySides, 0.43-0.45 s; SV_BadField's
+PR_FindFunction("ED_ParseUnknownEpair") per unknown entity key, each a linear scan of every global def,
+2x 0.16-0.18 s of the server's entity spawn.
+
+**Change.** SCR_LoadingPump per prop and displacement in VBSP_BuildBIHMain, per BIH node of 64+ leaves,
+per surface in Mod_Batches_BuildModelMeshes and Mod_Batches_AllocLightmaps, per texture in
+VBSP_GenerateMaterials, and between sky faces (the name is copied out of com_token first). The plugin
+reaches the pump through a new interface, "FTESurfLoading/1" (plugloadingfuncs_t; NULL on older engines
+and on servers). SV_BadField looks the hook up once per PR_SpawnInitialEntities (cleared at every progs
+load). The pump stops at 59 s, since GLSCR_UpdateScreen re-reads the clock for its 60 s timeout.
+
+**Verified.** Rig, the menu's ls_debug (every redraw gap of 50 ms+), the same arm against the installed
+patch-1251 pair: hosted, the collision build's 1409 ms became gaps of 74-159 ms, the materials 424 ->
+138 ms, the sky 360 ms -> six of 53-67 ms, the entity spawn's 157+153 ms gone; changelevel, 1398 ms ->
+75-160 ms, 392 -> 149 ms, sky 362 ms -> 53-73 ms. Load length 22.26 -> 22.36 s. Four review rounds
+(with P1258). Left (FTESurf BACKLOG): the join's filesystem hash rebuild after the old map's pack drops
+(0.34-0.36 s, P180; not safe to draw inside), the shader reload at activation (0.27-0.30 s), csqc init
+(0.08-0.16 s), a hosted map's first 0.34-0.39 s.
+
+## Patch 1258 — a gamecode loading screen stays up through a load's downloads (client exe)
+
+**Problem.** A join that downloads (a lobby's new csprogs after a deploy, a missing map) showed a black
+screen with the console's one-line bar: CL_CheckOrEnqueDownloadFile ended the plaque and its stage
+("release console") at the enqueue, and with con_stayhidden 1 SCR_SetUpToDrawConsole had nothing to
+show. And with the plaque down, no loading pump ran for the rest of that load: CL_DownloadFinished
+loads a downloaded world on the spot (MLV_WARNSYNC), 22 s for surf_eternity without one redraw.
+
+**Change.** For a menu QC loading screen the stage stays; the enqueue leaves its plaque alone;
+CL_SendDownloadStartRequest drops it while the download runs (step "download <file>"); CL_DownloadFinished
+and CL_RequestNextDownload raise it again with a fresh 60 s. Downloads run in normal frames (the menu's
+m_draw), loads under the plaque. Neither the step nor serverkey("loadstate"/"dlstate") uses va() any
+more: callers hold va() strings across both (csprogs and sound download names; the menu reads serverkey
+from inside pumps). Other loading screens keep the old behaviour. FTESurf's menu (P1258) shows the
+address being tried, a download's file, percent, rate, size left and queued files, and the load
+percent, from serverkey.
+
+**Verified.** Rig, a first visit that downloads both a 152 MB map (surf_eternity's bsp under a new name)
+and the server's csprogs: the installed exe showed a black screen and the console bar during a 6 MB
+download; the first cut froze 21.7 s after the download; this build kept the screen up throughout, the
+downloaded world's load had no gap over 160 ms, and the join completed with the csprogs downloaded.
+## Patch 1257 — near clip 2 by default; viewmodels keep 1
+
+**Problem.** Fake-sky faces z-fought with the shell 16 units behind them from far away (P1251 pulled the
+imposter forward instead); the near plane at 1 spends most of a 24-bit depth buffer on the first units.
+
+**Change.** Tag patch-1257 = c355068d9 (on patch-1251 with patch-1260 merged). client/renderer.c:
+gl_mindist defaults to 2 (twice the precision of 1; Source's 3D-sky near plane, its main view uses 7).
+gl/gl_rmain.c: m_projection_view (RF_DEPTHHACK/RF_XFLIP, the viewmodels) is built with min(mindist, 1),
+Source's zNearViewmodel. Review 1 measured 4 first: the rewind chase camera (4 units off its trace hit)
+and replay eyes in low tunnels put walls through the near plane, the water-surface strip at the eye grew
+4x, and a sky-room clamp did nothing (R_DrawSkyroom reuses the outer projection matrices).
+
+**Verified.** Rig with the built exe: `gl_mindist` reads "2" (default); surf_fantasy save 10 and the
+knife, usp and scout viewmodels draw the same at 1 and 2. Review 2 at near 2: nothing regresses in live
+play or spectate; left in FTESurf BACKLOG: 48-49 unit ducked tunnels in replays, the water strip ~2x,
+an ultrawide rewind-chase corner, world within 2-3 units over a viewmodel, Vulkan/D3D viewmodels at 2.
+Installs: exe 20b1609f, fteqwsv64 79111b05 (.pre1257 79dbfde0 / 78c8006c), plugin unchanged 1ba21f71.
+
+## Patch 1255 — pm_dettest measures mover 12, and finds its mover passes never collided
+
+**Problem.** Nothing compared mover 12 (P1248) across machines: pm_dettest pinned movers 6-9 and never set
+bih_phypick.
+
+**Change.** server/sv_ccmds.c. picktrace: mover 12's plane pick against the older rule on the same
+draws (ntrace*4 in the world box, then 1024 round each of up to 64 prop contacts), hashed, with the
+count it changed. pickmover: the random walk at mover 12 from the first prop contact. ride11/ride12:
+four hands-off rides along the face from each contact, 132 ticks at 2000 u/s, on movers 11 and 12;
+"touched" counts ticks where bih_probe_seq moved or the mover stood. SV_DetHashTrace and SV_DetPinMover
+factored out; every older line is bit-identical.
+
+**Found by review 1, and a correction to every earlier reading.** SV_DetPinMover's memset leaves
+pmove.skipent 0, the world physent's info, so PM_PlayerTrace (pmovetst.c:1168) skips the world: mover,
+srcmover, propmover, pinmover and fixmover have measured free fall since Patch 322 ("srcmover equals
+mover" in Patch 492 was this, not a physics result). They are kept for their recorded values; pickmover
+and the rides set skipent -1 and the feet hull with standheight 62, as pm_recsim does.
+
+**Verified.** Windows x64 against the Pi arm64 build (p1255-pi, measurement only, not swapped): all 90
+lines equal over pigate's six maps once the Windows rig carries the game cfg and surf_boreas's zone-file
+sv_maxvelocity 5000 (the walks read unpinned settings). Rides differ between movers 11 and 12 on surf_axil
+(16 of 72) and surf_sedona (11 of 116), identically on both machines; pickmover touched 228-662 of 2048
+ticks on the four prop maps. Four review rounds.
+
+## Patch 1260 — vid_multisample reaches the scene: a multisampled scene target, resolved before every copy
+
+**Problem.** Lex (3 Nov): "the engine doesn't support MSAA". vid_multisample only chose the window's pixel
+format, and the scene never draws there on Source maps: it draws into fbo_gameview (rt/$lastgameview) at
+any r_renderscale other than 1, under any post-process, and whenever r_scenedepth is on (P1230's aura
+depth, Lex's config). That target was single-sample, so MSAA never reached the 3D view.
+
+**Change.** Tag patch-1260 = 406ccd88f (with P1245). Engine gl_backend.c, gl_rmain.c, gl_rlight.c,
+gl_vidcommon.c, glquake.h, shader.h.
+- GLBE_SceneMSAA_Begin/End: with vid_multisample above 1 (clamped to GL_MAX_SAMPLES; desktop GL with
+  glRenderbufferStorageMultisample and glBlitFramebuffer), GLR_RenderView's scene draws into a
+  multisampled FBO whose colour and depth renderbuffers copy the internal formats of rt/$lastgameview and
+  its depth (or of GLBE_FBO_Update's depth renderbuffer), so the resolve into fbo_gameview is legal. It
+  resolves (colour, and depth when there is a depth texture; the first time one buffer at a time) when the
+  view ends, under the post-process bucket. Rebuilt on a size, sample count, format or texture change;
+  freed when vid_multisample drops; never freed while bound (GLBE_DrawWorld's mode-change
+  GLBE_DestroyFBOs runs mid-scene). An incomplete target or a failed first resolve prints once and stays
+  single-sample until GLBE_Init.
+- vid_multisample above 1 forces the scene target at render scale 1 too (world views, not quad stereo).
+- Mid-scene reads cannot see samples: T_Gen_CurrentRender ($currentrender), T_Gen_ScreenWater (hl2_water
+  5's colour and depth) and r_coronas_occlusion 3's depth read resolve their rectangle into fbo_gameview
+  and read it (GLBE_SceneMSAA_ReadBegin/End). The blit is scissored, so BE_Scissor records the state.
+- The sky room at r_skyroom_scale below 1 keeps drawing full size into a multisampled target (P1237):
+  through the resolve target measured slower (surf_demise s33 307 against 348 fps).
+- Known: alpha-tested surfaces (foliage) still cut at the alpha test, unsmoothed (alpha-to-coverage would
+  need the vmt/defaultskin/defaultwall alpha tests rewritten); a depth texture of PTI_DEPTH32 asks for a
+  GL_DEPTH_COMPONENT32 multisample renderbuffer, which NVIDIA accepts and a driver may refuse (then no
+  MSAA); $currentrender copied per batch (r_nearestsort 0, particles) resolves the frame each time.
+
+**Verified (rig, Lex's settings, fixture; three review rounds, the last with no confirmed defect).**
+surf_demise s33: render scale 2 306 fps (GPU 3.21 ms); scale 1 346 (1.50); scale 1 + MSAA 4 348 (1.83);
+MSAA 8 343 (2.14); scale 1.5 369 (2.18). At scale 1, demise, eternity, garden and boreas are CPU-bound;
+the end-of-view resolve costs ~0.06 ms of CPU (2-4% there). Crops at 1:1: geometry edges at MSAA 4 match
+render scale 2; fir branches stay as aliased as scale 1. hl2_water 5 under MSAA matches single-sample
+(mean 0.03). MSAA switched on before vid_restart renders from the first frame.
+
+## Patch 1245 — r_capturehalfrate: water and glass captures reused between renders, turned with the camera
+
+**Problem.** Lex (3 Nov) asked for half-rate reflections. A water or glass capture renders the scene again
+from the mirrored camera every frame: surf_eternity save 4, whose func_reflective_glass reflection draws
+353 prop batches, spent about 3.3 ms of a 5 ms frame on it; boreas and garden's water about 1.2-1.6 ms.
+
+**Change.** Tag patch-1260 = 406ccd88f (P1245 + P1260 on patch-1251). Engine gl_backend.c, renderer.c,
+gl_shader.c, shader.h, gl_vidcommon.c; plugin vmt/water and vmt/lmreflect (48's shaders, with their okay).
+- r_capturehalfrate N (default 0): the top-level view's chosen water plane (GLBE_WaterViewsBegin), or a
+  single-plane glass capture outside the water views, is kept in the level-0 targets and reused for N
+  frames after each render (GLBE_CaptureKeep): Source maps only (MDLF_SOURCEBSP: Quake's altwater reads no
+  fix), same seat and same world view of the frame (BE_SeatView), one capturing view last frame, same
+  frame size and plane, nothing else written to those targets, eye within 128 units and forward (vpn)
+  within 30 degrees of the render. A plane's other batches in the frame share the keep; no glass keep
+  for ripple maps.
+- m_capturefix (SP_M_CAPTUREFIX, FTE_CAPTUREFIX in sys/defs.h): on a reused frame the shaders sample the
+  capture through its projection times its view rotation times the inverse of this frame's
+  (GLBE_TurnVP). The eye's translation is left out on purpose: what a capture shows is taken as distant,
+  and the matrices keep float precision at map coordinates past 10000. Identity on rendered frames, in
+  nested views, and from the first fresh level-0 write after a keep. vmt/water moves DEPTH's surface depth
+  to the capture's forward (exactly 1x when fresh); both shaders keep this frame's coordinate for a point
+  behind the capture's camera.
+- Known: reused-frame fog depth ignores the eye's travel along the capture's forward (up to a frame's
+  movement); a refraction-only re-render after a portal or glass draws one frame of identity for the
+  kinds not re-rendered; 3D-sky water samples level 0's reused targets uncorrected (N+1 frames old); a
+  turning reused frame clamps a strip at the leading edge.
+
+**Verified (rig, Lex's settings, fixture; three review rounds, the last with no confirmed defect).**
+r_capturehalfrate 1 at the shipped commit: eternity s4 200 -> 273 fps, s10 188 -> 268, boreas s10 397 ->
+491, garden s1 464 -> 576, s4 573 -> 613; depth-1 views per top-level view 1.5-1.9 -> 1.0; r_capturelog
+prints "kept". Reprojection, eternity s4, a reuse from one pose shot at another against a fresh capture
+there (mean absolute difference): a 3 degree turn 0.14 (unreprojected 2.59); a 24-unit slide 0.84
+(unreprojected 0.83; reprojecting the translation as well scored 1.35). Review 1 added a turn guard on
+r_refdef.viewaxis, which the GL path never fills: every keep was refused (201 fps against 294) until
+review 2 read vpn; the review-1b commit blamed a seat-view rule instead, wrongly (FTESurf draws one world
+view a frame; renderscenes use VF_DRAWWORLD 0). Half-size captures (r_watertargetsize 512 against the 1024
+cap) gained 0-8%: the captures are CPU-bound.
+
 ## Patch 1252 — Source env_laser beams drawn by the client (QC only)
 
 **Problem.** Lex (3 Nov): surf_fantasy's env_lasers are "removed at spawn (unimplemented class)". 2,741

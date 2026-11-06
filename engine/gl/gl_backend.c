@@ -318,7 +318,29 @@ static struct {
 //world view or its last, and its target exists (a resize frees them).
 enum {BE_CAPREFL, BE_CAPREFR, BE_CAPDEPTH, BE_CAPKINDS};
 static int be_capstamp[R_MAX_RECURSE][BE_CAPKINDS], be_capseat[R_MAX_RECURSE][BE_CAPKINDS];
+//FTESurf Patch 1245: what the top-level view's chosen water plane last rendered into the level-0 targets,
+//for r_capturehalfrate. frame 0: nothing to reuse (reused already, or another capture overwrote them).
+static struct
+{
+	int frame, views;		//host_framecount they last served (rendered or reused), and the views that rendered them
+	int reused;				//frames served since they rendered
+	unsigned int kinds;		//SHADER_HASREFLECT etc. actually written to a target
+	plane_t plane;
+	entity_t *ent;			//the batch's: the world for water, a func_reflective_glass for glass
+	int fbw, fbh;
+	playerview_t *pv;
+	float vp[16];			//the projection times the view's rotation they were rendered for (GLBE_TurnVP)
+	vec3_t eye, fwd;		//and the eye and its forward (a teleport or a flick renders afresh)
+	int keptframe;			//host_framecount a keep was applied in: the plane's other batches share it
+	int view;				//which of its seat's world views that frame rendered them (BE_SeatView)
+	double rendered;		//realtime they rendered (r_capturerate)
+} be_capkeep = {-1};
+static int be_capfixframe = -1;	//host_framecount whose top-level draws sample a reused capture through be_capfix; -1 once a level-0 target is written
+static float be_capfix[16];	//its view-projection times the inverse of this frame's (SP_M_CAPTUREFIX)
+static const float be_identity16[16] = {1,0,0,0, 0,1,0,0, 0,0,1,0, 0,0,0,1};
 static int be_seatviews[MAX_SPLITS];	//world-drawing top-level views begun, per seat
+static int be_seatframe[MAX_SPLITS], be_seatbase[MAX_SPLITS];	//FTESurf Patch 1245: be_seatviews at a seat's first world view of a frame
+#define BE_SeatView(seat) (be_seatviews[seat] - be_seatbase[seat])	//1 for the frame's first world view of the seat
 static int BE_Seat(void)
 {
 	if (r_refdef.playerview && r_refdef.playerview >= cl.playerview && r_refdef.playerview < cl.playerview + MAX_SPLITS)
@@ -1171,6 +1193,7 @@ void GLBE_SetupVAO(vbo_t *vbo, unsigned int vaodynamic, unsigned int vaostatic)
 	}
 }
 
+static qboolean be_a2con;	//FTESurf Patch 1262: GL_SAMPLE_ALPHA_TO_COVERAGE as GLBE_AlphaCoverage last set it
 void GL_SelectProgram(GLuint program)
 {
 	if (shaderstate.currentprogram != program)
@@ -1181,6 +1204,11 @@ void GL_SelectProgram(GLuint program)
 }
 static void GL_DeSelectProgram(void)
 {
+	if (be_a2con)
+	{	//FTESurf Patch 1262: a fixed-function pass writes no coverage alpha
+		qglDisable(GL_SAMPLE_ALPHA_TO_COVERAGE);
+		be_a2con = false;
+	}
 	if (shaderstate.currentprogram != 0)
 	{
 		qglUseProgramObjectARB(0);
@@ -1581,12 +1609,274 @@ static qboolean GLBE_FlatRefractPane(void)
 	return !why;
 }
 
+//FTESurf Patch 1260: the view's scene drawn into a vid_multisample target and resolved into
+//rt/$lastgameview (and its depth) when the view ends, and before a mid-scene copy of the screen, which
+//cannot read samples. A resolve needs identical formats, so the samples copy the targets' own.
+//Patch 1276: a second target, for the main view's reflection captures (r_reflectmultisample).
+static qboolean be_scissoron;	//GL_SCISSOR_TEST as BE_Scissor last set it: blits are scissored
+#ifndef GL_STATIC
+extern cvar_t vid_multisample, r_reflectmultisample;
+typedef struct
+{
+	GLuint fbo, rbcolour, rbdepth;
+	int w, h, samples, key;	//key: the targets' upload formats
+	int uw, uh;				//the part this use draws: the reflection target only grows
+	int colnum, depnum;		//and their texture names
+	int ssfbo;				//the single-sample FBO it resolves into (gl_rmain.c's fbo_gameview, or a capture's)
+	int maxsamples;
+	unsigned int checked;	//the buffer bits whose resolve was error-checked since the build
+	qboolean active;		//bound for the current view
+	qboolean broken;		//refused: no MSAA until vid_restart
+} bemsaa_t;
+static bemsaa_t be_msaa, be_reflmsaa;
+static bemsaa_t *be_msaa_read;	//the target the last ReadBegin resolved
+#define MSAA_CVAR(t) ((t) == &be_reflmsaa ? "r_reflectmultisample" : "vid_multisample")
+#define MSAA_WHAT(t) ((t) == &be_reflmsaa ? "a reflection's" : "the scene's")
+static void MSAA_Free(bemsaa_t *t)
+{
+	if (t->fbo)
+		qglDeleteFramebuffersEXT(1, &t->fbo);
+	if (t->rbcolour)
+		qglDeleteRenderbuffersEXT(1, &t->rbcolour);
+	if (t->rbdepth)
+		qglDeleteRenderbuffersEXT(1, &t->rbdepth);
+	t->fbo = t->rbcolour = t->rbdepth = 0;
+	t->w = t->h = 0;
+	t->active = false;
+}
+static void GLBE_SceneMSAA_Free(void)
+{
+	MSAA_Free(&be_msaa);
+}
+static GLint GLBE_TexInternalFormat(texid_t t)
+{
+	GLint f = 0;
+	GL_MTBind(0, GL_TEXTURE_2D, t);
+	qglGetTexLevelParameteriv(GL_TEXTURE_2D, 0, GL_TEXTURE_INTERNAL_FORMAT, &f);
+	if (f == GL_RGBA)	//unsized: what drivers allocate for it
+		f = GL_RGBA8;
+	else if (f == GL_RGB)
+		f = GL_RGB8;
+	else if (f == GL_DEPTH_COMPONENT)
+		f = GL_DEPTH_COMPONENT24_ARB;
+	else if (f == GL_DEPTH_STENCIL_EXT)
+		f = GL_DEPTH24_STENCIL8_EXT;
+	return f;
+}
+static void MSAA_Blit(bemsaa_t *t, int x, int y, int w, int h, unsigned int bits)
+{
+	qboolean check = (t->checked & bits) != bits;
+	w = min(w, t->uw - x);
+	h = min(h, t->uh - y);
+	if (w <= 0 || h <= 0)
+		return;
+	if (check)
+		while (qglGetError() != GL_NO_ERROR)
+			;
+	if (be_scissoron)
+		qglDisable(GL_SCISSOR_TEST);
+	qglBindFramebufferEXT(GL_READ_FRAMEBUFFER, t->fbo);
+	qglBindFramebufferEXT(GL_DRAW_FRAMEBUFFER, t->ssfbo);
+	qglBlitFramebufferEXT(x, y, x+w, y+h, x, y, x+w, y+h, bits, GL_NEAREST);
+	if (be_scissoron)
+		qglEnable(GL_SCISSOR_TEST);
+	if (check)
+	{
+		GLenum e = qglGetError();
+		t->checked |= bits;
+		if (e != GL_NO_ERROR)
+		{
+			Con_Printf(CON_WARNING "%s: resolving %s %s failed (0x%x); drawing without MSAA\n",
+				MSAA_CVAR(t), MSAA_WHAT(t), (bits & GL_DEPTH_BUFFER_BIT) ? "depth" : "colour", e);
+			t->broken = true;
+		}
+	}
+}
+//a copy or read of the bound scene (or reflection) reads its resolve target instead
+qboolean GLBE_SceneMSAA_ReadBegin(int x, int y, int w, int h, qboolean depth)
+{
+	bemsaa_t *t;
+	if (be_msaa.active && shaderstate.fbo_current == be_msaa.fbo)
+		t = &be_msaa;
+	else if (be_reflmsaa.active && shaderstate.fbo_current == be_reflmsaa.fbo)
+		t = &be_reflmsaa;
+	else
+		return false;
+	MSAA_Blit(t, x, y, w, h, depth ? GL_DEPTH_BUFFER_BIT : GL_COLOR_BUFFER_BIT);
+	qglBindFramebufferEXT(GL_READ_FRAMEBUFFER, t->ssfbo);
+	qglBindFramebufferEXT(GL_DRAW_FRAMEBUFFER, t->fbo);
+	be_msaa_read = t;
+	return true;
+}
+void GLBE_SceneMSAA_ReadEnd(void)
+{
+	qglBindFramebufferEXT(GL_FRAMEBUFFER_EXT, be_msaa_read->fbo);
+}
+static int MSAA_Samples(bemsaa_t *t, int s)
+{
+	if (s <= 1 || t->broken || gl_config_gles || !gl_config.ext_framebuffer_objects ||
+		!qglRenderbufferStorageMultisampleEXT || !qglBlitFramebufferEXT || !qglGetTexLevelParameteriv)
+	{
+		if (t->fbo && !t->active)
+			MSAA_Free(t);	//off at render scale 1 with no post-process: Begin would not run to free it
+		return 0;
+	}
+	if (!t->maxsamples)
+	{
+		qglGetIntegerv(GL_MAX_SAMPLES, &t->maxsamples);
+		t->maxsamples = max(1, t->maxsamples);
+	}
+	s = min(s, t->maxsamples);
+	return (s > 1) ? s : 0;
+}
+#endif
+int GLBE_SceneMSAA_Samples(void)
+{
+#ifndef GL_STATIC
+	if (be_reflmsaa.fbo && !be_reflmsaa.active)	//Patch 1276: turned off since the last capture: freed now, not at the next one
+		MSAA_Samples(&be_reflmsaa, (r_reflectmultisample.ival < 0) ? vid_multisample.ival : r_reflectmultisample.ival);
+	return MSAA_Samples(&be_msaa, vid_multisample.ival);
+#else
+	return 0;
+#endif
+}
+#ifndef GL_STATIC
+//called with the single-sample target bound (col and depth attached); binds the multisampled one in its place
+static qboolean MSAA_Begin(bemsaa_t *t, int samples, texid_t col, texid_t depth, int key, int w, int h, qboolean grow)
+{
+	int depnum = TEXVALID(depth) ? depth->num : 0;
+	t->active = false;
+	if (!samples || !TEXVALID(col))
+	{
+		if (t->fbo)
+			MSAA_Free(t);	//off or refused: give the storage back
+		return false;
+	}
+	int uw = w, uh = h;
+	if (grow && t->fbo)
+		w = max(w, t->w), h = max(h, t->h);
+	if (!t->fbo || t->w != w || t->h != h || t->samples != samples || t->key != key ||
+		t->colnum != col->num || t->depnum != depnum)
+	{
+		//no depth texture: GLBE_FBO_Update's depth renderbuffer
+		GLint cfmt = GLBE_TexInternalFormat(col);
+		GLint dfmt = depnum ? GLBE_TexInternalFormat(depth) : (gl_config.ext_packed_depth_stencil ? GL_DEPTH24_STENCIL8_EXT : GL_DEPTH_COMPONENT16_ARB);
+		GLenum db = GL_COLOR_ATTACHMENT0_EXT, status;
+		MSAA_Free(t);
+		qglGenRenderbuffersEXT(1, &t->rbcolour);
+		qglBindRenderbufferEXT(GL_RENDERBUFFER_EXT, t->rbcolour);
+		qglRenderbufferStorageMultisampleEXT(GL_RENDERBUFFER_EXT, samples, cfmt, w, h);
+		qglGenRenderbuffersEXT(1, &t->rbdepth);
+		qglBindRenderbufferEXT(GL_RENDERBUFFER_EXT, t->rbdepth);
+		qglRenderbufferStorageMultisampleEXT(GL_RENDERBUFFER_EXT, samples, dfmt, w, h);
+		qglGenFramebuffersEXT(1, &t->fbo);
+		qglBindFramebufferEXT(GL_FRAMEBUFFER_EXT, t->fbo);
+		qglFramebufferRenderbufferEXT(GL_FRAMEBUFFER_EXT, GL_COLOR_ATTACHMENT0_EXT, GL_RENDERBUFFER_EXT, t->rbcolour);
+		qglFramebufferRenderbufferEXT(GL_FRAMEBUFFER_EXT, GL_DEPTH_ATTACHMENT_EXT, GL_RENDERBUFFER_EXT, t->rbdepth);
+		if (dfmt == GL_DEPTH24_STENCIL8_EXT)
+			qglFramebufferRenderbufferEXT(GL_FRAMEBUFFER_EXT, GL_STENCIL_ATTACHMENT_EXT, GL_RENDERBUFFER_EXT, t->rbdepth);
+		if (qglDrawBuffers)
+			qglDrawBuffers(1, (GLsizei*)&db);
+		else if (qglDrawBuffer)
+			qglDrawBuffer(db);
+		if (qglReadBuffer)
+			qglReadBuffer(db);
+		status = qglCheckFramebufferStatusEXT(GL_FRAMEBUFFER_EXT);
+		qglBindFramebufferEXT(GL_FRAMEBUFFER_EXT, shaderstate.fbo_current);
+		if (status != GL_FRAMEBUFFER_COMPLETE_EXT)
+		{
+			Con_Printf(CON_WARNING "%s %i: %s multisampled target is incomplete (0x%x); drawing without MSAA\n", MSAA_CVAR(t), samples, MSAA_WHAT(t), status);
+			MSAA_Free(t);
+			t->broken = true;
+			return false;
+		}
+		t->w = w;
+		t->h = h;
+		t->samples = samples;
+		t->key = key;
+		t->colnum = col->num;
+		t->depnum = depnum;
+		t->checked = 0;
+	}
+	t->uw = uw;
+	t->uh = uh;
+	t->ssfbo = shaderstate.fbo_current;
+	qglBindFramebufferEXT(GL_FRAMEBUFFER_EXT, t->fbo);
+	shaderstate.fbo_current = t->fbo;
+	t->active = true;
+	return true;
+}
+//leaves the resolve target bound, for the caller's GLBE_FBO_Pop
+static void MSAA_End(bemsaa_t *t)
+{
+	unsigned int bits;
+	if (!t->active)
+		return;
+	t->active = false;
+	if (be_a2con)
+	{	//FTESurf Patch 1262
+		qglDisable(GL_SAMPLE_ALPHA_TO_COVERAGE);
+		be_a2con = false;
+	}
+	bits = GL_COLOR_BUFFER_BIT | (t->depnum ? GL_DEPTH_BUFFER_BIT : 0);
+	if ((t->checked & bits) == bits)
+		MSAA_Blit(t, 0, 0, t->uw, t->uh, bits);
+	else
+	{	//checked one buffer at a time, so a refused depth resolve still delivers the colour
+		MSAA_Blit(t, 0, 0, t->uw, t->uh, GL_COLOR_BUFFER_BIT);
+		if (bits & GL_DEPTH_BUFFER_BIT)
+			MSAA_Blit(t, 0, 0, t->uw, t->uh, GL_DEPTH_BUFFER_BIT);
+	}
+	qglBindFramebufferEXT(GL_FRAMEBUFFER_EXT, t->ssfbo);
+	shaderstate.fbo_current = t->ssfbo;
+}
+#endif
+//called with fbo_gameview bound (col and depth attached); binds the multisampled target in its place
+void GLBE_SceneMSAA_Begin(texid_t col, texid_t depth, int key)
+{
+#ifndef GL_STATIC
+	MSAA_Begin(&be_msaa, GLBE_SceneMSAA_Samples(), col, depth, key, vid.fbpwidth, vid.fbpheight, false);
+#endif
+}
+void GLBE_SceneMSAA_End(void)
+{
+#ifndef GL_STATIC
+	MSAA_End(&be_msaa);
+#endif
+}
+//Patch 1276: called with the capture's FBO bound; true when it bound the multisampled target instead
+static qboolean GLBE_ReflectMSAA_Begin(texid_t col)
+{
+#ifndef GL_STATIC
+	int s = (r_reflectmultisample.ival < 0) ? vid_multisample.ival : r_reflectmultisample.ival;
+	return MSAA_Begin(&be_reflmsaa, MSAA_Samples(&be_reflmsaa, s), col, r_nulltex,
+		vid.flags & (VID_FP16|VID_SRGBAWARE), col->width, col->height, true);	//the flags that pick tex_reflection's format
+#else
+	return false;
+#endif
+}
+static void GLBE_ReflectMSAA_End(void)
+{
+#ifndef GL_STATIC
+	MSAA_End(&be_reflmsaa);
+#endif
+}
+static int GLBE_ReflectMSAA_Samples(void)
+{
+#ifndef GL_STATIC
+	return be_reflmsaa.active ? be_reflmsaa.samples : 0;
+#else
+	return 0;
+#endif
+}
+
 static void T_Gen_CurrentRender(int tmu, qboolean pane)
 {
 	int vwidth, vheight;
 	int pwidth = vid.fbpwidth;
 	int pheight = vid.fbpheight;
 	GLenum fmt;
+	qboolean msread;
 	//FTESurf Patch 866: bind the last copy rather than leave the unit holding whatever it had.
 	if (r_refdef.recurse)
 	{
@@ -1642,21 +1932,24 @@ static void T_Gen_CurrentRender(int tmu, qboolean pane)
 	GL_MTBind(tmu, GL_TEXTURE_2D, shaderstate.temptexture);
 	if (!shaderstate.force2d)	//FTESurf Patch 878: r_viewstats counts the scene's
 		r_vs_copies++, r_vs_copypixels += (double)vwidth * vheight;
+	msread = GLBE_SceneMSAA_ReadBegin(0, 0, vwidth, vheight, false);	//FTESurf Patch 1260
 	//FTESurf Patch 866: copy into the storage the last copy allocated; CopyTexImage2D
 	//reallocated it for every batch that samples the screen (Refract at hl2_refract 1).
 	if (be_currentw == vwidth && be_currenth == vheight && be_currentfmt == fmt)
-	{
 		qglCopyTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, 0, 0, vwidth, vheight);
-		return;
+	else
+	{
+		be_currentw = vwidth;
+		be_currenth = vheight;
+		be_currentfmt = fmt;
+		qglCopyTexImage2D(GL_TEXTURE_2D, 0, fmt, 0, 0, vwidth, vheight, 0);
+		qglTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+		qglTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+		qglTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+		qglTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
 	}
-	be_currentw = vwidth;
-	be_currenth = vheight;
-	be_currentfmt = fmt;
-	qglCopyTexImage2D(GL_TEXTURE_2D, 0, fmt, 0, 0, vwidth, vheight, 0);
-	qglTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
-	qglTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
-	qglTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
-	qglTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+	if (msread)
+		GLBE_SceneMSAA_ReadEnd();
 }
 
 //FTESurf Patch 1020: screen water's copies of the view it is drawn in -- the viewport's rectangle of the bound
@@ -1705,7 +1998,13 @@ static void T_Gen_ScreenWater(int tmu, qboolean depth)
 		qglTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
 		qglTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
 	}
-	qglCopyTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, x, y, w, h);
+	if (GLBE_SceneMSAA_ReadBegin(x, y, w, h, depth))	//FTESurf Patch 1260
+	{
+		qglCopyTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, x, y, w, h);
+		GLBE_SceneMSAA_ReadEnd();
+	}
+	else
+		qglCopyTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, x, y, w, h);
 	if (!shaderstate.force2d)
 		r_vs_copies++, r_vs_copypixels += (double)w * h;
 	if (check && qglGetError() != GL_NO_ERROR)
@@ -2059,6 +2358,10 @@ void GLBE_DestroyFBOs(void)
 	be_skysamplesfbo = -1;
 	be_skyroombroken = false;
 	be_skyroomifmt = 0;
+	if (!be_msaa.active)	//FTESurf Patch 1260: GLBE_DrawWorld calls this mid-scene on a mode change; Begin sized it for this view
+		GLBE_SceneMSAA_Free();
+	if (!be_reflmsaa.active)	//Patch 1276
+		MSAA_Free(&be_reflmsaa);
 #endif
 	GLBE_FBO_Destroy(&shaderstate.fbo_lprepass);
 
@@ -2170,6 +2473,11 @@ void GLBE_Init(void)
 
 	memset(&shaderstate, 0, sizeof(shaderstate));
 	GLBE_InstanceReset();	//FTESurf Patch 831
+#ifndef GL_STATIC
+	memset(&be_msaa, 0, sizeof(be_msaa));	//FTESurf Patch 1260: a new context may take what the last refused
+	memset(&be_reflmsaa, 0, sizeof(be_reflmsaa));	//Patch 1276
+#endif
+	be_a2con = false;	//FTESurf Patch 1262: a new context starts with A2C off
 
 	shaderstate.curentity = &r_worldentity;
 	be_maxpasses = gl_config_nofixedfunc?1:gl_mtexarbable;
@@ -4320,6 +4628,21 @@ static void BE_Program_Set_Attributes(const program_t *prog, struct programpermu
 
 	if (perm->factorsuniform != -1)
 		qglUniform4fvARB(perm->factorsuniform, countof(shaderstate.curshader->factors), shaderstate.curshader->factors[0]);
+	if (perm->lmsizeuniform != -1)
+	{	//FTESurf Patch 1275: the batch's lightmap page, which the per-entity cache below does not follow
+		unsigned int lmi = shaderstate.curbatch ? (unsigned short)shaderstate.curbatch->lightmap[0] : ~0u;
+		int w = 1, h = 1;
+		if (lmi < numlightmaps && lightmap[lmi]->width > 0 && lightmap[lmi]->height > 0)
+			w = lightmap[lmi]->width, h = lightmap[lmi]->height;
+		if (w != perm->lmsizew || h != perm->lmsizeh)
+		{
+			vec4_t sz;
+			Vector4Set(sz, w, h, 1.0f/w, 1.0f/h);
+			qglUniform4fvARB(perm->lmsizeuniform, 1, sz);
+			perm->lmsizew = w;
+			perm->lmsizeh = h;
+		}
+	}
 
 	/*don't bother setting it if the ent properties are unchanged (but do if the mesh changed)*/
 	if (entunchanged)
@@ -4457,6 +4780,9 @@ static void BE_Program_Set_Attributes(const program_t *prog, struct programpermu
 			break;
 		case SP_M_ENTBONES_MAT3X4:
 			qglUniformMatrix3x4fv(ph, shaderstate.sourcevbo->numbones, false, shaderstate.sourcevbo->bones);
+			break;
+		case SP_M_CAPTUREFIX:	//FTESurf Patch 1245: only the top-level view samples a reused capture
+			qglUniformMatrix4fvARB(ph, 1, false, (be_capfixframe == host_framecount && !r_refdef.recurse) ? be_capfix : be_identity16);
 			break;
 		case SP_M_INVVIEWPROJECTION:
 			{
@@ -4904,6 +5230,36 @@ static void BE_Program_Set_Attributes(const program_t *prog, struct programpermu
 	}
 }
 
+//FTESurf Patch 1262: alpha-to-coverage for an unblended draw into the multisampled scene by a program that keeps
+//e_alphacoverage (only its alpha-test path reads it): the shader writes the test's edge as coverage instead of
+//discarding. Off for every other draw, so A2C never meets an opaque program's ordinary alpha.
+extern cvar_t r_alphacoverage;
+static void GLBE_AlphaCoverage(struct programpermu_s *perm)
+{
+	qboolean want = false;
+#ifndef GL_STATIC
+	if (perm->a2cuniform != -1)
+	{
+		want = r_alphacoverage.ival && ((be_msaa.active && shaderstate.fbo_current == be_msaa.fbo) ||
+			(be_reflmsaa.active && shaderstate.fbo_current == be_reflmsaa.fbo)) &&	//Patch 1276
+			!(shaderstate.shaderbits & SBITS_BLEND_BITS) && !shaderstate.force2d;
+		if (perm->a2cval != want)	//per permutation: a reload's new one starts at -1
+		{
+			qglUniform1fARB(perm->a2cuniform, want ? 1.0f : 0.0f);
+			perm->a2cval = want;
+		}
+	}
+#endif
+	if (want != be_a2con)
+	{
+		if (want)
+			qglEnable(GL_SAMPLE_ALPHA_TO_COVERAGE);
+		else
+			qglDisable(GL_SAMPLE_ALPHA_TO_COVERAGE);
+		be_a2con = want;
+	}
+}
+
 static void BE_RenderMeshProgram(const shader_t *shader, const shaderpass_t *pass, program_t *p)
 {
 	int	i;
@@ -5038,7 +5394,10 @@ static void BE_RenderMeshProgram(const shader_t *shader, const shaderpass_t *pas
 		permu = p->permu[perm];
 		if (!permu)
 		{
+			void GLSLWarm_Note(const char *name, unsigned int perm);
 			p->permu[perm] = permu = Shader_LoadPermutation(p, perm);
+			if (permu)
+				GLSLWarm_Note(p->name, perm);	//FTESurf Patch 1277: compiled at its next load
 			if (!permu)
 			{	//failed? copy from 0 so we don't keep re-failing
 				permu = p->permu[perm] = p->permu[0];
@@ -5089,6 +5448,7 @@ static void BE_RenderMeshProgram(const shader_t *shader, const shaderpass_t *pas
 	BE_Program_Set_Attributes(p, permu, i);
 
 	BE_SendPassBlendDepthMask(pass->shaderbits);
+	GLBE_AlphaCoverage(permu);	//FTESurf Patch 1262: after the blend bits it reads
 
 	for (i = 0; i < pass->numMergedPasses; i++)
 	{
@@ -5576,6 +5936,7 @@ static void GLBE_ApplyScissor(srect_t *rect)
 			ceil(rect->width * r_refdef.pxrect.width),
 			ceil(rect->height * r_refdef.pxrect.height));
 		qglEnable(GL_SCISSOR_TEST);
+		be_scissoron = true;	//FTESurf Patch 1260
 
 		if (qglDepthBoundsEXT)
 		{
@@ -5591,6 +5952,7 @@ static void GLBE_ApplyScissor(srect_t *rect)
 			r_refdef.pxrect.width,
 			r_refdef.pxrect.height);
 */		qglDisable(GL_SCISSOR_TEST);
+		be_scissoron = false;	//FTESurf Patch 1260
 		if (qglDepthBoundsEXT)
 			qglDisable(GL_DEPTH_BOUNDS_TEST_EXT);
 
@@ -6966,6 +7328,7 @@ void GLBE_WaterViewsNewMap(void)
 	for (i = 0; i < MAX_SPLITS; i++)
 		be_waterlastvalid[i] = false;	//planes of the old map
 	memset(be_capstamp, 0, sizeof(be_capstamp));	//FTESurf Patch 1018: the old map's captures
+	be_capkeep.frame = be_capkeep.keptframe = be_capfixframe = -1;	//FTESurf Patch 1245
 	be_waterdepthfailed = false;	//FTESurf Patch 1020: a refused depth copy is tried again
 #ifdef PLUGINS
 	be_occluderasked = false;
@@ -7386,6 +7749,80 @@ static void GLBE_WaterViewsEnd(void)
 	}
 }
 
+extern cvar_t r_capturehalfrate, r_capturerate;
+extern int host_framecount;
+//FTESurf Patch 1281: kept captures are on at either setting; a rate redraws by the clock, else by frame count
+#define BE_CAPTUREKEEPS (r_capturehalfrate.ival || r_capturerate.value > 0)
+static qboolean GLBE_CaptureDue(void)
+{
+	if (r_capturerate.value > 0)
+	{	//at 3/4 of the interval: frames capped at the rate arrive a little early as often as late (cl_maxfps
+		//carries each frame's lateness into the next), and a full interval kept every other one of them.
+		//A clock that went back (capture, the QC debugger) is due rather than never.
+		double age = realtime - be_capkeep.rendered;
+		return age < 0 || age * max(r_capturerate.value, 20) >= 0.75;
+	}
+	return be_capkeep.reused >= r_capturehalfrate.ival;
+}
+//FTESurf Patch 1245: m_capturefix turns a reused capture's camera to this frame's and does not move it:
+//what it reflects is taken as distant. Moved too (exact on the water plane) was worse on a 24-unit slide,
+//surf_eternity s4 1.35 mean against 0.83 unmoved; a 3 degree turn 0.13 against 2.59. Without the eye's
+//translation the matrices also keep float precision at map coordinates of 10000+.
+static void GLBE_TurnVP(float *out)
+{
+	float v[16];
+	memcpy(v, r_refdef.m_view, sizeof(v));
+	v[12] = v[13] = v[14] = 0;
+	Matrix4_Multiply(shaderstate.projectionmatrix, v, out);
+}
+//last frame's captures of this plane, if nothing has written those targets since
+static qboolean GLBE_CaptureKeep(const plane_t *p, entity_t *ent, unsigned int need)
+{
+	int seat = BE_Seat();
+	vec3_t d;
+	if (!need || (need & ~be_capkeep.kinds) || be_capkeep.ent != ent || be_capkeep.pv != r_refdef.playerview ||
+		!GLBE_WaterSamePlane(p, &be_capkeep.plane))
+		return false;
+	//a seat can draw several world views a frame (stereo eyes, r_projection's faces, renderscenes): a view reuses
+	//only what the same view of the last frame rendered, and a second view sharing this frame's keep renders afresh
+	if (be_capkeep.view != BE_SeatView(seat))
+		return false;
+	if (be_capkeep.keptframe == host_framecount && be_capfixframe == host_framecount)
+		return true;	//another batch of the plane kept this frame
+	VectorSubtract(r_refdef.vieworg, be_capkeep.eye, d);
+	//vmt/water and vmt/lmreflect take m_capturefix; Quake's altwater does not
+	if (be_capkeep.frame != host_framecount - 1 || GLBE_CaptureDue() || be_capkeep.views != 1 ||
+		be_capkeep.fbw != vid.fbpwidth || be_capkeep.fbh != vid.fbpheight ||
+		!r_worldentity.model || !(r_worldentity.model->engineflags & MDLF_SOURCEBSP) ||
+		DotProduct(d, d) > 128*128 || DotProduct(vpn, be_capkeep.fwd) < 0.866f)	//past 128 units or 30 degrees
+		return false;
+	if (((need & SHADER_HASREFLECT) && !TEXVALID(shaderstate.tex_reflection[0])) ||
+		((need & SHADER_HASREFRACT) && !TEXVALID(shaderstate.tex_refraction[0])) ||
+		((need & SHADER_HASREFRACTDEPTH) && !TEXVALID(shaderstate.tex_refractiondepth[0])))
+		return false;
+	if (need & SHADER_HASREFLECT)
+		BE_StampCapture(BE_CAPREFL);
+	if (need & SHADER_HASREFRACT)
+		BE_StampCapture(BE_CAPREFR);
+	if (need & SHADER_HASREFRACTDEPTH)
+		BE_StampCapture(BE_CAPDEPTH);
+	be_capkeep.frame = host_framecount;
+	be_capkeep.keptframe = host_framecount;
+	be_capkeep.reused++;
+	if (GLBE_CaptureLogging())
+		Con_Printf("[capture]  kept, %.1f ms old, reuse %i\n", (realtime - be_capkeep.rendered) * 1000, be_capkeep.reused);
+	{
+		float vp[16], inv[16];
+		GLBE_TurnVP(vp);
+		if (Matrix4_Invert(vp, inv))
+			Matrix4_Multiply(be_capkeep.vp, inv, be_capfix);
+		else
+			memcpy(be_capfix, be_identity16, sizeof(be_capfix));
+		be_capfixframe = host_framecount;
+	}
+	return true;
+}
+
 static qboolean GLBE_GenerateBatchTextures(batch_t *batch, shader_t *bs)
 {
 	int oldfbo;
@@ -7395,6 +7832,11 @@ static qboolean GLBE_GenerateBatchTextures(batch_t *batch, shader_t *bs)
 	shader_t *cs = bs;				//the shader whose scale and $reflectentities decide them,
 	batch_t *cb = batch;			//and the batch whose meshes place them
 	qboolean viashare = false;
+	qboolean keepable = false;		//FTESurf Patch 1245: the top-level view's chosen plane, or a glass plane
+	plane_t keepplane = {{0}};
+	entity_t *keepent = NULL;
+	float keepvp[16] = {0};			//this view's GLBE_TurnVP, before any capture runs
+	vec3_t keepeye = {0}, keepfwd = {0};
 	if (r_refdef.recurse >= r_portalrecursion.ival || r_refdef.recurse == R_MAX_RECURSE)
 		return false;
 	//FTESurf Patch 864: no water capture inside a water capture.  r_portalrecursion 2
@@ -7468,10 +7910,22 @@ static qboolean GLBE_GenerateBatchTextures(batch_t *batch, shader_t *bs)
 				GLBE_CaptureLog(batch, chosenplane ? wv->chosen->shader : bs, "shared", chosenplane ? &wv->combined : &wv->other);
 				return true;
 			}
+			if (chosenplane && !r_refdef.recurse && BE_CAPTUREKEEPS && GLBE_CaptureKeep(&p, &r_worldentity, need & ~wv->helddone))
+			{
+				wv->helddone |= need;
+				GLBE_CaptureLog(batch, wv->chosen->shader, "kept", &wv->combined);
+				return true;
+			}
 			if (chosenplane)
 			{
 				cs = wv->chosen->shader;
 				cb = &wv->combined;
+				keepable = !r_refdef.recurse;
+				keepplane = p;
+				keepent = &r_worldentity;
+				GLBE_TurnVP(keepvp);
+				VectorCopy(r_refdef.vieworg, keepeye);
+				VectorCopy(vpn, keepfwd);	//R_SetupGL's; r_refdef.viewaxis is the native scene API's only
 			}
 			else
 			{
@@ -7487,6 +7941,25 @@ static qboolean GLBE_GenerateBatchTextures(batch_t *batch, shader_t *bs)
 	//anything else captured here overwrites those kinds of the level's targets (a portal's refraction too)
 	if (!viashare)
 		be_waterview[r_refdef.recurse].helddone &= ~(bs->flags & BE_WATERKINDS);
+	//FTESurf Patch 1245: one plane captured outside the water views (surf_eternity's func_reflective_glass)
+	if (!viashare && !r_refdef.recurse && BE_CAPTUREKEEPS && !(bs->flags & (SHADER_HASPORTAL|SHADER_HASRIPPLEMAP)) && (bs->flags & BE_WATERKINDS))
+	{
+		plane_t gp;
+		if (GLR_BatchPlane(batch, &gp))
+		{
+			if (GLBE_CaptureKeep(&gp, batch->ent, bs->flags & BE_WATERKINDS))
+			{
+				GLBE_CaptureLog(batch, bs, "kept", batch);
+				return true;
+			}
+			keepable = true;
+			keepplane = gp;
+			keepent = batch->ent;
+			GLBE_TurnVP(keepvp);
+			VectorCopy(r_refdef.vieworg, keepeye);
+			VectorCopy(vpn, keepfwd);
+		}
+	}
 
 	oldbem = shaderstate.mode;
 	oldil = shaderstate.identitylighting;
@@ -7496,6 +7969,7 @@ static qboolean GLBE_GenerateBatchTextures(batch_t *batch, shader_t *bs)
 		float renderscale = cs->portalfboscale;
 		vrect_t orect = r_refdef.vrect;
 		pxrect_t oprect = r_refdef.pxrect;
+		qboolean reflmsaa;
 		if (!shaderstate.tex_reflection[r_refdef.recurse])
 		{
 			shaderstate.tex_reflection[r_refdef.recurse] = Image_CreateTexture("***tex_reflection***", NULL, 0);
@@ -7523,6 +7997,10 @@ static qboolean GLBE_GenerateBatchTextures(batch_t *batch, shader_t *bs)
 		}
 		oldfbo = GLBE_FBO_Update(&shaderstate.fbo_reflectrefrac[r_refdef.recurse], FBO_RB_DEPTH, &shaderstate.tex_reflection[r_refdef.recurse], 1, r_nulltex, shaderstate.tex_reflection[r_refdef.recurse]->width, shaderstate.tex_reflection[r_refdef.recurse]->height, 0);
 		r_refdef.pxrect.maxheight = shaderstate.fbo_reflectrefrac[r_refdef.recurse].rb_size[1];
+		reflmsaa = !r_refdef.recurse && GLBE_ReflectMSAA_Begin(shaderstate.tex_reflection[0]);	//FTESurf Patch 1276: the main view's
+		if (GLBE_CaptureLogging())
+			Con_Printf("[capture]  level %i reflect target %ix%i, %i samples\n", r_refdef.recurse,
+				shaderstate.tex_reflection[r_refdef.recurse]->width, shaderstate.tex_reflection[r_refdef.recurse]->height, GLBE_ReflectMSAA_Samples());
 		GL_ViewportUpdate();
 		GL_ForceDepthWritable();
 		qglClearColor(0, 0, 0, 1);
@@ -7536,6 +8014,8 @@ static qboolean GLBE_GenerateBatchTextures(batch_t *batch, shader_t *bs)
 		r_capturemergevis = false;
 		r_capturenoents = 0;
 		be_watercapture--;
+		if (reflmsaa)
+			GLBE_ReflectMSAA_End();	//resolved into tex_reflection, its FBO bound for the pop
 		GLBE_FBO_Pop(oldfbo);
 		r_refdef.vrect = orect;
 		r_refdef.pxrect = oprect;
@@ -7737,6 +8217,47 @@ static qboolean GLBE_GenerateBatchTextures(batch_t *batch, shader_t *bs)
 	}
 	BE_SelectMode(oldbem);
 	shaderstate.identitylighting = oldil;
+	if (!r_refdef.recurse && (cf & BE_WATERKINDS))
+	{	//FTESurf Patch 1245: what reached a level-0 target, as the branches above write them
+		unsigned int written = cf & BE_WATERKINDS;
+		if (!gl_config.ext_framebuffer_objects)
+			written &= ~SHADER_HASREFLECT;
+		if (!(r_refract_fboival || (cf & (SHADER_HASPORTAL|SHADER_HASREFRACTDEPTH))))
+			written &= ~SHADER_HASREFRACT;	//the screen copy writes no target
+		if (written)
+		{
+			be_capfixframe = -1;	//whatever samples the targets now samples what was just rendered
+			be_capkeep.keptframe = -1;
+		}
+		if (keepable && written)
+		{
+			if (be_capkeep.frame != host_framecount)
+			{
+				be_capkeep.kinds = 0;
+				be_capkeep.views = 0;
+			}
+			if (!be_capkeep.kinds)
+				be_capkeep.views++;
+			else if (!GLBE_WaterSamePlane(&keepplane, &be_capkeep.plane) || be_capkeep.pv != r_refdef.playerview || be_capkeep.ent != keepent ||
+				be_capkeep.view != BE_SeatView(BE_Seat()))
+				be_capkeep.views++;	//a second plane, entity, seat or world view this frame: nothing is kept next frame
+			be_capkeep.frame = host_framecount;
+			be_capkeep.reused = 0;
+			be_capkeep.rendered = realtime;
+			be_capkeep.kinds |= written;
+			be_capkeep.plane = keepplane;
+			be_capkeep.ent = keepent;
+			be_capkeep.fbw = vid.fbpwidth;
+			be_capkeep.fbh = vid.fbpheight;
+			be_capkeep.pv = r_refdef.playerview;
+			be_capkeep.view = BE_SeatView(BE_Seat());
+			memcpy(be_capkeep.vp, keepvp, sizeof(keepvp));
+			VectorCopy(keepeye, be_capkeep.eye);
+			VectorCopy(keepfwd, be_capkeep.fwd);
+		}
+		else if (written)
+			be_capkeep.frame = -1;	//another capture overwrote the level's targets
+	}
 	return true;
 }
 /*
@@ -9637,6 +10158,97 @@ static qboolean GLBE_PickLate(const batch_t *b)
 	return !GLBE_NearestModelPane(b) && GLBE_NearestLate(b);
 }
 
+/*
+FTESurf Patch 1268: Source draws a translucent model whole after its screen copy, meshes in model order
+(viewrender.cpp:4339-4380), so a layer after its Refract mesh lands on top of the refraction. surf_starvald's
+start platform is refract_ice2 (mesh 4) under rune_floor (mesh 7): there the ice drew NEAREST after every
+BLEND batch and covered the rune floor with a warped copy of it. A model pane's later translucent meshes are
+held back from their sorts and drawn after their pane, in mesh order.
+*/
+typedef struct
+{
+	batch_t *batch, *pane;
+	int sort;
+} glpanelayer_t;
+static glpanelayer_t be_panelayer[256];
+static size_t be_panelayers;
+
+//the alias mesh index of b, or -1 (only R_GAlias_GenerateBatches fills user.alias)
+static int GLBE_AliasMesh(const batch_t *b)
+{
+	return (b->buildmeshes == R_GAlias_DrawBatch && b->ent) ? b->user.alias.surfrefs[0] : -1;
+}
+static qboolean GLBE_NearestModelPane(const batch_t *batch);
+//returns where this view's entries start: a capture or portal view nests and stacks its own above them
+static size_t GLBE_DeferPaneLayers(void)
+{
+	batch_t *p, *b, **link, *owner;
+	int s, m, pm;
+	size_t start = be_panelayers;
+
+	if (!r_nearestsort.ival || shaderstate.mode != BEM_STANDARD || (r_refdef.recurse && r_refdef.capturekind >= 1))
+		return start;	//the conditions GLBE_SubmitNearest draws model panes under
+	for (s = SHADER_SORT_SEETHROUGH+1; s < SHADER_SORT_NEAREST; s++)
+		for (link = &shaderstate.mbatches[s]; (b = *link); )
+		{
+			owner = NULL;
+			m = GLBE_AliasMesh(b);
+			if (m >= 0 && be_panelayers < countof(be_panelayer))
+				for (p = shaderstate.mbatches[SHADER_SORT_NEAREST]; p; p = p->next)
+				{
+					pm = GLBE_AliasMesh(p);
+					if (p->ent == b->ent && pm >= 0 && pm < m && GLBE_NearestModelPane(p) &&
+					    (!owner || pm > GLBE_AliasMesh(owner)))
+						owner = p;	//the last pane before this mesh
+				}
+			if (owner)
+			{
+				be_panelayer[be_panelayers].batch = b;
+				be_panelayer[be_panelayers].pane = owner;
+				be_panelayer[be_panelayers].sort = s;
+				be_panelayers++;
+				*link = b->next;	//relinked by GLBE_RestorePaneLayers
+			}
+			else
+				link = &b->next;
+		}
+	return start;
+}
+//pane's held-back layers (every one from start when pane is NULL), in mesh order
+static void GLBE_SubmitPaneLayersFrom(const batch_t *pane, size_t start)
+{
+	batch_t one;
+	size_t i, best;
+	for (;;)
+	{
+		for (best = be_panelayers, i = start; i < be_panelayers; i++)
+			if (be_panelayer[i].pane && (!pane || be_panelayer[i].pane == pane) &&
+			    (best == be_panelayers || GLBE_AliasMesh(be_panelayer[i].batch) < GLBE_AliasMesh(be_panelayer[best].batch)))
+				best = i;
+		if (best == be_panelayers)
+			return;
+		be_panelayer[best].pane = NULL;	//drawn
+		one = *be_panelayer[best].batch;
+		one.next = NULL;
+		GLBE_SubmitMeshesSortList(&one);
+	}
+}
+static void GLBE_SubmitPaneLayers(const batch_t *pane)
+{
+	GLBE_SubmitPaneLayersFrom(pane, 0);	//a pane pointer belongs to one view
+}
+static void GLBE_RestorePaneLayers(size_t start)
+{
+	size_t i;
+	GLBE_SubmitPaneLayersFrom(NULL, start);	//a pane that never drew must not lose its layers
+	for (i = start; i < be_panelayers; i++)
+	{
+		be_panelayer[i].batch->next = shaderstate.mbatches[be_panelayer[i].sort];
+		shaderstate.mbatches[be_panelayer[i].sort] = be_panelayer[i].batch;
+	}
+	be_panelayers = start;
+}
+
 extern cvar_t r_nearestsort;
 static void GLBE_SubmitNearest(batch_t *world, batch_t *dynamic)
 {
@@ -9672,6 +10284,7 @@ static void GLBE_SubmitNearest(batch_t *world, batch_t *dynamic)
 		one = *panes[i].batch;
 		one.next = NULL;
 		GLBE_SubmitMeshesSortList(&one);
+		GLBE_SubmitPaneLayers(panes[i].batch);	//Patch 1268
 	}
 	if (panes != stackpanes)
 		BZ_Free(panes);
@@ -9683,12 +10296,19 @@ void GLBE_SubmitMeshes (batch_t **worldbatches, int start, int stop)
 {
 	int i, prev;
 	int portaldepth = r_portalrecursion.ival;
+	qboolean deferred = false;	//Patch 1268
+	size_t layerstart = 0;
 
 	R_SkyboxSortBegin();
 	for (i = start; i <= stop; i++)
 	{
 		if (i == SHADER_SORT_SKY)
 			R_SkyboxSortBegin();	//a portal view in the PORTAL sort drew its own box
+		if (!deferred && i > SHADER_SORT_SEETHROUGH && i < SHADER_SORT_NEAREST && stop >= SHADER_SORT_NEAREST)
+		{
+			layerstart = GLBE_DeferPaneLayers();
+			deferred = true;
+		}
 		if (i == SHADER_SORT_BLEND && r_blendsort.ival == 2)
 		{
 			GLBudget_Set(GPUB_TRANSPARENT);
@@ -9724,6 +10344,8 @@ void GLBE_SubmitMeshes (batch_t **worldbatches, int start, int stop)
 			GLBudget_Set(GLBudget_SortCat(i, false));
 		GLBE_SubmitMeshesSortList(shaderstate.mbatches[i]);
 	}
+	if (deferred)
+		GLBE_RestorePaneLayers(layerstart);
 }
 
 #if (defined(GLQUAKE) || defined(VKQUAKE)) && defined(MULTITHREAD)
@@ -10514,7 +11136,8 @@ void GLBE_DrawLightPrePass(void)
 #ifdef RTLIGHTS
 	/*regular lighting now*/
 	GLBE_SelectEntity(&r_worldentity);
-	Sh_DrawLights(r_refdef.scenevis);
+	if (!(r_refdef.flags & RDF_WORLDONLY))
+		Sh_DrawLights(r_refdef.scenevis);
 #endif
 
 	qglClearColor (1,0,0,1);
@@ -10554,7 +11177,7 @@ static qboolean GLBE_DrawSkyroomScaled(shader_t *skyshader)
 		qglGetIntegerv(GL_SAMPLE_BUFFERS, &be_skysamples);
 		be_skysamplesfbo = shaderstate.fbo_current;
 	}
-	if (be_skysamples)
+	if (be_skysamples)	//FTESurf Patch 1260: two blits via the resolve target measured slower (demise s33 307 against 348 fps)
 		return R_DrawSkyroom(skyshader);
 	w = max(1, oprect.width * s);
 	h = max(1, oprect.height * s);
@@ -10646,7 +11269,15 @@ void GLBE_DrawWorld (batch_t **worldbatches)
 	{
 		be_flatcopied = false;	//FTESurf Patch 895: each top-level view copies once for its world/brush panes
 		if (worldbatches)
-			be_seatviews[BE_Seat()]++;	//FTESurf Patch 1018: what a capture stamp is counted against
+		{
+			int seat = BE_Seat();
+			if (be_seatframe[seat] != host_framecount)
+			{	//FTESurf Patch 1245: BE_SeatView counts from here
+				be_seatframe[seat] = host_framecount;
+				be_seatbase[seat] = be_seatviews[seat];
+			}
+			be_seatviews[seat]++;	//FTESurf Patch 1018: what a capture stamp is counted against
+		}
 		if (shaderstate.wbatch + 50 > shaderstate.maxwbatches)
 		{
 			int newm = shaderstate.wbatch + 100;
@@ -10656,6 +11287,7 @@ void GLBE_DrawWorld (batch_t **worldbatches)
 		}
 
 		shaderstate.wbatch = 0;
+		be_panelayers = 0;	//Patch 1268: batch addresses are reused from here; no stale entry may match one
 	}
 	//if the video mode changed, update any fbos (hopefully this won't happen on mirrors)
 	if (shaderstate.oldwidth != vid.pixelwidth || shaderstate.oldheight != vid.pixelheight)
@@ -10675,7 +11307,8 @@ void GLBE_DrawWorld (batch_t **worldbatches)
 
 	//memset(batches, 0, sizeof(batches));
 	BE_GenModelBatches(batches, shaderstate.curdlight, BEM_STANDARD, r_refdef.scenevis, r_refdef.sceneareas);
-	R_GenDlightBatches(batches);
+	if (!(r_refdef.flags & RDF_WORLDONLY))
+		R_GenDlightBatches(batches);
 	shaderstate.curentity = &r_worldentity;
 //	if (cl.paused || cls.state < ca_active)
 		shaderstate.updatetime = r_refdef.time;
@@ -10689,7 +11322,7 @@ void GLBE_DrawWorld (batch_t **worldbatches)
 		//FTESurf Patch 868: a water capture shows the 2D skybox, not the 3D sky (r_waterskyroom), as
 		//Source's above-water views do; with the eye under water its refraction keeps the 3D sky
 		//(viewrender.cpp:5912-5927).
-		if (worldbatches[SHADER_SORT_SKY] && r_refdef.skyroom_enabled && !r_refdef.skyroom_noleafsky &&	//Patch 880
+		if (!(r_refdef.flags & RDF_WORLDONLY) && worldbatches[SHADER_SORT_SKY] && r_refdef.skyroom_enabled && !r_refdef.skyroom_noleafsky &&	//Patch 880
 			!(r_refdef.capturekind >= 1 && !r_refdef.insideportal && !r_waterskyroom.ival &&
 			  !(r_viewcontents & (FTECONTENTS_WATER|FTECONTENTS_SLIME|FTECONTENTS_LAVA))))	//FLUID includes SKY
 		{
@@ -10736,7 +11369,7 @@ void GLBE_DrawWorld (batch_t **worldbatches)
 		}
 
 #ifdef RTLIGHTS
-		if (worldbatches && r_shadow_realtime_world.ival)
+		if (worldbatches && r_shadow_realtime_world.ival && !(r_refdef.flags & RDF_WORLDONLY))
 			shaderstate.identitylighting = r_shadow_realtime_world_lightmaps.value;
 		else
 #endif
@@ -10790,7 +11423,7 @@ void GLBE_DrawWorld (batch_t **worldbatches)
 			RSpeedEnd(RSPEED_OPAQUE);
 
 #ifdef RTLIGHTS
-			if (worldbatches)
+			if (worldbatches && !(r_refdef.flags & RDF_WORLDONLY))
 			{
 				RSpeedRemark();
 				TRACE(("GLBE_DrawWorld: drawing lights\n"));

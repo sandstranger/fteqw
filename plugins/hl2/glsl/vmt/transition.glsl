@@ -31,6 +31,7 @@
 
 !!permu FAKESHADOWS
 !!cvardf r_glsl_pcf
+!!cvardf r_lightmap_bicubic_world=0
 !!samps =FAKESHADOWS shadowmap
 
 #include "sys/defs.h"
@@ -158,13 +159,34 @@ varying vec2 lm1, lm2, lm3;
 	#include "sys/pcf.h"
 #endif
 
-	#ifdef LIGHTSTYLED
-		#define LIGHTMAP0 texture2D(s_lightmap0, lm0).rgb
-		#define LIGHTMAP1 texture2D(s_lightmap1, lm1).rgb
-		#define LIGHTMAP2 texture2D(s_lightmap2, lm2).rgb
-		#define LIGHTMAP3 texture2D(s_lightmap3, lm3).rgb
+	//FTESurf Patch 1275: a cubic B-spline over the lightmap in four bilinear taps, as HL2's 20th-anniversary
+	//update filters it. Each face's block has a one-texel copy of its edge around it (r_surf.c SURF_LMPAD).
+	#if r_lightmap_bicubic_world
+	vec3 lm_bicubic(sampler2D s, vec2 c)
+	{
+		vec2 p = c * e_lmsize.xy - 0.5;
+		vec2 f = fract(p);
+		vec2 f2 = f * f, f3 = f2 * f;
+		vec2 w0 = (1.0 - 3.0*f + 3.0*f2 - f3) / 6.0;
+		vec2 w1 = (4.0 - 6.0*f2 + 3.0*f3) / 6.0;
+		vec2 w3 = f3 / 6.0;
+		vec2 g0 = w0 + w1, g1 = 1.0 - g0;
+		vec2 b = p - f + 0.5;
+		vec2 h0 = (b - 1.0 + w1 / g0) * e_lmsize.zw, h1 = (b + 1.0 + w3 / g1) * e_lmsize.zw;
+		return g0.y * (g0.x * texture2D(s, h0).rgb + g1.x * texture2D(s, vec2(h1.x, h0.y)).rgb) +
+		       g1.y * (g0.x * texture2D(s, vec2(h0.x, h1.y)).rgb + g1.x * texture2D(s, h1).rgb);
+	}
+	#define LMSAMPLE(s,c) lm_bicubic(s, c)
 	#else
-		#define LIGHTMAP texture2D(s_lightmap, lm0).rgb 
+	#define LMSAMPLE(s,c) texture2D(s, c).rgb
+	#endif
+	#ifdef LIGHTSTYLED
+		#define LIGHTMAP0 LMSAMPLE(s_lightmap0, lm0)
+		#define LIGHTMAP1 LMSAMPLE(s_lightmap1, lm1)
+		#define LIGHTMAP2 LMSAMPLE(s_lightmap2, lm2)
+		#define LIGHTMAP3 LMSAMPLE(s_lightmap3, lm3)
+	#else
+		#define LIGHTMAP LMSAMPLE(s_lightmap, lm0)
 	#endif
 
 	//$seamless_scale sampling -- see lightmapped.glsl for the derivation.  Applied
@@ -191,18 +213,8 @@ varying vec2 lm1, lm2, lm3;
 #else
 		lightmaps  = LIGHTMAP * e_lmscale.rgb;
 #endif
-
-		/* the light we're getting is always too bright */
-		lightmaps *= 0.75;
-
-		/* clamp at 1.5 */
-		if (lightmaps.r > 1.5)
-			lightmaps.r = 1.5;
-		if (lightmaps.g > 1.5)
-			lightmaps.g = 1.5;
-		if (lightmaps.b > 1.5)
-			lightmaps.b = 1.5;
-
+		//Patch 1269: no 0.75 scale or 1.5 clamp, as lightmapped.glsl since e4c4938ef: a blended
+		//displacement drew at 3/4 of the flat face beside it (surf_starvald's floor seam).
 		return lightmaps;
 	}
 
@@ -254,8 +266,14 @@ varying vec2 lm1, lm2, lm3;
 		//material type and this shader has never read it, so an alpha-masked
 		//transition surface came out as a solid rectangle.
 #ifdef MASKLT
+	#ifdef FTE_ALPHACOVERAGE	// FTESurf Patch 1262: under MSAA the test's edge is a pixel of coverage, not a cut
+		float a2c = (diffuse_f.a - float(MASK)) / max(fwidth(diffuse_f.a), 0.0001) + 0.5;
+		if (e_alphacoverage > 0.0 ? a2c <= 0.0 : diffuse_f.a < float(MASK))
+			discard;
+	#else
 		if (diffuse_f.a < float(MASK))
 			discard;
+	#endif
 #endif
 
 		//ftesurf (P232): $vertexcolor / $vertexalpha, the per-vertex tint and opacity.
@@ -275,7 +293,8 @@ varying vec2 lm1, lm2, lm3;
 		diffuse_f.a *= vex_color.a;
 #endif
 
-		diffuse_f.rgb *= e_colourident.rgb * vec3(COLOR);	//FTESurf Patch 1250: a brush entity's rendercolor
+		//FTESurf Patch 1288: $color in linear light, as LightmappedGeneric (see lightmapped.glsl)
+		diffuse_f.rgb *= e_colourident.rgb * pow(vec3(COLOR), vec3(1.0/2.2));	//FTESurf Patch 1250: a brush entity's rendercolor
 
 		/* deluxemapping isn't working on Source BSP yet, FIXME */
 		diffuse_f.rgb *= lightmap_fragment();
@@ -425,6 +444,10 @@ varying vec2 lm1, lm2, lm3;
 		#else
 			gl_FragColor = vec4(fog3(diffuse_f.rgb), diffuse_f.a);
 		#endif
+#endif
+#if defined(MASKLT) && defined(FTE_ALPHACOVERAGE)
+	if (e_alphacoverage > 0.0)
+		gl_FragColor.a = min(a2c, 1.0);
 #endif
 	}
 #endif

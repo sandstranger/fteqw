@@ -18,6 +18,7 @@ YOU SHOULD NOT EDIT THIS FILE BY HAND
 "!!samps =LIGHTSTYLED lightmap1 lightmap2 lightmap3\n"
 
 "!!samps =BUMP normalmap\n"
+"!!samps =DELUXE deluxemap\n"
 "!!samps =FULLBRIGHT fullbright\n"
 
 // envmaps only
@@ -25,6 +26,7 @@ YOU SHOULD NOT EDIT THIS FILE BY HAND
 
 "!!permu FAKESHADOWS\n"
 "!!cvardf r_glsl_pcf\n"
+"!!cvardf r_lightmap_bicubic_world=0\n"
 "!!cvarf r_renderscale\n"
 "!!samps =FAKESHADOWS shadowmap\n"
 
@@ -190,13 +192,34 @@ YOU SHOULD NOT EDIT THIS FILE BY HAND
 "#include \"sys/pcf.h\"\n"
 "#endif\n"
 
-"#ifdef LIGHTSTYLED\n"
-"#define LIGHTMAP0 texture2D(s_lightmap0, lm0).rgb\n"
-"#define LIGHTMAP1 texture2D(s_lightmap1, lm1).rgb\n"
-"#define LIGHTMAP2 texture2D(s_lightmap2, lm2).rgb\n"
-"#define LIGHTMAP3 texture2D(s_lightmap3, lm3).rgb\n"
+//FTESurf Patch 1275: a cubic B-spline over the lightmap in four bilinear taps, as HL2's 20th-anniversary
+//update filters it. Each face's block has a one-texel copy of its edge around it (r_surf.c SURF_LMPAD).
+"#if r_lightmap_bicubic_world\n"
+"vec3 lm_bicubic(sampler2D s, vec2 c)\n"
+"{\n"
+"vec2 p = c * e_lmsize.xy - 0.5;\n"
+"vec2 f = fract(p);\n"
+"vec2 f2 = f * f, f3 = f2 * f;\n"
+"vec2 w0 = (1.0 - 3.0*f + 3.0*f2 - f3) / 6.0;\n"
+"vec2 w1 = (4.0 - 6.0*f2 + 3.0*f3) / 6.0;\n"
+"vec2 w3 = f3 / 6.0;\n"
+"vec2 g0 = w0 + w1, g1 = 1.0 - g0;\n"
+"vec2 b = p - f + 0.5;\n"
+"vec2 h0 = (b - 1.0 + w1 / g0) * e_lmsize.zw, h1 = (b + 1.0 + w3 / g1) * e_lmsize.zw;\n"
+"return g0.y * (g0.x * texture2D(s, h0).rgb + g1.x * texture2D(s, vec2(h1.x, h0.y)).rgb) +\n"
+"g1.y * (g0.x * texture2D(s, vec2(h0.x, h1.y)).rgb + g1.x * texture2D(s, h1).rgb);\n"
+"}\n"
+"#define LMSAMPLE(s,c) lm_bicubic(s, c)\n"
 "#else\n"
-"#define LIGHTMAP texture2D(s_lightmap, lm0).rgb \n"
+"#define LMSAMPLE(s,c) texture2D(s, c).rgb\n"
+"#endif\n"
+"#ifdef LIGHTSTYLED\n"
+"#define LIGHTMAP0 LMSAMPLE(s_lightmap0, lm0)\n"
+"#define LIGHTMAP1 LMSAMPLE(s_lightmap1, lm1)\n"
+"#define LIGHTMAP2 LMSAMPLE(s_lightmap2, lm2)\n"
+"#define LIGHTMAP3 LMSAMPLE(s_lightmap3, lm3)\n"
+"#else\n"
+"#define LIGHTMAP LMSAMPLE(s_lightmap, lm0)\n"
 "#endif\n"
 
 "vec3 lightmap_fragment()\n"
@@ -225,6 +248,40 @@ YOU SHOULD NOT EDIT THIS FILE BY HAND
 "#define SEAMSAMP(s) texture2D(s, tex_c)\n"
 "#endif\n"
 
+"#ifdef BUMP\n"
+//FTESurf Patch 1264: Source's bump basis (common_fxc.h:36), the tangent space of its normal maps,
+//ssbumps and the deluxemap mod_vbsp.c VBSP_BuildRNM writes.
+"const vec3 rnm_b0 = vec3(0.81649661, 0.0, 0.57735026);\n"
+"const vec3 rnm_b1 = vec3(-0.40824833, 0.70710677, 0.57735026);\n"
+"const vec3 rnm_b2 = vec3(-0.40824822, -0.70710683, 0.57735026);\n"
+"#endif\n"
+"#if defined(DELUXE) && defined(BUMP)\n"
+//FTESurf Patch 1264: radiosity normal mapping (lightmappedgeneric_ps2_3_x.h:433-466).  The
+//deluxemap is the luxel's three basis-map luminances as one direction, so each map's share is
+//dot(dir, basis); the lightmap is their mean (VBSP_BuildRNM), so Source's weighted sum is the mean
+//times 3 * dot(weights, share) / sum(share).  A normal map weighs by its squared, clamped dots
+//with the basis, normalized; an ssbump IS the three weights, unnormalized.  That ratio is linear
+//light and the lightmap is sRGB-encoded (VBSP_ConvertLuxel), hence the 1/2.2.  A zero direction is
+//a luxel with no basis data (or no static light): left alone.
+"float rnm_fragment()\n"
+"{\n"
+"vec3 share = max(vec3(dot(texture2D(s_deluxemap, lm0).rgb * 2.0 - 1.0, rnm_b0),\n"
+"dot(texture2D(s_deluxemap, lm0).rgb * 2.0 - 1.0, rnm_b1),\n"
+"dot(texture2D(s_deluxemap, lm0).rgb * 2.0 - 1.0, rnm_b2)), 0.0);\n"
+"vec3 w = SEAMSAMP(s_normalmap).rgb;\n"
+"#ifndef SSBUMP\n"
+"w = w * 2.0 - 1.0; //Source's DX space, as the deluxemap: no green flip\n"
+"w = clamp(vec3(dot(w, rnm_b0), dot(w, rnm_b1), dot(w, rnm_b2)), 0.0, 1.0);\n"
+"w *= w;\n"
+"w /= max(dot(w, vec3(1.0)), 0.0001);\n"
+"#endif\n"
+"float total = dot(share, vec3(1.0));\n"
+"if (total < 0.01)\n"
+"return 1.0;\n"
+"return pow(3.0 * dot(w, share) / total, 1.0 / 2.2);\n"
+"}\n"
+"#endif\n"
+
 "vec3 env_saturation(vec3 rgb, float adjustment) {\n"
 "vec3 intensity = vec3(dot(rgb, vec3(0.2126,0.7152,0.0722)));\n"
 "return mix(intensity, rgb, adjustment);\n"
@@ -241,11 +298,20 @@ YOU SHOULD NOT EDIT THIS FILE BY HAND
 "#else\n"
 "diffuse_f = SEAMSAMP(s_diffuse);\n"
 "#endif\n"
-"diffuse_f.rgb *= e_colourident.rgb * vec3(COLOR);\n"
+//FTESurf Patch 1288: LightmappedGeneric multiplies by $color raw between an sRGB read and an sRGB write
+//(lightmappedgeneric_dx9_helper.cpp: no GammaToLinear, unlike VertexLitGeneric), so in linear light; on
+//the gamma values here that is ^(1/2.2). surf_eternity's $color .103 walls drew 3.5x too dark.
+"diffuse_f.rgb *= e_colourident.rgb * pow(vec3(COLOR), vec3(1.0/2.2));\n"
 
 "#ifdef MASKLT\n"
+"#ifdef FTE_ALPHACOVERAGE // FTESurf Patch 1262: under MSAA the test's edge is a pixel of coverage, not a cut\n"
+"float a2c = (diffuse_f.a - float(MASK)) / max(fwidth(diffuse_f.a), 0.0001) + 0.5;\n"
+"if (e_alphacoverage > 0.0 ? a2c <= 0.0 : diffuse_f.a < float(MASK))\n"
+"discard;\n"
+"#else\n"
 "if (diffuse_f.a < float(MASK))\n"
 "discard;\n"
+"#endif\n"
 "#endif\n"
 
 //ftesurf (P232): the per-vertex tint and opacity the material asked for.
@@ -263,17 +329,26 @@ YOU SHOULD NOT EDIT THIS FILE BY HAND
 "diffuse_f.rgb *= ShadowmapFilter(s_shadowmap, vtexprojcoord);\n"
 "#endif\n"
 
-/* deluxemapping isn't working on Source BSP yet */
 "diffuse_f.rgb *= lightmap_fragment();\n"
+"#if defined(DELUXE) && defined(BUMP)\n"
+"diffuse_f.rgb *= rnm_fragment(); //FTESurf Patch 1264\n"
+"#endif\n"
 
 /* CUBEMAPS ONLY */
 "#ifdef REFLECTCUBEMASK\n"
 /* We currently only use the normal/bumpmap for cubemap warping. move this block out once we do proper radiosity normalmapping */
 "#ifdef BUMP\n"
-/* Source's normalmaps are in the DX format where the green channel is flipped */
 "vec4 normal_f = SEAMSAMP(s_normalmap);\n"
+"#ifdef SSBUMP\n"
+"{ //FTESurf Patch 1264: three basis weights, and Source reflects off their sum (ps2_3_x.h:447)\n"
+"vec3 n = normalize(rnm_b0 * normal_f.r + rnm_b1 * normal_f.g + rnm_b2 * normal_f.b);\n"
+"normal_f.rgb = vec3(n.x, -n.y, n.z); //into the green-flipped space below\n"
+"}\n"
+"#else\n"
+/* Source's normalmaps are in the DX format where the green channel is flipped */
 "normal_f.g = 1.0 - normal_f.g;\n"
 "normal_f.rgb = normalize(normal_f.rgb - 0.5);\n"
+"#endif\n"
 "#else\n"
 "vec4 normal_f = vec4(0.0,0.0,1.0,0.0);\n"
 "#endif\n"
@@ -394,6 +469,10 @@ YOU SHOULD NOT EDIT THIS FILE BY HAND
 "#else\n"
 "gl_FragColor = vec4(fog3(diffuse_f.rgb), diffuse_f.a);\n"
 "#endif\n"
+"#endif\n"
+"#if defined(MASKLT) && defined(FTE_ALPHACOVERAGE)\n"
+"if (e_alphacoverage > 0.0)\n"
+"gl_FragColor.a = min(a2c, 1.0);\n"
 "#endif\n"
 "}\n"
 "#endif\n"
@@ -563,6 +642,7 @@ YOU SHOULD NOT EDIT THIS FILE BY HAND
 
 "!!permu FAKESHADOWS\n"
 "!!cvardf r_glsl_pcf\n"
+"!!cvardf r_lightmap_bicubic_world=0\n"
 "!!samps =FAKESHADOWS shadowmap\n"
 
 "#include \"sys/defs.h\"\n"
@@ -690,13 +770,34 @@ YOU SHOULD NOT EDIT THIS FILE BY HAND
 "#include \"sys/pcf.h\"\n"
 "#endif\n"
 
-"#ifdef LIGHTSTYLED\n"
-"#define LIGHTMAP0 texture2D(s_lightmap0, lm0).rgb\n"
-"#define LIGHTMAP1 texture2D(s_lightmap1, lm1).rgb\n"
-"#define LIGHTMAP2 texture2D(s_lightmap2, lm2).rgb\n"
-"#define LIGHTMAP3 texture2D(s_lightmap3, lm3).rgb\n"
+//FTESurf Patch 1275: a cubic B-spline over the lightmap in four bilinear taps, as HL2's 20th-anniversary
+//update filters it. Each face's block has a one-texel copy of its edge around it (r_surf.c SURF_LMPAD).
+"#if r_lightmap_bicubic_world\n"
+"vec3 lm_bicubic(sampler2D s, vec2 c)\n"
+"{\n"
+"vec2 p = c * e_lmsize.xy - 0.5;\n"
+"vec2 f = fract(p);\n"
+"vec2 f2 = f * f, f3 = f2 * f;\n"
+"vec2 w0 = (1.0 - 3.0*f + 3.0*f2 - f3) / 6.0;\n"
+"vec2 w1 = (4.0 - 6.0*f2 + 3.0*f3) / 6.0;\n"
+"vec2 w3 = f3 / 6.0;\n"
+"vec2 g0 = w0 + w1, g1 = 1.0 - g0;\n"
+"vec2 b = p - f + 0.5;\n"
+"vec2 h0 = (b - 1.0 + w1 / g0) * e_lmsize.zw, h1 = (b + 1.0 + w3 / g1) * e_lmsize.zw;\n"
+"return g0.y * (g0.x * texture2D(s, h0).rgb + g1.x * texture2D(s, vec2(h1.x, h0.y)).rgb) +\n"
+"g1.y * (g0.x * texture2D(s, vec2(h0.x, h1.y)).rgb + g1.x * texture2D(s, h1).rgb);\n"
+"}\n"
+"#define LMSAMPLE(s,c) lm_bicubic(s, c)\n"
 "#else\n"
-"#define LIGHTMAP texture2D(s_lightmap, lm0).rgb \n"
+"#define LMSAMPLE(s,c) texture2D(s, c).rgb\n"
+"#endif\n"
+"#ifdef LIGHTSTYLED\n"
+"#define LIGHTMAP0 LMSAMPLE(s_lightmap0, lm0)\n"
+"#define LIGHTMAP1 LMSAMPLE(s_lightmap1, lm1)\n"
+"#define LIGHTMAP2 LMSAMPLE(s_lightmap2, lm2)\n"
+"#define LIGHTMAP3 LMSAMPLE(s_lightmap3, lm3)\n"
+"#else\n"
+"#define LIGHTMAP LMSAMPLE(s_lightmap, lm0)\n"
 "#endif\n"
 
 //$seamless_scale sampling -- see lightmapped.glsl for the derivation.  Applied
@@ -723,18 +824,8 @@ YOU SHOULD NOT EDIT THIS FILE BY HAND
 "#else\n"
 "lightmaps  = LIGHTMAP * e_lmscale.rgb;\n"
 "#endif\n"
-
-/* the light we're getting is always too bright */
-"lightmaps *= 0.75;\n"
-
-/* clamp at 1.5 */
-"if (lightmaps.r > 1.5)\n"
-"lightmaps.r = 1.5;\n"
-"if (lightmaps.g > 1.5)\n"
-"lightmaps.g = 1.5;\n"
-"if (lightmaps.b > 1.5)\n"
-"lightmaps.b = 1.5;\n"
-
+//Patch 1269: no 0.75 scale or 1.5 clamp, as lightmapped.glsl since e4c4938ef: a blended
+//displacement drew at 3/4 of the flat face beside it (surf_starvald's floor seam).
 "return lightmaps;\n"
 "}\n"
 
@@ -786,8 +877,14 @@ YOU SHOULD NOT EDIT THIS FILE BY HAND
 //material type and this shader has never read it, so an alpha-masked
 //transition surface came out as a solid rectangle.
 "#ifdef MASKLT\n"
+"#ifdef FTE_ALPHACOVERAGE // FTESurf Patch 1262: under MSAA the test's edge is a pixel of coverage, not a cut\n"
+"float a2c = (diffuse_f.a - float(MASK)) / max(fwidth(diffuse_f.a), 0.0001) + 0.5;\n"
+"if (e_alphacoverage > 0.0 ? a2c <= 0.0 : diffuse_f.a < float(MASK))\n"
+"discard;\n"
+"#else\n"
 "if (diffuse_f.a < float(MASK))\n"
 "discard;\n"
+"#endif\n"
 "#endif\n"
 
 //ftesurf (P232): $vertexcolor / $vertexalpha, the per-vertex tint and opacity.
@@ -807,7 +904,8 @@ YOU SHOULD NOT EDIT THIS FILE BY HAND
 "diffuse_f.a *= vex_color.a;\n"
 "#endif\n"
 
-"diffuse_f.rgb *= e_colourident.rgb * vec3(COLOR); //FTESurf Patch 1250: a brush entity's rendercolor\n"
+//FTESurf Patch 1288: $color in linear light, as LightmappedGeneric (see lightmapped.glsl)
+"diffuse_f.rgb *= e_colourident.rgb * pow(vec3(COLOR), vec3(1.0/2.2)); //FTESurf Patch 1250: a brush entity's rendercolor\n"
 
 /* deluxemapping isn't working on Source BSP yet, FIXME */
 "diffuse_f.rgb *= lightmap_fragment();\n"
@@ -958,6 +1056,10 @@ YOU SHOULD NOT EDIT THIS FILE BY HAND
 "gl_FragColor = vec4(fog3(diffuse_f.rgb), diffuse_f.a);\n"
 "#endif\n"
 "#endif\n"
+"#if defined(MASKLT) && defined(FTE_ALPHACOVERAGE)\n"
+"if (e_alphacoverage > 0.0)\n"
+"gl_FragColor.a = min(a2c, 1.0);\n"
+"#endif\n"
 "}\n"
 "#endif\n"
 },
@@ -1033,8 +1135,14 @@ YOU SHOULD NOT EDIT THIS FILE BY HAND
 "diffuse_f.rgb *= e_colourident.rgb * vec3(COLOR); //FTESurf Patch 1250: a brush entity's rendercolor, as lightmapped.glsl\n"
 
 "#ifdef MASKLT\n"
+"#ifdef FTE_ALPHACOVERAGE // FTESurf Patch 1262: under MSAA the test's edge is a pixel of coverage, not a cut\n"
+"float a2c = (diffuse_f.a - float(MASK)) / max(fwidth(diffuse_f.a), 0.0001) + 0.5;\n"
+"if (e_alphacoverage > 0.0 ? a2c <= 0.0 : diffuse_f.a < float(MASK))\n"
+"discard;\n"
+"#else\n"
 "if (diffuse_f.a < float(MASK))\n"
 "discard;\n"
+"#endif\n"
 "#endif\n"
 
 "#ifdef VERTEXCOL\n"
@@ -1076,6 +1184,10 @@ YOU SHOULD NOT EDIT THIS FILE BY HAND
 "#else\n"
 "gl_FragColor = vec4(fog3(diffuse_f.rgb), diffuse_f.a);\n"
 "#endif\n"
+"#endif\n"
+"#if defined(MASKLT) && defined(FTE_ALPHACOVERAGE)\n"
+"if (e_alphacoverage > 0.0)\n"
+"gl_FragColor.a = min(a2c, 1.0);\n"
 "#endif\n"
 "}\n"
 "#endif\n"
@@ -1330,8 +1442,14 @@ YOU SHOULD NOT EDIT THIS FILE BY HAND
 "diffuse_f.rgb *= vec3(COLOR);\n"
 
 "#ifdef MASKLT\n"
+"#ifdef FTE_ALPHACOVERAGE // FTESurf Patch 1262: under MSAA the test's edge is a pixel of coverage, not a cut\n"
+"float a2c = (diffuse_f.a - float(MASK)) / max(fwidth(diffuse_f.a), 0.0001) + 0.5;\n"
+"if (e_alphacoverage > 0.0 ? a2c <= 0.0 : diffuse_f.a < float(MASK))\n"
+"discard;\n"
+"#else\n"
 "if (diffuse_f.a < float(MASK))\n"
 "discard;\n"
+"#endif\n"
 "#endif\n"
 
 /* Normal/Bumpmap Shenanigans */
@@ -1573,6 +1691,10 @@ YOU SHOULD NOT EDIT THIS FILE BY HAND
 "gl_FragColor = vec4(fog3(diffuse_f.rgb), diffuse_f.a);\n"
 "#endif\n"
 "#endif\n"
+"#if defined(MASKLT) && defined(FTE_ALPHACOVERAGE)\n"
+"if (e_alphacoverage > 0.0)\n"
+"gl_FragColor.a = min(a2c, 1.0);\n"
+"#endif\n"
 "}\n"
 "#endif\n"
 },
@@ -1752,6 +1874,18 @@ YOU SHOULD NOT EDIT THIS FILE BY HAND
 "float fres;\n"
 "float depth = 0.0;\n"
 "stc = (1.0 + (tf.xy / tf.w)) * 0.5;\n"
+"#if defined(FTE_CAPTUREFIX) && !defined(SCREEN)\n"
+// FTESurf Patch 1245: a reused capture (r_capturehalfrate) saw this point at m_capturefix * tf
+// (identity when fresh; a point behind that camera keeps this frame's). The ripple map is this frame's.
+"vec2 rstc = stc;\n"
+"vec4 ctf = m_capturefix * tf;\n"
+"if (ctf.w > 0.5)\n"
+"stc = (1.0 + (ctf.xy / ctf.w)) * 0.5;\n"
+"else\n"
+"ctf = tf;\n"
+"#else\n"
+"#define rstc stc\n"
+"#endif\n"
 "#ifdef ANIMBUMP\n"
 "int bumplayers = textureSize(s_bumpanim, 0).z;\n"
 "float bumplayer = bumplayers > 0 ? floor(mod(e_time * float(ANIMBUMP), float(bumplayers))) : 0.0;\n"
@@ -1787,7 +1921,7 @@ YOU SHOULD NOT EDIT THIS FILE BY HAND
 "#endif\n"
 
 "#ifdef RIPPLEMAP\n"
-"n += texture2D(s_ripplemap, stc).rgb*3.0;\n"
+"n += texture2D(s_ripplemap, rstc).rgb*3.0;\n"
 "#endif\n"
 "n = normalize(n);\n"
 
@@ -1798,6 +1932,9 @@ YOU SHOULD NOT EDIT THIS FILE BY HAND
 
 "#ifdef DEPTH\n"
 "float surfaceDepth = eyeDepth(gl_FragCoord.z);\n"
+"#if defined(FTE_CAPTUREFIX) && !defined(SCREEN)\n"
+"surfaceDepth *= ctf.w / tf.w; // along the capture's forward, as s_refractdepth is (exactly 1 when fresh)\n"
+"#endif\n"
 // P877: 1/depth is affine across the plane in screen space, so this gives the surface's depth
 // on the refracted sample's own ray, the ray Source's alpha was computed for (water_ps2x_helper.h:161).
 "float invs = 1.0 / surfaceDepth;\n"
@@ -2246,6 +2383,7 @@ YOU SHOULD NOT EDIT THIS FILE BY HAND
 "!!permu NOFOG\n"
 "!!permu VC   // FTESurf Patch 1218: MODELLIT's VRAD bake, as vertexlit.glsl's\n"
 "!!cvardf hl2_lt_fold=1\n"
+"!!cvardf r_lightmap_bicubic_world=0\n"
 "!!samps anim:2DArray=0\n"
 
 "!!samps !UNLIT lightmap\n"
@@ -2363,13 +2501,34 @@ YOU SHOULD NOT EDIT THIS FILE BY HAND
 "#include \"sys/fog.h\"\n"
 
 "#ifndef UNLIT\n"
-"#ifdef LIGHTSTYLED\n"
-"#define LIGHTMAP0 texture2D(s_lightmap0, lm0).rgb\n"
-"#define LIGHTMAP1 texture2D(s_lightmap1, lm1).rgb\n"
-"#define LIGHTMAP2 texture2D(s_lightmap2, lm2).rgb\n"
-"#define LIGHTMAP3 texture2D(s_lightmap3, lm3).rgb\n"
+//FTESurf Patch 1275: a cubic B-spline over the lightmap in four bilinear taps, as HL2's 20th-anniversary
+//update filters it. Each face's block has a one-texel copy of its edge around it (r_surf.c SURF_LMPAD).
+"#if r_lightmap_bicubic_world\n"
+"vec3 lm_bicubic(sampler2D s, vec2 c)\n"
+"{\n"
+"vec2 p = c * e_lmsize.xy - 0.5;\n"
+"vec2 f = fract(p);\n"
+"vec2 f2 = f * f, f3 = f2 * f;\n"
+"vec2 w0 = (1.0 - 3.0*f + 3.0*f2 - f3) / 6.0;\n"
+"vec2 w1 = (4.0 - 6.0*f2 + 3.0*f3) / 6.0;\n"
+"vec2 w3 = f3 / 6.0;\n"
+"vec2 g0 = w0 + w1, g1 = 1.0 - g0;\n"
+"vec2 b = p - f + 0.5;\n"
+"vec2 h0 = (b - 1.0 + w1 / g0) * e_lmsize.zw, h1 = (b + 1.0 + w3 / g1) * e_lmsize.zw;\n"
+"return g0.y * (g0.x * texture2D(s, h0).rgb + g1.x * texture2D(s, vec2(h1.x, h0.y)).rgb) +\n"
+"g1.y * (g0.x * texture2D(s, vec2(h0.x, h1.y)).rgb + g1.x * texture2D(s, h1).rgb);\n"
+"}\n"
+"#define LMSAMPLE(s,c) lm_bicubic(s, c)\n"
 "#else\n"
-"#define LIGHTMAP texture2D(s_lightmap, lm0).rgb\n"
+"#define LMSAMPLE(s,c) texture2D(s, c).rgb\n"
+"#endif\n"
+"#ifdef LIGHTSTYLED\n"
+"#define LIGHTMAP0 LMSAMPLE(s_lightmap0, lm0)\n"
+"#define LIGHTMAP1 LMSAMPLE(s_lightmap1, lm1)\n"
+"#define LIGHTMAP2 LMSAMPLE(s_lightmap2, lm2)\n"
+"#define LIGHTMAP3 LMSAMPLE(s_lightmap3, lm3)\n"
+"#else\n"
+"#define LIGHTMAP LMSAMPLE(s_lightmap, lm0)\n"
 "#endif\n"
 
 "vec3 lightmap_fragment()\n"
@@ -2398,7 +2557,11 @@ YOU SHOULD NOT EDIT THIS FILE BY HAND
 "float layer = mod(e_time * float(ANIMRATE), float(sz.z));\n"
 
 "diffuse_f = texture2D(s_anim, vec3(tex_c, layer));\n"
+"#if defined(UNLIT) || defined(MODELLIT)\n"
 "diffuse_f.rgb *= e_colourident.rgb * vec3(COLOR);\n"
+"#else //FTESurf Patch 1288: a lightmapped brush takes $color in linear light (lightmapped.glsl)\n"
+"diffuse_f.rgb *= e_colourident.rgb * pow(vec3(COLOR), vec3(1.0/2.2));\n"
+"#endif\n"
 "#ifdef MODELLIT\n"
 "diffuse_f.rgb *= mlight;\n"
 "#elif defined(VERTEXCOL)\n"
@@ -2414,8 +2577,14 @@ YOU SHOULD NOT EDIT THIS FILE BY HAND
 "#endif\n"
 
 "#ifdef MASKLT\n"
+"#ifdef FTE_ALPHACOVERAGE // FTESurf Patch 1262: under MSAA the test's edge is a pixel of coverage, not a cut\n"
+"float a2c = (diffuse_f.a - float(MASK)) / max(fwidth(diffuse_f.a), 0.0001) + 0.5;\n"
+"if (e_alphacoverage > 0.0 ? a2c <= 0.0 : diffuse_f.a < float(MASK))\n"
+"discard;\n"
+"#else\n"
 "if (diffuse_f.a < float(MASK))\n"
 "discard;\n"
+"#endif\n"
 "#endif\n"
 
 "#ifndef UNLIT\n"
@@ -2437,6 +2606,10 @@ YOU SHOULD NOT EDIT THIS FILE BY HAND
 "#else\n"
 "gl_FragColor = vec4(fog3(diffuse_f.rgb), diffuse_f.a);\n"
 "#endif\n"
+"#endif\n"
+"#if defined(MASKLT) && defined(FTE_ALPHACOVERAGE)\n"
+"if (e_alphacoverage > 0.0)\n"
+"gl_FragColor.a = min(a2c, 1.0);\n"
 "#endif\n"
 "}\n"
 "#endif\n"
@@ -3208,8 +3381,14 @@ YOU SHOULD NOT EDIT THIS FILE BY HAND
 "base.a = mix(base.a, base.a * texture2D(s_upper, (tex_c + e_time * vec2(DETAILSCROLL)) * float(DETAILSCALE)).a, float(DETAILBLEND)); //BaseVSShader.cpp:351-357 scales the scroll too\n"
 "#endif\n"
 "#if defined(MASKLT) && !defined(ENVFROMBASE) //base alpha as the mask turns the alpha test off\n"
+"#ifdef FTE_ALPHACOVERAGE // FTESurf Patch 1262, as vmt/lightmapped\n"
+"float a2c = (base.a - float(MASK)) / max(fwidth(base.a), 0.0001) + 0.5;\n"
+"if (e_alphacoverage > 0.0 ? a2c <= 0.0 : base.a < float(MASK))\n"
+"discard;\n"
+"#else\n"
 "if (base.a < float(MASK))\n"
 "discard;\n"
+"#endif\n"
 "#endif\n"
 "#ifdef ENVFROMMASK\n"
 "rgb *= texture2D(s_reflectmask, btc).rgb; //at the base's coordinates (ps2x.fxc:331)\n"
@@ -3247,6 +3426,10 @@ YOU SHOULD NOT EDIT THIS FILE BY HAND
 "gl_FragColor = fog4additive(result);\n"
 "#else\n"
 "gl_FragColor = vec4(fog3(result.rgb), result.a);\n"
+"#endif\n"
+"#if defined(BASE) && defined(MASKLT) && !defined(ENVFROMBASE) && defined(FTE_ALPHACOVERAGE) //as the test above\n"
+"if (e_alphacoverage > 0.0)\n"
+"gl_FragColor.a = min(a2c, 1.0);\n"
 "#endif\n"
 "}\n"
 "#endif\n"
@@ -3533,6 +3716,18 @@ YOU SHOULD NOT EDIT THIS FILE BY HAND
 "float fres;\n"
 "float depth = 0.0;\n"
 "stc = (1.0 + (tf.xy / tf.w)) * 0.5;\n"
+"#if defined(FTE_CAPTUREFIX) && !defined(SCREEN)\n"
+// FTESurf Patch 1245: a reused capture (r_capturehalfrate) saw this point at m_capturefix * tf
+// (identity when fresh; a point behind that camera keeps this frame's). The ripple map is this frame's.
+"vec2 rstc = stc;\n"
+"vec4 ctf = m_capturefix * tf;\n"
+"if (ctf.w > 0.5)\n"
+"stc = (1.0 + (ctf.xy / ctf.w)) * 0.5;\n"
+"else\n"
+"ctf = tf;\n"
+"#else\n"
+"#define rstc stc\n"
+"#endif\n"
 "#ifdef ANIMBUMP\n"
 "int bumplayers = textureSize(s_bumpanim, 0).z;\n"
 "float bumplayer = bumplayers > 0 ? floor(mod(e_time * float(ANIMBUMP), float(bumplayers))) : 0.0;\n"
@@ -3568,7 +3763,7 @@ YOU SHOULD NOT EDIT THIS FILE BY HAND
 "#endif\n"
 
 "#ifdef RIPPLEMAP\n"
-"n += texture2D(s_ripplemap, stc).rgb*3.0;\n"
+"n += texture2D(s_ripplemap, rstc).rgb*3.0;\n"
 "#endif\n"
 "n = normalize(n);\n"
 
@@ -3579,6 +3774,9 @@ YOU SHOULD NOT EDIT THIS FILE BY HAND
 
 "#ifdef DEPTH\n"
 "float surfaceDepth = eyeDepth(gl_FragCoord.z);\n"
+"#if defined(FTE_CAPTUREFIX) && !defined(SCREEN)\n"
+"surfaceDepth *= ctf.w / tf.w; // along the capture's forward, as s_refractdepth is (exactly 1 when fresh)\n"
+"#endif\n"
 // P877: 1/depth is affine across the plane in screen space, so this gives the surface's depth
 // on the refracted sample's own ray, the ray Source's alpha was computed for (water_ps2x_helper.h:161).
 "float invs = 1.0 / surfaceDepth;\n"
@@ -4095,12 +4293,22 @@ YOU SHOULD NOT EDIT THIS FILE BY HAND
 "void main ()\n"
 "{\n"
 "vec4 c = texture2D(s_diffuse, tex_c);\n"
+"#ifdef FTE_ALPHACOVERAGE // FTESurf Patch 1262, as vmt/lightmapped\n"
+"float a2c = (c.a - float(MASK)) / max(fwidth(c.a), 0.0001) + 0.5;\n"
+"if (e_alphacoverage > 0.0 ? a2c <= 0.0 : c.a < float(MASK))\n"
+"discard;\n"
+"#else\n"
 "if (c.a < float(MASK))\n"
 "discard;\n"
+"#endif\n"
 //interleaved-gradient noise as the fade's threshold
 "if (vex_color.a < 1.0 && vex_color.a <= fract(52.9829189 * fract(dot(gl_FragCoord.xy, vec2(0.06711056, 0.00583715)))))\n"
 "discard;\n"
 "gl_FragColor = fog4(vec4(c.rgb * vex_color.rgb, 1.0));\n"
+"#ifdef FTE_ALPHACOVERAGE\n"
+"if (e_alphacoverage > 0.0)\n"
+"gl_FragColor.a = min(a2c, 1.0);\n"
+"#endif\n"
 "}\n"
 "#endif\n"
 },
@@ -4167,7 +4375,14 @@ YOU SHOULD NOT EDIT THIS FILE BY HAND
 // Source's normal maps are DX: green is flipped (lightmapped.glsl).
 "vec3 tn = normalize(vec3(nrm.r, 1.0 - nrm.g, nrm.b) * 2.0 - 1.0);\n"
 "vec3 wn = normalize(invsurface * tn);\n"
+"#ifdef FTE_CAPTUREFIX\n"
+"vec4 ctf = m_capturefix * tf_c; // FTESurf Patch 1245: where a reused capture saw this point\n"
+"if (ctf.w <= 0.5)\n"
+"ctf = tf_c; // behind that camera: this frame's\n"
+"vec2 sc = (1.0 + ctf.xy / ctf.w) * 0.5;\n"
+"#else\n"
 "vec2 sc = (1.0 + tf_c.xy / tf_c.w) * 0.5;\n"
+"#endif\n"
 "float ndv = clamp(dot(normalize(-incident), wn), 0.0, 1.0);\n"
 "float f = float(REFLECTANCE) + (1.0 - float(REFLECTANCE)) * pow(1.0 - ndv, 5.0);\n"
 "#if defined(CUBEREFL) && !defined(REFLECTCUBEMASK)\n"

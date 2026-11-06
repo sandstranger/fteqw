@@ -916,6 +916,7 @@ typedef struct
 	char color2[MAX_QPATH];		//FTESurf Patch 188: $color2, which wins over $color where both are written
 	char envfrombase;
 	char envfromnorm;
+	char ssbump;	//FTESurf Patch 1264: $ssbump -- the bump map holds the three basis weights, not a normal
 	char halflambert;
 
 	float envmaptint_r;
@@ -991,6 +992,7 @@ typedef struct
 	char translucent;
 	char translucent_vmt;	//FTESurf Patch 783: $translucent as written; arms below overwrite `translucent`
 	char vertexalpha_on;	//FTESurf Patch 783: $vertexalpha's value (`vertexalpha` is set by the key alone)
+	char vertexcolor_on;	//Patch 1270: $vertexcolor's value, as vertexalpha_on
 	char additive_oneone;	//FTESurf Patch 783: Source's pass is ONE ONE whatever the alpha (emissive)
 	char vmtclass[32];	//FTESurf Patch 783: the Source shader class, before an arm rewrites `type`
 	char selfillum;
@@ -2098,7 +2100,7 @@ static char *VMT_ParseBlock(const char *fname, vmtstate_t *st, char *line)
 			;	//nettest: recognised-but-ignored Source key; silenced (was per-field developer-1 spam)
 		}
 		else if (!Q_strcasecmp(key, "$ssbump"))
-			;
+			st->ssbump = atoi(value) != 0;
 		else if (!Q_strcasecmp(key, "$ssbumpmathfix"))
 			;
 		else if (!Q_strcasecmp(key, "$basetexture2") || !strcmp(key, "$texture2"))
@@ -2257,7 +2259,10 @@ static char *VMT_ParseBlock(const char *fname, vmtstate_t *st, char *line)
 		else if (!Q_strcasecmp(key, "$color2"))
 			Q_strlcpy(st->color2, value, sizeof(st->color2));
 		else if (!Q_strcasecmp(key, "$vertexcolor"))
+		{
 			st->vertexcolor = 1;
+			st->vertexcolor_on = atof(value) != 0;
+		}
 		else if (!Q_strcasecmp(key, "$vertexalpha"))
 		{
 			st->vertexalpha = 1;
@@ -4111,7 +4116,12 @@ static void Shader_GenerateFromVMT(parsestate_t *ps, vmtstate_t *st, const char 
 		} else {
 			Q_strlcatfz(script, &offset, sizeof(script),"\t\tblendFunc gl_dst_color gl_zero\n");
 		}
-		Q_strlcatfz(script, &offset, sizeof(script),	"\trgbGen vertex\n");
+		//Patch 1270: only $vertexcolor/$vertexalpha read vertex colour (modulate_dx9.cpp:133). A model's vertex colours
+		//are its lighting, so surf_voyager's combine balls (comball_glow1, grey under $mod2x) drew black squares in space.
+		if (st->vertexcolor_on || st->vertexalpha_on)
+			Q_strlcatfz(script, &offset, sizeof(script),	"\trgbGen vertex\n");
+		else
+			Q_strlcatfz(script, &offset, sizeof(script),	"\trgbGen identity\n");
 
 		Q_strlcatfz(script, &offset, sizeof(script),	"\t}\n");
 		st->translucent = 0;
@@ -4905,6 +4915,8 @@ static void Shader_GenerateFromVMT(parsestate_t *ps, vmtstate_t *st, const char 
 				Q_strlcpy(st->type, "vmt/lightmapped#ENVFROMMASK", sizeof(st->type));
 			else /* take from normalmap */
 				Q_strlcpy(st->type, "vmt/lightmapped", sizeof(st->type));
+			if (st->ssbump && *st->normalmap)	//FTESurf Patch 1264
+				Q_strlcat(progargs, "#SSBUMP", sizeof(progargs));
 
 			//FTESurf Patch 268 B: + envmapcontrast, empty unless bit 2 is on.
 			Q_strlcatfz(script, &offset, sizeof(script),	"\tprogram \"%s%s%s%s%s\"\n", st->type, progargs, envmaptint, envmapsat, envmapcontrast);

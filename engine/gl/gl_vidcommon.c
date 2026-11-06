@@ -95,6 +95,7 @@ void (APIENTRY *qglBindFramebufferEXT)(GLenum target, GLuint id);
 void (APIENTRY *qglDeleteRenderbuffersEXT)(GLsizei n, const GLuint* ids);
 void (APIENTRY *qglFramebufferTexture2DEXT)(GLenum target, GLenum attachmentPoint, GLenum textureTarget, GLuint textureId, GLint  level);
 void (APIENTRY *qglBlitFramebufferEXT)(GLint sx0, GLint sy0, GLint sx1, GLint sy1, GLint dx0, GLint dy0, GLint dx1, GLint dy1, GLbitfield mask, GLenum filter);	//FTESurf Patch 1237: gl3 / EXT_framebuffer_blit, may be NULL
+void (APIENTRY *qglRenderbufferStorageMultisampleEXT)(GLenum target, GLsizei samples, GLenum internalformat, GLsizei width, GLsizei height);	//FTESurf Patch 1260: may be NULL
 FTEPFNGLVERTEXATTRIBPOINTERPROC			qglVertexAttribPointer;
 FTEPFNGLVERTEXATTRIB4FPROC				qglVertexAttrib4f;
 FTEPFNGLGETVERTEXATTRIBIVPROC			qglGetVertexAttribiv;
@@ -714,6 +715,7 @@ static qboolean GL_CheckExtensions (void *(*getglfunction) (char *name))
 	qglRenderbufferStorageEXT	= NULL;
 	qglFramebufferTexture2DEXT	= NULL;
 	qglBlitFramebufferEXT		= NULL;
+	qglRenderbufferStorageMultisampleEXT = NULL;
 
 #endif
 
@@ -1294,7 +1296,10 @@ static qboolean GL_CheckExtensions (void *(*getglfunction) (char *name))
 		qglCheckFramebufferStatusEXT	= (void *)getglext("glCheckFramebufferStatus");
 		qglGetFramebufferAttachmentParameteriv	= (void *)getglext("glGetFramebufferAttachmentParameteriv");
 		if (gl_config.glversion >= 3 || GL_CheckExtension("GL_ARB_framebuffer_object"))
+		{
 			qglBlitFramebufferEXT	= (void *)getglext("glBlitFramebuffer");	//FTESurf Patch 1237: not in gles2
+			qglRenderbufferStorageMultisampleEXT = (void *)getglext("glRenderbufferStorageMultisample");	//FTESurf Patch 1260
+		}
 
 		gl_config.arb_framebuffer_srgb = GL_CheckExtension("GL_ARB_framebuffer_sRGB");
 	}
@@ -1314,6 +1319,8 @@ static qboolean GL_CheckExtensions (void *(*getglfunction) (char *name))
 		qglGetFramebufferAttachmentParameteriv	= (void *)getglext("glGetFramebufferAttachmentParameterivEXT");
 		if (GL_CheckExtension("GL_EXT_framebuffer_blit"))
 			qglBlitFramebufferEXT	= (void *)getglext("glBlitFramebufferEXT");	//FTESurf Patch 1237
+		if (GL_CheckExtension("GL_EXT_framebuffer_multisample"))
+			qglRenderbufferStorageMultisampleEXT = (void *)getglext("glRenderbufferStorageMultisampleEXT");	//FTESurf Patch 1260
 	}
 /*	//I don't think we care about the differences, so this code should be safe, but I have no way to test that theory right now
 	else if (GL_CheckExtension("GL_OES_framebuffer_object"))
@@ -1598,6 +1605,10 @@ static const char *glsl_hdrs[] =
 				"uniform mat4 m_invviewprojection;"
 				"uniform mat4 m_invmodelviewprojection;"
 				"uniform mat3 m_invmodelview;"
+				"uniform mat4 m_capturefix;\n"	//FTESurf Patch 1245
+				"#define FTE_CAPTUREFIX 1\n"
+				"uniform float e_alphacoverage;\n"	//FTESurf Patch 1262
+				"#define FTE_ALPHACOVERAGE 1\n"
 
 				/*viewer properties*/
 				"uniform vec3 v_eyepos;"
@@ -1619,6 +1630,7 @@ static const char *glsl_hdrs[] =
 				"#else\n"
 				"uniform vec4 e_lmscale;\n"
 				"#endif\n"
+				"uniform vec4 e_lmsize;\n"	//FTESurf Patch 1275
 				"uniform vec3 e_origin;"
 				"uniform float e_time;"
 				"uniform vec3 e_eyepos;"
@@ -3074,6 +3086,13 @@ static void GLSlang_ProgAutoFields(program_t *prog, struct programpermu_s *pp, c
 	pp->instuniform[0] = qglGetUniformLocationARB(pp->h.glsl.handle, "s_instdata");	//FTESurf Patch 831
 	pp->instuniform[1] = qglGetUniformLocationARB(pp->h.glsl.handle, "s_instvc");
 	pp->instuniform[2] = qglGetUniformLocationARB(pp->h.glsl.handle, "e_instbase");
+	//FTESurf Patch 1262: only a program whose arguments ask for the alpha test (vmt/detail always does) turns its
+	//output alpha into coverage; a driver may report an unused uniform as active
+	pp->a2cuniform = (prog && prog->name && (strstr(prog->name, "#MASKLT") || !strncmp(prog->name, "vmt/detail", 10))) ?
+		qglGetUniformLocationARB(pp->h.glsl.handle, "e_alphacoverage") : -1;
+	pp->a2cval = -1;
+	pp->lmsizeuniform = qglGetUniformLocationARB(pp->h.glsl.handle, "e_lmsize");	//FTESurf Patch 1275
+	pp->lmsizew = pp->lmsizeh = 0;
 
 	for (i = 0; shader_unif_names[i].name; i++)
 	{
@@ -3342,6 +3361,7 @@ void GL_ForgetPointers(void)
 	qglRenderbufferStorageEXT	= NULL;
 	qglFramebufferTexture2DEXT	= NULL;
 	qglBlitFramebufferEXT		= NULL;
+	qglRenderbufferStorageMultisampleEXT = NULL;
 #endif
 
 	//no GL_EXT_stencil_two_side

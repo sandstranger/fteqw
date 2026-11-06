@@ -200,6 +200,73 @@ qboolean PMSrc_BankGravityEnd(void)
 	return used;
 }
 
+// P1344: command-local annotation; only the chosen StepMove path survives.
+// 0 no observed ramp, 1 world ramp, 2 nonworld, 3 ambiguous/unsupported.
+typedef struct
+{
+	int kind;
+	vec3_t normal, point;
+	float distance;
+} pms_tas_contact_t;
+static qboolean pms_tas_contact_observe;
+static pms_tas_contact_t pms_tas_contact;
+
+void PMSrc_TASContactBegin(qboolean enabled)
+{
+	pms_tas_contact_observe = enabled;
+	memset(&pms_tas_contact, 0, sizeof(pms_tas_contact));
+}
+
+int PMSrc_TASContactEnd(vec3_t normal, float *distance, vec3_t point)
+{
+	int kind = pms_tas_contact_observe ? pms_tas_contact.kind : 0;
+	VectorClear(normal);
+	VectorClear(point);
+	*distance = 0;
+	if (kind == 1 || kind == 2)
+	{
+		VectorCopy(pms_tas_contact.normal, normal);
+		VectorCopy(pms_tas_contact.point, point);
+		*distance = pms_tas_contact.distance;
+	}
+	PMSrc_TASContactBegin(false);
+	return kind;
+}
+
+// Recovery's normal can be synthesized; its trace distance/entity is unrelated.
+// Keep the mover's existing substitution, but never call that a real BSP plane.
+static void PMSrc_TASContactRecovery(trace_t *trace, const vec3_t normal)
+{
+	VectorCopy(normal, trace->plane.normal);
+	if (pms_tas_contact_observe) pms_tas_contact.kind = 3;
+}
+
+static void PMSrc_TASContactHit(const trace_t *trace)
+{
+	int kind;
+	if (!pms_tas_contact_observe || pms_tas_contact.kind == 3) return;
+	if (!isfinite(trace->plane.dist) || !isfinite(trace->plane.normal[0]) ||
+		!isfinite(trace->plane.normal[1]) || !isfinite(trace->plane.normal[2]) ||
+		!isfinite(trace->endpos[0]) || !isfinite(trace->endpos[1]) || !isfinite(trace->endpos[2]) ||
+		fabs(DotProduct(trace->plane.normal, trace->plane.normal) - 1) > 0.01f)
+	{
+		pms_tas_contact.kind = 3;
+		return;
+	}
+	kind = trace->entnum >= 0 && trace->entnum < pmove.numphysent &&
+		pmove.numphysent <= MAX_PHYSENTS ?
+		(pmove.physents[trace->entnum].info == 0 ? 1 : 2) : 3;
+	if (pms_tas_contact.kind)
+		if (kind != pms_tas_contact.kind ||
+			DotProduct(pms_tas_contact.normal, trace->plane.normal) < 0.99999f ||
+			fabs(pms_tas_contact.distance - trace->plane.dist) > 0.1f)
+			kind = 3;
+	pms_tas_contact.kind = kind;
+	VectorCopy(trace->plane.normal, pms_tas_contact.normal);
+	VectorCopy(trace->endpos, pms_tas_contact.point);
+	pms_tas_contact.distance = trace->plane.dist;
+}
+
 static vec3_t pms_forward, pms_right, pms_up;
 
 /* The STANDING hull, captured from the entity on entry.  The duck hull is
@@ -1184,7 +1251,7 @@ static int PMSrc_TryPlayerMoveCore (vec3_t firstdest, trace_t *firsttrace, qbool
 			   probe from an origin we invented, and a traversal launched from an
 			   invented position would be one the player never actually made. */
 			pm = PMSrc_TraceHull (fixed_origin, end);
-			VectorCopy (valid_plane, pm.plane.normal);
+			PMSrc_TASContactRecovery (&pm, valid_plane);
 		}
 		else
 			pm = PM_PlayerTracePortals (pmove.origin, end, MASK_PLAYERSOLID, &tookportal);
@@ -1426,6 +1493,7 @@ static int PMSrc_TryPlayerMoveCore (vec3_t firstdest, trace_t *firsttrace, qbool
 			float nz = fabs(pm.plane.normal[2]);
 			if (nz >= PMSRC_MIN_RAMP_NZ && nz <= standable)
 			{
+				PMSrc_TASContactHit(&pm);
 				pmove.rampcontact = 1;
 
 				/* Patch 137: the plane THIS tick clipped, unlatched.  The
@@ -1709,7 +1777,9 @@ static void PMSrc_StepMove (vec3_t vecDestination, trace_t *trace)
 	vec3_t vecUpPos;
 	trace_t t;
 	float flDownDist, flUpDist;
+	pms_tas_contact_t contactBefore, contactDown;
 
+	contactBefore = pms_tas_contact;
 	VectorCopy (vecDestination, vecEndPos);
 	VectorCopy (pmove.origin, vecPos);
 	VectorCopy (pmove.velocity, vecVel);
@@ -1729,7 +1799,10 @@ static void PMSrc_StepMove (vec3_t vecDestination, trace_t *trace)
 
 	VectorCopy (pmove.origin, vecDownPos);
 	VectorCopy (pmove.velocity, vecDownVel);
+	contactDown = pms_tas_contact;
 
+	/* Reset only annotation with the trial; movement policy is unchanged. */
+	pms_tas_contact = contactBefore;
 	/* Reset and try again, stepped up. */
 	VectorCopy (vecPos, pmove.origin);
 	VectorCopy (vecVel, pmove.velocity);
@@ -1776,6 +1849,7 @@ static void PMSrc_StepMove (vec3_t vecDestination, trace_t *trace)
 	{
 		VectorCopy (vecDownPos, pmove.origin);
 		VectorCopy (vecDownVel, pmove.velocity);
+		pms_tas_contact = contactDown;
 		return;
 	}
 
@@ -1794,6 +1868,7 @@ static void PMSrc_StepMove (vec3_t vecDestination, trace_t *trace)
 	{
 		VectorCopy (vecDownPos, pmove.origin);
 		VectorCopy (vecDownVel, pmove.velocity);
+		pms_tas_contact = contactDown;
 	}
 	else
 	{	/* keep the stepped position, but the flat move's Z velocity */
@@ -3277,7 +3352,8 @@ static qboolean PMSrc_BankGravityDefaultStart(vec3_t normal, qboolean groundjump
 	int i;
 	if (!pms_bankgravity_observe || pms_bankgravity_used ||
 		movevars.sourceversion < 11 || pmove.pm_type != PM_NORMAL ||
-		(pmove.onground && !groundjump) || pmove.waterlevel || pmove.waterjumptime ||
+		(pmove.onground && !groundjump) ||
+		(pmove.waterlevel != 0 && pmove.waterlevel != 1) || pmove.waterjumptime ||
 		pmove.waterjumpremaining ||
 		pms_haveportals || pms_anyslide || pms_slidetick || pms_momslide ||
 		!movevars.entgravity || movevars.entgravity == 1 ||
@@ -3301,8 +3377,7 @@ static qboolean PMSrc_BankGravityStartDefault(vec3_t normal)
 static qboolean PMSrc_BankGravityGroundStartCommon(vec3_t normal)
 {
 	if (!pmove.onground || !(pmove.cmd.buttons & BUTTON_JUMP) ||
-		movevars.ktjump ||
-		movevars.jumpzoffset ||
+		!isfinite(movevars.ktjump) ||
 		!isfinite(movevars.entgravity) || !isfinite(movevars.gravity) ||
 		!isfinite(movevars.jumpvelocity) || !isfinite(movevars.maxvelocity))
 		return false;
@@ -3320,8 +3395,8 @@ static qboolean PMSrc_BankGravityJumpStaminaDefault(void)
 
 static qboolean PMSrc_BankGravityGroundStartDefault(vec3_t normal)
 {
-	// P1145: stock crouch assigns Z; normalized postures share the existing add path.
-	if (movevars.normalizejump || movevars.jumpaddrise || pmove.ducked || pmove.ducking ||
+	// Stock ignores these options; nonfinite settings stay conservatively excluded.
+	if (movevars.normalizejump || !isfinite(movevars.jumpaddrise) || !isfinite(movevars.jumpzoffset) ||
 		!PMSrc_BankGravityJumpStaminaDefault())
 		return false;
 	return PMSrc_BankGravityGroundStartCommon(normal);
@@ -3330,8 +3405,10 @@ static qboolean PMSrc_BankGravityGroundStartDefault(vec3_t normal)
 static qboolean PMSrc_BankGravityGroundStartNormalized(vec3_t normal)
 {
 	if (!isfinite(movevars.normalizejump) || !movevars.normalizejump ||
-		!isfinite(movevars.jumpaddrise)) return false;
+		!isfinite(movevars.jumpaddrise) ||
+		!isfinite(movevars.jumpzoffset)) return false;
 	if (!PMSrc_BankGravityJumpStaminaDefault()) return false;
+	// P1299: native relocation is gravity-independent; observe its actual origin.
 	return PMSrc_BankGravityGroundStartCommon(normal);
 }
 
@@ -3346,7 +3423,11 @@ static qboolean PMSrc_BankGravityJumpDefault(vec3_t normal)
 		float inbound = normal[2] + (1.0f * movevars.gravity * 0.5f * pms_frametime);
 		if (inbound > 0) normal[2] -= inbound;
 	}
-	normal[2] += impulse;
+	// P1306: stock crouch/transition assigns; normalized jumps always add.
+	if (!movevars.normalizejump && (pmove.ducked || pmove.ducking))
+		normal[2] = impulse;
+	else
+		normal[2] += impulse;
 	if (PMSrc_StaminaEnabled())
 		normal[2] *= PMSrc_StaminaRatio();
 	if (!movevars.normalizejump)
@@ -3553,8 +3634,9 @@ static void PMSrc_FullWalkMove (void)
 		bankfinish_projected ? bankfinish_plane : NULL))
 		pms_bankgravity_used = true;
 	// Lazy: the usual late use needs no alternative geometry queries.
+	// P1310: shallow water still takes full-walk gravity, unlike swimming.
 	if (bankstart && bankairclear && !pms_bankgravity_used && !pmove.onground &&
-		!pmove.waterlevel && !pms_slidetick && !pms_portalcrossed &&
+		(pmove.waterlevel == 0 || pmove.waterlevel == 1) && !pms_slidetick && !pms_portalcrossed &&
 		VectorCompare(pmove.origin, bankstart_airend) &&
 		PMSrc_BankGravityAirChanged(bankstart_origin, bankstart_airend, bankstart_airvel, bankstart_default[2]))
 		pms_bankgravity_used = true;
@@ -3583,6 +3665,7 @@ static qboolean PMSrc_CheckStuck (void)
 	if (PM_TestPlayerPosition (pmove.origin, false))
 		return false;	/* not stuck */
 
+	if (pms_tas_contact_observe) pms_tas_contact.kind = 3;
 	VectorCopy (pmove.origin, base);
 
 	for (d = 0; d < countof(dists); d++)
@@ -4065,6 +4148,8 @@ static void PMSrc_Tick (void)
 	   without needing a timestamp anywhere. */
 	pmove.rampcontact = 0;
 	VectorClear (pmove.rampnormal);	/* Patch 137: re-derived below, like rampcontact */
+	if (pms_tas_contact_observe)
+		memset(&pms_tas_contact, 0, sizeof(pms_tas_contact));
 	pmove.rampoff += pms_frametime;
 	if (pmove.landticks < PMLIM_LANDMAX)
 		pmove.landticks++;	/* Patch 882: tickcount - m_iLandTick */
@@ -4420,6 +4505,139 @@ static void PMSrc_Check (const char *what, float got, float expect, float tol)
 	}
 }
 
+static void PMSrc_TASContactTests(void)
+{
+	trace_t trace, recovered;
+	vec3_t normal, point;
+	float distance;
+	int count = pmove.numphysent, world = pmove.physents[0].info;
+	int other = pmove.physents[1].info;
+	qboolean enabled = pms_tas_contact_observe;
+	pms_tas_contact_t saved = pms_tas_contact;
+
+	memset(&trace, 0, sizeof(trace));
+	trace.plane.normal[0] = 0.8660254f;
+	trace.plane.normal[2] = 0.5f;
+	trace.plane.dist = 32;
+	trace.endpos[0] = 12;
+	pmove.numphysent = 2;
+	pmove.physents[0].info = 0;
+	pmove.physents[1].info = 17;
+	PMSrc_TASContactBegin(false);
+	PMSrc_TASContactHit(&trace);
+	PMSrc_Check("P1344 disabled contact observer", PMSrc_TASContactEnd(normal, &distance, point), 0, 0);
+	PMSrc_TASContactBegin(true);
+	PMSrc_Check("P1344 no contact is not a ramp", PMSrc_TASContactEnd(normal, &distance, point), 0, 0);
+	PMSrc_TASContactBegin(true);
+	PMSrc_TASContactHit(&trace);
+	PMSrc_Check("P1344 actual world index0", PMSrc_TASContactEnd(normal, &distance, point), 1, 0);
+	PMSrc_Check("P1344 actual normal retained", normal[2], 0.5f, 0);
+	PMSrc_Check("P1344 actual plane retained", distance, 32, 0);
+	PMSrc_Check("P1344 actual trace point retained", point[0], 12, 0);
+	PMSrc_Check("P1344 end closes observation", PMSrc_TASContactEnd(normal, &distance, point), 0, 0);
+	PMSrc_Check("P1344 unarmed normal cleared", DotProduct(normal, normal), 0, 0);
+	PMSrc_Check("P1344 unarmed point cleared", DotProduct(point, point), 0, 0);
+	PMSrc_Check("P1344 unarmed plane cleared", distance, 0, 0);
+	trace.entnum = 1;
+	PMSrc_TASContactBegin(true);
+	PMSrc_TASContactHit(&trace);
+	PMSrc_Check("P1344 nonworld does not qualify", PMSrc_TASContactEnd(normal, &distance, point), 2, 0);
+	trace.entnum = 2;
+	PMSrc_TASContactBegin(true);
+	PMSrc_TASContactHit(&trace);
+	PMSrc_Check("P1344 invalid positive entity", PMSrc_TASContactEnd(normal, &distance, point), 3, 0);
+	trace.entnum = -1;
+	PMSrc_TASContactBegin(true);
+	PMSrc_TASContactHit(&trace);
+	PMSrc_Check("P1344 invalid negative entity", PMSrc_TASContactEnd(normal, &distance, point), 3, 0);
+	trace.entnum = 0;
+	PMSrc_TASContactBegin(true);
+	PMSrc_TASContactHit(&trace);
+	PMSrc_TASContactHit(&trace);
+	PMSrc_Check("P1344 same plane is stable", PMSrc_TASContactEnd(normal, &distance, point), 1, 0);
+	PMSrc_TASContactBegin(true);
+	PMSrc_TASContactHit(&trace);
+	trace.plane.dist = 33;
+	PMSrc_TASContactHit(&trace);
+	PMSrc_Check("P1344 two planes are ambiguous", PMSrc_TASContactEnd(normal, &distance, point), 3, 0);
+	trace.plane.dist = HUGE_VALF;
+	PMSrc_TASContactBegin(true);
+	PMSrc_TASContactHit(&trace);
+	PMSrc_Check("P1344 infinite plane refused", PMSrc_TASContactEnd(normal, &distance, point), 3, 0);
+	trace.plane.dist = 32;
+	VectorClear(trace.plane.normal);
+	PMSrc_TASContactBegin(true);
+	PMSrc_TASContactHit(&trace);
+	PMSrc_Check("P1344 invalid normal refused", PMSrc_TASContactEnd(normal, &distance, point), 3, 0);
+	// The old normal-only recovery trace looks valid without a witness.
+	// Exercise the production substitution/abstention, leaving trace bytes
+	// identical to the old mover's normal substitution.
+	VectorSet(trace.plane.normal, 0.8660254f, 0, 0.5f);
+	memcpy(&recovered, &trace, sizeof(trace));
+	VectorSet(normal, 0, 0.8660254f, 0.5f);
+	VectorCopy(normal, trace.plane.normal);
+	PMSrc_TASContactBegin(true);
+	PMSrc_TASContactHit(&trace);
+	PMSrc_Check("P1344 recovery normal-only control qualifies", PMSrc_TASContactEnd(normal, &distance, point), 1, 0);
+	PMSrc_TASContactBegin(true);
+	PMSrc_TASContactRecovery(&recovered, normal);
+	PMSrc_TASContactHit(&recovered);
+	PMSrc_Check("P1344 recovery witness refuses synthetic plane", PMSrc_TASContactEnd(normal, &distance, point), 3, 0);
+	PMSrc_Check("P1344 recovery movement trace unchanged", memcmp(&trace, &recovered, sizeof(trace)) == 0, 1, 0);
+	{
+		playermove_t *held = BZ_Malloc(sizeof(*held));
+		vec3_t control;
+		physent_t *floor;
+		qboolean stuck;
+		*held = pmove;
+		memset(&pmove, 0, sizeof(pmove));
+		pmove.skipent = -1;
+		pmove.pm_type = PM_NORMAL;
+		pmove.numphysent = 1;
+		VectorSet(pmove.player_mins, -16, -16, 0);
+		VectorSet(pmove.player_maxs, 16, 16, 62);
+		floor = &pmove.physents[0];
+		VectorSet(floor->mins, -128, -128, -100);
+		VectorSet(floor->maxs, 128, 128, -0.25f);
+		PMSrc_TASContactBegin(true);
+		PMSrc_CheckStuck();
+		PMSrc_TASContactHit(&trace);
+		PMSrc_Check("P1350 clear origin keeps world contact", PMSrc_TASContactEnd(normal, &distance, point), 1, 0);
+		VectorSet(pmove.origin, 0, 0, -0.5f);
+		PMSrc_Check("P1350 initial solid actually acts", PM_TestPlayerPosition(pmove.origin, false), 0, 0);
+		PMSrc_TASContactBegin(true);
+		// Compiled-out-witness control: the SAME real recovery still runs.
+		pms_tas_contact_observe = false;
+		stuck = PMSrc_CheckStuck();
+		pms_tas_contact_observe = true;
+		VectorCopy(pmove.origin, control);
+		PMSrc_Check("P1350 old unstuck physically acts", !stuck && control[2] > -0.5f && PM_TestPlayerPosition(control, false), 1, 0);
+		PMSrc_TASContactHit(&trace);
+		PMSrc_Check("P1350 old unstuck witness omission", PMSrc_TASContactEnd(normal, &distance, point), 1, 0);
+		VectorSet(pmove.origin, 0, 0, -0.5f);
+		PMSrc_TASContactBegin(true);
+		stuck = PMSrc_CheckStuck();
+		PMSrc_Check("P1350 observed unstuck physically acts", !stuck && PM_TestPlayerPosition(pmove.origin, false), 1, 0);
+		PMSrc_TASContactHit(&trace);
+		PMSrc_Check("P1350 unstuck cannot become world ramp", PMSrc_TASContactEnd(normal, &distance, point), 3, 0);
+		PMSrc_Check("P1350 unstuck body matches old path", VectorCompare(pmove.origin, control), 1, 0);
+		VectorSet(floor->mins, -1024, -1024, -1024);
+		VectorSet(floor->maxs, 1024, 1024, 1024);
+		VectorClear(pmove.origin);
+		PMSrc_TASContactBegin(true);
+		PMSrc_Check("P1350 unresolved stuck actually acts", PMSrc_CheckStuck(), 1, 0);
+		PMSrc_Check("P1350 unresolved stuck is unsupported", PMSrc_TASContactEnd(normal, &distance, point), 3, 0);
+		PMSrc_Check("P1350 unresolved stuck body unchanged", VectorCompare(pmove.origin, vec3_origin), 1, 0);
+		pmove = *held;
+		BZ_Free(held);
+	}
+	pmove.numphysent = count;
+	pmove.physents[0].info = world;
+	pmove.physents[1].info = other;
+	pms_tas_contact_observe = enabled;
+	pms_tas_contact = saved;
+}
+
 /*
   Drive one jump tick exactly as FullWalkMove sequences it, and return the
   velocity the MOVE is performed with -- the value AirMove would multiply by
@@ -4692,6 +4910,28 @@ static void PMSrc_TestBankStartGravity(void)
 	pmove.waterjumpremaining = 1;
 	PMSrc_Check("P1131 waterjump excluded", PMSrc_BankGravityStartDefault(normal), 0, 0);
 	pmove.waterjumpremaining = 0;
+	/* P1310: only the native dry/shallow full-walk domain; admission is not use. */
+	{
+		int level;
+		for (level = -1; level <= 4; ++level)
+		{
+			pmove.waterlevel = level;
+			PMSrc_BankGravityBegin(true);
+			Q_snprintfz(name, sizeof(name), "P1310 water domain %i admitted", level);
+			PMSrc_Check(name, PMSrc_BankGravityStartDefault(normal), level == 0 || level == 1, 0);
+			Q_snprintfz(name, sizeof(name), "P1310 water domain %i alone not use", level);
+			PMSrc_Check(name, PMSrc_BankGravityEnd(), 0, 0);
+		}
+		pmove.waterlevel = 1;
+		PMSrc_BankGravityBegin(true);
+		pmove.waterjumptime = 1;
+		PMSrc_Check("P1310 shallow legacy waterjump excluded", PMSrc_BankGravityStartDefault(normal), 0, 0);
+		pmove.waterjumptime = 0;
+		pmove.waterjumpremaining = 1;
+		PMSrc_Check("P1310 shallow waterjump excluded", PMSrc_BankGravityStartDefault(normal), 0, 0);
+		pmove.waterjumpremaining = 0;
+		pmove.waterlevel = 0;
+	}
 	pmove.cmd.buttons = BUTTON_JUMP;
 	VectorClear(pmove.velocity);
 	VectorCopy(pmove.velocity, velocity);
@@ -4913,10 +5153,27 @@ static void PMSrc_TestBankStartGravity(void)
 				PMSrc_Check("P1139 normalized jump excluded", PMSrc_BankGravityGroundStartDefault(normal), 0, 0);
 				movevars.normalizejump = 0;
 				movevars.jumpaddrise = 1;
-				PMSrc_Check("P1139 alternate rise excluded", PMSrc_BankGravityGroundStartDefault(normal), 0, 0);
+				PMSrc_Check("P1305 ignored stock rise admitted", PMSrc_BankGravityGroundStartDefault(normal), 1, 0);
 				movevars.jumpaddrise = 0;
+				// Source ignores the generic KTeams blend; finite context is enough.
 				movevars.ktjump = 1;
-				PMSrc_Check("P1139 KT jump excluded", PMSrc_BankGravityGroundStartDefault(normal), 0, 0);
+				PMSrc_Check("bank gravity ignored KT setting admitted", PMSrc_BankGravityGroundStartDefault(normal), 1, 0);
+				{
+					const float finitekt[] = {-.5f, .25f, 2, 3500};
+					int k;
+					for (k = 0; k < 4; ++k)
+					{
+						movevars.ktjump = finitekt[k];
+						Q_snprintfz(name, sizeof(name), "bank gravity ignored finite KT %i admitted", k);
+						PMSrc_Check(name, PMSrc_BankGravityGroundStartDefault(normal), 1, 0);
+					}
+				}
+				movevars.ktjump = NAN;
+				PMSrc_Check("bank gravity NaN KT refused", PMSrc_BankGravityGroundStartDefault(normal), 0, 0);
+				movevars.ktjump = INFINITY;
+				PMSrc_Check("bank gravity infinite KT refused", PMSrc_BankGravityGroundStartDefault(normal), 0, 0);
+				movevars.ktjump = -INFINITY;
+				PMSrc_Check("bank gravity negative infinite KT refused", PMSrc_BankGravityGroundStartDefault(normal), 0, 0);
 				movevars.ktjump = 0;
 				movevars.stamina = 1;
 				pmove.stamina = 40;
@@ -4924,13 +5181,13 @@ static void PMSrc_TestBankStartGravity(void)
 				pmove.stamina = 0;
 				movevars.stamina = 0;
 				movevars.jumpzoffset = 1;
-				PMSrc_Check("P1139 offset jump excluded", PMSrc_BankGravityGroundStartDefault(normal), 0, 0);
+				PMSrc_Check("P1305 ignored stock offset admitted", PMSrc_BankGravityGroundStartDefault(normal), 1, 0);
 				movevars.jumpzoffset = 0;
 				pmove.ducked = true;
-				PMSrc_Check("P1139 ducked jump excluded", PMSrc_BankGravityGroundStartDefault(normal), 0, 0);
+				PMSrc_Check("P1306 stock ducked jump admitted", PMSrc_BankGravityGroundStartDefault(normal), 1, 0);
 				pmove.ducked = false;
 				pmove.ducking = true;
-				PMSrc_Check("P1139 ducking jump excluded", PMSrc_BankGravityGroundStartDefault(normal), 0, 0);
+				PMSrc_Check("P1306 stock ducking jump admitted", PMSrc_BankGravityGroundStartDefault(normal), 1, 0);
 				pmove.ducking = false;
 				pmove.basevelocity[2] = INFINITY;
 				PMSrc_Check("P1139 nonfinite ground carrier excluded", PMSrc_BankGravityGroundStartDefault(normal), 0, 0);
@@ -5131,7 +5388,7 @@ static void PMSrc_TestBankStartGravity(void)
 				movevars.jumpaddrise = 1;
 				movevars.normalizejump = 0;
 				PMSrc_Check("P1143 stock normalized entry excluded", PMSrc_BankGravityGroundStartNormalized(normal), 0, 0);
-				PMSrc_Check("P1143 stock rise entry excluded", PMSrc_BankGravityGroundStartDefault(normal), 0, 0);
+				PMSrc_Check("P1305 stock ignored rise entry admitted", PMSrc_BankGravityGroundStartDefault(normal), 1, 0);
 				movevars.normalizejump = 1;
 				movevars.gravity = 800;
 				movevars.jumpvelocity = 268.3281572999747f;
@@ -5331,8 +5588,8 @@ static void PMSrc_TestBankStartGravity(void)
 						Q_snprintfz(name, sizeof(name), "P1148 recovered stamina %i/%i normalized admitted", mode, posture);
 						PMSrc_Check(name, PMSrc_BankGravityGroundStartNormalized(normal), 1, 0);
 						movevars.normalizejump = movevars.jumpaddrise = 0;
-						Q_snprintfz(name, sizeof(name), "P1148 recovered stamina %i/%i stock posture bounded", mode, posture);
-						PMSrc_Check(name, PMSrc_BankGravityGroundStartDefault(normal), posture == 0, 0);
+						Q_snprintfz(name, sizeof(name), "P1306 recovered stamina %i/%i stock posture admitted", mode, posture);
+						PMSrc_Check(name, PMSrc_BankGravityGroundStartDefault(normal), 1, 0);
 						movevars.normalizejump = 1;
 						movevars.jumpaddrise = mode;
 						pmove.stamina = 40;
@@ -5455,12 +5712,12 @@ static void PMSrc_TestBankStartGravity(void)
 							*finite_values[bad / 2] = saved_bad;
 						}
 						pmove.ducked = true;
-						Q_snprintfz(name, sizeof(name), "P1152 stock stamina %i ducked excluded", poolcase);
-						PMSrc_Check(name, PMSrc_BankGravityGroundStartDefault(normal), 0, 0);
+						Q_snprintfz(name, sizeof(name), "P1306 stock stamina %i ducked admitted", poolcase);
+						PMSrc_Check(name, PMSrc_BankGravityGroundStartDefault(normal), 1, 0);
 						pmove.ducked = false;
 						pmove.ducking = true;
-						Q_snprintfz(name, sizeof(name), "P1152 stock stamina %i ducking excluded", poolcase);
-						PMSrc_Check(name, PMSrc_BankGravityGroundStartDefault(normal), 0, 0);
+						Q_snprintfz(name, sizeof(name), "P1306 stock stamina %i ducking admitted", poolcase);
+						PMSrc_Check(name, PMSrc_BankGravityGroundStartDefault(normal), 1, 0);
 						pmove.ducking = false;
 					}
 					PMSrc_FullWalkMove();
@@ -5641,6 +5898,94 @@ static void PMSrc_TestBankStartGravity(void)
 				}
 			}
 		}
+		/* P1299: offset admission stays separate from actual accepted use. */
+		memset(&pmove, 0, sizeof(pmove));
+		pmove.pm_type = PM_NORMAL;
+		pmove.onground = true;
+		pmove.cmd.buttons = BUTTON_JUMP;
+		movevars.entgravity = 1.5f;
+		movevars.gravity = 800;
+		movevars.jumpvelocity = 301.993f;
+		movevars.maxvelocity = 3500;
+		movevars.stamina = movevars.jumpaddrise = 0;
+		movevars.ktjump = 0;
+		for (i = 0; i < 8; ++i)
+		{
+			movevars.normalizejump = 1;
+			movevars.jumpzoffset = i == 0 ? 0 : i == 1 ? 1.5f : i == 2 ? 5000 :
+				i == 3 ? -.125f : i == 4 ? NAN : i == 5 ? INFINITY : i == 6 ? -INFINITY : 1.5f;
+			if (i == 7) movevars.normalizejump = 0;
+			PMSrc_BankGravityBegin(true);
+			Q_snprintfz(name, sizeof(name), "P1305 offset %i normalized admission", i);
+			PMSrc_Check(name, PMSrc_BankGravityGroundStartNormalized(normal), i < 4, 0);
+			Q_snprintfz(name, sizeof(name), "P1305 offset %i stock admission", i);
+			PMSrc_Check(name, PMSrc_BankGravityGroundStartDefault(normal), i == 7, 0);
+			Q_snprintfz(name, sizeof(name), "P1299 offset %i admission alone is not use", i);
+			PMSrc_Check(name, PMSrc_BankGravityEnd(), 0, 0);
+		}
+		/* P1305: ignored finite controls do not defeat an otherwise valid model. */
+		{
+			static const float settings[] = {-5000, -.125f, 0, 1.5f, NAN, INFINITY, -INFINITY};
+			int option;
+			movevars.normalizejump = 0;
+			for (option = 0; option < 2; ++option)
+			{
+				for (i = 0; i < countof(settings); ++i)
+				{
+					movevars.jumpaddrise = option ? settings[i] : 0;
+					movevars.jumpzoffset = option ? 0 : settings[i];
+					PMSrc_BankGravityBegin(true);
+					Q_snprintfz(name, sizeof(name), "P1305 stock ignored option %i/%i", option, i);
+					PMSrc_Check(name, PMSrc_BankGravityGroundStartDefault(normal), i < 4, 0);
+					Q_snprintfz(name, sizeof(name), "P1305 stock option %i/%i is not use", option, i);
+					PMSrc_Check(name, PMSrc_BankGravityEnd(), 0, 0);
+				}
+			}
+			movevars.jumpaddrise = movevars.jumpzoffset = 1.5f;
+			pmove.ducked = true;
+			PMSrc_BankGravityBegin(true);
+			PMSrc_Check("P1306 ignored stock duck admitted", PMSrc_BankGravityGroundStartDefault(normal), 1, 0);
+			pmove.ducked = false;
+			pmove.ducking = true;
+			PMSrc_Check("P1306 ignored stock transition admitted", PMSrc_BankGravityGroundStartDefault(normal), 1, 0);
+			PMSrc_Check("P1306 posture admission is not use", PMSrc_BankGravityEnd(), 0, 0);
+		}
+		/* P1306: pin stock assignment separately from both normalized add modes. */
+		{
+			int mode, posture, fatigue;
+			float scaled, wanted;
+			movevars.gravity = 800;
+			movevars.jumpvelocity = 280;
+			movevars.maxvelocity = 3500;
+			movevars.staminarecovery = 20;
+			pms_frametime = .015625f;
+			for (mode = 0; mode < 3; ++mode)
+			{
+				movevars.normalizejump = mode != 0;
+				movevars.jumpaddrise = mode == 2;
+				for (posture = 0; posture < 3; ++posture)
+				{
+					pmove.ducked = posture == 1;
+					pmove.ducking = posture == 2;
+					for (fatigue = 0; fatigue < 2; ++fatigue)
+					{
+						movevars.stamina = fatigue;
+						pmove.stamina = 2500;
+						scaled = fatigue ? .5f : 1;
+						wanted = mode == 1 ? 273.75f * scaled :
+							(mode == 2 ? 380 * scaled : (posture ? 280 : 380) * scaled - 6.25f);
+						VectorSet(normal, 0, 0, 100);
+						PMSrc_BankGravityBegin(true);
+						Q_snprintfz(name, sizeof(name), "P1306 jump model %i/%i/%i acts", mode, posture, fatigue);
+						PMSrc_Check(name, PMSrc_BankGravityJumpDefault(normal), 1, 0);
+						Q_snprintfz(name, sizeof(name), "P1306 jump model %i/%i/%i result", mode, posture, fatigue);
+						PMSrc_Check(name, normal[2], wanted, 0);
+						Q_snprintfz(name, sizeof(name), "P1306 model %i/%i/%i is not use", mode, posture, fatigue);
+						PMSrc_Check(name, PMSrc_BankGravityEnd(), 0, 0);
+					}
+				}
+			}
+		}
 		pms_forwardmove = forwardmove;
 		pms_sidemove = sidemove;
 	}
@@ -5694,6 +6039,8 @@ static void PMSrc_SelfTest_f (void)
 		movevars.physicsmode, movevars.accelerate, movevars.airaccelerate,
 		movevars.friction, movevars.stopspeed, movevars.gravity,
 		movevars.jumpvelocity, movevars.maxairspeed);
+
+	PMSrc_TASContactTests();
 
 	/* The Momentum-surf reference set the checks below are written against.
 	   Deliberately NOT the running config: movevars are zero until a server

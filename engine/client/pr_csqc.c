@@ -36,6 +36,7 @@ Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
 
 #include "pr_common.h"
 #include "snd_vis.h"
+#include "com_bih.h"
 
 extern usercmd_t cl_pendingcmd[MAX_SPLITS];
 extern cvar_t sv_demo_write_csqc;
@@ -1487,15 +1488,31 @@ void QCBUILTIN PF_cs_addwaterripple(pubprogfuncs_t *prinst, struct globalvars_s 
 	R_AddWaterRipple(org, amplitude, size, speed, lifetime);
 }
 
+//P1345: loaded geometry only; never late-load a decorative CSQC model to classify it.
+static qboolean CSQC_OverviewBrush(csqcedict_t *ent)
+{
+	int index = ent->v->modelindex;
+	model_t *model = NULL;
+	if (index > 0 && index < MAX_PRECACHE_MODELS)
+		model = cl.model_precache[index];
+	else if (index < 0 && index > -MAX_CSMODELS)
+		model = cl.model_csqcprecache[-index];
+	return model && model->loadstate == MLS_LOADED && model->type == mod_brush;
+}
+
 static void QCBUILTIN PF_R_AddEntityMask(pubprogfuncs_t *prinst, struct globalvars_s *pr_globals)
 {
 	int mask = G_FLOAT(OFS_PARM0);
+	qboolean worldonly = Surf_WorldOnlyView(csqc_playerview);
 	csqcedict_t *ent;
 	entity_t rent;
 	int e;
 	int maxe;
 
 	int oldself = *csqcg.self;
+	r_refdef.flags &= ~RDF_WORLDONLY;
+	if (worldonly)
+		r_refdef.flags |= RDF_WORLDONLY;
 	RSpeedMark();
 	prinst->ProfileExclude(prinst, true);	//FTESurf Patch 800: "entity setup" is World's; predraw QC still counts
 
@@ -1509,7 +1526,8 @@ static void QCBUILTIN PF_R_AddEntityMask(pubprogfuncs_t *prinst, struct globalva
 			else
 #endif
 			{
-				CL_LinkPlayers ();
+				if (!worldonly)
+					CL_LinkPlayers ();
 				CL_LinkPacketEntities ();
 			}
 		}
@@ -1530,7 +1548,9 @@ static void QCBUILTIN PF_R_AddEntityMask(pubprogfuncs_t *prinst, struct globalva
 				if (ED_ISFREE(ent))
 					continue;
 			}
-			if (ent->xv->predraw)
+			if (worldonly && !CSQC_OverviewBrush(ent))
+				continue;
+			if (!worldonly && ent->xv->predraw)
 			{
 				*csqcg.self = EDICT_TO_PROG(prinst, (void*)ent);
 				PR_ExecuteProgram(prinst, ent->xv->predraw);
@@ -1555,10 +1575,12 @@ static void QCBUILTIN PF_R_AddEntityMask(pubprogfuncs_t *prinst, struct globalva
 			ent = (void*)EDICT_NUM_PB(prinst, e);
 			if (ED_ISFREE(ent))
 				continue;
+			if (worldonly && !CSQC_OverviewBrush(ent))
+				continue;
 
 			if ((int)ent->xv->drawmask & mask)
 			{
-				if (ent->xv->predraw)
+				if (!worldonly && ent->xv->predraw)
 				{
 					*csqcg.self = EDICT_TO_PROG(prinst, (void*)ent);
 					PR_ExecuteProgram(prinst, ent->xv->predraw);
@@ -1578,11 +1600,11 @@ static void QCBUILTIN PF_R_AddEntityMask(pubprogfuncs_t *prinst, struct globalva
 
 	if (cl.worldmodel)
 	{
-		if (mask & MASK_STDVIEWMODEL)
+		if (!worldonly && (mask & MASK_STDVIEWMODEL))
 		{
 			CL_LinkViewModel ();
 		}
-		if (mask & MASK_DELTA)
+		if (!worldonly && (mask & MASK_DELTA))
 		{
 			CL_LinkProjectiles ();
 			CL_UpdateTEnts ();
@@ -2319,6 +2341,9 @@ nogameaccess:
 	case VF_VIEWMODEL_AFOV:
 		*r = r_refdef.viewmodel_afov;
 		break;
+	case VF_WORLDONLY:
+		*r = Surf_WorldOnlyView(csqc_playerview);
+		break;
 
 	case VF_SKYROOM_CAMERA:
 		if (r_refdef.skyroom_enabled)
@@ -2869,6 +2894,8 @@ void R_DrawNameTags(void);
 static void QCBUILTIN PF_R_RenderScene(pubprogfuncs_t *prinst, struct globalvars_s *pr_globals)
 {
 	qboolean scissored;
+	qboolean worldonly = Surf_WorldOnlyView(csqc_playerview);
+	static qboolean lastworldonly;
 	//FTESurf Patch 1230: not screenshot_mega's target, which is the screen view at another size
 	qboolean rtview = *r_refdef.rt_destcolour[0].texname && strcmp(r_refdef.rt_destcolour[0].texname, "megascreeny");
 	vrect_t oldvrect = r_refdef.vrect;
@@ -2893,6 +2920,17 @@ static void QCBUILTIN PF_R_RenderScene(pubprogfuncs_t *prinst, struct globalvars
 
 	R2D_ImageColours(1,1,1,1);	//apparently does matter.
 
+	r_refdef.flags &= ~RDF_WORLDONLY;
+	if (worldonly)
+		r_refdef.flags |= RDF_WORLDONLY;
+	if (!r_refdef.recurse && (!*r_refdef.rt_destcolour[0].texname || !strcmp(r_refdef.rt_destcolour[0].texname, "megascreeny")))
+	{
+		//P1345: discard hidden transient state at either edge, never replay it on reentry.
+		if (worldonly != lastworldonly && cl.splitclients <= 1 && pe)
+			P_ClearParticles();
+		lastworldonly = worldonly;
+	}
+	//P1348: suppressed scenes must still retire the previous light epoch.
 	if (cl.worldmodel)
 		R_PushDlights ();
 
@@ -2904,7 +2942,8 @@ static void QCBUILTIN PF_R_RenderScene(pubprogfuncs_t *prinst, struct globalvars
 	prinst->ProfileExclude(prinst, true);	//FTESurf Patch 800: the 3D view has its own r_budget groups
 	R_RenderView();
 	prinst->ProfileExclude(prinst, false);
-	R2D_PolyBlend ();
+	if (!worldonly)
+		R2D_PolyBlend ();
 
 	if (r_refdef.grect.x || r_refdef.grect.y || r_refdef.grect.width != vid.fbvwidth || r_refdef.grect.height != vid.fbvheight)
 	{
@@ -2924,7 +2963,8 @@ static void QCBUILTIN PF_R_RenderScene(pubprogfuncs_t *prinst, struct globalvars
 
 	if (!vrui.enabled)	//when we're using the vrui, this stuff needs to be part of the scene, drawn seperately for each eye
 	{
-		R_DrawNameTags();
+		if (!worldonly)
+			R_DrawNameTags();
 #ifdef RTLIGHTS
 		R_EditLights_DrawInfo();
 #endif
@@ -3285,6 +3325,106 @@ static void QCBUILTIN PF_cs_pointcontentsmask(pubprogfuncs_t *prinst, struct glo
 	else
 		cont = World_PointContentsAllBSPs(w, v);
 	G_UINT(OFS_RETURN) = cont;
+}
+
+#if defined(Q2BSPS) || defined(Q3BSPS)
+typedef struct
+{
+	model_t *world;
+	int servercount, frame, count;
+	vec3_t point, normal;
+	float distance;
+	vecV_t verts[64];
+} csqcbrushface_t;
+
+static void CSQC_BrushFace(void *ctx, const q2cbrush_t *brush)
+{
+	csqcbrushface_t *face = ctx;
+	vec4_t planes[512];
+	vecV_t verts[64];
+	vec3_t p, edge, side, delta;
+	float d, v, tolerance;
+	qboolean positive, negative;
+	int i, j;
+	size_t n;
+
+	if (!(brush->contents & MASK_PLAYERSOLID) || brush->numsides < 4 || brush->numsides > countof(planes))
+		return;
+	for (i = 0; i < brush->numsides; i++)
+	{
+		VectorCopy(brush->brushside[i].plane->normal, planes[i]);
+		planes[i][3] = brush->brushside[i].plane->dist;
+	}
+	for (i = 0; i < brush->numsides; i++)
+	{
+		if (DotProduct(face->normal, planes[i]) < 0.9999f)
+			continue;
+		d = DotProduct(face->point, planes[i]) - planes[i][3];
+		if (fabs(d) > face->distance)
+			continue;
+		n = Fragment_ClipPlaneToBrush(verts, countof(verts), planes, sizeof(planes[0]), brush->numsides, planes[i]);
+		if (n < 3)
+			continue; // supporting bevels have no winding
+		VectorMA(face->point, -d, planes[i], p);
+		positive = negative = false;
+		for (j = 0; j < n; j++)
+		{
+			VectorSubtract(verts[(j+1)%n], verts[j], edge);
+			CrossProduct(edge, planes[i], side);
+			VectorSubtract(p, verts[j], delta);
+			v = DotProduct(delta, side);
+			tolerance = 0.01f * VectorLength(edge);
+			positive |= v > tolerance;
+			negative |= v < -tolerance;
+		}
+		if (positive && negative)
+			continue;
+		face->distance = fabs(d);
+		face->count = (int)n;
+		memcpy(face->verts, verts, n * sizeof(*verts));
+	}
+}
+#endif
+
+// World collision-brush winding at an actual trace hit. Index -1 returns [count,0,0].
+// This uses the same brush-plane cutter as surf_view; no render surface or ABI alias.
+static void QCBUILTIN PF_cs_getworldbrushfacepoint(pubprogfuncs_t *prinst, struct globalvars_s *pr_globals)
+{
+	VectorClear(G_VECTOR(OFS_RETURN));
+#if defined(Q2BSPS) || defined(Q3BSPS)
+	world_t *w = prinst->parms->user;
+	static csqcbrushface_t face;
+	vec3_t mins, maxs, normal;
+	const float *point = G_VECTOR(OFS_PARM0), *nrm = G_VECTOR(OFS_PARM1);
+	float vertex = G_FLOAT(OFS_PARM2);
+	int i;
+
+	if (!w->worldmodel || w->worldmodel->loadstate != MLS_LOADED || !isfinite(vertex))
+		return;
+	for (i = 0; i < 3; i++)
+		if (!isfinite(point[i]) || !isfinite(nrm[i]))
+			return;
+	VectorCopy(nrm, normal);
+	if (VectorNormalize(normal) < 0.5f)
+		return;
+	if (face.world != w->worldmodel || face.servercount != cl.servercount || face.frame != host_framecount
+		|| !VectorCompare(face.point, point) || !VectorCompare(face.normal, normal))
+	{
+		face.world = w->worldmodel;
+		face.servercount = cl.servercount;
+		face.frame = host_framecount;
+		VectorCopy(point, face.point);
+		VectorCopy(normal, face.normal);
+		face.count = 0;
+		face.distance = 0.5f; // includes the native trace's 1/32-unit surface bias
+		for (i = 0; i < 3; i++) { mins[i] = point[i]-2; maxs[i] = point[i]+2; }
+		BIH_EnumBrushes(w->worldmodel, mins, maxs, CSQC_BrushFace, &face);
+	}
+	if (vertex == -1)
+		G_VECTOR(OFS_RETURN)[0] = face.count;
+	else if (vertex >= 0 && vertex < face.count && vertex == floor(vertex))
+		VectorCopy(face.verts[(int)vertex], G_VECTOR(OFS_RETURN));
+#endif
 }
 
 static model_t *csqc_setmodel(pubprogfuncs_t *prinst, csqcedict_t *ent, int modelindex)
@@ -7474,6 +7614,7 @@ static struct {
 	{"getsurfacepoint",			PF_getsurfacepoint,					435},		// #435 vector(entity e, float s, float n) getsurfacepoint (DP_QC_GETSURFACE)
 	{"getsurfacenormal",		PF_getsurfacenormal,				436},		// #436 vector(entity e, float s) getsurfacenormal (DP_QC_GETSURFACE)
 	{"getsurfacetexture",		PF_getsurfacetexture,				437},			// #437 string(entity e, float s) getsurfacetexture (DP_QC_GETSURFACE)
+	{"getworldbrushfacepoint", PF_cs_getworldbrushfacepoint, 0},
 	{"getsurfacenearpoint",		PF_getsurfacenearpoint,				438},		// #438 float(entity e, vector p) getsurfacenearpoint (DP_QC_GETSURFACE)
 	{"getsurfaceclippedpoint",	PF_getsurfaceclippedpoint,			439},			// #439 vector(entity e, float s, vector p) getsurfaceclippedpoint (DP_QC_GETSURFACE)
 
@@ -8865,6 +9006,11 @@ void CSQC_WorldLoaded(void)
 
 void CSQC_CoreDump(void)
 {
+	if (Cmd_IsInsecure())
+	{
+		Con_Printf("%s is not permitted from untrusted commands\n", Cmd_Argv(0));
+		return;
+	}
 	if (!csqcprogs)
 	{
 		Con_Printf("Can't core dump, you need to be running the CSQC progs first.");

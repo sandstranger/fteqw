@@ -43,6 +43,10 @@ int		d_lightstylevalue[MAX_NET_LIGHTSTYLES];	// 8.8 fraction of base light value
   Bumped here on any change, and directly by Surf_NewMap on map load.*/
 unsigned int r_modellight_seq = 1;	//never 0: a zeroed cache entry must never validate
 
+static int R_LightStyleColourKey(const vec3_t c)
+{	//compacted colours, compared against each surface's cached_colour
+	return (int)(c[0]*0x400) ^ (int)(c[1]*0x100000) ^ (int)(c[2]*0x40000000);
+}
 void R_BumpLightstyles(unsigned int maxstyle)
 {
 	int style = cl_max_lightstyles;
@@ -50,7 +54,12 @@ void R_BumpLightstyles(unsigned int maxstyle)
 	{
 		Z_ReallocElements((void**)&cl_lightstyle, &cl_max_lightstyles, maxstyle+1, sizeof(*cl_lightstyle));
 		for (; style < cl_max_lightstyles; style++)
+		{
 			VectorSet(cl_lightstyle[style].colours, 1,1,1);
+			//FTESurf Patch 1284: and their key. Left 0, every lightmap built before the server's lightstyle(0) was
+			//rebuilt, unchanged, the first time it was drawn (surf_monolith: 2,548 surfaces in one frame, 34 ms).
+			cl_lightstyle[style].colourkey = R_LightStyleColourKey(cl_lightstyle[style].colours);
+		}
 	}
 }
 void R_UpdateLightStyle(unsigned int style, const char *stylestring, float r, float g, float b)
@@ -72,7 +81,7 @@ void R_UpdateLightStyle(unsigned int style, const char *stylestring, float r, fl
 	}
 	else
 		VectorSet(cl_lightstyle[style].colours, r,g,b);
-	cl_lightstyle[style].colourkey = (int)(cl_lightstyle[style].colours[0]*0x400) ^ (int)(cl_lightstyle[style].colours[1]*0x100000) ^ (int)(cl_lightstyle[style].colours[2]*0x40000000);
+	cl_lightstyle[style].colourkey = R_LightStyleColourKey(cl_lightstyle[style].colours);
 }
 
 void Sh_CalcPointLight(vec3_t point, vec3_t light);
@@ -217,7 +226,7 @@ void R_AnimateLight (void)
 			if (r_fullbright.value)
 				cl_lightstyle[j].colourkey = 0xff;
 			else
-				cl_lightstyle[j].colourkey = (int)(cl_lightstyle[j].colours[0]*0x400) ^ (int)(cl_lightstyle[j].colours[1]*0x100000) ^ (int)(cl_lightstyle[j].colours[2]*0x40000000);
+				cl_lightstyle[j].colourkey = R_LightStyleColourKey(cl_lightstyle[j].colours);
 		}
 	}
 
@@ -245,7 +254,8 @@ void R_AnimateLight (void)
 			//since the plugin owns them, so a hud_gfx change relights models without a reload.
 			//Looked up every frame: a gamedir change frees plugin-created cvars (Cvar_GamedirChange).
 			static const char *plugcvars[] = {"hl2_lt_scale", "hl2_lt_srgb_mag", "hl2_lt_min", "hl2_lt_face",
-				"hl2_lt_dirsign", "hl2_lt_fold", "hl2_lt_worldlight"};
+				"hl2_lt_dirsign", "hl2_lt_fold", "hl2_lt_worldlight",
+				"hl2_lt_occlusion", "hl2_lt_blend", "hl2_lt_illumpos", "hl2_cubelight", "hl2_lt_vcache"};	//FTESurf Patch 1289
 			size_t k;
 			for (k = 0; k < countof(plugcvars); k++)
 			{
@@ -593,7 +603,12 @@ void R_RenderDlights (void)
 
 					//FIXME: in terms of performance, mixing reads+draws is BAD BAD BAD. SERIOUSLY BAD
 					//it would be an improvement to calculate all of these at once.
-					qglReadPixels(out[0], out[1], 1, 1, GL_DEPTH_COMPONENT, GL_FLOAT, &depth);
+					{	//FTESurf Patch 1260: a multisampled scene is read through its resolve target
+						qboolean msread = GLBE_SceneMSAA_ReadBegin(out[0], out[1], 1, 1, true);
+						qglReadPixels(out[0], out[1], 1, 1, GL_DEPTH_COMPONENT, GL_FLOAT, &depth);
+						if (msread)
+							GLBE_SceneMSAA_ReadEnd();
+					}
 					if (depth < out[2])
 						continue;
 					break;
@@ -836,6 +851,10 @@ void R_PushDlights (void)
 
 	r_dlightframecount++;	// because the count hasn't
 											//  advanced yet for this frame
+
+	//P1348: current scene policy, without overwriting cache/realtime lightmap eligibility.
+	if (r_refdef.flags & RDF_WORLDONLY)
+		return;
 
 #ifdef RTLIGHTS
 	/*if we're doing full rtlighting only, then don't bother calculating old-style dlights as they won't be visible anyway*/
@@ -1572,6 +1591,16 @@ static void R_SaveRTLights_f(void)
 	char displayname[MAX_OSPATH];
 	vec3_t ang;
 	int ver = 0;
+	if (Cmd_IsInsecure())
+	{
+		Con_Printf("%s is not permitted from untrusted commands\n", Cmd_Argv(0));
+		return;
+	}
+	if (!cl.worldmodel)
+	{
+		Con_Printf("No world loaded\n");
+		return;
+	}
 	COM_StripExtension(cl.worldmodel->name, fname, sizeof(fname));
 	strncat(fname, ".rtlights", MAX_QPATH-1);
 

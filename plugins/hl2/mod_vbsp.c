@@ -55,6 +55,8 @@ Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
 static plugfsfuncs_t		*filefuncs;
 static plugmodfuncs_t		*modfuncs;
 static plugthreadfuncs_t	*threadfuncs;
+static plugloadingfuncs_t	*loadingfuncs;	//FTESurf Patch 1259: NULL before engine 1259 and on servers
+#define VBSP_LoadingPump() do { if (loadingfuncs) loadingfuncs->Pump(); } while (0)
 
 #define Q_strncpyz Q_strlcpy
 float VectorNormalize2(const vec3_t in,vec3_t out) {float l = sqrt(DotProduct(in,in)); if (l) l = 1.0/l; VectorScale(in,l,out); return l;}
@@ -92,11 +94,13 @@ static cvar_t *hl2_novis;
 static cvar_t *hl2_clipflags;	//FTESurf Patch 831
 static cvar_t *hl2_visdebug;	//Opt-in area/leaf-walk statistics, not visibility behavior.
 static cvar_t *hl2_pvscache;	//FTESurf Patch 273: memoise the headnode descent
+static cvar_t *hl2_pvsmemo;		//FTESurf Patch 1261: keep each level's prop and displacement PVS verdicts
 static cvar_t *hl2_displacement_scale;
 static cvar_t *hl2_favour_ldr;
 static cvar_t *hl2_lumpretire;	//FTESurf Patch 298
 static cvar_t *hl2_lightmap_repack;	//FTESurf Patch 281: see VBSP_RepackLighting
 static cvar_t *hl2_bumpstride;	//FTESurf Patch 268 D1: tag surfaces with their per-style luxel-set stride, see VBSP_ProbeLightmapStride
+static cvar_t *hl2_rnm;	//FTESurf Patch 1264: bumped faces lit by their basis maps, see VBSP_BuildRNM
 static cvar_t *map_noareas;
 static cvar_t *map_autoopenportals;
 static cvar_t *hl2_areaportals;		//FTESurf Build 8
@@ -467,6 +471,12 @@ typedef struct vbspinfo_s
 		qbyte *vis;
 		pvsbuffer_t visbuf;
 		int viewcluster[2];
+		//FTESurf Patch 1261 (VBSP_PVSMemo): the static props' then the displacements' PVS/area answers against
+		//this vis, 0 unknown or 1 + vbsp_pvs_why, while the view's vis, clusters, area, area connections
+		//(floodvalid) and map_noareas are the ones they were taken for
+		qbyte *memo;
+		const qbyte *memovis;
+		int memocluster[2], memoarea, memoflood, memonoareas;
 	} vcache[R_MAX_RECURSE];
 
 	/*
@@ -615,6 +625,9 @@ typedef struct vbspinfo_s
 	//file-scope static that the next caller overwrites (:6281).
 	pvsbuffer_t	wl_pvs;
 	int			wl_pvscluster;	//which cluster wl_pvs currently holds, -2 = none
+	struct vlvc_s	*lvc;		//FTESurf Patch 1283: remembered light visibility (VBSP_LightCacheCube)
+	double		lvc_framespent;	//FTESurf Patch 1283: seconds of its light traces in this view (VBSP_PrepareFrame zeroes it)
+	qboolean	wl_exact;	//FTESurf Patch 1283: set round the static-prop solve and the census; they trace every light
 
 	size_t numdisplacements;
 	dispinfo_t *displacements;
@@ -4575,6 +4588,118 @@ static void VBSP_ProbeLightmapStride (model_t *mod)
 }
 #endif
 #ifdef HAVE_CLIENT
+/*
+FTESurf Patch 1264: Source's radiosity normal mapping (lightmappedgeneric_ps2_3_x.h:433-466).  A
+bumped face lights with its three basis maps, never its flat one: with a flat normal that is their
+mean, so the flat set (Patch 268 D1's set 0 of each style) becomes the mean, colour and all -- VRAD's
+sum(basis)/flat runs 1.8-3.8 (median 2.2-2.6 on bhop_ceaseless, surf_4am, surf_fantasy, surf_sedona),
+so the flat set is 0.6-1.3x what Source shows there.  The deluxemap gets one tangent-space direction a
+luxel, sum(lum_i * bumpBasis[i]): the basis is orthonormal, so vmt/lightmapped.glsl gets each map's
+share back as dot(dir, bumpBasis[i]) and weights it by the normal map (or the ssbump).  Per-direction
+colour is lost; the mean colour is kept.  Every other luxel is the zero vector, which the shader reads
+as "no basis data" and leaves alone (an ssbump material on an unbumped face, an unlit luxel).
+Read from the raw lump in linear RGBE and converted by VBSP_ConvertLuxel, as the flat set was.
+Nothing is built with r_deluxemapping 0 or no bumped face (the deluxe pages double the lightmaps),
+and a face off the 4-byte grid (the nine trailer maps under hl2_lightmap_repack 0) is left as it was.
+The 2/5 layout's sets are [flat][b0][b1][b2][extra]: over 40 such maps the non-RGBE record sat in the
+last set on 5180 single-style bumped faces and elsewhere on under 20.
+*/
+static const float vbsp_bumpbasis[3][3] = {	//common_fxc.h:36
+	{ 0.81649661064147949f, 0.0f, 0.57735025882720947f },
+	{ -0.40824833512306213f, 0.70710676908493042f, 0.57735025882720947f },
+	{ -0.40824821591377258f, -0.7071068286895752f, 0.57735025882720947f }};
+
+static void VBSP_EncodeRGBE(const float *c, qbyte *p)
+{
+	float m = max(c[0], max(c[1], c[2]));
+	int e, k;
+	if (!(m > 0))
+	{
+		p[0] = p[1] = p[2] = 0;
+		p[3] = 0;
+		return;
+	}
+	frexp(m / 255.0f, &e);	//m/255 = f*2^e, f in [0.5,1): every channel/2^e fits a byte
+	e = bound(-128, e, 127);
+	for (k = 0; k < 3; k++)
+		p[k] = (qbyte)bound(0, (int)(ldexp(c[k], -e) + 0.5f), 255);
+	p[3] = (qbyte)(signed char)e;
+}
+
+static void VBSP_BuildRNM(model_t *mod)
+{
+	vbspinfo_t	*prv = (vbspinfo_t*)mod->meshinfo;
+	size_t		words, si, faces = 0, i;
+	qbyte		*dx;
+	int			k, b, c;
+
+	if (!hl2_rnm || !hl2_rnm->ival || !cvarfuncs->GetFloat("r_deluxemapping") || !mod->lightdata ||
+		!prv->lightraw || prv->lightrepacked || mod->lightmaps.fmt != LM_E5BGR9 || (mod->lightdatasize & 3))
+		return;
+	words = mod->lightdatasize / 4;
+	dx = NULL;
+	for (si = 0; si < mod->numsurfaces; si++)
+	{
+		msurface_t *surf = mod->surfaces + si;
+		int extra = (surf->flags & SURF_LMSTRIDE_MASK) >> SURF_LMSTRIDE_SHIFT;
+		int smax, tmax, ns;
+		size_t lux, ofs;
+
+		if (!surf->samples || extra < 12 || !prv->texinfo[surf->texinfo - mod->texinfo].bumped)
+			continue;
+		smax = (surf->extents[0]>>surf->lmshift)+1;
+		tmax = (surf->extents[1]>>surf->lmshift)+1;
+		ofs = surf->samples - mod->lightdata;	//== the file's lightofs (VBSP_LoadLighting keeps offsets)
+		if (smax <= 0 || tmax <= 0 || (ofs & 3))
+			continue;
+		lux = (size_t)smax*tmax;
+		for (ns = 0; ns < MAXCPULIGHTMAPS && surf->styles[ns] != INVALID_LIGHTSTYLE; ns++)
+			;
+		if (!dx)
+		{
+			dx = plugfuncs->GMalloc(&mod->memgroup, words * 3);
+			memset(dx, 127, words * 3);	//the zero vector: no basis data
+		}
+		for (k = 0; k < ns; k++)
+		{
+			size_t blk = ofs + (size_t)k*lux*(4+extra);	//bytes: style k, set 0
+			qbyte *q = dx + (ofs/4 + (size_t)k*lux)*3;	//the deluxe walk's style k (r_surf.c Surf_BuildDeluxMap)
+			if (blk + 4*lux*4 > prv->lightrawsize)
+				break;
+			for (i = 0; i < lux; i++, q += 3)
+			{
+				float col[3][3], mean[3], d[3] = {0, 0, 0}, l, len;
+				qbyte rgbe[4];
+				for (b = 0; b < 3; b++)
+				{
+					const qbyte *r = prv->lightraw + blk + (size_t)(b+1)*lux*4 + 4*i;
+					float sc = ldexp(1.0f, (signed char)r[3]);
+					col[b][0] = r[0]*sc;
+					col[b][1] = r[1]*sc;
+					col[b][2] = r[2]*sc;
+					l = 0.2126f*col[b][0] + 0.7152f*col[b][1] + 0.0722f*col[b][2];
+					for (c = 0; c < 3; c++)
+						d[c] += l * vbsp_bumpbasis[b][c];
+				}
+				for (c = 0; c < 3; c++)
+					mean[c] = (col[0][c] + col[1][c] + col[2][c]) * (1.0f/3);
+				VBSP_EncodeRGBE(mean, rgbe);
+				((unsigned int*)(mod->lightdata + blk))[i] = VBSP_ConvertLuxel(rgbe);
+				len = sqrt(d[0]*d[0] + d[1]*d[1] + d[2]*d[2]);
+				if (len > 0)
+					for (c = 0; c < 3; c++)
+						q[c] = (qbyte)bound(0, (int)(127.5f + 127.0f * d[c] / len), 254);
+			}
+		}
+		faces++;
+	}
+	if (!dx)
+		return;
+	mod->deluxdata = dx;
+	Con_DPrintf("VBSP: %s: %u bumped faces lit by their basis maps (hl2_rnm 1)\n", mod->name, (unsigned)faces);
+}
+#endif
+#ifdef HAVE_CLIENT
 //FTESurf Patch 780: a texinfo coordinate (dot(p, axis) + offset) as world units along the
 //axis, in checker tiles.  The offset is dropped so the squares sit on the world grid.
 static float VBSP_MissingTC(float raw, const float *vecs, float tile)
@@ -6312,6 +6437,7 @@ static void VBSP_GenerateMaterials(void *ctx, void *data, size_t a, size_t b)
 	{	//submodels share textures, so only do this if 'a' is 0 (inline index, 0 = world).
 		for(a = 0; a < mod->numtextures; a++)
 		{
+			VBSP_LoadingPump();	//FTESurf Patch 1259: with Batches_Build below, 0.5 s on surf_eternity
 			script = NULL;
 			if (!strncmp(mod->textures[a]->name, "sky/", 4))
 				script =
@@ -7879,6 +8005,7 @@ there.  The same sharp edge already exists on r_glsl_rtenvsphere (vertexlit.glsl
 static cvar_t *hl2_lt_fold;
 static cvar_t *hl2_lt_min;
 static cvar_t *hl2_lt_occlusion;
+static cvar_t *hl2_lt_vcache, *hl2_lt_vbudget;	//FTESurf Patch 1283
 /*
 FTESurf Patch 233: WHAT IS THIS NAME, AND WILL I EVER SEE IT.
 
@@ -8396,6 +8523,7 @@ static void VBSP_BuildBIHMain(void *ctx, void *unusedp, size_t unuseda, size_t u
 		unsigned int contents = d->contents;
 
 		size_t j;
+		VBSP_LoadingPump();	//FTESurf Patch 1259: this function is one main-thread job, 1.7 s on surf_eternity
 
 		/*
 		FTESurf Patch 250: the mapper's opt-out, applied.
@@ -8441,6 +8569,7 @@ static void VBSP_BuildBIHMain(void *ctx, void *unusedp, size_t unuseda, size_t u
 	if (hl2_propcollision->ival)
 	for (i = 0; i < prv->numstaticprops; i++)
 	{
+		VBSP_LoadingPump();	//Patch 1259: VBSP_PhyBrushes below is most of it
 		if (!prv->staticprops[i].solid)
 			continue;
 
@@ -10103,12 +10232,68 @@ static void VBSP_DetailDraw(model_t *mod, const qbyte *surfvis, int area)
 	}
 }
 
-static void VBSP_PrepareFrame(model_t *mod, refdef_t *r_refdef, int area, int clusters[2], pvsbuffer_t *vis, qbyte **entvis_out, qbyte **surfvis_out)
+//FTESurf Patch 1261: a level's PVS verdicts, NULL where there are none to keep (a forced vis: captures and portals)
+static qbyte *VBSP_PVSMemo(model_t *mod, int area, const int clusters[2], const qbyte *surfvis)
 {
 	vbspinfo_t	*prv = (vbspinfo_t*)mod->meshinfo;
+	int lvl = (refdef->recurse < 0) ? 0 : (refdef->recurse >= R_MAX_RECURSE ? R_MAX_RECURSE-1 : refdef->recurse);
+	size_t n = prv->numstaticprops + prv->numdisplacements;
+	if (!surfvis || refdef->forcevis || !n || (hl2_pvsmemo && !hl2_pvsmemo->ival))
+		return NULL;
+	if (!prv->vcache[lvl].memo)
+		prv->vcache[lvl].memo = plugfuncs->GMalloc(&mod->memgroup, n);
+	if (prv->vcache[lvl].memovis != surfvis || prv->vcache[lvl].memocluster[0] != clusters[0] ||
+		prv->vcache[lvl].memocluster[1] != clusters[1] || prv->vcache[lvl].memoarea != area ||
+		prv->vcache[lvl].memoflood != prv->floodvalid || prv->vcache[lvl].memonoareas != !!map_noareas->value)
+	{
+		memset(prv->vcache[lvl].memo, 0, n);
+		prv->vcache[lvl].memovis = surfvis;
+		prv->vcache[lvl].memocluster[0] = clusters[0];
+		prv->vcache[lvl].memocluster[1] = clusters[1];
+		prv->vcache[lvl].memoarea = area;
+		prv->vcache[lvl].memoflood = prv->floodvalid;
+		prv->vcache[lvl].memonoareas = !!map_noareas->value;	//VBSP_AreasConnected's override
+	}
+	return prv->vcache[lvl].memo;
+}
+//Patch 1271: an area's verdict on an unvised map. Area 0 is never culled (Source's R_CullNode); nor is one
+//past numareas, which areabits does not cover.
+static qboolean VBSP_UnvisedAreaVisible(const vbspinfo_t *prv, const qbyte *areabits, int a)
+{
+	return a <= 0 || a >= (int)prv->numareas || (areabits[a>>3] & (1<<(a&7)));
+}
+//An object's pair: hidden only when every area it names is (num_leafs < 0: an overflowed record, drawn).
+//`none` is the record's "no second area": 0 from VBSP_FindTouchedLeafs, -1 from the static prop loader.
+static qboolean VBSP_UnvisedPairVisible(const vbspinfo_t *prv, const qbyte *areabits, const pvscache_t *pc, int none)
+{
+	return pc->num_leafs < 0 || VBSP_UnvisedAreaVisible(prv, areabits, pc->areanum) ||
+		(pc->areanum2 != none && VBSP_UnvisedAreaVisible(prv, areabits, pc->areanum2));
+}
+
+//its verdict for one object, or the test's (kept); vbsp_pvs_why as the test leaves it
+static qboolean VBSP_PVSMemoTest(qbyte *memo, size_t idx, model_t *mod, const struct staticprop_s *sp, const pvscache_t *pvs, const qbyte *surfvis, const int *areas)
+{
+	qboolean vis;
+	if (memo && memo[idx])
+	{
+		vbsp_pvs_why = memo[idx] - 1;
+		return memo[idx] == 1 + VBSP_PVSWHY_VISIBLE;
+	}
+	vis = (sp && sp->numpvsclusters) ? VBSP_PropClustersVisible(sp, surfvis) : VBSP_EdictInFatPVS(mod, pvs, surfvis, areas);
+	if (memo)
+		memo[idx] = 1 + vbsp_pvs_why;
+	return vis;
+}
+
+static void VBSP_PrepareFrame(model_t *mod, refdef_t *r_refdef, int area, int clusters[2], pvsbuffer_t *vis, qbyte **entvis_out, qbyte **surfvis_out)
+{
+	qbyte *memo;	//FTESurf Patch 1261
+	vbspinfo_t	*prv = (vbspinfo_t*)mod->meshinfo;
 	qbyte *surfvis, *entvis;
+	qboolean unvisedareas;	//Patch 1271: an unvised map, culled by area
 
 	refdef = r_refdef;
+	prv->lvc_framespent = 0;	//FTESurf Patch 1283: each view's light traces start a fresh VLVC_FRAMEMS
 
 	//FTESurf Patch 880: Source draws the 3D sky only where the eye's leaf has 3D sky in its PVS
 	//(viewrender.cpp:4595); a toolsskybox2d leaf shows the 2D skybox. The main view tests its eye, a
@@ -10222,8 +10407,42 @@ static void VBSP_PrepareFrame(model_t *mod, refdef_t *r_refdef, int area, int cl
 
 
 	entvis = surfvis = VBSP_MarkLeaves(mod, clusters);
+	memo = VBSP_PVSMemo(mod, area, clusters, surfvis);
 	VectorCopy (r_refdef->vieworg, modelorg);
-	if (!surfvis)
+	unvisedareas = !surfvis && !mod->vis && !hl2_novis->ival && !r_refdef->forcevis;
+	if (unvisedareas)
+	{	//Patch 1271: an unvised map is still culled by area in Source (R_CullNode: a node whose area > 0 draws
+		//only if R_IsAreaVisible; area 0 never), so surf_voyager's stations, alone in area 3, are hidden from
+		//area 1 rather than drawn and cut at r_sky_forcedepth_scale's distance. Displacements and static props
+		//by their area pair (review 3). Marked by leaf, emitted in surface order: leaf order split sunset's
+		//batches, 77 -> 796 draws.
+		size_t i;
+		int k;
+		msurface_t *surf, **mark;
+		vbsp_surfsequence++;
+		for (i = 0; i < (size_t)mod->numleafs; i++)
+		{
+			mleaf_t *leaf = &mod->leafs[i];
+			if (leaf->contents == FTECONTENTS_SOLID)
+				continue;
+			if (!VBSP_UnvisedAreaVisible(prv, r_refdef->areabits, leaf->area))
+				continue;
+			for (mark = leaf->firstmarksurface, k = leaf->nummarksurfaces; k > 0; k--)
+				(*mark++)->visframe = vbsp_surfsequence;
+		}
+		for (i = 0; i < prv->numdisplacements; i++)
+			if (VBSP_UnvisedPairVisible(prv, r_refdef->areabits, &prv->displacements[i].pvs, 0))
+				prv->displacements[i].surf->visframe = vbsp_surfsequence;
+		for (i = 0; i < mod->nummodelsurfaces; i++)
+		{
+			surf = &mod->surfaces[i];
+			if (surf->visframe != vbsp_surfsequence)
+				continue;
+			modfuncs->RenderDynamicLightmaps (surf);
+			VBSP_EMIT_SURF(surf);
+		}
+	}
+	else if (!surfvis)
 	{
 		size_t i;
 		msurface_t *surf;
@@ -10247,7 +10466,7 @@ static void VBSP_PrepareFrame(model_t *mod, refdef_t *r_refdef, int area, int cl
 		for (i = 0; i < prv->numdisplacements; i++)
 		{
 			disp = &prv->displacements[i];
-			if (VBSP_EdictInFatPVS(mod, &disp->pvs, surfvis, areas))
+			if (VBSP_PVSMemoTest(memo, prv->numstaticprops + i, mod, NULL, &disp->pvs, surfvis, areas))
 			{
 				surf = disp->surf;
 				if (surf->visframe == vbsp_surfsequence)
@@ -10265,7 +10484,7 @@ static void VBSP_PrepareFrame(model_t *mod, refdef_t *r_refdef, int area, int cl
 
 
 	//FTESurf Patch 868: a water reflection without $reflectentities draws only the world, as Source's.
-	if (prv->numstaticprops && !(r_refdef->flags & RDF_NOENTS))
+	if (prv->numstaticprops && !(r_refdef->flags & (RDF_NOENTS|RDF_WORLDONLY)))
 	{
 		struct staticprop_s *sent;
 		entity_t *src, *ent;
@@ -10323,7 +10542,9 @@ static void VBSP_PrepareFrame(model_t *mod, refdef_t *r_refdef, int area, int cl
 				if (!VBSP_LeafHasAmbient(mod, sample))
 					prv->lit_solid++;
 
+				prv->wl_exact = true;	//FTESurf Patch 1283
 				VBSP_LightPointValues(mod, sample, dif, amb, dir);
+				prv->wl_exact = false;
 
 				//FTESurf Patch 163: report the colour that is DRAWN, not the one
 				//the cube proposed.  A census of a value the renderer overrides
@@ -10613,12 +10834,17 @@ static void VBSP_PrepareFrame(model_t *mod, refdef_t *r_refdef, int area, int cl
 			//PVS/area cull, exactly like the displacement loop above (VBSP_EdictInFatPVS at ~3587).
 			//Only valid when we actually have view PVS: surfvis==NULL means portal-recursion / novis / no model vis, where everything must draw.
 			//src->pvscache.leafnums hold CLUSTERS, and surfvis is the cluster-PVS from VBSP_MarkLeaves, so this is index-consistent (same as displacements).
-			if (surfvis && (sent->numpvsclusters ? !VBSP_PropClustersVisible(sent, surfvis) :
-			                !VBSP_EdictInFatPVS(mod, &src->pvscache, surfvis, areas)))
+			if (surfvis && !VBSP_PVSMemoTest(memo, i, mod, sent, &src->pvscache, surfvis, areas))
 			{
 				sent->lastpvswhy = vbsp_pvs_why;	//FTESurf Patch 257: set by the call above
 				PROP_VERDICT(PROPV_PVS);
 				continue;	//prop's leaves aren't in the view PVS and its area can't be reached — not visible.
+			}
+			if (unvisedareas && !VBSP_UnvisedPairVisible(prv, r_refdef->areabits, &src->pvscache, -1))
+			{
+				sent->lastpvswhy = VBSP_PVSWHY_AREA;	//Patch 1271
+				PROP_VERDICT(PROPV_PVS);
+				continue;
 			}
 
 			//cheap frustum cull on the model's radius box (props through the portal still pass PVS above, so this only drops what's off-screen).
@@ -10723,7 +10949,9 @@ static void VBSP_PrepareFrame(model_t *mod, refdef_t *r_refdef, int area, int cl
 				//.vhv already has VRAD's own shading per vertex, so re-splitting
 				//the cube under it would shade it twice.
 				prv->fold_prop = !sent->hasbaked;
+				prv->wl_exact = true;	//FTESurf Patch 1283: solved once for the map, so every light is traced
 				HL2_CalcModelLighting(src, src->model, r_refdef, mod);
+				prv->wl_exact = false;
 				prv->wl_suppress = false;
 				prv->fold_prop = false;
 				VectorCopy(tmp, src->origin);
@@ -10874,7 +11102,7 @@ static void VBSP_PrepareFrame(model_t *mod, refdef_t *r_refdef, int area, int cl
 	}
 
 	//FTESurf Patch 1038: detail props, under the props' RDF_NOENTS rule.
-	if (prv->detailraw && hl2_detail && hl2_detail->ival && !(r_refdef->flags & RDF_NOENTS))
+	if (prv->detailraw && hl2_detail && hl2_detail->ival && !(r_refdef->flags & (RDF_NOENTS|RDF_WORLDONLY)))
 		VBSP_DetailDraw(mod, surfvis, area);
 }
 static void VBSP_InfoForPoint (struct model_s *mod, vec3_t pos, int *area, int *cluster, unsigned int *contentbits)
@@ -11686,6 +11914,418 @@ static int QDECL VBSP_OccluderTrace(model_t *mod, const vec3_t start, const vec3
 	return tr.fraction < 1;
 }
 
+//FTESurf Patch 1283: one world light's unoccluded share at point (0 = none) and the direction to it, split out of
+//VBSP_AddWorldLightCube unchanged so the remembered path computes exactly what the traced path does.
+static float VBSP_WorldLightRatio(const struct vworldlight_s *wl, const vec3_t point, vec3_t dir)
+{
+	vec3_t	delta;
+	float	d2, dist, falloff, angle, ratio;
+
+	VectorSubtract(wl->origin, point, delta);
+	d2 = DotProduct(delta, delta);
+
+	//Engine_WorldLightDistanceFalloff, worldlight.cpp:36-87.
+	if (wl->type == VWL_SURFACE)
+	{
+		if (wl->radius != 0 && d2 > wl->radius*wl->radius)
+			return 0;
+		//InvRSquared (public/mathlib/vector.h:2176-2190) clamps the
+		//DENOMINATOR to a minimum of 1, so a light inside 1 unit saturates
+		//at 1.0 rather than exploding.  That clamp is load-bearing.
+		falloff = 1.0f / ((d2 > 1.0f) ? d2 : 1.0f);
+	}
+	else
+	{
+		dist = sqrt(d2);
+		if (wl->radius != 0 && dist > wl->radius)
+			return 0;
+		falloff = wl->constant_attn + wl->linear_attn*dist + wl->quadratic_attn*d2;
+		if (falloff < 1e-6f)
+			falloff = 1e-6f;
+		falloff = 1.0f / falloff;
+	}
+	if (falloff <= 0)
+		return 0;
+
+	if (d2 < 1e-8f)
+		return 0;	//coincident with the light; no direction to give it.
+	dist = sqrt(d2);
+	VectorScale(delta, 1.0f/dist, dir);
+
+	/*
+	Engine_WorldLightAngle (leaf_ambient_lighting.cpp:57-73), emitter side
+	only.  VRAD calls it with the NORMALISED DELTA in the snormal slot for
+	cube work, which makes its first dot exactly 1 -- the receiving surface's
+	own cosine is applied per cube face below instead, which is the only way
+	a six-face cube can be built from a single call.
+	*/
+	if (wl->type == VWL_SURFACE)
+	{
+		angle = -DotProduct(dir, wl->normal);
+		if (angle <= 0.01f)		//ON_EPSILON/10; behind the emitting surface
+			return 0;
+	}
+	else if (wl->type == VWL_SPOTLIGHT)
+	{
+		float dot2 = -DotProduct(dir, wl->normal);
+		if (dot2 <= wl->stopdot2)
+			return 0;			//outside the penumbra entirely
+		if (dot2 >= wl->stopdot)
+			angle = 1.0f;		//inside the hot spot
+		else
+		{
+			float span = wl->stopdot - wl->stopdot2;
+			float e = (wl->exponent < 1.0f) ? 1.0f : wl->exponent;
+			if (span < 1e-6f)
+				span = 1e-6f;
+			angle = pow((dot2 - wl->stopdot2) / span, e);
+		}
+	}
+	else
+		angle = 1.0f;			//a point light emits equally in every direction
+
+	ratio = falloff * angle;
+	return ratio > 0 ? ratio : 0;
+}
+
+static void VBSP_AddLightToCube(vec3_t cube[6], const struct vworldlight_s *wl, const vec3_t dir, float ratio)
+{
+	int f, j;
+	for (f = 0; f < 6; f++)
+	{
+		float t = DotProduct(vbsp_boxdirections[f], dir);
+		if (t > 0)
+			for (j = 0; j < 3; j++)
+				cube[f][j] += wl->intensity[j] * (t * ratio);
+	}
+}
+
+/*FTESurf Patch 1283 (ENGINE_PATCHES.md): a caller sampling near its last point keeps a slot of per-light answers and
+  re-traces hl2_lt_vbudget a call, never-traced brightest first, then brightness x age; bursts when untraced light is
+  a large share. Untraced lights count at the share an even spread of them lets through (not the brightest: they are
+  nearer, less often blocked). Static props, the census and hl2_lightprobe trace every light. False = trace normally.*/
+#define VLVC_SLOTS	64
+#define VLVC_NEAR	64.0f		//within this of a slot's last point is that caller again (callers this close share answers)
+#define VLVC_SEED	1024.0f		//a new slot within this of another in the same cluster starts from its answers, all stale
+#define VLVC_PICK	256			//hl2_lt_vbudget's ceiling
+#define VLVC_FIRST	128			//a first sample's budget
+#define VLVC_BURST	64			//a call whose untraced lights carry over VLVC_BURSTSHARE of the light
+#define VLVC_BURSTSHARE	0.1f
+#define VLVC_FRAMEMS	1.0		//light traces a view may spend before later samples in it are held to VLVC_LATE
+#define VLVC_CALLMS		0.5		//and one sample: a burst where traces are long stops here, the rest estimated
+#define VLVC_LATE		4
+struct vlvcslot_s
+{
+	vec3_t			org;
+	int				cluster;	//of org: a seed must be in the caller's, not through a wall
+	unsigned int	used;		//vlvc clock at last use; 0 = free
+	unsigned int	calls;		//this slot's own clock, which its stamps are read against
+	unsigned int	stillfrom;	//the call its caller last stood still from: answers traced since are final
+	qbyte			*vis;		//per world light: 0 not traced here, 1 visible, 2 blocked
+	unsigned int	*when;		//calls when last traced
+};
+struct vlvccand_s
+{
+	unsigned int	light;
+	float			ratio, w;	//share at the point, and that share of the light's brightest channel
+	vec3_t			dir;
+};
+struct vlvc_s
+{
+	struct vlvcslot_s	slot[VLVC_SLOTS];
+	unsigned int		clock;
+	int					occl, wl;	//hl2_lt_occlusion/hl2_lt_worldlight the answers were traced under
+	struct vlvccand_s	*cand;		//numworldlights of scratch
+	float				heappri[VLVC_PICK];
+	qbyte				heapnew[VLVC_PICK];	//never traced here: outranks every re-trace
+	unsigned int		heapidx[VLVC_PICK];
+	double				chk_t0, chk_err, chk_errmax, chk_trc, chk_tre;	//hl2_lt_vcache 2
+	unsigned int		chk_n;
+	unsigned int		last_nc, last_unk, last_how;	//the call just made: candidates, still untraced, 0 kept 1 fresh 2 seeded
+	float				last_est, last_unkw, last_w;
+	vec3_t				chk_worg;
+	unsigned int		chk_wnc, chk_wunk, chk_whow;
+	float				chk_west, chk_wden, chk_wnum, chk_wunkw, chk_ww;
+};
+
+#define VLVC_LESS(v,a,b) ((v)->heapnew[a] != (v)->heapnew[b] ? (v)->heapnew[a] < (v)->heapnew[b] : (v)->heappri[a] < (v)->heappri[b])
+static void VBSP_LightCacheHeapDown(struct vlvc_s *v, unsigned int n, unsigned int k)
+{	//min-heap on (never traced, priority): the cheapest pick sits at the root, ready to be replaced
+	for (;;)
+	{
+		unsigned int l = 2*k+1, r = l+1, m = k;
+		if (l < n && VLVC_LESS(v, l, m)) m = l;
+		if (r < n && VLVC_LESS(v, r, m)) m = r;
+		if (m == k)
+			return;
+		{
+			float tp = v->heappri[k]; qbyte tn = v->heapnew[k]; unsigned int ti = v->heapidx[k];
+			v->heappri[k] = v->heappri[m]; v->heapnew[k] = v->heapnew[m]; v->heapidx[k] = v->heapidx[m];
+			v->heappri[m] = tp; v->heapnew[m] = tn; v->heapidx[m] = ti;
+		}
+		k = m;
+	}
+}
+
+static qboolean VBSP_LightCacheCube(model_t *mod, const vec3_t point, int cluster, const qbyte *visbits, vec3_t cube[6], unsigned int *traced)
+{
+	vbspinfo_t			*prv = (vbspinfo_t*)mod->meshinfo;
+	struct vlvc_s		*v = prv->lvc;
+	struct vlvcslot_s	*s = NULL, *seed = NULL, *lru = NULL;
+	size_t				i, n = prv->numworldlights, nc = 0;
+	unsigned int		k, budget, npick = 0;
+	float				best = VLVC_NEAR*VLVC_NEAR, bestseed = VLVC_SEED*VLVC_SEED, kw = 0, vw = 0, est;
+	float				tw = 0, uw = 0, nw = 0, nvw = 0;	//all, untraced, and the guide sample (all / visible) light
+	unsigned int		un = 0, spread, hbudget, unsettled = 0, nn = 0, done = 0;
+	float				sw = 0, svw = 0;
+	double				t0;
+	int					occl = hl2_lt_occlusion ? hl2_lt_occlusion->ival : 0, wlv = hl2_lt_worldlight ? hl2_lt_worldlight->ival : 0;
+	qboolean			fresh = false, claimed = false;
+
+	*traced = 0;
+	if (!n)
+		return false;
+	if (!v)
+	{
+		v = prv->lvc = plugfuncs->GMalloc(&mod->memgroup, sizeof(*v));
+		v->cand = plugfuncs->GMalloc(&mod->memgroup, sizeof(*v->cand)*n);
+		v->occl = occl;
+		v->wl = wlv;
+	}
+	if (v->occl != occl || v->wl != wlv)
+	{	//answers traced under other settings are not answers
+		for (k = 0; k < VLVC_SLOTS; k++)
+			v->slot[k].used = 0;
+		v->occl = occl;
+		v->wl = wlv;
+	}
+	budget = (hl2_lt_vbudget && hl2_lt_vbudget->ival > 0) ? hl2_lt_vbudget->ival : 1;
+	if (budget > VLVC_PICK)
+		budget = VLVC_PICK;
+
+	if (!++v->clock)
+	{	//wrapped: start the slots over rather than mis-order them
+		for (k = 0; k < VLVC_SLOTS; k++)
+			v->slot[k].used = 0;
+		v->clock = 1;
+	}
+	for (k = 0; k < VLVC_SLOTS; k++)
+	{
+		struct vlvcslot_s *t = &v->slot[k];
+		if (t->used)
+		{
+			vec3_t d;
+			float d2;
+			VectorSubtract(t->org, point, d);
+			d2 = DotProduct(d, d);
+			if (d2 < best) { best = d2; s = t; }
+			if (d2 < bestseed && t->cluster == cluster) { bestseed = d2; seed = t; }
+		}
+		if (!lru || t->used < lru->used)
+			lru = t;	//a free slot (used 0) is always the least recent
+	}
+	if (!s)
+	{
+		s = lru;
+		claimed = true;
+		if (!s->vis)
+		{
+			s->vis = plugfuncs->GMalloc(&mod->memgroup, n);
+			s->when = plugfuncs->GMalloc(&mod->memgroup, sizeof(*s->when)*n);
+		}
+		if (seed && seed != s)
+		{	//every answer stale: the brightest are re-traced first
+			memcpy(s->vis, seed->vis, n);
+			memset(s->when, 0, sizeof(*s->when)*n);
+			s->calls = 1u<<20;
+		}
+		else if (!seed)
+		{
+			memset(s->vis, 0, n);
+			s->calls = 0;
+			fresh = true;
+		}
+		else
+		{	//seed == s: the least recent slot is itself the near one; its own answers, all stale
+			memset(s->when, 0, sizeof(*s->when)*n);
+			s->calls = 1u<<20;
+		}
+	}
+	if (!VectorEquals(s->org, point) || claimed)
+		s->stillfrom = s->calls + 1;	//moved (or claimed): nothing traced before this call is final here
+	s->used = v->clock;
+	s->calls++;
+	s->cluster = cluster;
+	VectorCopy(point, s->org);
+	v->last_how = fresh ? 1 : (seed && seed != s && s->calls == (1u<<20) + 1) ? 2 : 0;
+
+	for (i = 0; i < n; i++)
+	{
+		const struct vworldlight_s *wl = &prv->worldlights[i];
+		struct vlvccand_s *cd;
+		vec3_t dir;
+		float ratio;
+		int c = wl->cluster;
+
+		if (c >= mod->numclusters || !(visbits[c>>3] & (1<<(c&7))))
+			continue;
+		ratio = VBSP_WorldLightRatio(wl, point, dir);
+		if (ratio <= 0)
+			continue;
+		cd = &v->cand[nc++];
+		cd->light = i;
+		cd->ratio = ratio;
+		cd->w = ratio * max(wl->intensity[0], max(wl->intensity[1], wl->intensity[2]));
+		VectorCopy(dir, cd->dir);
+		tw += cd->w;
+		if (!s->vis[i])
+		{
+			uw += cd->w;
+			un++;
+		}
+		if (!s->vis[i] || s->when[i] < s->stillfrom)
+			unsettled++;
+	}
+	if (!unsettled)
+		budget = 0;		//still, and every light traced since: the answers are final
+	if (fresh && budget < VLVC_FIRST)
+		budget = VLVC_FIRST;
+	else if (uw > VLVC_BURSTSHARE * tw && budget < VLVC_BURST)
+		budget = VLVC_BURST;
+	if (budget && prv->lvc_framespent * 1000 > VLVC_FRAMEMS && budget > VLVC_LATE)
+		budget = VLVC_LATE;	//this view has spent its traces: estimate, and settle on later calls
+	spread = (un > budget) ? budget / 4 : 0;	//more new lights than the budget: keep a quarter for an even spread
+	hbudget = budget - spread;
+	if (!hbudget && budget)
+		hbudget = 1;
+	t0 = plugfuncs->GetSeconds();
+
+	for (i = 0; hbudget && i < nc; i++)
+	{
+		const struct vlvccand_s *cd = &v->cand[i];
+		qbyte isnew = !s->vis[cd->light];
+		float pri;
+		if (!isnew && s->when[cd->light] >= s->stillfrom)
+			continue;	//traced since the caller stood still: final
+		pri = isnew ? cd->w : cd->w * (float)(s->calls - s->when[cd->light] + 1);
+		if (npick < hbudget)
+		{
+			v->heappri[npick] = pri;
+			v->heapnew[npick] = isnew;
+			v->heapidx[npick] = i;
+			npick++;
+			if (npick == hbudget)
+				for (k = hbudget/2 + 1; k-- > 0;)
+					VBSP_LightCacheHeapDown(v, npick, k);
+		}
+		else if (isnew > v->heapnew[0] || (isnew == v->heapnew[0] && pri > v->heappri[0]))
+		{
+			v->heappri[0] = pri;
+			v->heapnew[0] = isnew;
+			v->heapidx[0] = i;
+			VBSP_LightCacheHeapDown(v, npick, 0);
+		}
+	}
+	for (k = npick/2 + 1; k-- > 0;)
+		VBSP_LightCacheHeapDown(v, npick, k);	//a heap even when the candidates were fewer than the budget
+	for (k = npick; k > 1; k--)
+		{	//heapsort on the min-heap: the root goes to the end, so index 0 ends as the highest priority
+			float tp = v->heappri[0]; qbyte tn = v->heapnew[0]; unsigned int ti = v->heapidx[0];
+			v->heappri[0] = v->heappri[k-1]; v->heapnew[0] = v->heapnew[k-1]; v->heapidx[0] = v->heapidx[k-1];
+			v->heappri[k-1] = tp; v->heapnew[k-1] = tn; v->heapidx[k-1] = ti;
+			VBSP_LightCacheHeapDown(v, k-1, 0);
+		}
+	for (k = 0; k < npick; k++)
+	{
+		const struct vlvccand_s *cd = &v->cand[v->heapidx[k]];
+		qbyte a;
+		if ((k & 7) == 7 && (plugfuncs->GetSeconds() - t0) * 1000 > VLVC_CALLMS)
+		{
+			spread = 0;	//out of time: what is left stays untraced, estimated from what was traced
+			break;
+		}
+		a = VBSP_WorldLightVisible(mod, point, &prv->worldlights[cd->light]) ? 1 : 2;
+		if (!s->vis[cd->light])
+		{	//only a guide when there is no spread: these are the brightest, not a fair sample
+			nw += cd->w;
+			nn++;
+			if (a == 1)
+				nvw += cd->w;
+		}
+		s->vis[cd->light] = a;
+		s->when[cd->light] = s->calls;
+		(*traced)++;
+	}
+	if (spread)
+	{	//every step-th light still untraced, in light order: a fair sample of what is left
+		unsigned int left = 0, step, seen = 0;
+		for (i = 0; i < nc; i++)
+			if (!s->vis[v->cand[i].light])
+				left++;
+		step = left / spread;
+		if (step < 1)
+			step = 1;
+		sw = svw = 0;
+		for (i = 0; i < nc && done < spread; i++)
+		{
+			const struct vlvccand_s *cd = &v->cand[i];
+			qbyte a;
+			if (s->vis[cd->light] || (seen++ % step))
+				continue;
+			if ((done & 7) == 7 && (plugfuncs->GetSeconds() - t0) * 1000 > VLVC_CALLMS)
+				break;
+			a = VBSP_WorldLightVisible(mod, point, &prv->worldlights[cd->light]) ? 1 : 2;
+			sw += cd->w;
+			if (a == 1)
+				svw += cd->w;
+			s->vis[cd->light] = a;
+			s->when[cd->light] = s->calls;
+			(*traced)++;
+			done++;
+		}
+	}
+	prv->lvc_framespent += plugfuncs->GetSeconds() - t0;
+
+	for (i = 0; i < nc; i++)
+		if (s->vis[v->cand[i].light])
+		{
+			kw += v->cand[i].w;
+			if (s->vis[v->cand[i].light] == 1)
+				vw += v->cand[i].w;
+		}
+	//the share untraced lights get: a fair spread sample, else the newly traced brightest, else what this slot
+	//knows -- each only from 4 or more traces (one late trace is an all-or-nothing guess)
+	if (done >= 4 && sw > 0)
+		est = svw / sw;
+	else if (nn >= 4 && nw > 0)
+		est = nvw / nw;
+	else
+		est = (kw > 0) ? vw / kw : 1;
+	v->last_nc = nc;
+	v->last_est = est;
+	v->last_unk = 0;
+	v->last_unkw = v->last_w = 0;
+	for (i = 0; hl2_lt_vcache->ival == 2 && i < nc; i++)
+	{
+		v->last_w += v->cand[i].w;
+		if (!s->vis[v->cand[i].light])
+		{
+			v->last_unk++;
+			v->last_unkw += v->cand[i].w;
+		}
+	}
+	for (i = 0; i < nc; i++)
+	{
+		const struct vlvccand_s *cd = &v->cand[i];
+		qbyte a = s->vis[cd->light];
+		if (a == 1)
+			VBSP_AddLightToCube(cube, &prv->worldlights[cd->light], cd->dir, cd->ratio);
+		else if (!a && est > 0)
+			VBSP_AddLightToCube(cube, &prv->worldlights[cd->light], cd->dir, cd->ratio * est);
+	}
+	return true;
+}
+
 static void VBSP_AddWorldLightCube (model_t *mod, const vec3_t point, vec3_t cube[6], qboolean ignoresuppress, qboolean report)
 {
 	vbspinfo_t	*prv = (vbspinfo_t*)mod->meshinfo;
@@ -11720,80 +12360,90 @@ static void VBSP_AddWorldLightCube (model_t *mod, const vec3_t point, vec3_t cub
 	if (!visbits)
 		return;
 
+	if (!report && !prv->wl_exact && hl2_lt_vcache && hl2_lt_vcache->ival && hl2_lt_occlusion && hl2_lt_occlusion->ival)
+	{
+		vec3_t got[6], want[6];
+		unsigned int trc, tre = 0;
+		if (hl2_lt_vcache->ival != 2)
+		{
+			if (VBSP_LightCacheCube(mod, point, cluster, visbits, cube, &trc))
+				return;
+		}
+		else
+		{	//check: the remembered answer against tracing every light, measured on the whole cube it lands in
+			struct vlvc_s *v;
+			double num = 0, den = 0, now;
+			memcpy(got, cube, sizeof(got));
+			memcpy(want, cube, sizeof(want));
+			if (VBSP_LightCacheCube(mod, point, cluster, visbits, got, &trc))
+			{
+				for (i = 0; i < prv->numworldlights; i++)
+				{
+					const struct vworldlight_s *wl = &prv->worldlights[i];
+					vec3_t dir;
+					float ratio;
+					int c = wl->cluster;
+					if (c >= mod->numclusters || !(visbits[c>>3] & (1<<(c&7))))
+						continue;
+					ratio = VBSP_WorldLightRatio(wl, point, dir);
+					if (ratio <= 0)
+						continue;
+					tre++;
+					if (VBSP_WorldLightVisible(mod, point, wl))
+						VBSP_AddLightToCube(want, wl, dir, ratio);
+				}
+				for (f = 0; f < 6; f++)
+					for (j = 0; j < 3; j++)
+					{
+						num += fabs(got[f][j] - want[f][j]);
+						den += fabs(want[f][j]);
+					}
+				v = prv->lvc;
+				v->chk_n++;
+				v->chk_trc += trc;
+				v->chk_tre += tre;
+				if (den > 0)
+				{
+					v->chk_err += num / den;
+					if (num / den > v->chk_errmax)
+					{
+						v->chk_errmax = num / den;
+						VectorCopy(point, v->chk_worg);
+						v->chk_wnc = v->last_nc; v->chk_wunk = v->last_unk; v->chk_whow = v->last_how;
+						v->chk_west = v->last_est; v->chk_wden = den; v->chk_wnum = num;
+						v->chk_wunkw = v->last_unkw; v->chk_ww = v->last_w;
+					}
+				}
+				now = plugfuncs->GetSeconds();
+				if (now - v->chk_t0 >= 5)
+				{
+					if (v->chk_n)
+						Con_Printf("[vcache] %u samples: traces %.1f a sample (every light: %.1f); cube error mean %.4f, max %.4f\n",
+							v->chk_n, v->chk_trc / v->chk_n, v->chk_tre / v->chk_n, v->chk_err / v->chk_n, v->chk_errmax);
+					if (v->chk_n && v->chk_errmax > 0)
+						Con_Printf("[vcache] worst at %.0f %.0f %.0f: |err| %.4f of %.4f; %u lights, %u untraced (%.4f of %.4f weight, est %.3f), %s\n",
+							v->chk_worg[0], v->chk_worg[1], v->chk_worg[2], v->chk_wnum, v->chk_wden, v->chk_wnc, v->chk_wunk,
+							v->chk_wunkw, v->chk_ww, v->chk_west, v->chk_whow == 1 ? "fresh" : v->chk_whow == 2 ? "seeded" : "kept");
+					v->chk_t0 = now;
+					v->chk_n = 0;
+					v->chk_trc = v->chk_tre = v->chk_err = v->chk_errmax = 0;
+				}
+				memcpy(cube, got, sizeof(got));
+				return;
+			}
+		}
+	}
+
 	for (i = 0; i < prv->numworldlights; i++)
 	{
 		const struct vworldlight_s *wl = &prv->worldlights[i];
-		vec3_t	delta, dir;
-		float	d2, dist, falloff, angle, ratio;
+		vec3_t	dir;
+		float	ratio;
 		int		c = wl->cluster;
 
 		if (c >= mod->numclusters || !(visbits[c>>3] & (1<<(c&7))))
 			continue;
-
-		VectorSubtract(wl->origin, point, delta);
-		d2 = DotProduct(delta, delta);
-
-		//Engine_WorldLightDistanceFalloff, worldlight.cpp:36-87.
-		if (wl->type == VWL_SURFACE)
-		{
-			if (wl->radius != 0 && d2 > wl->radius*wl->radius)
-				continue;
-			//InvRSquared (public/mathlib/vector.h:2176-2190) clamps the
-			//DENOMINATOR to a minimum of 1, so a light inside 1 unit saturates
-			//at 1.0 rather than exploding.  That clamp is load-bearing.
-			falloff = 1.0f / ((d2 > 1.0f) ? d2 : 1.0f);
-		}
-		else
-		{
-			dist = sqrt(d2);
-			if (wl->radius != 0 && dist > wl->radius)
-				continue;
-			falloff = wl->constant_attn + wl->linear_attn*dist + wl->quadratic_attn*d2;
-			if (falloff < 1e-6f)
-				falloff = 1e-6f;
-			falloff = 1.0f / falloff;
-		}
-		if (falloff <= 0)
-			continue;
-
-		if (d2 < 1e-8f)
-			continue;	//coincident with the light; no direction to give it.
-		dist = sqrt(d2);
-		VectorScale(delta, 1.0f/dist, dir);
-
-		/*
-		Engine_WorldLightAngle (leaf_ambient_lighting.cpp:57-73), emitter side
-		only.  VRAD calls it with the NORMALISED DELTA in the snormal slot for
-		cube work, which makes its first dot exactly 1 -- the receiving surface's
-		own cosine is applied per cube face below instead, which is the only way
-		a six-face cube can be built from a single call.
-		*/
-		if (wl->type == VWL_SURFACE)
-		{
-			angle = -DotProduct(dir, wl->normal);
-			if (angle <= 0.01f)		//ON_EPSILON/10; behind the emitting surface
-				continue;
-		}
-		else if (wl->type == VWL_SPOTLIGHT)
-		{
-			float dot2 = -DotProduct(dir, wl->normal);
-			if (dot2 <= wl->stopdot2)
-				continue;			//outside the penumbra entirely
-			if (dot2 >= wl->stopdot)
-				angle = 1.0f;		//inside the hot spot
-			else
-			{
-				float span = wl->stopdot - wl->stopdot2;
-				float e = (wl->exponent < 1.0f) ? 1.0f : wl->exponent;
-				if (span < 1e-6f)
-					span = 1e-6f;
-				angle = pow((dot2 - wl->stopdot2) / span, e);
-			}
-		}
-		else
-			angle = 1.0f;			//a point light emits equally in every direction
-
-		ratio = falloff * angle;
+		ratio = VBSP_WorldLightRatio(wl, point, dir);
 		if (ratio <= 0)
 			continue;
 		{
@@ -11806,14 +12456,7 @@ static void VBSP_AddWorldLightCube (model_t *mod, const vec3_t point, vec3_t cub
 			if (!visible)
 				continue;
 		}
-
-		for (f = 0; f < 6; f++)
-		{
-			float t = DotProduct(vbsp_boxdirections[f], dir);
-			if (t > 0)
-				for (j = 0; j < 3; j++)
-					cube[f][j] += wl->intensity[j] * (t * ratio);
-		}
+		VBSP_AddLightToCube(cube, wl, dir, ratio);
 	}
 }
 
@@ -12777,6 +13420,8 @@ static qboolean VBSP_LoadModel(model_t *mod, qbyte *mod_base, size_t filelen, ch
 		VBSP_LoadVertNormals					(mod, mod_base, header.lumps);
 	if (noerrors && haverenderer)	//FTESurf Patch 268 D1: needs texinfo, faces and the lighting lump; before displacements only because nothing later moves samples or extents
 		VBSP_ProbeLightmapStride				(mod);
+	if (noerrors && haverenderer)	//FTESurf Patch 1264: after the stride tags it reads, before anything allocates lightmaps
+		VBSP_BuildRNM							(mod);
 #endif
 	noerrors = noerrors && VBSP_LoadDisplacements	(mod, mod_base, header.lumps);
 	noerrors = noerrors && VBSP_LoadMarksurfaces	(mod, mod_base, &header.lumps[VLUMP_LEAFFACES]);
@@ -13370,6 +14015,7 @@ qboolean VBSP_Init(void)
 	if (modfuncs && modfuncs->version != MODPLUGFUNCS_VERSION)
 		modfuncs = NULL;
 	threadfuncs = plugfuncs->GetEngineInterface(plugthreadfuncs_name, sizeof(*threadfuncs));
+	loadingfuncs = plugfuncs->GetEngineInterface(plugloadingfuncs_name, sizeof(*loadingfuncs));
 
 	//nettest: a dedicated/headless server has no client Image/renderer interface (the same condition the
 	//"hl2: VTF/VMT/TTH support unavailable" banners report).  Mark qrenderer QR_NONE so the renderer-only
@@ -13417,6 +14063,7 @@ qboolean VBSP_Init(void)
 		hl2_visdebug = cvarfuncs->GetNVFDG("hl2_visdebug", "0", 0, "Print Source area visibility and 300-frame leaf-walk statistics (also requires developer). Does not change visibility.", MAPOPTIONS);
 		hl2_novis = cvarfuncs->GetNVFDG("r_novis", "0", 0, "Draw every leaf, ignoring the PVS. Diagnostic: makes a vis problem visible by removing vis.", MAPOPTIONS);
 		hl2_clipflags = cvarfuncs->GetNVFDG("hl2_clipflags", "1", 0, "FTESurf Patch 831: the world walk stops testing a frustum plane below a node wholly in front of it. 0 tests every plane at every node (the A/B).", MAPOPTIONS);
+		hl2_pvsmemo = cvarfuncs->GetNVFDG("hl2_pvsmemo", "1", 0, "FTESurf Patch 1261: keep each view level's static-prop and displacement PVS verdicts while its clusters, area and area connections are unchanged, instead of testing every one each frame. 0 tests every frame (the A/B).", MAPOPTIONS);
 		hl2_pvscache = cvarfuncs->GetNVFDG("hl2_pvscache", "1", 0, "FTESurf (P273): reuse the answer to the whole-tree entity-visibility descent when the same node is asked about the same PVS. Exact, not approximate -- the test is a pure function of those two. Measured on surf_tensor2 it was 98% of the listen server's per-frame cost. 0 restores the old recompute-every-time behaviour, so a suspected culling bug is a one-command A/B.", MAPOPTIONS);
 		hl2_lumpretire = cvarfuncs->GetNVFDG("hl2_lumpretire", "1", CVAR_MAPLATCH, "FTESurf (P298): skip LZMA-decompressing the BSP lumps nothing in this configuration will read -- both lightmaps on a dedicated server, and the unused half of the LDR/HDR pair when drawing. Map load on this engine is single-threaded LZMA and almost nothing else, so this is most of it: 334 MB of the 350 MB surf_affliction expands is lightmap. 0 restores the old decompress-everything behaviour, which makes the whole patch a one-command A/B.", MAPOPTIONS);
 		/*
@@ -13453,6 +14100,7 @@ qboolean VBSP_Init(void)
 		which walk was used either way.  MAPLATCH: the tags are written while the BSP is
 		read, so a map reload is when a change takes effect.
 		*/
+		hl2_rnm = cvarfuncs->GetNVFDG("hl2_rnm", "1", CVAR_MAPLATCH, "Light bumped Source brush faces as Source does (radiosity normal mapping): the three basis lightmaps VRAD stores for a $bumpmap face, weighted by the normal map or $ssbump; needs r_deluxemapping. 0 shows the flat lightmap and no bump lighting (an $ssbump material still reflects off its own normal). Takes effect on a map reload.", MAPOPTIONS);
 		hl2_bumpstride = cvarfuncs->GetNVFDG("hl2_bumpstride", "1", CVAR_MAPLATCH, "Walk a Source map's lightstyles at the stride VRAD wrote them: a $bumpmap face stores four luxel sets per style (flat plus three radiosity-normal-map basis maps), and 150 library maps add a non-lightmap record after every style's sets.\n0: the old walk, which summed a basis map in as the next lightstyle at full brightness and never read the real one, on ~67,000 faces across 153 library maps.\n1: probe the layout per map and skip the extra sets (default). Faces then show their real second style -- brighter where it is a bright switchable light, darker where it is dim. Maps whose layout cannot be proven from the lighting lump size fall back to 0 and say so in the console.", MAPOPTIONS);
 		/*
 		FTESurf: hide the brushes Source hides.
@@ -13796,6 +14444,8 @@ qboolean VBSP_Init(void)
 		*/
 		cvarfuncs->GetNVFDG("hl2_lt_baked_scale", "2", 0, "Overbright applied to VRAD's baked static prop lighting. 2 is the same factor gl_overbright already gives the world lightmap and which model lighting has never had; 1 is the raw baked value, as VRAD wrote it.", MAPOPTIONS);
 		hl2_lt_occlusion = cvarfuncs->GetNVFDG("hl2_lt_occlusion", "1", 0, "Trace local worldlights against opaque world brushes and ray-collidable displacements before lighting models. Independent of movement collision. No prop/mover shadows or sky tracing. Live; 0 restores PVS-only lighting for comparison.", MAPOPTIONS);
+		hl2_lt_vcache = cvarfuncs->GetNVFDG("hl2_lt_vcache", "1", 0, "FTESurf Patch 1283: a model light sample that repeats near its last point (the view model, a moving model, lit particles) remembers which world lights it saw and re-traces hl2_lt_vbudget of them a call (more when many new lights come into view at once), never-traced first, then the brightest and stalest. Static props and hl2_lightprobe always trace every light. 0 = trace every light every call. 2 = also trace every light and print every 5 s how far the remembered answer was from it, and the worst sample (slow; for checking).", MAPOPTIONS);
+		hl2_lt_vbudget = cvarfuncs->GetNVFDG("hl2_lt_vbudget", "32", 0, "FTESurf Patch 1283: world lights re-traced per model light sample under hl2_lt_vcache (1-256). A trace is a few microseconds; a sample at a light-dense spot used to trace 1500.", MAPOPTIONS);
 		hl2_lt_blend = cvarfuncs->GetNVFDG("hl2_lt_blend", "1", 0, "FTESurf Patch 780: how a model's ambient light is read from the leaf it stands in.\n1: Source's way (default) -- every sample in the leaf, weighted by inverse squared distance. VRAD stores the samples assuming that blend.\n0: the single nearest sample, as before P780. Neighbouring props can land on very different samples.\nLive: props re-solve on the next frame.", MAPOPTIONS);
 		hl2_lt_illumpos = cvarfuncs->GetNVFDG("hl2_lt_illumpos", "1", 0, "FTESurf Patch 780: where a static prop with no usable lighting origin is lit from.\n1: the model's $illumposition through the prop's transform, as Source does (default).\n0: the prop's origin, as before P780.\nLive: props re-solve on the next frame.", MAPOPTIONS);
 		hl2_lt_min = cvarfuncs->GetNVFDG("hl2_lt_min", "16", 0, "Minimum model ambient base on Source/HL2 maps (0-255). Lift only the base toward neutral grey; never amplify the directional light. Live on unbaked props. 0 = off.", MAPOPTIONS);

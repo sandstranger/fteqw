@@ -4,6 +4,7 @@
  * World, counters, command freshness and assistance are never rolled back. */
 #include "sv_tas_input.h"
 #include "sv_tas_strafe.h"
+#include "sv_tas_control.h"
 #define TAS_REWIND_SLOTS 4000
 #define TAS_REWIND_LIMIT 16000000u
 #define TAS_REWIND_FLAGS (FL_ONGROUND | FL_WATERJUMP | FL_JUMPRELEASED)
@@ -19,22 +20,35 @@ typedef struct
 	float forceduck, momlimit, momcool, momslide;
 	int flags, pmflags;
 	sv_tas_input_t input; // immutable availability; not a historical live-counter key
+	sv_tas_input_t planinput;
+	float planamount, pitchfollow;
+	unsigned short planyaw;
+	int planmode;
 } tas_rewind_state_t;
 
 typedef struct
 {
 	int userid, spawncount;
-	sv_tas_input_t lastinput;
+	sv_tas_input_t lastinput, lastplaninput;
 	double lastmove;
+	float lastplanamount, lastpitchfollow;
+	int lastplanmode;
 	sv_tas_tape_t tape;
 	sv_tas_input_t planinput;
 	unsigned int planepoch;
 	unsigned short planyaw;
-	int planmode, planair, planpostpending; // 0 live, 1 manual preset, 2 left, 3 right
+	float planamount;
+	int planmode, planair, planpostpending; // live0/manual1/left2/right3/guide4/hold5
 	tas_rewind_state_t state[TAS_REWIND_SLOTS];
 } tas_rewind_pool_t;
 
 static tas_rewind_pool_t *tas_rewind_pool[MAX_CLIENTS];
+// One local live-play base, not a4000-state TAS allocation for every human.
+static struct
+{
+	int userid, spawncount;
+	tas_rewind_state_t state;
+} tas_play_base[MAX_CLIENTS];
 static unsigned int tas_rewind_token;
 static sv_tas_clock_t tas_clock_context[MAX_CLIENTS];
 
@@ -60,6 +74,7 @@ void SV_TASRewindClear(void)
 {
 	unsigned int i;
 	memset(tas_clock_context,0,sizeof(tas_clock_context));
+	memset(tas_play_base,0,sizeof(tas_play_base));
 	for (i = 0; i < countof(tas_rewind_pool); ++i)
 	{
 		if (tas_rewind_pool[i]) Z_Free(tas_rewind_pool[i]);
@@ -73,7 +88,7 @@ static eval_t *SV_TASRewindField(edict_t *e, const char *name, etype_t type)
 	return svprogfuncs->GetEdictFieldValue(svprogfuncs, e, name, type, NULL);
 }
 
-static client_t *SV_TASRewindClient(edict_t *e)
+static client_t *SV_TASMovementClient(edict_t *e, qboolean assisted)
 {
 	eval_t *f;
 	int slot;
@@ -89,13 +104,22 @@ static client_t *SV_TASRewindClient(edict_t *e)
 		PR_FindFunction(svprogfuncs, "SV_RunClientCommand", PR_ANY) ||
 		!(e->v->health > 0) ||
 		!SV_TASClockForClient(host_client,NULL)) return NULL;
-	f = SV_TASRewindField(e, "run_tas_mode", ev_float);
-	if (!f || f->_float != 1) return NULL;
-	f = SV_TASRewindField(e, "run_tas_used", ev_float);
-	if (!f || f->_float != 1) return NULL;
+	if (assisted)
+	{
+		f = SV_TASRewindField(e, "run_tas_mode", ev_float);
+		if (!f || f->_float != 1) return NULL;
+		f = SV_TASRewindField(e, "run_tas_used", ev_float);
+		if (!f || f->_float != 1) return NULL;
+	}
 	return host_client;
 }
 
+static client_t *SV_TASRewindClient(edict_t *e)
+{
+	return SV_TASMovementClient(e, true);
+}
+
+static void SV_TASTapePublish(edict_t *e, const tas_rewind_pool_t *p);
 static void SV_TASTapeStop(edict_t *e, tas_rewind_pool_t *pool, enum sv_tas_tape_state reason);
 static void SV_TASInputCancel(edict_t *e);
 
@@ -115,6 +139,7 @@ static tas_rewind_pool_t *SV_TASPool(client_t *cl, qboolean create)
 	{
 		if (!create) return NULL;
 		memset(p, 0, sizeof(*p));
+		p->planamount = 1;
 		p->userid = cl->userid; p->spawncount = svs.spawncount;
 	}
 	return p;
@@ -127,27 +152,59 @@ float SV_TASRewind(edict_t *e, unsigned int slot, unsigned int token, unsigned i
 	tas_rewind_state_t *s;
 	eval_t *f;
 	int index;
-	if (slot >= TAS_REWIND_SLOTS || op > 2) return 0;
-	cl = SV_TASRewindClient(e);
+	if (slot > TAS_REWIND_SLOTS || op > 3) return 0;
+	if ((op == 3 && slot != TAS_REWIND_SLOTS) || (op == 0 && slot == TAS_REWIND_SLOTS)) return 0;
+	cl = op == 3 ? SV_TASMovementClient(e, false) : SV_TASRewindClient(e);
 	if (!cl) return 0;
+	// NET_IsLoopBackAddress means an in-process listen socket, not127.0.0.1/::1.
+	if (op == 3 && NET_ClassifyAddress(&cl->netchan.remote_address, NULL) > ASCOPE_HOST) return 0;
 	index = e->entnum - 1;
 	pool = tas_rewind_pool[index];
-	if (op == 0)
+	if (pool && (pool->userid != cl->userid || pool->spawncount != svs.spawncount)) pool = NULL;
+	if (op == 0 || op == 3)
 	{
 		// Carriers are world state. Capture only a normal private walk body.
 		if (e->v->movetype != MOVETYPE_WALK ||
 			(((int)e->v->flags & FL_ONGROUND) && e->v->groundentity) ||
 			tas_rewind_token >= TAS_REWIND_LIMIT) return 0;
-		pool = SV_TASPool(cl, true);
-		if (!pool) return 0;
-		s = &pool->state[slot];
+		if (op == 0)
+		{
+			pool = SV_TASPool(cl, true);
+			if (!pool) return 0;
+			s = &pool->state[slot];
+		}
+		else
+		{
+			tas_play_base[index].userid = cl->userid;
+			tas_play_base[index].spawncount = svs.spawncount;
+			s = &tas_play_base[index].state;
+		}
 		memset(s, 0, sizeof(*s));
 		s->token = ++tas_rewind_token;
 		s->pmepoch = cl->pmepoch;
 		s->source = cl->pmsrc;
 		s->jumpheld = cl->jump_held;
-		if (pool->lastinput.valid && pool->lastmove == cl->movetickcount)
+		s->planyaw = SV_TASPlanAngleWord(e->v->v_angle[YAW]);
+		if (op == 3)
+		{
+			// Recorded live movement, not an authored recipe or human-proof grant.
+			s->planamount = 1;
+		}
+		else if (pool->lastinput.valid && pool->lastmove == cl->movetickcount)
+		{
 			s->input = pool->lastinput;
+			s->planinput = pool->lastplaninput;
+			s->planmode = pool->lastplanmode;
+			s->planamount = pool->lastplanamount;
+			s->pitchfollow = pool->lastpitchfollow;
+		}
+		else
+		{
+			s->planinput = pool->planinput; s->planmode = pool->planmode;
+			s->planamount = pool->planamount;
+			f = SV_TASRewindField(e,"run_tas_pitchfollow",ev_float);
+			s->pitchfollow = f ? f->_float : 0;
+		}
 		VectorCopy(e->v->origin, s->origin); VectorCopy(e->v->oldorigin, s->oldorigin);
 		VectorCopy(e->v->velocity, s->velocity); VectorCopy(e->v->angles, s->angles);
 		VectorCopy(e->v->v_angle, s->viewangles); VectorCopy(e->v->mins, s->mins);
@@ -170,13 +227,22 @@ float SV_TASRewind(edict_t *e, unsigned int slot, unsigned int token, unsigned i
 #undef TAS_CAPTURE_FIELD
 		return s->token;
 	}
-	if (!pool || !token || pool->userid != cl->userid || pool->spawncount != svs.spawncount) return 0;
-	s = &pool->state[slot];
+	if (!token) return 0;
+	if (slot == TAS_REWIND_SLOTS)
+	{
+		if (tas_play_base[index].userid != cl->userid || tas_play_base[index].spawncount != svs.spawncount) return 0;
+		s = &tas_play_base[index].state;
+	}
+	else
+	{
+		if (!pool) return 0;
+		s = &pool->state[slot];
+	}
 	if (s->token != token) return 0;
 	// Watch holds legitimately change the live pin epoch; do not mistake that
 	// for a different owner. Rules/world are current, not rolled back by a go.
 	if (op == 1) return 1; // read-only preflight; never changes body or recording
-	if (pool->tape.state == SV_TAPE_ACTIVE || pool->tape.state == SV_TAPE_STAGING)
+	if (pool && (pool->tape.state == SV_TAPE_ACTIVE || pool->tape.state == SV_TAPE_STAGING))
 	{
 		SV_TASTapeStop(e, pool, SV_TAPE_CANCELLED);
 		return 0; // no replay can silently attach to a different placement
@@ -184,10 +250,20 @@ float SV_TASRewind(edict_t *e, unsigned int slot, unsigned int token, unsigned i
 	if (e->v->movetype != MOVETYPE_WALK) return 0;
 	f = SV_TASRewindField(e, "run_tas_paused", ev_float);
 	if (!f || f->_float != 1) return 0;
+	if (!pool) pool = SV_TASPool(cl, true);
+	if (!pool) return 0;
 	SV_TASInputCancel(e); // a placement never revives a latent future-input plan
 	cl->pmsrc = s->source; cl->jump_held = s->jumpheld;
 	pool->lastinput = s->input; // state-only snapshots explicitly clear availability
 	pool->lastmove = cl->movetickcount; // rebind, NEVER rewind the connection counter
+	pool->planinput = pool->lastplaninput = s->planinput;
+	pool->planamount = pool->lastplanamount = s->planamount;
+	pool->planmode = pool->lastplanmode = s->planmode;
+	pool->lastpitchfollow = s->pitchfollow;
+	pool->planyaw = s->planyaw;
+	pool->planepoch = cl->pmepoch;
+	f = SV_TASRewindField(e,"run_tas_pitchfollow",ev_float);
+	if (f) f->_float = s->pitchfollow;
 	// Publish restored fractional state immediately, never the cumulative tick.
 	f = SV_TASRewindField(e, "run_movecarry", ev_float);
 	if (f) f->_float = cl->pmsrc.msec_carry;
@@ -217,6 +293,7 @@ float SV_TASRewind(edict_t *e, unsigned int slot, unsigned int token, unsigned i
 	e->v->fixangle = FIXANGLE_NO;
 	SV_SendFixAngle(cl, NULL, FIXANGLE_FIXED, true);
 	World_LinkEdict(&sv.world, (wedict_t*)e, false);
+	SV_TASTapePublish(e, pool);
 	return 1;
 }
 
@@ -258,6 +335,7 @@ static void SV_TASTapePublish(edict_t *e, const tas_rewind_pool_t *p)
 	SV_TASInputSet(e, "run_tas_planyaw", SHORT2ANGLE(p->planinput.angle[1]) > 180 ? SHORT2ANGLE(p->planinput.angle[1])-360 : SHORT2ANGLE(p->planinput.angle[1]));
 	SV_TASInputSet(e, "run_tas_planbits", p->planinput.buttons);
 	SV_TASInputSet(e, "run_tas_planair", p->planair);
+	SV_TASInputSet(e, "run_tas_planamount", p->planamount);
 }
 
 static void SV_TASTapeStop(edict_t *e, tas_rewind_pool_t *p, enum sv_tas_tape_state reason)
@@ -291,6 +369,7 @@ static void SV_TASInputCancel(edict_t *e)
 	{
 		memset(p, 0, sizeof(*p));
 		p->userid = cl->userid; p->spawncount = svs.spawncount;
+		p->planamount = 1;
 	}
 	p->lastinput.valid = 0;
 	p->planmode = p->planair = p->planpostpending = 0;
@@ -337,7 +416,7 @@ void SV_TASInput(edict_t *e, unsigned int slot, unsigned int token, unsigned int
 	const sv_tas_input_t *in;
 	int i;
 	VectorClear(out);
-	if (slot >= TAS_REWIND_SLOTS || field > 3 || !token) return;
+	if (slot >= TAS_REWIND_SLOTS || field > 4 || !token) return;
 	cl = SV_TASRewindClient(e);
 	if (!cl || !(p = SV_TASInputPool(cl)) || p->state[slot].token != token) return;
 	in = &p->state[slot].input;
@@ -345,7 +424,13 @@ void SV_TASInput(edict_t *e, unsigned int slot, unsigned int token, unsigned int
 	if (field == 0) out[0] = 1;
 	else if (field == 1) for (i = 0; i < 3; ++i) out[i] = in->move[i];
 	else if (field == 2) for (i = 0; i < 3; ++i) out[i] = in->angle[i];
-	else out[0] = in->buttons;
+	else if (field == 3) out[0] = in->buttons;
+	else
+	{
+		out[0] = p->state[slot].planmode;
+		out[1] = p->state[slot].planamount;
+		out[2] = p->state[slot].pitchfollow;
+	}
 }
 
 static int SV_TASTapeContext(edict_t *e, client_t *cl, int count)
@@ -369,13 +454,14 @@ float SV_TASTape(edict_t *e, unsigned int op, float a, float b,
 	sv_tas_input_t in;
 	unsigned int serial;
 	float done, request;
-	int i, same;
+	int i, same, human = op == 10;
 	if (op == SV_TAPE_CANCEL) { SV_TASInputCancel(e); return 1; }
-	if (op == SV_TAPE_PLANCAP) return 1071; // readonly planner capability, not an action ticket
+	if (op == SV_TAPE_PLANCAP) return 1308; // readonly capability, never an action ticket
 	cl = SV_TASRewindClient(e);
-	if (op == SV_TAPE_PLANSET)
+	if (op == SV_TAPE_PLANSET || human)
 	{
-		if (!cl || !SV_TASStrafeFinite(a) || a < 0 || a > 3 || a != floorf(a) || b != 0 ||
+		if (!cl || !SV_TASStrafeFinite(a) || a < 0 || a > (human ? 5 : 3) || a != floorf(a) ||
+			!SV_TASStrafeFinite(b) || (human ? (b < 0 || b > 4) : b != 0) ||
 			SV_TASInputField(e, "run_tas_paused") != 1 || SV_TASInputField(e, "run_tas_pending") != 0 ||
 			SV_TASInputField(e, "run_tas_fault") || e->v->movetype != MOVETYPE_WALK ||
 			SV_TASInputField(e, "rec_wt_hold") || SV_TASInputField(e, "rec_sl_hold") ||
@@ -389,15 +475,17 @@ float SV_TASTape(edict_t *e, unsigned int op, float a, float b,
 		p = SV_TASPool(cl, true);
 		if (!p) return 0;
 		// Equality is decided here, never from a client's potentially stale stats.
-		same = p->planmode == (int)a && p->planepoch == cl->pmepoch && p->planinput.valid;
+		same = p->planmode == (int)a && p->planepoch == cl->pmepoch && p->planinput.valid &&
+			p->planamount == (human ? b : 1);
 		for (i = 0; i < 3; ++i)
 			if (p->planinput.move[i] != in.move[i] || p->planinput.angle[i] != in.angle[i]) same = 0;
 		if (p->planinput.buttons != in.buttons) same = 0;
 		p->planinput = in; p->planmode = (int)a; p->planair = 0;
+		p->planamount = human ? b : 1;
 		p->planepoch = cl->pmepoch;
 		if (!same)
 		{
-			p->planyaw = in.angle[YAW];
+			p->planyaw = human && (int)a == 4 ? SV_TASPlanAngleWord(e->v->v_angle[YAW]) : (unsigned short)in.angle[YAW];
 			p->planpostpending = 0;
 		}
 		SV_TASTapePublish(e, p);
@@ -532,10 +620,16 @@ static int SV_TASTapeOverlay(client_t *cl, edict_t *e, usercmd_t *cmd)
 static void SV_TASInputComplete(client_t *cl, edict_t *e, const sv_tas_input_t *in, int success)
 {
 	tas_rewind_pool_t *p = SV_TASInputPool(cl);
+	eval_t *follow;
 	if (!p) return;
 	p->lastinput = *in;
 	p->lastinput.valid = success && in->valid;
 	p->lastmove = cl->movetickcount; // called AFTER the resulting counter is published
+	// Bind the recipe to the executed input, not a later draft at this head.
+	p->lastplaninput = p->planmode ? p->planinput : *in;
+	p->lastplanmode = p->planmode; p->lastplanamount = p->planamount;
+	follow = SV_TASRewindField(e,"run_tas_pitchfollow",ev_float);
+	p->lastpitchfollow = follow ? follow->_float : 0;
 	if (p->tape.state == SV_TAPE_ACTIVE)
 	{
 		if (!SV_TASTapeCommit(&p->tape, success && in->valid, cl->movetickcount,
