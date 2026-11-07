@@ -5868,7 +5868,13 @@ void CSQC_EntStateToCSQC(unsigned int flags, float lerptime, entity_state_t *src
 {
 	model_t *model;
 	lerpents_t		*le;
+	vec3_t oorg, oang, omin, omax;	//FTESurf Patch 1363: collision fields before the update
+	float omodel = ent->v->modelindex, osolid = ent->v->solid;
 
+	VectorCopy(ent->v->origin, oorg);
+	VectorCopy(ent->v->angles, oang);
+	VectorCopy(ent->v->mins, omin);
+	VectorCopy(ent->v->maxs, omax);
 	le = &cl.lerpents[src->number];
 
 	CSQC_LerpStateToCSQC(le, ent, flags & RSES_NOLERP);
@@ -5938,6 +5944,13 @@ void CSQC_EntStateToCSQC(unsigned int flags, float lerptime, entity_state_t *src
 	}
 	else
 		ent->v->solid = SOLID_NOT;
+	if (((wedict_t*)ent)->gridareas[0].l.prev && (ent->v->solid == SOLID_BSP || ent->v->solid == SOLID_PORTAL) &&
+		(osolid != ent->v->solid || omodel != ent->v->modelindex || !VectorCompare(oorg, ent->v->origin) ||
+		 !VectorCompare(oang, ent->v->angles) || !VectorCompare(omin, ent->v->mins) || !VectorCompare(omax, ent->v->maxs)))
+	{	//linked, solid, and moved without a relink: csqc_linewalk stands aside until it is relinked
+		extern void CSQC_LineWalkStale(unsigned int entnum, qboolean stale);
+		CSQC_LineWalkStale(((wedict_t*)ent)->entnum, true);
+	}
 
 	ent->v->movetype = src->u.q1.pmovetype;
 	ent->v->velocity[0] = src->u.q1.velocity[0] * (1/8.0);
@@ -6129,6 +6142,11 @@ qboolean CSQC_DeltaUpdate(entity_state_t *src)
 		pr_globals = PR_globals(csqcprogs, PR_CURRENT);
 		G_FLOAT(OFS_PARM0) = !oldent;
 		PR_ExecuteProgram(csqcprogs, func);
+		if (ent->v->solid != SOLID_BSP && ent->v->solid != SOLID_PORTAL)
+		{	//FTESurf Patch 1363: the listener left it non-solid (cl_proximity.qc), so no eligible trace can reach it
+			extern void CSQC_LineWalkStale(unsigned int entnum, qboolean stale);
+			CSQC_LineWalkStale(((wedict_t*)ent)->entnum, false);
+		}
 
 
 		if (csqcdelta_pack_new.maxents <= csqcdelta_pack_new.numents)
@@ -7991,6 +8009,8 @@ static void PDECL CSQC_EntSpawn (struct edict_s *e, int loading)
 static pbool QDECL CSQC_EntFree (struct edict_s *e)
 {
 	struct csqcedict_s *ent = (csqcedict_t*)e;
+	extern void CSQC_LineWalkStale(unsigned int entnum, qboolean stale);
+	CSQC_LineWalkStale(((wedict_t*)ent)->entnum, false);	//FTESurf Patch 1363: freed, so nothing of it is linked
 	ent->v->solid = SOLID_NOT;
 	ent->v->movetype = 0;
 	ent->v->modelindex = 0;
@@ -9248,6 +9268,14 @@ void CSQC_RegisterCvarsAndThings(void)
 	Cmd_AddCommandD("poke_csqc", CSQC_Poke_f, "Allows you to inspect/debug ");
 	Cmd_AddCommand ("profile_csqc", PR_CSProfile_f);
 
+#ifdef USEAREAGRID
+	{
+		extern cvar_t csqc_emptygrid;
+		extern void CSQC_LineWalk_Register(const char *group);
+		Cvar_Register(&csqc_emptygrid, CSQCPROGSGROUP);
+		CSQC_LineWalk_Register(CSQCPROGSGROUP);
+	}
+#endif
 	Cvar_Register(&pr_csqc_formenus, CSQCPROGSGROUP);
 	Cvar_Register(&pr_csqc_memsize, CSQCPROGSGROUP);
 	Cvar_Register(&pr_csqc_maxedicts, CSQCPROGSGROUP);

@@ -1,5 +1,332 @@
 # Engine patches (fteqw `fteqw64.exe`)
 
+## Patch 1368 — execute selected similarity reader source bytes
+
+**Problem.** Ordinary direct callers could execute a previous reader revision on
+its next pass: an equal-size/same-integer-mtime source replacement still matched
+Python's timestamp bytecode. -B disables cache writes, not reads. Guarded live
+routes already isolate caches; no production stale-reader incident is claimed.
+
+**Change.** Keep caller-only paths/spec metadata and one reader per enabled pass;
+compile the selected binary source with dont_inherit=True and execute in that
+module's globals. Preserve encoding/BOM/source-future semantics, capability checks
+and typed unavailability. No cache deletion, helper, capture, schema, history,
+threshold, ranking, native pin/tag or QC Build change.
+
+**Verified.** Exact legacy Windows/ARM control fails only its final stale-reader
+marker after six real80 comparisons. Fixed four-case pass-reader banks pass on
+Windows3.10 and ARM3.11; existing rows stay exact. Windows all30 similarity programs:
+273unit cases/267pass/6existing skips plus68legacy assertions; reader949/0. Same554REC/
+178VIEW inputs and all732 diagnostic report blocks, unchanged344REC/7VIEW faults.
+Independent source review CLEAR. See QC tools/p1368-simcheck-source-reader.md for
+separate publication/delivery and limits; not helper-cache/global freshness,
+code authenticity, hard resource bounds, live cutover or whole-fleet coverage.
+
+## Patch 1367 -- own replay views by their measured lead, lobby ghost rows, "!player" filters, goto (QC only)
+
+Problem: (1) an own online replay (P814's staged .view beside the board .rec) put every frame one
+round trip early: the .view's tick column is STAT_FS_TIMERTICKS as it arrived, and Watch_ViewMap
+maps frames by it. Remote players saw the camera turn before the body from t = 0 (measured on the
+lobby's uploads: 225-435 ms, 6-53 deg mean error; 0 on the Pi's LAN). (2) Lobby_Frame's colour pass
+wrote forceinfokey to departed clients' edicts; in the 2 s zombie window the engine re-sent their
+emptied name as "unnamed" to everyone and nothing cleared the row. (3) filter_activator_name
+compared the activator's targetname literally: ahop_coast's "!player" filter (23 teleports, 19
+water resets, its doors) never passed, nor did `*` filters (29 maps) or case-only names (14).
+(4) The lobbies have no data/mapmeta.txt, so ahop_coast ran the base ruleset where Momentum and the
+installs run bhop. (5) Owner request: one goto command.
+
+Change: Watch_ViewLag (cl_watch.qc), own online views only: 64 probe knots, shifts -2 ticks ..
+1.2 s scored by yaw+pitch error against the .rec's samples; a shift beating none by 0.5 deg comes
+out of every knot offset, printed and shown by `replay status`. sv_lobby.qc skips slots clienttype()
+does not call REAL/BOT. SV_FilterPassesD: "!player" = any player, else SV_NamesMatch (Source's
+CFilterName/NamesMatch); cl_triggers predicts "!player" statically. cfg/maps/map_ahop_coast.cfg =
+mode_bhop.cfg's lines. `goto [spawn|start|main|sN|bN]` in cl_warpop.qc; goto_spawn kept.
+New recordings carry the additive header key `filtermatch 1` (grammar in sv_timer.qc, reccheck).
+
+Verified: isolated rig, subject vs control at the same base (FTESurf tools/p1367-lexlist.md).
+Akatosh surf_ace own replay: subject 375 ms taken out, trace vs .rec mean 0.08 deg; control 28.75
+(p95 89). LAN control: 0 ms taken out. Two clients, one disconnects: control shows
+"name=unnamed" and 120 refused writes in 8 s, subject neither. ahop_coast C0103_teleport: subject
+lands landmark-relative (-895 -15319 -12655.09), control does not move. Rig without mapmeta:
+100 Hz, airaccelerate 1000. goto: every form answered by the server's own warp line. 0 warnings.
+Not covered: the slope-fix half of Momentum's ClipVelocity and the other nine lobby/install
+ruleset splits (BACKLOG); the lobby still publishes gamemode ahop, so ahop_coast's timer starts
+on leaving the box there (on the jump on installs); a view shift is one constant per file.
+
+## Patch 1366 -- comparison bars and held-save visual travel (QC only)
+
+Problem: comparison deltas were difficult to read and answered only the nearest-route
+question; the held-save camera snapped directly to the saved position; local best
+receipts could hide segmented improvements behind clean-run metadata.
+
+Change: add independent same-elapsed and closest-route bars with numeric deltas,
+center-zero scales and unavailable/break guards. Copy at most512 consecutive rows
+from the loaded slot's own picture for render-only travel during an actual save hold.
+A bounded pending state waits for HOLD and one sequence/slot-bound endpoint string;
+queued saved posture, HUD body capture and a bounded hold-owned visibility eye keep
+presentation separate from body/clock/evidence. Preserve cancellation, failed-line
+retention and queued prediction guards. Keep segmented local-best receipts separate
+from clean PBs and certification, including pruning and result ranks.
+
+Verified: all three QC VMs zero warnings on the reviewed subject. Real dedicated-socket
+controls:26 checks/zero failures, plus actual server endpoint publication; graph PNG
+inspected. Controls cover distinct time/spatial sampling, breaks, independent class/
+certification/rank,512consecutive rows, late discontinuity, saved posture, delayed and
+mismatched endpoints, copied-source ownership and unpredicted HUD body source. Reader
+949/0;554 REC/178 VIEW corpus retains351 existing faulty files. No native code/pin/tag,
+QC Build, evidence grammar, historical-recorder repair or old cold-cut support change.
+The streamed historical-save repair remains unqualified and is deliberately excluded.
+Exact reported UI-cursor placement, natural travel feel and owner visual acceptance
+remain open; see tools/p1366-compare-save.md and lextest.md. Deployment recorded separately.
+
+## Patch 1364 -- solve static-prop lighting before first sight
+
+Problem: each static prop's exact lighting solve (every worldlight traced) ran in the frame
+that first drew it. After P1358, bhop_ceaseless's first traversal still solved 103 props
+(321 ms) inside play: worst frames ~70 ms, 0.1% low 26 fps.
+
+Change: the solve moves verbatim into VBSP_PropSolveLight. Once per map load
+(vbspinfo_t lightwarm_done), in its first frame, VBSP_PropLightWarm requests every prop
+model, waits for them as VBSP_BuildVisualBIH does (at most 10 s), and solves each unlit prop
+within hl2_lt_prewarm ms of solving (default 3000). The solve does not read the view, so its values are the
+same whenever it runs. A later lighting-cvar change re-solves lazily, as before; 0 is the
+old lazy path. hl2_lt_prewarm_info prints the pass and how many props were still solved in
+the frame that first drew them.
+
+Verified: Ceaseless replay 77, fresh launch per arm (on/off/off/on), first traversal, full
+effects (1920x1200, scale 1, MSAA 4, hl2_water 2, hl2_refract 1): on 575/560 avg, 261/264
+1%, 240/231 0.1%, 0 props solved mid-route; off 548/547, 135/136, 26/26, 103 props (321 ms)
+mid-route. The pass: Ceaseless 151 props in 355 ms; Demise 2350 in 23 ms, Boreas 1587 in
+21, Garden 429 in 12, Jumble 819 in 3, surf_dragon_css 3133 in 15. Three review rounds.
+Not covered: the pass runs in the first world frame after the loading plaque (no hook during
+activation), so a map with many unbaked props under many lights freezes there up to the
+budget; over budget, props are taken in lump order.
+
+## Patch 1363 -- CSQC point traces visit only what the ray reaches
+
+Problem: a CSQC trace walked every area-grid cell of its bounding box (about 1,860 per
+Tensor2 sprite sky ray) and every overflow-list entity (362 on Tensor2), and traced brush
+entities whose box met the ray's box but not the ray. Sky rays cost 1.16 ms of a 2.82 ms
+Tensor2 frame (rays 0 vs 64, render scale 1).
+
+Change: csqc_linewalk 1 (default) takes MOVE_NOMONSTERS point traces with BODY in the mask
+and finite ends: it visits the footprint's cells row by row, files the overflow list in a
+grid rebuilt after links hold still, and skips entities the ray cannot reach. With more
+than one entity able to change the answer, the trace is redone the original way. It stands
+aside while any csqc entity's collision may not match its link (a SOLID_BSP linked without
+a natively traced model, or moved by network state without a relink). csqc_linewalk 2 runs
+both walks and counts differing fields; 0 is the original walk; csqc_linewalk_stats reports.
+
+Verified: Tensor2 replay 4729, full effects, 20 s ABBA in one binary, two runs: 386/384 ->
+496/486 avg, 239/231 -> 295/283 1%; 349/339 -> 438/442, 167/161 -> 208/198. csqc_linewalk 2:
+1.67 M traces compared over all builds (392 k on the final gate), 0 fields differed; 0
+stale entities in play. surf_jumble +4.5% avg (its cost is the world BIH trace). Three
+review rounds (box traces, BODY-less masks, off-grid rows and engine-side stale links found
+and handled). Exact for QC that moves SOLID_BSP/SOLID_PORTAL entities only through
+setorigin/setsize/setmodel, as every such FTESurf entity does.
+
+## Patch 1362 -- positive serialized ramp chart bounds (asset writer only)
+
+**Problem.** Positive tiny chart radii rounded to `0.0` in the baker's one-decimal
+output. The unchanged client correctly refuses the entire geometry file. Full
+source Sinsane2 had43 such charts; the retained predecessor already had40.
+
+**Change.** Floor only exported chart radii at0.1 before decimal formatting.
+Keep client bounds, geometry/UV/normal/image data and rendering code unchanged.
+The delivery qualifier now mirrors the actual client counts/radius/UV/normals;
+its earlier weaker check and refused payload are retained, not regraded.
+
+**Verified.** Same frozen full-input Sinsane2 bake changes exactly43 radius tokens
+from0.0 to0.1, with identical header and every other chart/triangle token. Four
+raster/ABI tests and all249 final generated sets pass the actual client-format bounds,
+content hashes and decoded-image checks. Native appearance/FPS acceptance is not
+claimed. Data-delivery provenance: QC tools/p1360-ramp-library.md. No native, VM,
+physics, evidence, threshold/default or QC Build change; native pins stay fixed.
+
+## Patch 1361 -- cooperative pending-source selection boundary (backend only)
+
+**Problem.** Reader/preparation or admitted retirement could consume the existing
+cooperative elapsed budget, yet the collector still entered pending-source SQL
+before its later row-admission check. No comparison or stored false measurement
+was demonstrated after expiry; this is unnecessary newly entered selection work,
+not a hard-time vulnerability claim.
+
+**Change.** Recheck the same budget after retirement and before selection. Empty
+selection flows through existing final diagnostics. Already admitted retirement
+commits/reports normally; preserve observation/replay bytes, source/peer positions,
+in-flight recovery, next fresh-pass work and standalone pending reads. No new
+schema, capture, clock model, threshold/default/ranking/enforcement policy, native
+pin/tag, VM or QC Build change. Whole hard resource bounds remain open.
+
+**Verified.** Pristine-source three-arm control: fresh real80-opportunity positive
+passes, two intended post-expiry delegate/eligible-SQL assertions fail with zero
+loader errors. Candidate128 Windows cases run/126pass/two existing POSIX-only
+skips; ARM128/128pass/no skips. Actual retirement deletion/checkpoint and unchanged
+old observation/replay/recovery state survive reopen; a following fresh pass
+compares80 and completes the retained source. All192 qualified source hashes and
+synthetic cleanup held on ARM. Fake monotonic time proves ordering, not latency,
+SQL/native preemption or global RSS/fleet coverage. Independent final review,
+publication and live installation are separately recorded in QC
+tools/p1361-simcheck-preselection.md. Both exact CLOSED synthetic profiles also
+passed13 explicit-reader cases and actual startup/receipt/reopen controls. Owner
+then authenticated the reviewed primary cutover; fresh7Nov09:25:46UTC readback
+binds actual namespace/default-reader acceptance to the current PID/birth/CWD and
+invocation, verifies runtime84/full158/actual mounts, OPEN health, normal launcher,
+four cron routes and importer. SAME CURRENT DB schema26/all44 tables/eight identity
+digests preserved at cutover; P1359 reader pair unchanged. Ingress/resources clean,
+no old DB restore or repeated healthy activation. This verifies primary delivery,
+not production fallback, hard bounds, numerical performance or whole-fleet coverage.
+
+## Patch 1360 -- optional priority ramp-mark library and R2 delivery
+
+**Problem.** The optional replay-baked ramp library covered only the original
+Story/Event selection and was served from the origin. Important bonus courses
+and popular main boards needed a broader, explicitly measured asset inventory,
+without adding a large set of atlases to game packages.
+
+**Change.** Freeze the owner's public sheet, preserving all280mentions across
+278distinct bonuses and explicit installed-revision aliases. Extend the existing
+batch baker with a frozen exact-map scope. Reuse the whole-map baker (P1362 later
+corrects tiny-radius serialization), shader and on-request SHA256-checked cache. Allowlist only public ramp
+geometry, map/hash PNG and its bounded base64 transport in the existing R2
+mirror/gateway; compress text with verified gzip companions. Separate ramp
+readiness ledgers preserve existing map/zone state and current-source fallback.
+No native code, pin/tag, VM, movement, recording/evidence or QC Build change.
+
+**Verified.**307target maps from the resolved sheet, original Story/Event roster
+and100most-contested held main boards (NOT measured play telemetry). Final full
+source snapshot supplies30,800held files, including10,240KSF/16,147Mom originals;
+converted fallbacks have no per-course/rank/style cap. After P1362,249bakes pass
+the actual client-format/image/digest bounds:94of100popular mains and129of173
+priority maps.196of278sheet bonuses have an indexed held exact-course input;
+192also have a ready atlas, NOT proof every course surface was painted.58map
+gaps remain explicit (43no-input/15no-contact);938reader rejects are not used
+recordings. Our154missing sidecars were recovered and14affected maps rebaked,
+not mislabelled upstream absence. Windows25mirror/22gateway/11gzip tests pass
+(one POSIX-only link skip); ARM25/22/11pass without skips.3priority,
+4raster and3replay-reader controls pass. Actual unprivileged ARM nginx/gunicorn
+and real R2 GET/gzip/hash/HEAD/range/stale-source/dead-gateway controls pass.
+Three QC VMs build with0warnings using qualified c24ede65. Deployment, root-side
+nginx cutover and owner appearance acceptance are separately recorded in
+QC tools/p1360-ramp-library.md; not claimed by these source/transport checks.
+
+## Patch 1359 -- recording-version numeral spelling (diagnostic readers only)
+
+**Problem.** Python-only numeral syntax in an ordinary REC version token could
+become accepted version metadata or a measured similarity stream. Merely raising
+ValueError in similarity's conversion try would still fall through to version
+zero and compare moves. This is malformed diagnostic input, not proof of cheating.
+
+**Change.** The two existing ordinary consumers reject underscore/non-ASCII
+version tokens before int conversion. Similarity raises its existing malformed
+refusal outside the version-zero fallback, including repeated pre-body header
+branches. Recording checks use their existing version fault before publishing a
+version or dispatching held metadata. Preserve ASCII signs/zero padding, other
+malformed-ASCII fallback, unsupported-version dispatch and exact native held
+framing. No magic/tokenization/whole-header parser, raw capture/evidence format,
+clock model, stored-history, policy/threshold/ranking, native pin/tag/VM or QC
+Build change. Special view/ramp paths are outside this patch.
+
+**Verified.** Published-source control ran13 methods with24 failing subcases and
+no loader errors; candidate13 pass, including real collector/CLI abstention,
+both pair orientations, bounded/standalone paths, repeated header and metadata
+withholding. Legacy23 pass; held39 run/38pass/one unset paired-source skip. The
+separate paired-source case fails the same pre-existing version12-versus10
+assertion on the published control and candidate; no native-pin qualification or
+unrelated test repair is claimed. Recording reader949 checks/0 failures.
+Actual subprocess CLI normal80-input
+control compares, malformed header exits1 without metrics, bytes unchanged.
+Current corpus554REC/178VIEW has unchanged raw bytes, identical control/candidate
+output and351 existing faults. This is structural diagnostic admission, not
+full native grammar/authenticity or new calibrated anti-cheat capability. Final
+independent review, ARM qualification and installation are separately recorded in
+QC tools/p1359-rec-version-numbers.md; not claimed by these source checks.
+
+## Patch 1358 -- reuse exact static-prop lighting cubes
+
+Problem: Ceaseless first-traversal stalls came from uncached static-prop lighting,
+not world drawing or shader startup:231.307ms of a231.444ms PrepareFrame call was
+22 new prop solves. The model-lighting caller solved the same raw ambient cube
+once for the level/direction and again for light_cube.
+
+Change: optionally return the raw cube from the unchanged Values producer,
+before encoding/folding/flooring. Reuse only for the native VBSP callback with
+exact visibility and no baked-light suppression. Dynamic/approximate, baked,
+other callbacks and missing state keep their original paths. No cross-call memo,
+ray/quality reduction, lighting formula, renderer interface or physics change.
+Default hl2_lt_reusecube1;0 is the original two-query control. A toggle invalidates
+the existing prop-light cache, allowing genuinely cold on/on comparison arms.
+The ordinary Values callback remains a wrapper with no cube output.
+
+Verified: prototype native72 raw cubes match the original independent Cube query
+bit-for-bit. Actual caller C tests cover64 eligibility/output combinations; all4
+mutants (dynamic/baked/foreign gate removal and never-act) fail at runtime.
+Matched14s cold-lighting ABBA: off697/706avg,124/125 1%,17/17 0.1%,
+worst249.46/248.55ms; on718/712avg,195/182 1%,37/32 0.1%,
+worst67.22/66.91ms. Probes/profiling/in-window logging OFF, same normal64rays,
+render scale2 and moving replay; assets/world prewarmed, lighting reset each arm.
+These are short prototype windows, NOT whole-map or installed performance, and
+remaining67ms stalls are NOT eliminated. Clean committed source/build/comparison
+and dual-Windows activation are separately recorded in the QC delivery report.
+Temporary phase/comparison probes and the unselected GPU shader candidate are
+excluded from this product patch.
+
+## Patch 1357 -- skip empty CSQC grid-call overhead
+
+**Problem.** Source light-visibility point traces walked large client area-grid
+rectangles, entering the collision routine even for empty cells. A selected
+Tensor2 native probe attributed about81% of collision-query time to this client
+broadphase, not the world BSP or result publication.
+
+**Change.** Default-on `csqc_emptygrid` checks the live forward-list sentinel
+before entering the unchanged routine, for the exact CSQC world only. It retains
+x-major/y-minor occupied-cell and node order, sequence increment, jumbo-first
+handling, portal/network stages and the disabled/other-world fallback. No cached
+occupancy, ray budget, visibility policy, collision filter, trace-field handling,
+header/ABI, movement formula, evidence or QC Build change. An empty callee has
+only local declarations before its loop and performs no state writes/callbacks.
+
+**Verified.** Extracted actual C traversal/insertion/unlink controls plus8 runtime
+mutants cover activation, shared-cell order, first/last heads, upper-boundary
+jumbo behavior, portals, exact next-vs-prev predicate and sequence/fallbacks.
+Independent source review confirms empty-call equivalence. Instrumented native
+normal64-ray12s Tensor2 ABBA, with profiling OFF during timings: original394/395
+average and249/258 1% low versus433/433 and284/286; separate acted witness skips
+54,319,301 of60,271,690 cells. This is a selected-section result, not a whole-map
+or GPU/first-use fix. Boreas/Garden timing controls are largely neutral;
+Demise/Ceaseless selected-query witnesses have zero calls and are not acting
+optimization passes. Earlier all-edict proof shortcuts failed to act and were
+rejected. Clean-source build, final comparisons and actual deployment provenance
+are recorded separately in the QC repository's tools/p1357-csqc-emptygrid.md.
+
+## Patch 1356 -- required-input numeric spelling (diagnostic readers only)
+
+**Problem.** Python-only number spellings in required input fields could become
+ordinary similarity moves or clean recording rows. Actual untreated synthetic
+controls measured15 malformed spellings as match1.0/80; the existing clean REC9
+builder retained zero faults/80inputs across33 payload mutations. This is not
+native replay/authenticity proof or a finding about real players.
+
+**Change.** Admit ASCII numeric tokens without Python digit separators before the
+existing required move-tick/move/button conversions and the full checker's
+ordinary in/fzin numeric payload conversions. Similarity retains whole-stream
+malformed/unavailable behavior and deliberate fractional truncation; the full
+checker keeps its existing integer/finite-float/precision rules. No global float
+or header change, capture/API/format/schema, history/retry, policy/threshold,
+ranking, backend runtime source, native pin/tag, VM or QC Build change.
+
+**Verified.** New9 methods pass against real readers and collector; untreated
+Windows98 assertions plus1 actual collector integration fail. Valid matching,
+unequal measured-zero, fractional/sign/exponent, bounded/unbounded, alias and
+supported13/15 controls ACT. Reader949/0; collector270 unittest cases pass with
+6 known Windows SQLite/POSIX skips. Standalone checks passed despite an initial
+unittest import-loader error caused by its successful SystemExit0. Identical
+548REC/178VIEW corpus retains351 existing faults, all726 source hashes preserved.
+Initial fixture/native-status assumptions remain recorded, not product passes.
+Two reviews, ARM and actual dual-Windows/Pi helper delivery PENDING; no live,
+full native grammar, authenticity, resource or enforcement claim. See the QC
+repository's tools/p1356-input-numbers.md for publication/delivery status.
+
 ## Patch 1355 -- bounded local full-line next-face search (QC only)
 
 **Problem.** Observed section navigation did not provide constrained candidate
@@ -20,7 +347,7 @@ input mutation, existing invalidation/history and source proof; no pose/world
 injection, new evidence format, public admission, native pin/tag or Build change.
 Published P1351-1353 source/native fixes remain intact.
 
-**Verified.** Final integrated real dedicated-socket34/34 controls ACT: baseline,
+**Verified.** Final integrated real dedicated-socket37/37 controls ACT: baseline,
 all9 candidates, measured authored work, full-future replay, genuine GUI completion
 and Cancel, stale job1 cannot cancel job2, cancelled Keep disabled, exact Original
 input/settings/future recovery and preview/operation clearing. Baseline was best:
@@ -29,11 +356,23 @@ Preview recovery setup, invalid QC8/compact2 helper oracle, driver status regex
 and whole-file versus canonical-chain domain failures are preserved/diagnosed,
 not counted as passes. Actual old21helpers covered all72 masks against existing
 editor. Final fair-baseline22production helpers ACT with0failed, including the
-bounded first-qualified-window baseline control; same34native controls pass after
-that change, all own processes quit0. All3VMs compile0warnings. Native component
+bounded first-qualified-window baseline control; same37native controls pass after
+that change, all own processes quit0. Two independent review rounds caught/fixed
+optimizer admission ownership and preview status loss after workshop reopen;
+actual same-batch exclusion and reopen/preview controls pass. Initial declaration-
+order compile and immediate-status driver oracle failures remain explicit. Existing
+verifier regression949/0. All3VMs compile0warnings. Native component
 profile2f5; no global zero-warning/native/performance claim. >128
 selected rows, changed-winner Keep/history, finish-specific context and owner
-familiar two-ramp acceptance remain unverified. See tools/p1355-tas-solve.md.
+familiar two-ramp acceptance remain unverified. Published QC runtimec489d56a is
+installed BOTH Windows22:02Z/all12lobbies22:14Z6November UTC: all14Windows and
+2lobby-program targets/.prev exact,12fresh actor births/native hashes verified;
+18656Windows/48617Pi protected originals unchanged.8recorder parts and183full
+resume payload/metadata members individually ON/OFFBOX rehashed before staging,
+locked JIT closure checked, catalog77 preserves76prior entries. Native/config/
+backend unchanged; sweep lock released. Transport deadlines reconciled read-only,
+no repeated promotion/restart. Build89/native pin1353 unchanged; no release or
+owner-acceptance claim. See tools/p1355-tas-solve.md.
 
 ## Patch 1354 -- report non-finite similarity output as unavailable
 
