@@ -1,5 +1,214 @@
 # Engine patches (fteqw `fteqw64.exe`)
 
+## Patch 1383 -- a player's own noclip speed (sv_user.c + QC)
+
+Problem: csprogs' Shift+wheel wrote pm_noclipspeed, a server cvar only a game hosted in the same
+process shares, so on a lobby it printed the new speed and changed nothing (BACKLOG "Lobby wheel").
+
+Change: userinfo `ncspeed` (0.25..16) is that player's speed on the moves that fly by it -- noclip
+or a spectator -- and only those (SV_ClientNoclipSpeed from SV_SetQWClientMoveVars): the pin records
+movevars and TAS project identity compares it, so walking keeps the shared value (review 2). The
+server tells only that client svc_serverinfo pm_noclipspeed (%.9g) when its value changes, and again
+after a map's serverdata or the engine's own sync of the shared key (sv_send.c marks the client), so
+released clients predict it. client_t gains three appended fields. Pi: branch p1383-arm =
+p1371-arm + the two P1383 commits.
+
+Verified: Source physics rig, installed client engine: noclip legs 265.2 / 795.6 units at ncspeed
+1 / 3, control (old server) 1060.8 / 1060.8 at the shared 4; client serverinfo follows; no prederr
+lines while flying. Pi pigate identical to the live binary (93 lines) and wasteland2 0022396 PASS on
+every Pi build. Three review rounds (pin/TAS identity, the sync race, pm type, reconnect fixed).
+Delivery: FTESurf tools/p1378-p1383.md.
+
+## Patch 1382 -- name the fs_addons games that did not mount (fs.c, hl2 plugin + QC)
+
+Problem: with no data/mapdeps.txt line the plugin said a map "references content that was never
+shipped with it", but mapdeps is resolved with every fs_addons.txt game mounted, so a player whose
+HL2/CS:S were not found (another drive) was told the map was broken.
+
+Change: FS_RemountAddons publishes the steam: lines it could not mount as fs_addons_missing (not
+"Half-Life 2/hl2" when Momentum's base resolves: its hl2_dir.vpk stands in, review 2); the material
+census names them first with the fs_steamlibs fix and drops states 0/1's claim. csprogs' banner and
+its new lobby report read the same cvar.
+
+Verified: CS:S listed under a misspelled folder: "Not found on this PC: Counter-Strike Sourcee/cstrike",
+no "never shipped", banner line and lobby report carry it; all games mounted: nothing missing. The
+HL2-under-Momentum exemption is checked by reading only (HL2 is installed on the test PC).
+
+## Patch 1380 -- point-sampled VTFs keep their mips; both clamp flags clamp (image.c)
+
+Problem: surf_centipedes' spawn title (VTF POINTSAMPLE|NOMIP|CLAMPS|CLAMPT, 1024 wide, ~640 px on
+screen) wrapped at the brush edges -- slivers of the next tile's letters beside it -- and point
+sampling of one level dropped texel columns.
+
+Change: CLAMPS and CLAMPT together set IF_CLAMP (one flag for both axes, so one alone keeps
+wrapping); NOMIP is not honoured on a POINTSAMPLE VTF (its own mips, GL_NEAREST_MIPMAP_LINEAR, nearest
+magnification as P728).
+
+Verified: spawn screenshot beside the owner's: slivers gone, strokes even. Owner check pending.
+
+## Patch 1378 -- passable tracktrains ride their path_tracks, in csprogs (QC only)
+
+Problem: func_tracktrain spawned frozen, so surf_centipedes' 3D-sky swarms (105 props on 35 passable
+trains) and 369 more passable trains Source starts at spawn never moved.
+
+Change: the server keeps each passable train's clock (path_track walk, Find/Next semantics, inputs)
+and sends it once as a CSQC entity; riders (non-solid props) once with their pose in the train's spawn
+frame; csprogs draws both every frame. A train with anything parented under it that cannot ride --
+including what spawned away (CheckSpawn records it) -- stays frozen. No native change.
+
+Verified: centipedes 35 trains / 105 riders, skulls cross the sky room; server->client bytes equal the
+control (441-446 vs 437-442 B/s; a server-side version cost 9-12 KB/s). Three review rounds.
+FTESurf tools/p1378-p1383.md.
+
+## Patch 1377 — selected similarity reads observe the pass deadline
+
+**Problem.** The existing owner-opted SQLite progress handler limited selected VM
+work but did not observe the collector admission deadline during executing reads.
+The prior contract was cooperative, not a silently broken hard overall timeout.
+
+**Change.** Scope the earlier prior/pass deadline to the owned read budget; check
+before selected statements and at VM callbacks, distinguish time from instruction
+exhaustion, restore scope/cursors/handlers and propagate late time cancellation.
+Retain whole-query abstention, completed comparisons/atomic flush, callback opt-in,
+recovery and history. No metric/schema/parser/capture/threshold/rank/default-policy/
+retention/native pin/tag/VM/QC Build change; no new process/config/grant/controller.
+
+**Verified.** Two independent reviews CLEAR. All30Windows similarity programs rc0:
+276unit270pass6oldplatformskips plus68standalone. Real ordinaryREC9 controls store
+three80-opportunity comparisons; actual selectedSQL callback/time subject interrupts
+with ampleVM and no partial admission, preparedDB/history exact. Sameffed predecessor
+fails required interrupt only after acting controls. Nested/foreign/SQLerror/
+BaseException restore and stricter-owner-deadline completedflush controls pass.
+ActualARM3.11.2/aarch64 SQL8/time15 pass, samecounterfactual onefailure/zeroerrors.
+Original observer/transport failures retained, exact owned fixtures retired; small
+source overlays retained. See QC tools/p1377-simcheck-sql-deadline.md. No total elapsed/
+I/O/RSS/schema/write/UDF/wait/fleet/leaf closure, no newerreader qualification or
+installation implied. Actual delivery requires separate source-bound provenance;
+pending P1368 package stays immutable until its owner completion is proved.
+
+## Patch 1371 -- a zone file's gamemode picks the ruleset; bhop_ maps are bhop (sv_phys.c + QC)
+
+Problem: the owner wants every bhop_ map to start its timer on the jump, and zone_edit to set a map's
+mode and its Momentum/KSF tiers. The timer rule follows serverinfo gamemode (sv_timer.qc), which came
+from sv_gamemode, data/mapmeta.txt or the name: five bhop_ maps the index files under ahop/climb-16/
+df-vq3 ran Momentum's mode, and zone_edit's Surf/Bhop was local-only (SV_ReadEditorRuleset refuses
+lobbies).
+
+Fix: SV_ApplyGamemodeModes reads the first loose zone file with a region (SV_FindZoneFile, the speed
+cap's lookup order) for `"gamemode"` 1 or 2, after hosted map settings and sv_gamemode and before
+mapmeta; other values warn and are ignored, compared as a 32-bit float so QC (sh_zones.qc) agrees.
+A bhop_ map whose mapmeta mode is outside the bhop category is bhop (src "bhop_ name"). QC: zone file
+keys gamemode/momentumTier/ksfTier, zone_edit Map properties, tier row from the zone file, `.rec`
+`startrule` and `gamemode` header lines (FTESurf tools/p1371-modetier.md).
+
+Verified: Windows server arms against the installed build (bhop_badwater ahop -> bhop; a zone file's
+2 on surf_ace and 1 on bhop_eazy win; 2.5 and 3 refused). Pi: branch p1371-arm = patch-1353 (the live
+lobby build) + this sv_phys.c, pm_dettest identical to the live binary on bhop_eazy and surf_ace,
+sweeper-form pm_verify PASS 22396/22396 on both. Windows binaries are stamped eb36ba811 (tag patch-1371).
+Three review rounds; the last found only low UI quirks.
+
+## Patch 1375 -- centered save countdown and one lead-in editor (client UI)
+
+Problem: load travel gave no small time-to-ready cue; hud_edit exposed presets and
+numeric entry as two rows for the same cl_sl_leadin setting.
+Change: draw remaining minimum-hold/travel milliseconds below the crosshair,
+Loading save while an answer/start is unknown, and Release to play if still held
+when ready. Keep one 0..2000ms numeric editor; preserve the existing value. Read-only
+presentation: no hold/release, body, clock, recorder, native pin/tag or Build change.
+Verified: compiler/source checks and delivery in tools/p1375-save-countdown.md.
+Owner approved the PRIOR lead-in; new countdown readability/editor acceptance pending.
+
+## Patch 1374 — own ordinary input keywords before payload validation
+
+**Problem.** The existing similarity required-row projection recognized fzin by
+exact whitespace token but ordinary in by literal trailing space. Bare in/tabbad
+could vanish as unknown rows and yield a measured79/79 prefix instead of abstention.
+This ordinary-path gap is NOT a native REC13/15 witness-bypass claim.
+
+**Change.** Use the already computed exact in token alongside fzin before the same
+payload check. Preserve valid whitespace/all80 rows and unknown-word compatibility;
+no header/numeric/clock/budget/selection/support/minimum/capture/schema/history/
+threshold/default-enforcement/native pin/tag/VM/QC Build change. Later native
+validation remains; no new signal, cutoff, regrade or authenticity/tier credit.
+
+**Verified.** Independent source review CLEAR. Windows10parsing pass; exact15e
+predecessor only2targetverdict failures AFTERvalid80/malformedin0 andreal79/79/raw
+capture/buffer controls act. Actual ARM3.11/aarch64 same subject10/control2targetfails.
+Existing36Windowsprograms:27recsim+273similarity(267pass/6oldskips),68standalone,
+949reader/0. CheckerA221 source scope explicit, installed3eab not implied. Same554REC/
+178VIEW domain/rawbytes,351oldfaults344/7 andall732normalizedreportblocks unchanged;
+771sourceinventory exact, childrenreaped/tmpempty/cacheabsent. See QC tools/p1374-
+recsim-required-input-keyword.md. Source evidence is not actualdelivery/namespace,
+hardware/calibration/hard-bound/new-mode/fleet acceptance. Separately, final UTC
+2026-11-07T13:00:49Z BOTHWindows installedac915 fromcleanQCf1b9bc1d:29actual-path
+casesEACH(13numeric/6prefix/10parsing), original15ebackups/ACL/index andfour3eab/A3f7
+helperguards preserved; no failure/rollback/game/data/process change. Pi untouched,
+P1368actualownerproof stillpending; no live-namespace/generation credit.
+
+## Patch 1372 -- retain selected-row metadata for historical warm saves (QC only)
+
+Problem: current-format historical streamed saves omitted recorder metadata required
+by warm restoration. An acting baseline kept positive saved clocks but lost recording
+after load; the predicted zero saved clock was falsified, not relabelled as a pass.
+
+Change: capture the full recorder tuple with each rewind row and write it from that
+selected row, never today's live head. Grow the dynamic row layout and reject an
+unavailable modern tuple before file/queue mutation. No format/native/pin/tag/Build
+change, old-file migration, cold-cut duration recovery or general zero-clock fix.
+
+Verified: reviewed subject ordinary warm controls22/0, actual client helper26/0;
+standing/crouched body, clock, loaded stance, real GUI sampled position, hold/release
+and recording continuation. Frozen P1366 server counterfactual ACTS and loses recorder
+attachment. Latest public-base integration/build/readers and deployment recorded in
+tools/p1372-warm-stream.md. Full TAS, changing nonzero native counter tuples,
+unavailable-state runtime mutation counters and owner visual/original-case acceptance
+remain open, not implied by metadata presence or source review.
+
+## Patch 1370 — start the existing prefix at the aligned overlap
+
+**Problem.** best_offset compares negative alignments after skipping their leading
+non-overlap; prefix_len exited immediately at negative j. Thus79 actual matched/
+compared rows could report prefix0/cover0 solely in that direction.
+
+**Change.** Start prefix at max(0,-d),max(0,d), the first overlap of the same row
+alignment. Preserve first mismatch, longer-run cover denominator, offset selection/
+ties, match/support, parser/capture/budgets, no-opportunity/zero distinctions, stored
+history, thresholds/ranking/default enforcement, native pin/tag, VM and QC Build.
+No new statistic or calibrated cutoff. Unpublished draft1369 became1370 after the
+concurrent mapmeta publication; identical validated source/test, no evidence regrade.
+
+**Verified.** Independent source review CLEAR. Windows Opportunities6pass; exactBF99
+control only2negative-prefix subfailures after acting real79/support/rawSHA/bytes/
+positive controls (perfect79 andfirstmismatch40). ActualARM3.11/aarch64 same subject6/
+control2targetfails; no-overlap±80/81 remains0. Existing Windows36programs:25recsim+
+273similarity cases(267pass/6established skips),68standalone andreader949/0. Current
+checkerA221 scope explicit; same554REC/178VIEW rawbytes/domain,351oldfaults(344/7),
+all732reportblockmultiset unchanged. Source771-file inventory exact; tempchildren
+reaped/cacheabsent. Source validation alone establishes no actual delivery,
+hardware/calibration/fleet/resource/new-mode/source-authenticity credit.
+
+**Windows delivery (7Nov2026,12:11UTC).** Exact clean source6848f729 reader15e19bf4
+installed in BOTH Windows tools/census paths. Each actual installed path passed13
+numeric+6prefix cases; retainedBF99 originals/timestamps/ACL, destinationACL/index
+preserved; checker3eab/heldmetaA3f7 untouched. No game/data/native process change.
+NanoPi reader NOT shipped: serialize after P1368 actualowner cutover/current proof.
+See QC tools/p1370-recsim-aligned-prefix.md for separate scopes and limits.
+
+## Patch 1369 -- lobbies read data/mapmeta.txt; five bhop_ maps keep bhop numbers (cfg/data only)
+
+Problem: the Pi had no data/mapmeta.txt, so SV_ApplyGamemode took lobby modes from the map name while
+installs read Momentum's index: 27 of the Pi's 2256 maps resolved differently, 10 with a different
+ruleset. Owner: ship the file, and every bhop map runs 100 tick / airaccelerate 1000.
+
+Fix (no engine or QC change): the installs' mapmeta.txt (5e6c978d) copied to the Pi; cfg/maps/
+map_<map>.cfg with mode_bhop.cfg's lines for the five bhop_ maps the index files under ahop, climb-16
+or df-vq3 (5 of 522 bhop_ rows); map_ahop_coast.cfg removed. A map cfg cannot set the mode, so those
+five keep Momentum's gamemode and start the timer on leaving the box (BACKLOG).
+
+Verified on the live lobby 12 (empty) with rcon `map` + `movement`: agtricks "bhop, from mapmeta",
+bhop_badwater/bhop_canals per-map 100 Hz and airaccelerate 1000, ahop_coast "bhop, from mapmeta" with
+no per-map file. FTESurf a344f846, tools/p1369-mapmeta.md.
+
 ## Patch 1368 — execute selected similarity reader source bytes
 
 **Problem.** Ordinary direct callers could execute a previous reader revision on
@@ -20,7 +229,13 @@ Windows3.10 and ARM3.11; existing rows stay exact. Windows all30 similarity prog
 178VIEW inputs and all732 diagnostic report blocks, unchanged344REC/7VIEW faults.
 Independent source review CLEAR. See QC tools/p1368-simcheck-source-reader.md for
 separate publication/delivery and limits; not helper-cache/global freshness,
-code authenticity, hard resource bounds, live cutover or whole-fleet coverage.
+code authenticity, hard resource bounds or whole-fleet coverage. Separate actual
+P1368primary delivery auditedREADONLY2026-11-07T14:29:19Z: OPENgen16fb0b54/coreffed,
+84runtime/158inputs, actualactor+namespace+mounts/canonical/fourcron/importer/routes
+match; currentDBschema26/44tables/8identitydigests preserved, no failure/recovery,
+leasesreleased. Fallbackfb7ed790 retained onCURRENTdata; no healthyretry. Prior
+BF99/3eab/A3f7 readers unchanged; P1370/P1374reader andP1377core NOT included. Next
+feature requiresfreshsource-boundgeneration, noteditingliveimmutableP1368.
 
 ## Patch 1367 -- own replay views by their measured lead, lobby ghost rows, "!player" filters, goto (QC only)
 

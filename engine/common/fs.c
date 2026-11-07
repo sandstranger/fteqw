@@ -342,6 +342,9 @@ Published on EVERY path out of FS_AutoMountForMap, early returns included.  Stat
 initial value for exactly that reason: leave it unset on a path and the previous map's answer
 is what the next map's warning quotes, which is the failure this cvar exists to end. */
 static cvar_t fs_automount_state	= CVARFD	("fs_automount_state", "4", CVAR_NOSAVE, "ftesurf (P231): what fs_automount did for the loaded map. 0=it needs no pack, 1=its pack is mounted, 2=its pack is served from the asset cache, 3=it names a pack that is not installed, 4=unknown (fs_automount off, or no data/mapdeps.txt). Read by the missing-material warning to pick its advice; setting it by hand only lies to that warning.");
+//FTESurf Patch 1382: the fs_addons.txt games FS_RemountAddons could not mount, so the material
+//census stops saying "never shipped" when the game the map was checked against is just not found.
+static cvar_t fs_addons_missing		= CVARFD	("fs_addons_missing", "", CVAR_NOSAVE, "ftesurf (P1382): the steam: lines of fs_addons.txt that did not mount at the last filesystem build, comma-separated (Steam folder/game dir). Read by the missing-material warning; setting it by hand only lies to that warning.");
 static cvar_t fs_automount_spec		= CVARFD	("fs_automount_spec", "", CVAR_NOSAVE, "ftesurf (P231): the data/mapdeps.txt spec behind fs_automount_state -- the pack the loaded map asks for, or empty when it asks for none. In state 3 this is the one an fs_load would name.");
 //nettest: Half-Life ships its high-definition model pack as a SEPARATE gamedir sibling
 //("valve" -> "valve_hd", "bshift" -> "bshift_hd", "anticlimax" -> "anticlimax_hd", ...),
@@ -10586,13 +10589,15 @@ static const struct {const char *pak, *game, *probe;} fs_standin[] =
 	{"csgo_placeholder.vpk",	"Counter-Strike Global Offensive/csgo",	""},
 	{"portal2_placeholder.vpk",	"Portal 2/portal2",						"pak01_dir.vpk"},
 };
-static void FS_Addon_AutoSourceBase(void)
+//FTESurf Patch 1382: true when Momentum's hl2_dir.vpk is mounted (FS_RemountAddons' HL2 test).
+static qboolean FS_Addon_AutoSourceBase(void)
 {
 	char syspath[MAX_OSPATH], gamepath[MAX_OSPATH], game[MAX_OSPATH], probe[MAX_QPATH];
 	int i;
+	qboolean base;
 	if (!FS_Addon_ResolveEx(FS_MOMENTUM_BASE_SPEC, syspath, sizeof(syspath), true))
-		return;
-	FS_Addon_MountSourceBase(syspath);
+		return false;
+	base = FS_Addon_MountSourceBase(syspath);
 	for (i = 0; i < countof(fs_standin) && fs_standins.ival; i++)
 	{
 		Q_strncpyz(game, fs_standin[i].game, sizeof(game));
@@ -10600,6 +10605,7 @@ static void FS_Addon_AutoSourceBase(void)
 		if (fs_standins.ival == 2 || !Sys_SteamHasFile(gamepath, sizeof(gamepath), game, probe))
 			FS_Addon_MountMomentumPack(syspath, fs_standin[i].pak);
 	}
+	return base;
 }
 
 static qboolean FS_Addon_Mount(const char *arg, unsigned int loadstuff)
@@ -10883,10 +10889,15 @@ static void FS_RemountAddons(unsigned int loadstuff)
 {
 	char *file, *line, *nl, *e;
 	int steamfails = 0;	//ftesurf (P276)
+	char missing[1024];	//FTESurf Patch 1382
+	qboolean hl2missing = false;
+
+	*missing = 0;
 
 	file = FS_LoadMallocFile(FS_ADDONS_FILE, NULL);
 	if (!file)
 	{
+		Cvar_ForceSet(&fs_addons_missing, "");
 		FS_Addon_AutoSourceBase();
 		return;
 	}
@@ -10905,12 +10916,30 @@ static void FS_RemountAddons(unsigned int loadstuff)
 		if (FS_Addon_Mount(line, loadstuff))
 			Con_DPrintf("fs_load: re-mounted addon \"%s\"\n", line);
 		else if (!strncmp(line, "steam:", 6))
+		{
 			steamfails++;	//ftesurf (P276): a Steam game the resolver could not see
+			if (!Q_strcasecmp(line, "steam:Half-Life 2/hl2"))
+				hl2missing = true;	//said below, unless Momentum's hl2_dir.vpk stands in
+			else
+			{
+				if (*missing)
+					Q_strncatz(missing, ", ", sizeof(missing));
+				Q_strncatz(missing, line+6, sizeof(missing));
+			}
+		}
 	}
 	BZ_Free(file);
 	if (steamfails)
 		FS_SteamHint();
-	FS_Addon_AutoSourceBase();	//below user-ordered games, before any map asset loads
+	//below user-ordered games, before any map asset loads.  P1382 reviews 2-3: when its hl2_dir.vpk
+	//mounts, a missing HL2 is not news.
+	if (!FS_Addon_AutoSourceBase() && hl2missing)
+	{
+		if (*missing)
+			Q_strncatz(missing, ", ", sizeof(missing));
+		Q_strncatz(missing, "Half-Life 2/hl2", sizeof(missing));
+	}
+	Cvar_ForceSet(&fs_addons_missing, missing);
 	FS_Addon_SinkSourceLoose();	//FTESurf Patch 875
 	FS_Addon_SinkStandIns();	//FTESurf Patch 889
 }
@@ -13070,6 +13099,7 @@ void COM_InitFilesystem (void)
 	Cvar_Register(&fs_assetcache, "Filesystem");	//ftesurf (P186)
 	Cvar_Register(&fs_automount_state, "Filesystem");	//ftesurf (P231)
 	Cvar_Register(&fs_automount_spec, "Filesystem");	//ftesurf (P231)
+	Cvar_Register(&fs_addons_missing, "Filesystem");	//FTESurf Patch 1382
 	Cvar_Register(&fs_loadstats, "Filesystem");		//ftesurf (P180)
 	Cvar_Register(&fs_maploadhash, "Filesystem");	//ftesurf (P180)
 	Cvar_Register(&fs_mapmaterials, "Filesystem");	//ftesurf (P765)

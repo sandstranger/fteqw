@@ -1713,6 +1713,7 @@ void SV_SendClientPrespawnInfo(client_t *client)
 					Info_SetValueForStarKey(buffer, "*z_ext", va("%i", client->zquake_extensions), sizeof(buffer)); //should already be in there, so this should only ever make it shorter.
 					ClientReliableWrite_Begin(client, svc_stufftext, 20 + i);
 					ClientReliableWrite_String (client, va("fullserverinfo \"%s\"\n", buffer) );
+					client->ncspeed_spawn = -1;	//FTESurf Patch 1383: a reconnect on this map hears the shared one
 				}
 			}
 			else if (client->prespawn_idx == 3)
@@ -8403,6 +8404,50 @@ size_t playertouchmax;
 
 /* Apply the actual QW per-client overrides to an already prepared base.
  * Shared with pre-input capture so no later mover state is copied backward. */
+/*FTESurf Patch 1383: a player's own noclip speed.  Userinfo "ncspeed" (0.25..16, csprogs' Shift+wheel)
+  is that player's speed on the moves that fly by it -- noclip, a spectator -- and only those: the pin
+  records movevars, and TAS project identity compares the pin (review 2), so a walking move keeps the
+  shared value.  Released clients predict from serverinfo pm_noclipspeed, which only noclip prediction
+  reads, so this client alone is told its own value whatever it is doing, and again whenever the engine's
+  serverinfo sync sent it the shared one (ncspeed_spawn -1, sv_send.c) or a map's serverdata did.
+  %.9g so the client's atof gets the server's float exactly.*/
+static void SV_ClientNoclipSpeed(client_t *client)
+{
+	const char *s = InfoBuf_ValueForKey(&client->userinfo, "ncspeed");
+	float v = *s ? atof(s) : 0;
+	float shared = movevars.noclipspeed;
+	float want = shared;
+	float told;
+	char val[32];
+	sizebuf_t *buf;
+
+	if (v >= 0.25 && v <= 16)	//NaN fails it
+	{
+		int pmt = client->edict ? SV_PMTypeForClient(client, client->edict) : PM_NORMAL;
+		want = v;
+		//review 3: the mover's own set (PMSrc_NoClipMove), not the movetype
+		if (pmt == PM_SPECTATOR || pmt == PM_OLD_SPECTATOR || pmt == PM_FLY || pmt == PM_6DOF)
+			movevars.noclipspeed = v;
+	}
+	if (client->ncspeed_spawn != svs.spawncount || client->ncspeed_global != shared)
+	{
+		client->ncspeed_spawn = svs.spawncount;
+		client->ncspeed_global = shared;
+		client->ncspeed_told = 0;
+	}
+	told = client->ncspeed_told ? client->ncspeed_told : shared;
+	if (want == told || !ISQWCLIENT(client) || client->num_backbuf
+		|| client->netchan.message.cursize >= MAX_BACKBUFLEN/2)
+		return;	//a backed-up reliable stream: a later move
+	Q_snprintfz(val, sizeof(val), "%.9g", want);
+	buf = ClientReliable_StartWrite(client, 2+strlen("pm_noclipspeed")+1+strlen(val)+1);
+	MSG_WriteByte(buf, svc_serverinfo);
+	MSG_WriteString(buf, "pm_noclipspeed");
+	MSG_WriteString(buf, val);
+	ClientReliable_FinishWrite(client);
+	client->ncspeed_told = (want == shared) ? 0 : want;
+}
+
 void SV_SetQWClientMoveVars(client_t *client)
 {
 	//FTESurf Patch 977: these six were latched at spawn (SV_SetMoveVars), so one
@@ -8432,6 +8477,7 @@ void SV_SetQWClientMoveVars(client_t *client)
 	movevars.coordtype = client->netchan.netprim.coordtype;
 	movevars.flags = MOVEFLAG_VALID|MOVEFLAG_NOGRAVITYONGROUND|(*pm_edgefriction.string?0:MOVEFLAG_QWEDGEBOX);
 	SV_SetSourceMoveVars();
+	SV_ClientNoclipSpeed(client);	//FTESurf Patch 1383
 }
 
 void SV_PreRunCmd(void)
