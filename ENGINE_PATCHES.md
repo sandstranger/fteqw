@@ -1,5 +1,593 @@
 # Engine patches (fteqw `fteqw64.exe`)
 
+## Patch 1453 -- the loading screen names each game it mounts and where its textures come from (fs.c, cl_screen.c, image.c, screen.h)
+
+Problem: the menu loading screen read "Loading Texture (2x)". Texture loads run on loader threads and set no step, and
+FS_AutoMountForMap's per-map mounts set none either, though one takes seconds (bhop_landmark's CS:GO VPKs: 5.6-7.4 s),
+so the screen held whatever line came before.
+
+Fix: FS_AutoMountStep sets "mount <game>" (CS:GO, TF2, Portal 2, Portal, Momentum, else "content"; " cached" when the
+proven cache dir stands in) before each resolved, not-yet-mounted per-map game, through SCR_SetLoadingFileNow: one
+redraw past the 60 Hz limiter (the step lands ~3 ms after "starting server..." drew, and the limiter dropped it), with
+texture-source steps held so a source noted meanwhile cannot replace it. When Image_LocateHighResTexture finds a
+texture that is not a UI picture, SCR_NoteTextureSource marks its pack's source game seen (any thread); SCR_LoadingPump
+turns a newly seen game into the step "textures <every game so far, in order>" on the main thread. Once per game per
+load (reset at LS_SERVER and LS_CONNECTION): the source flips constantly between the map, HL2 and CS:S, and each step
+would split a model run. UI pictures are excluded because the loading screen's own card picture is one, and on a lobby
+join its source replaced the mount line for the whole stall (review). The menu (m_loading.qc) words both. Still
+undrawn: a `map` typed while the menu or console holds the keys (P1259's Key_Dest guard refuses every pump); the Play
+button closes the menu before its `map` runs.
+
+Measured (P1453 arms, Play path, bhop_landmark's first load): before, "5671 ms without a redraw, from  to textures
+Momentum"; after, "5744 ms without a redraw, from mount CS:GO to spawnserver", the mount line on screen for the stall,
+then "textures the map" growing to "the map, World of Surf, CS:GO, CS:S" (4 steps in the load).
+
+## Patch 1454 -- no "Not Responding" ghost window during long loads (sys_win.c)
+
+Problem: a map's first load can spend several seconds in one call -- surf_quarantine: the CS:GO VPK mount, then ~5 s
+in the hl2 plugin's BSP loader -- with no message pump, and Windows replaces the window with its "Not Responding"
+ghost. Patch 1442's Sys_KeepAlive covers the shader warm-up only; FTESurf Patch 1453 redraws the loading screen
+before each mount, not inside it.
+
+Fix: WinMain calls DisableProcessWindowsGhosting (user32, loaded by name like SetDllDirectoryW beside it). The window
+still reads hung to IsHungAppWindow while a long call runs; the ghost that replaced it is gone.
+
+Measured (FTESurf artifacts/run_hangtest.py, HG_THROTTLE=0: changelevel surf_centipedes -> surf_quarantine with the
+CS:GO mount, top-level windows of class "Ghost" counted every 0.1 s): patch-1451 exe 1 ghost window in each of two
+runs (hung 2.6-2.7 s); P1454 0 in both (hung 2.4-3.8 s).
+
+## Patch 1451 -- the QC tempstring collector's buffers are made during the loading screen (initlib.c, progslib.h, pr_csqc.c, cl_main.c, client.h)
+
+Problem: Patch 1446 keeps the collector's snapshot block and free list per VM, but the first collection of every
+map still allocated them and faulted their pages in on the main thread, early in the first run attempt.
+
+Fix: pubprogfuncs_t gains PrewarmGC (appended; NULL without THREADEDGC). PR_PrewarmGC sizes the block from the
+current hunk segments and max(maxtempstrings, PR_GC_MINTEMPS), allocates and zero-touches it and the free list unless
+a collection is in flight or the list is busy. CL_MakeActive calls it for CSQC after the shader warm list (load stage
+"qc collector buffers").
+
+Measured (FTESurf artifacts/run_idlegc.py: surf_nuclear, 75 s at the spawn with the HUD making its temp strings, no
+replay loaded): the first collection's start 2.66 -> 1.28 ms, its finish 1.97 -> 1.56 ms; the 6-8 collections in
+75 s otherwise alike (starts 0.8-3.8 ms, finishes 0.2-1.8 ms). With a replay loaded after activation the hunk grows
+from ~7 to ~23 MB and the first collection still reallocates.
+
+## Patch 1446 -- the QC tempstring collector keeps its buffers; r_spikes names prediction, entity, QC and collector costs (initlib.c, progsint.h, cl_screen.c, cl_pred.c, pr_csqc.c)
+
+Problem: P1444's r_spikes put surf_nuclear's largest spikes in frame pairs at two places on its route: 5-8 ms in
+"prediction" (engine CL_PredictMove), then 5-8 ms in "QC UpdateView" the next frame, against a 1.7 ms average frame.
+Splitting them: one predicted move, no entities arriving, the QC profiler showing 0.07 ms of QC self time -- the time
+was the CSQC tempstring GC's main-thread phases, at whichever QC exit they landed (PR_RunGC runs at every outermost
+exit). Every 15-20 s on every map: the start malloced a ~25 MB block for the snapshot (pages faulted in during the
+copy), the finish walked ~130k dead slots into a fresh 1 MB list and freed the block. Measured per phase: start
+4.6-6.4 ms, finish 3.9-7.7 ms; the frame holding one 7.5-12 ms.
+
+Fix: the snapshot block (with dead[] inside it, no longer malloced by the worker) is kept in prinst.gcspare and reused
+while large enough (12.5% headroom); the free list is kept in prinst.gcfree, its busy flag cleared by a WG_MAIN job
+(PR_QCGC_FreeDone) as gc->done is, and replaced by a one-off its own job frees when still busy -- PR_QCGC_Finish never
+waits (COM_WorkerPartialSync runs main-thread work, which can run QC and re-enter). PR_FreeAllTemps loops while a
+collection or a busy list remains, re-reading both, then frees both. Each VM keeps ~25-40 MB for its life (a busy
+CSQC; ~7 MB of hunk plus 12 B a slot outside replays).
+Clearing the dead slots in chunks across frames was built and dropped: during a map load QC allocated faster than the
+chunks cleared, and the full table doubled to 1,046,528 slots (the client looked hung).
+
+Measured (FTESurf artifacts/run_spikelog.py, surf_nuclear best replay at 1x, Lex's settings, uncapped): collector
+phases 1.7-4.1 ms (one 5.2 ms start right after a map load, before any block is kept), the frame holding one
+4.5-6.4 ms, against 6.5-9.2 ms / 8.6-12 ms unfixed in the same sessions' alternation. Load + two map changes, five
+runs, all answered.
+
+r_spikes additions, per slow frame: the prediction bucket split (SetSolidEntities, TransitionEntities, PredictMove =
+PM_PlayerMove + the CSQC trigger hook), physents and predicted moves (engine; QC runstandardplayerphysics), CSQC
+entity spawns/updates and their QC time, the collector's phases with a run summary listing every phase, and with
+r_spikes 2 the frame's three busiest CSQC functions by self time (the profiler, read and reset each frame, left to
+r_budget_csqc when that is on). Engine work called from QC is excluded from QC self time.
+
+Reviews: two rounds on the collector. Round 1: the teardown wait on a busy flag a worker cleared could sleep forever
+(the rebased build hung after a load) -> cleared on the main thread; finish only a done collection. Round 2: nothing
+practical; three re-entry holes needing a VM's own QC during its teardown, no route found -> the loop re-reads both.
+
+## Patch 1443 -- tas_rollout: N ticks of TAS inputs through the real mover, nothing kept (sv_tas_rollout.inc, world.c, pr_cmds.c)
+
+Problem: the TAS optimizer plays each candidate through the real mover at game speed (one candidate per
+couple of seconds), and the surf path planner (FTESurf tools/p1443-path-planner.md) needs 10^5-10^6.
+
+Fix: a server-QC builtin, `float tas_rollout(entity player, float *rows, float ticks, float *out)`. From the
+paused TAS body it repeats SV_RunCmd's mover setup for the plain case and runs one PM_PlayerMove per row (the
+TAS step's msec, tas_tape's input words), writing origin, velocity, onground, ducked, the P1344 contact kind
+and normal, and the first trigger the hull overlaps (World_TriggerAt, World_TouchAllLinks' own test without
+the touch) each tick. pmove, movevars, pmove_mins/maxs and frametime are saved and restored; the edict,
+client, recorder and QC are never written. Per-command QC does not run, so QC cuts a prediction at a trigger.
+It refuses to start (a negative code per reason) where SV_RunCmd's inputs are not the plain ones: a carrier,
+a QC movement limit or forced duck, a gravity direction, water/ladder/duck transition, non-default gravity
+(P1129 bank-gravity observation), an unsupported TAS clock.
+
+Measured (FTESurf tools/p1443_rollcheck.py, bhop_eazy, every `tas optimize` candidate predicted before its
+tape plays): 44 of 44 landings bit-equal in origin and velocity (22 ground, 22 air); a mutant mirroring the
+strafe input gives 0 of 22 (18.3 u, 253 u/s off); a server without the builtin prints no check. 70-75k ticks/s
+on this PC (588 rollouts/s of 128 ticks).
+
+## Patch 1450 -- keyboard enumeration is not proof of registration (tools/hidcheck.py)
+
+Problem: the HID reader inferred that an enumerated/bound keyboard count proved
+successful Windows registration, both when explaining an unavailable observer
+and when attributing key device IDs. Those headers do not establish either claim.
+
+Change: qualify both notes, leave legacy device ID 0 unattributed, and preserve
+existing observation availability, counters, flags and faults. Reader-only; no
+engine input/capture field, native pin/tag, QC Build, ranking or enforcement change.
+The native registration/lifecycle follow-up remains OPEN, not fixed by these notes.
+
+Verified: strengthened tests first expose six assertions on the untouched reader
+(314 checks total), then all314 pass with the correction; receipt268, snapshots12,
+recording949 pass. Same-buffer read-only corpus561 REC/179 VIEW/25 HID has identical
+reports and faults before/after (346/5/0). No new native build or input-policy claim.
+See FTESurf tools/p1450-keyboard-registration.md for limits and delivery status.
+
+## Patch 1444 -- r_spikes: the slowest frames' own CPU time by group (cl_screen.c, cl_main.c, gl_shader.c)
+
+Problem: r_budget averages a window (0.5 s), so the frames that set the 0.1% lows -- a handful in 30 s -- vanish
+into it, and r_frametime's slowest-frame list says only how long and where. cl_debug_spikes splits Host_Frame
+coarsely (one "gfx" for the whole render) and prints every slow frame as it happens.
+
+Fix: r_spikes 1 turns the RSpeed buckets on (r_speeds_timing) and, once a frame from RSpeedShow before
+R_Budget_Sample, sums that frame's rspeeds_self into budget_groups, keeping the 8 slowest frames since
+r_frametime_reset with: the interval, each group's ms, the largest single bucket, late shader compiles and image
+uploads (R_MapReadyLate, gl_shader.c), packets read (netchan incoming_sequence) and nested views (r_vs_views depth
+1+, water/glass/portal captures). r_frametime_dump prints them under the average frame. Nothing is drawn; off, it
+costs one cvar test a frame. It clears rspeeds_self itself only while r_budget is off (R_Budget_Sample does
+otherwise).
+
+First use (FTESurf artifacts/run_spikelog.py, surf_nuclear's best replay at 1x, Lex's settings, uncapped, warm
+session, two runs): the largest spikes are frame pairs at the same two places on the route -- "prediction"
+5.5-7.7 ms (engine: CL_SetSolidEntities/TransitionEntities/PredictMove, though r_budget files it under CSQC) then
+"QC UpdateView, HUD" 5.2-8.3 ms (average frame 1.6-1.7 ms, CSQC 0.7); frames with 2 nested water
+views spend 4-6 ms in PrepareFrame + opaque draws; one swap/present stall of 49.8 ms and one of 8.7 ms; one
+"network" frame of 5.0 ms. Packets were 0-1 in every listed frame. surf_pantheon's slowest are draw calls 2-3.4 ms
+plus CSQC 1.4-2.7 ms, no single cause.
+
+## Patch 1440 -- Source MDL bodyparts draw the model the entity's body picks (gl_alias.c, gl_model.h, com_mesh.h, plugin.c; fteplug_hl2 mod_hl2.c, mod_vbsp.c)
+
+Problem: fteplug_hl2 tagged every mesh geomset 0 / geomid 0, so all of a bodypart's alternative models drew at
+once. bhop_crash_egypt's crate_generic.mdl (102 crates; one bodypart: box, 14 shatter frames, blank) showed the
+whole shatter around the box, and the map's SetBodyGroup 1..14 over 0.43 s had nothing to switch (Lex's report).
+
+Fix: mod_hl2.c tags a bodypart with more than one model (the first 32) as a geomset, each model its id, and writes
+the bodypart's base and the .mdl's model count into two arrays appended to model_t. GL_ChooseSkin draws such a
+surface while (entity body / base) % count is its id -- Source's packed m_nBody (studio.cpp R_StudioSetupModel);
+single-model bodyparts stay always drawn, other formats keep id 0 only. body is the existing networked field
+(PEXT2_BODYGROUP); FTESurf QC sets it from the SetBodyGroup keyfield and input. The exe answers the interface
+"FTESurfModelTail/1440" and the plugin writes the tail only then: on an older exe those writes would land in the
+next mod_known slot (its name and load state), so there the plugin leaves every alternative drawn, as before. The
+plugin's prop-opacity walk skips alternatives a prop does not draw.
+
+Left: collision is unchanged -- a prop whose collision is its render mesh (no usable .phy) still collides with its
+hidden alternatives, as it did before. Client prediction and the server must build the same prop trees and the
+lobby server runs an older engine; change both together. Bodyparts past 32, csprogs-drawn props (riders, P860
+movers) and bodies over 255 (the wire's byte) draw submodel 0.
+
+Measured (FTESurf runs/p1440, bhop_crash_egypt from inside the map, test engine against the installed one, the
+same QC): the crates draw whole (the installed engine shows every alternative, Lex's screenshot); SetBodyGroup 5,
+14 and 15 change the crate 31k, 16k and 17k px and 0 returns it to background (6k), against 3-6k throughout on the
+installed engine.
+
+## Patch 1442 -- the activation warm-up keeps the window responsive; r_mapready_budget 6 (gl_shader.c, sys_win.c, sys.h)
+
+Problem: CL_MakeActive runs Shader_DoReload and GLSLWarm_MapActive in one frame. Windows marks a window that has
+not checked its queue for 5 s "Not Responding" and ghosts it, so the warm-up budget had to stay at 2 s -- and a cold
+NVIDIA cache on the PC (i9-9900K, RTX 2080 SUPER) already needs 1.96 s for surf_quarantine's 199 permutations of
+FTESurf P1441's list (a 1 s budget, standing in for a CPU half as fast, left 93 pending: 32 late compiles, 0.1% low
+137 -> 60 fps).
+
+Fix: Sys_KeepAlive (Windows GL only; WINRT/SDL builds skip the call) peeks the queue with PM_NOREMOVE; the warm-up
+calls it before each permutation compile and each resource-drain poll, at most every 0.25 s. Only sent messages are
+dispatched; posted input waits for the next frame's Sys_SendKeyEvents. r_mapready_budget defaults to 6 (was 2); its
+description names Patch 1442 so FTESurf QC can tell the engine has it before moving a saved 2.
+
+Measured (FTESurf artifacts/run_hangtest.py): a renamed exe (cold driver cache) changes to surf_quarantine with a
+29,673-entry stress list at budget 10, IsHungAppWindow sampled every 0.1 s. patch-1413 exe: warm-up 10.0 s, window
+hung 5.4 s (from 5 s into the frame to its end). P1442: warm-up 10.0 s, hung 0 s during it. Both runs also show a
+2.2-2.5 s hung period earlier, while the map itself loads (CS:GO VPK mount + BSP) -- unchanged by this patch.
+
+## Patch 1437 -- coherent save loads and bounded lead-in grace (FTESurf QC only)
+
+Problem: independently delivered load metadata can cancel a lead-in on its first
+missing HOLD, consume a new sequence with an old operation, or treat a pending
+rewind answer as refusal. Deferring an event also exposes destructive fallbacks:
+a resumed timer can clear a retained trail, and a selection cursor that moved
+can misidentify the loaded prefix or serialize the wrong sequence destination.
+
+Change: publish the existing endpoint string with its sequence/operation/ticks/tag
+and the saved row's origin, and consume a validated coherent cache at callback
+boundaries. Keep pending state
+out of refusal, failed-prefix cleanup, native angle writes and trail transitions.
+Use the validated load endpoint for rewind association, loaded sequence/zero
+restoration and the trail stitch destination. Bound the initial absent-HOLD grace;
+once HOLD was observed, its loss is real. Existing file formats, authoritative
+movement, ranking/taint policy, native pin/tag and QC Build stay unchanged.
+
+Verified: acting state-boundary controls expose a 199-unit camera snap, a missed
+load binding, an 82-degree native-angle overwrite, false rewind refusal, an empty
+resumed picture and lost/misassociated prefixes. Corrected arms retain the saved
+angle, transfer the retained angle prefix once, preserve the exact raw trail
+prefix and pass the location check; final cursor-displacement arm passes all
+existing p817 checks. Off-profile load and retry controls pass. Reader949/0 and
+740 same-buffer corpus reports agree with baseline, 351 existing faults unchanged.
+These are CSQC state emulations, not actual packet/PVS proof or universal frame
+performance. The existing short post-release trail check can fail in untouched
+control too; persistent invisible brushes and owner feel remain unresolved.
+Published QC68679ee9 built all3VMs warning-free; production recompile all6artifacts
+byte-identical. QW/CS+LNO hash-matched in BOTH Windows installs; existing Pi entrypoint
+restarted all12lobbies. Fresh loopback reads prove fs_savelead3 in all12; native,
+menu, configs and backend unchanged. All213archived members rehashed on/off-box
+before Pi staging; all53983old data prefixes retained in the fresh post observation.
+Immediate post-status timeout remains a failure, not regraded by later health;
+no extra restart/restore. Fresh-client smoke not launched below4GiB RAM, so
+served-cache download/render and owner feel remain pending. Exact UTC/hashes and
+build/deployment limits are recorded in FTESurf tools/p1437-save-events.md.
+
+## Patch 1434 -- input diagnostics survive receipt snapshots (FTESurf readers/admin only)
+
+Problem: the journal reader already measures uncorroborated legacy key presses, handle-less
+keyboard reports and legacy mouse presses, but captured receipt snapshots omit these diagnostics.
+Review must reopen the journal; measured zero, unavailable and partial observation do not survive
+as typed stored fields. Skipped malformed records can also leave a zero or surviving subtotal.
+
+Change: preserve bounded exact integer counts, observer state and a typed partial-key qualifier in
+captured snapshots, their existing sweep storage and authenticated admin review. Do not invent
+counts for unavailable/off/changed observation. Conservatively withhold all four new input totals
+on any journal content fault; keep existing identity/join measurements and verdicts unchanged.
+The admin renders unavailable explicitly and scopes partial-key wording only to keyboard counts.
+No receipt/journal format, native code/pin/tag, QC Build, capture, policy or historical backfill change.
+
+Verified: new controls reject the original projection (9 snapshot / 5 storage / 34 admin failures).
+Independent review found the malformed-record and warning-scope gaps; raw malformed zero/subtotal
+controls fail 8 times and signed persistence twice before the correction. Final snapshot12 tests,
+storage/admin executed-DOM controls, receipt268, HID307 and recording949 checks pass on Windows.
+Read-only same-byte corpus561 REC +179 VIEW gives740 identical per-file reports and351 existing
+faults (346 REC /5 VIEW), zero increase. No native hardware calibration or backend deployment is
+claimed here; source/platform and delivery receipts are in FTESurf tools/p1434-input-observations.md.
+
+## Patch 1424 -- the journal counts legacy key presses no keyboard reported (in_win.c, in_generic.c, client.h)
+
+Problem: with in_rawinput_keyboard 0, the default, every key takes the legacy WM_KEYDOWN path, so a keystroke
+injected with SendInput or PostMessage reached the game and the .hid recorded nothing about it. Patch 306 counted
+injected keys only for the opt-in raw keyboard, which loses the repeat bit (Patch 309) and so is not the default.
+
+Change: the keyboard half of Patch 307. Raw keyboard is registered observe-only (dwFlags 0) while the opt-in path
+is off, so legacy messages still drive the game. A legacy press counts as corroborated when a real device's raw
+DOWN of the same scancode arrives within 100 ms, in either order, one for one; a press still unmatched when its
+window expires is counted (in_raw_legacykey). Expiry runs once a frame from INS_Move, so a count does not wait on
+the next mouse report. Repeats are judged by each path's own held state (rawkey_legheld / rawkey_rawheld), never
+by the lParam repeat bit the game itself ignores; held keys clear on focus change (INS_ClearStates). Handle-less
+raw keyboard reports, which SendInput leaves, are counted beside it (in_raw_kbdnohandle). The .hid gains the header
+key `kbdobserve`, a 'y <keys> <nohandle>' record, and an 'o <state>' record whenever observation starts or stops
+(a mid-run vid_restart/in_restart that tears raw input down); all three are written with dt 0, because an older
+hidcheck skips an unknown kind before summing its dt and any other dt faults its clock check, and the `end` trailer
+is unchanged for the same reason. FTESurf tools/hidcheck.py needs kbdobserve 1 and no 'o' for a whole-run count;
+0, -1, absent or a mid-run change read as unmeasured or partial, never a measured zero. A non-zero count is a note,
+never a fault: AltGr's synthesized Ctrl, on-screen keyboards and remappers press keys this way too.
+
+Verified: bhop_eazy arm (ftesurf/cfg/test/p1424keys.cfg, six arms). Subject: nothing injected -> kbdobserve 1,
+no 'y'; 20 PostMessage taps -> 'y' keys 20; 20 SendInput taps -> keys 20 / nohandle 40; 10 repeat-flagged downs
+-> 10; 5 downs whose ups follow the journal -> 5; raw input toggled mid-run -> 'o 0' then 'o 1', read as partial.
+Each injected key arrived as a '+' record. The installed patch-1421 exe on the same six arms took every key with
+no count and no header key. Both the current and the previous hidcheck read all journals without a fault.
+Genuine-keyboard zero is a pending human check (lextest, ftesurf/cfg/test/p1424human.cfg).
+
+## Patch 1421 -- Sys_Error's record carries the console's last lines, kept in memory (log.c, sv_sys_win.c)
+
+Problem: FTESurf P1418's crash report first read logs/qconsole.log, which meant turning the console log on for
+every player. Its review refused that: a server's CSQC can read that file while the game runs (chat, connect
+lines, a Steam sign-in link), and the log writes a file per printed line on the main thread (AGENT_NOTES
+measured 4-6 ms a line). Log_Fatal (Patch 1417) wrote only the error.
+
+Change: Con_Log keeps the last 64 lines (160 bytes each, control bytes dropped) in a fixed array, whether or not
+logging is on. Log_Fatal writes data/crash/error.txt as "Sys_Error: <text>", "engine <version>", then those
+lines, leaving out typed commands (']') and any line naming a password, key=, token or secret. The Windows
+dedicated server's Sys_Error calls Log_Fatal too. Nothing touches the disk until the game is already dying.
+Verified (FTESurf-worktrees/xhair-20261108-b8/tools/tailarm2.py): a dedicated server built with Patch 1417's guard compiled out (fault injection: BZ_Malloc then calls Sys_Error with the filesystem up) echoes markers, two of them naming a password and a key=, and loads a 0x80FFDFFF-byte map. Its data/crash/error.txt: "Sys_Error: BZ_Malloc: Failed on allocation of 18446744071578836992 bytes", the engine line, 17 console lines with both markers, neither secret line. The first cut wrote only the last line: Q_snprintfz returns a truncation flag, not a length. On a dedicated server SV_Error shuts the filesystem down before its Sys_Error, so a missing map leaves no record there (Log_Fatal checks FS_GameIsInitialised).
+
+## Patch 1420 — offline pair details print acquired opportunities
+
+**Problem:** `cmd_pairs` used measured `matched / compared` for MATCH, but its
+negative detail printed the longer source length under the `compared` label.
+A controlled 37/100 measurement on 200-row inputs correctly read MATCH .3700
+while incorrectly printing compared 200. This is diagnostic metadata, not a
+new statistic, comparison or player finding.
+
+**Change:** Append measured compared as display-only metadata; sort using the
+exact original ten tuple components (including stable ties) and print the
+appended count. Preserve old indices/longer length, identity splits, selection,
+deduplication, MATCH/p99/coverage/prefix and positives. Source `684e49f3154fe888781f6433965e90e0aeef9ac6`,
+`tools/p1420-pair-detail.md`; ENGINE counter1420 only, preserving concurrent
+published P1417 native metadata. No own native pin/tag/QC Build change.
+
+**Verified:** Actual-command baseline one target FAIL/eight positive methods;
+corrected nine command plus six recording-opportunity methods PASS on Windows
+from an exact Git-only closure and on actual aarch64 Python3.11. Old2780 ARM
+control retains one target FAIL/eight command plus all six opportunity PASS.
+Independent full source review CLEAR. CLI help and exact module paths ACTED;
+destination/source/test hashes match the reviewed, qualified executable blobs.
+Only an explicitly selected operator child was delivered, not a default/backend
+promotion. Before/after all159 admitted bindings, actor/unit/launcher/helpers/
+namespace policy/DB inode held; selected parent P1415 source/manifest/owner/
+qualification records and its original clock held (other historical logs not
+re-hashed). Fixture/bytecode absent, no gate/listener/process retained. Original
+SSH host-key refusal kept; documented pinned route used with strict checking,
+no bypass. Publication guard preserved concurrently published native metadata.
+No parser/recorder dependency changed (outside-command AST identical), no new
+reader/corpus result claimed, no production DB/corpus read, calibration, time/RSS,
+new app/namespace-health, default-module deployment or broader AC completion.
+
+## Patch 1417 -- a file length past 2 GB is refused by name; Sys_Error reaches the log (fs.c, image.c, fs_vpk.c, log.c, sys_win.c, sys_linux.c)
+
+Problem: a player (MetalGio, 8 Nov) got "BZ_Malloc: Failed on allocation of 18446744071578836992 bytes" on
+every story-mode map switch while downloading. That is 0xFFFFFFFF80FFE000: FS_LoadMallocGroupFile (every
+.bsp and model) took VFS_GETLEN's 64-bit length in an int, so a length of 0x80FFDFFF went negative and
+`len+1` reached BZ_Malloc sign-extended. The dialog named no file. Image_LoadHiResTextureWorker passed any
+length straight to BZ_Malloc, and fs_vpk.c built entry sizes and offsets with int shifts, so a VPK entry
+whose top byte is 0x80 or more became a sign-extended qofs_t. Sys_Error wrote its text only to the dialog.
+
+Change: both loaders refuse a length over 0x7ffffffe with "<file>: reports N bytes; not loaded" (a model
+or map then fails to load as a missing one does; a texture takes the failed-texture path). fs_vpk.c's three
+size/offset sums are unsigned. Log_Fatal (log.c) writes "Sys_Error: <text>" to the console log (when on)
+and data/crash/error.txt before the shutdown, once (a guard stops recursion; skipped before the filesystem
+is up); the Windows and Linux client Sys_Errors call it. FTESurf P1418 builds a crash report from it.
+
+Verified (FTESurf-worktrees/xhair-20261108-b8/tools/guardarm.py): a dedicated server loading a sparse
+maps/huge.bsp of 0x80FFDFFF bytes. Before (fteqwsv64 0e2d9f5c): "BZ_Malloc: Failed on allocation of
+18446744071578836992 bytes" -- MetalGio's number exactly -- and exit 1. After: "maps/huge.bsp: reports
+2164252671 bytes; not loaded", then the ordinary missing-map error. No library map is near 2 GB (largest
+518 MB local, 343 MB in the download catalogue), so his length came from a broken archive entry or VPK
+size; with this the next one is named in the console. 0 new warnings (77 upstream lines, none in the
+files changed).
+
+## Patch 1410 -- the click that activates the window presses no mouse key (gl_vidnt.c, in_win.c)
+
+Problem: clicking the game window while it was in the background ran that button's bind; Lex's MOUSE1
++duck ducked a hands-free surf_voyager flight (probe.log 12:57:43, beside a [focus] correction).
+WM_MOUSEACTIVATE already returned MA_ACTIVATEANDEAT, so Windows ate the WM_LBUTTONDOWN, and raw input
+(registered without RIDEV_INPUTSINK) does not give a background window the down. A legacy
+WM_MOUSEMOVE with MK_LBUTTON while the button was still held (any motion, or the grab's SetCursorPos
+recentre: INS_ActivateMouse, INS_Accumulate) reached INS_MouseEvent with oldbuttons clear and
+rawbuttondown[0] false, and the dedupe accepted it as a new press (measured with messages; that a
+real click takes this path is Lex's check).
+
+Change: WM_MOUSEACTIVATE (not under sys_parentwindow, where a child is sent it on every click) puts the
+activating button from HIWORD(lParam) (L 1, R 2, M 4, X 8|16) in two masks. INS_MouseEvent keeps a masked
+bit at its old state (no press, no release) until a legacy message shows it up. The raw reader drops an
+UP for a masked button and unmasks on a raw DOWN (raw never sees the activating down, so any down is
+new). Separate masks so the path that sees the release first cannot unmask the other. Alt-tab sends no
+WM_MOUSEACTIVATE; clicks on the active window never arm it. DirectInput (in_dinput 1) unchanged.
+`developer 1` prints "[focus] activating click: mouse buttons 0x1 ..." (log_developer 1 for the log).
+
+Verified (FTESurf-worktrees/focusclick-20261108/artifacts/p1410drive.py): hosted poop.bsp, window
+off-screen, the click as window messages in Windows' order (WM_MOUSEACTIVATE, WM_ACTIVATE, optional
+WM_SETFOCUS, no WM_LBUTTONDOWN since it is eaten, WM_MOUSEMOVE MK_LBUTTON, WM_LBUTTONUP), graded on
+`bind mouse1 "echo ..."` after a positive-control click. A diag build printed `legacy msg 0x200 mk 0x1`,
+`legacy PRESS K_MOUSE1 rawmice 2 rawdown 0 age 8.146`, then the echo. ABAB control / patched, two runs
+each: activating click with a held move (L, L + WM_SETFOCUS, R) 1/1/1 vs 0/0/0, next click 1 on both;
+no move before the up 0 on both; a dragging click on the focused window 1 (not 2); alt-tab then click
+1; activation, release seen as a plain move, click 2 vs 1. Arm trap: an active ungrabbed window
+retypes the mouse absolute (INS_Accumulate) and keys.c then drops MOUSE1's bind unless
+Key_MouseShouldBeFree, so the arm sets cl_prydoncursor 1. Messages cannot make raw input: the raw
+half (dropped UP, unmask on DOWN) waits on a real click.
+
+## Patch 1413 -- sys_framepacing 5, predictive present pacing (sys_win.c, cl_main.c, gl_screen.c, cl_screen.c)
+
+Problem: Lex at cl_maxfps 100 saw 0.1% lows near 80 fps. Modes 1-3 start frames on the grid and present when
+done, so render-time variance (water capture frames) reaches the present cadence: bhop_ceaseless save 35, 30 s,
+present p99 11.0-11.2, p99.9 12.2-12.3 ms. Mode 4 holds the swap to the grid but starts each frame right after
+the last flip (~10 ms of input age at cap 100) and a miss waits a whole slot (20 ms).
+
+Change: mode 5 starts each frame its predicted render time (sys_framepacing_quantile of the last 64 frame-start
+to pre-hold times, after mode 4's drain; default the slowest, clamped to the interval) plus 0.5 ms before its
+slot, and holds the swap to that slot; a late frame presents at once. An on-time frame's successor aims one slot
+on, a late one's at the slot after its present (the floor of a post-swap time skipped slots in runs under a
+blocking vsync swap: simulated 25 frames at 30 fps, cap 60 on 59.94 Hz). It acts as mode 2 off-GL, uncapped,
+minimised, in timedemo, with cl_netfps 0 (server-capped), with vid_vsync on, and while the swap itself blocks
+(median of 32 over 1 ms -- not demonstrated: windowed here, vid_vsync 1 did not block the swap, p50 0.25 ms). A
+started frame that never reaches the swap hook (loading) paces plain intervals. Engine default 5; FTESurf's
+cfg/default.cfg had pinned every player to 1. r_frametime on Windows GL now samples right after the swap: under a
+held swap the HUD draws at times that move on purpose (mode 5 HUD-timed p99 11.32 against 10.21 at the swap).
+
+Verified: ceaseless save 35, cap 100, 30 s arms, present p99/p99.9: mode 5 10.11-10.23 / 11.49-12.88, mode 2
+11.00-11.23 / 12.18-12.34, mode 4 10.21 / 10.66 (frames start ~10 ms before present; mode 5 ~3.2). Cap 300:
+p99 4.32 -> 3.50. Cap 1000 unreached: 529 vs 530 fps. Mode 5 with vid_vsync 1 stood aside (11.03/12.15); through
+a reconnect it kept pacing. The first cut froze the client (a slot chased the clock with no present); review 1
+found the vsync runs, capped timedemo, a loading busy-wait and the off-GL change; review 2 the graph's clock
+switch and a stale start after minimise. The remaining 0.1% is ~3 frames per 30 s whose render ran 6-9 ms
+against ~3: pacing can only hide those by starting every frame earlier (mode 4).
+
+## Patch 1409 -- r_blendsort 2 keeps static blended faces' sorting centres (gl_backend.c)
+
+Problem: Lex's 0.1%-low survey put surf_bossfight at 514 fps average with 2,861 stutters in 35 s; at the
+owner's r_blendsort 2 the same replay stretch ran 281-288 fps against 541-602 at 1. A CPU sample put 36% of
+the main thread in GLBE_SubmitBlendedFaces; stage timers showed ~400 blended faces a frame and 2.1 ms of it in
+GLBE_BlendAreaDepth, an area-weighted centre summed over every triangle of each dense face, every frame.
+
+Change: on a Source map, a world or brush-entity face's model-space centre is computed once (direct-mapped
+table keyed by mesh pointer, checked against its xyz/index arrays and counts, dropped by a new map and by
+Surf_Clear) and only transformed per frame; the depth, so the order and the picture, are the same. r_blendcache
+0 recomputes every frame. Not on Quake worlds (their scene cache refills one mesh in place per PVS).
+
+Verified: bossfight replay 15 s, r_blendsort 2: cache 1 470/498 fps (1% 179/196) against 0 281 (153); gather
+2.1 -> 0.05 ms a frame. Same paused frame at 0/1/0 on four bossfight views: 0 pixels differ. Review 1 removed a
+run-merging half (it changed multi-pass draw order and gained ~4%) and limited the cache to Source worlds;
+review 2 found nothing.
+
+## Patch 1412 -- fteqcc -Fomitarraydefs: no per-element array defs (qclib/qccmain.c)
+
+Problem: fteqcc writes a named global def for every array element ("spr_org[17]") and copies
+its name into the string table at write time; only the array header is stripped
+(QCC_PR_DummyDef). Nothing but saved games, core dumps and debuggers reads them. FTESurf's
+csprogs (main 45fb397d, 8,050,298 bytes): 132,157 of 161,078 globaldefs, 1.90 MB of the 2.24 MB
+string table that passed the 2 MiB -max_strings default in P1391.
+
+Change: -Fomitarraydefs, off by default. QCC_def_t.arrayelement marks the elements DummyDef
+makes; QCC_WriteData leaves out their defs unless nostrip, shared, or typed string, pointer,
+field or function: PR_ReallyLoadProgs relocates string/pointer/function globals and remaps
+field globals by walking the defs, so those keep theirs. Members of struct-array elements
+("_frames[0].pos") are not elements and stay. -Fomitinternals is no substitute: it drops every
+global not marked used, including the system globals CSQC_FindGlobals binds by name.
+
+Verified: the UNPATCHED compiler at be087454f (git-8544) is a drop-in for the pinned c24ede65
+(git-7809-patch-962-24-g18d15ab9f-dirty) on qwprogs, csprogs and menu: 0 warnings, strings,
+statements, functions, globaldefs, fielddefs, globals, bodyless and .lno byte-identical; only
+the copyright string (12 bytes shorter), the offsets after it and the trailing empty-zip
+record's self-offset move. Patched without the flag: identical again. With it, csprogs
+8,050,298 -> 4,940,618 bytes: statements, functions, globals identical; globaldefs 161,078 ->
+42,652, exactly the old list minus 118,426 element defs in order (88,696 float, 26,916 vector,
+2,396 entity, 384 struct, 34 int); fielddefs the same 500 (type, ofs, name), only s_name offsets
+move; strings 2,240,804 -> 552,236, first 286,879 bytes identical (every string a global holds
+and every function name lies below 278,986). Still written: 12,067 string-element defs
+(313 KB) and 1,664 struct-array members. Measured, not used: qwprogs 1,655,890 -> 1,197,022,
+menu 762,430 -> 717,486. It also lifts csprogs off the def-count limit (FTESurf src/qcc.cfg
+MAX_GLOBALS 163,840; P1411 hit it at 164,535 with bigger ps_* arrays): the same tree plus one
+scratch float[4000] fails "Too many globals - 165079" without the flag and builds with it at
+42,653 defs, 0 warnings. Game: compiler 600bcd24e (git-8545, sha256 73f9a1a4) via FTESurf
+build.ps1 -NoDeploy, csprogs fa957ba9 (4,940,606 bytes) hosted on surf_dune by the installed
+patch-1409 exe in a private basedir: "FTESurf CSQC loaded" in 6.0 s, HUD, zone box and
+scoreboard drawn (screenshots looked at), 0 log lines matching error or warning.
+
+Limits: saved games, coredump/csqccore.txt and QC debuggers no longer name array elements, so
+never for qwprogs. Readers that find an array through "name[0]" (the offline QC VM's gofs)
+need a build without the flag (FTESurf build.ps1 -KeepArrayDefs).
+
+## Patch 1399 -- cached shifted-epoch positive controls in the offline census
+
+Problem: the pairs census acquired recordings, then reopened each pathname to
+construct its same-recording positive control. A disappearing file returned None
+and aborted at b.mt; changed bytes could also stop it being the same acquired
+stream. This was a control-construction issue, not a similarity metric failure.
+
+Change: shallow-copy the acquired Rec and replace only the copy's mt list with the
+shifted epoch. Comparison reads the other shared fields without mutating them.
+Keep acquisition, full-file deduplication, grouping, metrics, output and storage.
+Default malformed acquisition already returns None and is skipped; that suspected
+additional bug was falsified and no new exception/skip policy was introduced.
+
+Verified: valid two-file controls parse 80 rows and compare 79/80, then exercise
+one negative and two positive samples. Original EB51 reparses the first owned
+fixture after controlled removal and aborts with None.mt; subject performs one
+real parse per path, retains both positives and preserves original cached times,
+moves and fixture bytes. Existing malformed-input acquisition control passes on
+both versions. Subject parsing16 and reader families pass without new warnings;
+reccheck949/0, same554 recordings+168 views/722 buffers and351 existing faults.
+No recalibration, live collector, parser/capture, history, schema, enforcement,
+native pin/tag or QC Build change. Acquisition parse/hash/stat remain non-atomic;
+this does not promise an immutable whole pass or a time/RSS ceiling.
+
+## Patch 1398 -- a moving model keeps its light sample briefly (gl_alias.c)
+
+Problem: Patch 105's model light cache matched only an unmoved origin, so a moving model re-sampled the
+world's light every frame, which on a Source map runs the hl2 plugin's sample with world-light traces.
+surf_centipedes' 105 skulls flying through the 3D sky (P1378): a CPU sample at stage 3 put ~40% of the
+main thread in VBSP_LightCacheCube / VBSP_WorldLightRatio / BIH traces; the stage starts ran 151-455 fps
+at the owner's settings (r_drawentities 0: 655-933).
+
+Change: r_modellight_moverate (30, not archived): on a Source map, a model within 32 units of where it
+took the sample it wrote (the entry records keynum and model; keynum 0 never) keeps it for
+(0.75 + (keynum & 15)/32) / rate seconds, the spread so a swarm does not re-sample in one frame -- Patch
+1280's rule for the view model. Another entity of the bucket never borrows it (review: two still ones would
+swap samples). Quake maps (a sample is ~10 us) and exact hits keep Patch 105/1283's rules; r_modellight_cache
+2 checks only exact hits. 0 = every frame it moves. A teleport under 32 units keeps the old light up to 1/rate s.
+
+Verified: surf_centipedes stage starts, rate 0 against 30 (ABBA, 5 s each): st1 151/168 -> 340/342 fps,
+st3 284/271 -> 510/514, st4 372/455 -> 780/787, st5 273/255 -> 474/484. bhop_lost_world_v2 and surf_voyager
+spawn views (P1387's spinners): no consistent change.
+
+Follow-up (Lex: about once a second, blended; Momentum does not re-light moving props at all): rate
+defaults to 1 and the radius is 64 units; a re-sample by the entry's own model blends in from the light it
+showed over as long as its last sample was kept (1/rate at most), and a jump of 256 units shows the new
+light at once. One skull traced 3.6 s at rate 1: largest frame-to-frame step 0.25/255. Stage starts at
+rate 1 / 30 / 0: st1 464-549 / 376 / 164, st3 673-688 / 557 / 278, st4 910-922 / 874 / 414, st5
+616-627 / 564 / 277 (1% lows also highest at 1: the keynum spread keeps a swarm's samples apart).
+
+## Patch 1386 -- water walls, slopes, undersides and entity Water share the view's capture (gl_backend.c)
+
+Problem: at r_waterviews 1 only level water facing the eye shared the view's one reflection/refraction
+pair (P879). Every other plane of water -- walls, slopes, an underside seen from below, Water on brush
+entities -- rendered its own pair every frame, and a second captured plane stopped r_capturerate's keep
+(P1245/P1281) for all of them. bhop_ceaseless save 35: two water walls hidden under the ocean and behind
+the start building, 6 scene renders a frame, 214 fps. surf_affliction's lava channel: 184 renders, 8 fps.
+
+Change: r_waterwalls 1 (new, default; 0 = before). Water the eye sees from its front that GLBE_WaterFacesEye
+turns down, and Water on brush entities, samples the pair the view captured for its chosen water, as
+every Source water material samples the one _rt_WaterReflection/_rt_WaterRefraction. Water means the
+material samples $refractiondepth, so LightmappedReflective (func_reflective_glass, world mirrors) keeps
+its own capture. When no level water on screen is seen past the world, GLBE_WaterViewsBegin weighs that
+other Water and takes the heaviest seen plane. A share that must add a kind beside a capture kept this
+frame renders every held and listed kind, so be_capfix and be_capkeep never describe two cameras. The
+sharers are not added to the capture's merged PVS (what they sample is the chosen plane's view).
+
+Verified (owner's settings, r_capturerate 144, paused or static views, w0 = r_waterwalls 0):
+- fps w0 -> w1: ceaseless s35 214 -> 441 (1% 104 -> 232), affliction 8 -> 598, quarantine 33 -> 552,
+  brodderlands 78 -> 535, abandoned 109 -> 541, froots_ksf 120 -> 686, desolate 87 -> 775, fortum 56 -> 263,
+  4matan 236 -> 1081, christmas 221 -> 554, dynasty 89 -> 319, ahop_coast 24 -> 156.
+- Pixels: the same paused frame at w0 / w1 / w0 on 20 views chosen to face each census map's biggest
+  non-level Water plane: 16 identical, desolate at its noise floor, dynasty 3 px, christmas a thin far
+  strip, affliction's lava channel (its red fog blocks' edges).
+- Census: 248 of 2,224 library maps have non-level Water faces (artifacts/watercensus2.py).
+- Three review rounds: a keep half-refreshed, a hidden level plane holding pass 1, mirrors sharing, pass 1
+  re-weighing level water -- all fixed. Left: a glass or portal capture after a water keep in the same
+  frame still mixes two cameras (pre-existing, BACKLOG).
+
+## Patch 1393 -- whole-file deduplication in the offline pairs census
+
+Problem: recsim.py pairs described and counted byte-identical duplicates, but its
+key hashed only the first MiB plus the pathname size. Different equal-size files
+sharing that prefix were discarded before negative-pair acquisition. The local
+parser still read their different later moves; this was not a SHA-256 collision.
+
+Change: hash successive fixed-size chunks through EOF inside a context manager.
+Keep the existing size key, OSError skip, eligibility, grouping, sampling, metrics
+and output categories. No live collector compare_paths, parser, captured bytes,
+recording format, stored history, threshold, enforcement, native pin/tag or QC Build
+change. Parse/hash/stat are still separate reads, not an immutable snapshot. Whole-
+file I/O is necessary here; chunking is not a total-pass/time/RSS bound.
+
+Verified: two synthetic REC9 controls each contain 80 moves beyond the first MiB.
+Identical copies compare 80/80 and remain deduplicated. One changed move in a same-
+size shared-prefix tail compares 79/80: original retains one file/no negative pair,
+subject retains two/one negative pair. Original fails exactly the distinct-tail
+method; subject parsing14 and adjacent reader suites pass with no new warnings.
+Reccheck949/0; identical read-only554 recordings+168 views retain351 existing faults.
+Python-only source verification; no independent-performance/calibration/fleet claim.
+
+## Patch 1389 -- own ordinary similarity map keywords (reader only)
+
+Problem: the similarity reader recognized an ordinary map header only with a literal
+trailing space. Bare or whitespace-only known headers could disappear into the intentional
+absent-header path fallback and produce an 80-row comparison. Valid tab/leading-whitespace
+headers lost their authoritative map identity. The existing `map ` blank case already
+abstained correctly; this is not a numeric exception fix.
+
+Change: dispatch the exact whitespace-separated map keyword to its existing required
+payload check. Keep absent headers and unknown map-like words as before. No other header,
+native held framing, input capture, metrics, threshold, schema, history, default enforcement,
+engine pin/tag or QC Build change. No stored observation is regraded.
+
+Verified: original ac915 reader fails exactly five subcases in two added tests after acting
+80-row/prefix/source-byte controls; fixed source passes all 31 targeted methods (13 numeric,
+6 opportunities, 12 parsing). Adjacent reader/native structural controls pass; reccheck
+949 checks, zero failures. Read-only local runs sweep: 554 recordings and 168 paired views,
+351 pre-existing faults before/after, identical entire CLI output and input bytes. The checker
+does not import recsim; the sweep proves no fault increase, not this dispatch correction.
+Python-only source verification; no native replay, deployment or fleet claim.
+
+## Patch 1385 -- map text at native pixel sizes; P1378 follow-up (QC only)
+
+Problem: game_text and env_hudhint drew with the UI face's virtual slot at 13/9 x hud scale, so the baked
+glyphs were resampled to the console-to-pixel ratio at fractional positions ("a weird font size that scales
+weirdly", Lex, surf_centipedes' spawn text). Separately, P1378's 105 riders each recomputed their train's
+pose every frame and 140 non-solid entities were relinked by setorigin.
+
+Change: the face's pixels=1 slot at a size snapped to its baked ladder, lines on whole pixels (as
+sui_native_text). Trk_Place caches a pose per time; the predraws write .origin.
+
+Verified: 1920x1080 centipedes text 653 px resampled -> 603 px at the 20 px rung, crisp at 3x. r_budget,
+spawn view: pre-P1378 1.77 ms, P1378 1.65 ms, follow-up 1.26 ms; sh_trk 0.49 -> 0.19 ms profiled.
+
 ## Patch 1383 -- a player's own noclip speed (sv_user.c + QC)
 
 Problem: csprogs' Shift+wheel wrote pm_noclipspeed, a server cvar only a game hosted in the same
@@ -65180,3 +65768,68 @@ FTESurf tools/p703native_retirement.md and tools/native_retirement_readlock.md.
 hostile concurrent ancestor/hardlink protection, broad orphan collection or
 all-network-silence claim. No QC Build/public version/feed, progs/configs,
 Linux/Pi or release operation is implied by this source entry.
+
+## Patch 1415 — correct the offline pairs census upper-tail p99
+
+**Problem:** `recsim.py cmd_pairs` labelled a sorted negative-pair MATCH value
+p99 but selected the lowest 1% index: 100 values printed .0100 rather than .9900;
+two values could put p99 below the existing median.
+
+**Change:** Select the empirical nearest rank with exact integer arithmetic,
+`(99*N+99)//100-1`, in the existing nonempty summary branch. Acquisition, pair
+selection/deduplication, scoring, coverage, positives and all other output fields
+stay unchanged. Offline operator diagnostic only, not a calibrated threshold or
+ranking/enforcement change. `ENGINE.txt` patch counter advances; native commit/tag,
+VM, recorder/parser/collector, QC Build and live default reader stay unchanged.
+
+**Verified:** Actual command controls: predecessor three target failures/four
+positive passes; corrected seven pass, including zero/ties/unavailable/small N.
+Windows reader families92 methods (one existing skip), reccheck949/0. Read-only
+runs559rec+169view,728 acquired buffers/351 pre-existing faults, no increase;
+historical byte identity not claimed. Independent source review CLEAR. Clean
+exact-commit summary7 pass; optional wider parser-file arm15 pass/one missing test
+fixture import ERROR retained NOT PASSED. Actual aarch64/Python3.11 direct CLI
+help and summary7 pass; exact old control3 failures/4 passes. Explicit operator-only
+copy hash verified at 8 Nov 2026 04:53:08 UTC; canonical helper metadata,159 backend
+bindings/actor/unit/namespace policy and DB inode unchanged. No DB contents opened
+or frozen claim, new calibration, service restart or active test process. Two
+local artifact-copy refusals after remote success preserved; collection completed
+from the same immutable received output, no remote action repeated.
+Source commit b98e5db04e1c7ca8f5192ddf1ac906e1d204b965; `tools/p1415-recsim-p99.md`.
+
+## Patch 1419 â€” withhold stored-sample summaries containing numeric infinity
+
+**Problem:** A historical compared80/+Inf MATCH is withheld by authenticated
+detail but the offline summary returned an infinite identity maximum and notable
+notice. New-comparison finite guarding was already present; history was untouched.
+
+**Change:** Same grouped SQL sample query adds an internal typed numeric-infinity
+flag, using strict binary64 finite extrema, not a similarity threshold. Any flagged
+compared row withholds the whole summary (fixed nonfinite/None state and unavailable
+line), never a silently filtered/zero sample. Finite/zero/skip/identity/NOTABLE and
+other-metric/legacy contracts stay unchanged. No DDL/DML, persisted/output counter,
+extra sample query/result groups, capture/ranking/native pin/tag/QC Build change.
+
+**Verified:** Actual authenticated baseline one target fails, finite.75/zero pass;
+genuine corrected six sign/identity targets fail before correction. First matrix's
+five AUTOINCREMENT fixture errors retained/not product proof. Extrema prototype
+independently falsified by SQLite TEXT masking; final per-row flag covers it.
+Independent source review CLEAR; final Windows32 methods pass (7admin/9summary/
+6SQLbudget/10finitecollector), history/schema/group/query/callback/finite recovery
+controls held. Product bytes outside two summary functions unchanged. Clean exact
+qualified module/test source bytes retained; actual aarch64/Python3.11 synthetic
+entrypoint and nine pure summary methods pass, old same9 program seven target
+failure entries across2methods/seven other methods pass. Explicit operator-only
+copy hash verified 8 Nov 2026 05:54:25 UTC. Default runtime module/canonical helpers,
+159bindings/actualactor/unit/policy/DBinode unchanged, no production contents read,
+namespace-import probe, service restart or app/native/calibration proof. New flag
+adds VM work; explicit budget may exhaust sooner, not a new performance bound.
+One post-commit receipt check overstrictly compared the CRLF reservation to LF blob;
+normalized metadata verified, source exact, no repeated commit/tests. Existing
+fixture warnings retained. `tools/p1419-summary-nonfinite.md` records scope/use.
+
+Original unpublished local1417 label relinquished after collision with published
+peer1417/1418; final sole reservation1419. Same qualified module34627/test bytes,
+original nominal operator directory/time unchanged, no rerun/redating. Peer
+reservations and both histories preserved, no old conflicting commit published.
+Public source commit 9ededf4c06b9f50ed15e8fc178c839bb65915cf7; module34627, exact qualified bytes.

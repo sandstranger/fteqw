@@ -14828,11 +14828,19 @@ static void Image_LoadHiResTextureWorker(void *ctx, void *data, size_t a, size_t
 
 	if (Image_LocateHighResTexture(tex, &loc, fname, sizeof(fname), &locflags))
 	{
+		if (!(tex->flags & IF_UIPIC))	//FTESurf Patch 1453: the map's textures, not the loading screen's own pictures
+			SCR_NoteTextureSource(FS_WhichPackForLocation(&loc, WP_FULLPATH));
 		f = FS_OpenReadLocation(fname, &loc);
 		if (f)
 		{
 			fsize = VFS_GETLEN(f);
-			buf = BZ_Malloc(fsize);
+			if (fsize > 0x7ffffffe)
+			{	//FTESurf Patch 1417: see FS_LoadMallocGroupFile; falls through to the failed-texture path
+				Con_Printf(CON_ERROR "%s: reports %"PRIuSIZE" bytes; not loaded\n", fname, fsize);
+				buf = NULL;
+			}
+			else
+				buf = BZ_Malloc(fsize);
 			if (buf)
 			{
 				VFS_READ(f, buf, fsize);

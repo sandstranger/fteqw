@@ -276,8 +276,9 @@ qboolean GLSCR_UpdateScreen (void)
 	{
 #if defined(_WIN32) && !defined(FTE_SDL)
 		extern void Sys_FramePacePresent(void);
-		extern qboolean Sys_FramePacePresentActive(void);
+		extern qboolean Sys_FramePaceDrainActive(void);
 		extern void Sys_FramePace_RecordPresent(void);
+		extern void R_FrameTime_Swapped(void);
 		//nettest: FRAME PACING bucket.  This is where the missing third of the frame was.
 		//
 		//The drain below sat in no RSPEED_ bucket, and it could not have been caught by any of
@@ -300,7 +301,7 @@ qboolean GLSCR_UpdateScreen (void)
 		//The paced hold further down contributes nothing to this bucket: Sys_FramePacePresent
 		//early-outs on cl_maxfps 0.  So what this reads is the drain alone.
 		RSpeedRemark();
-		if (Sys_FramePacePresentActive())
+		if (Sys_FramePaceDrainActive())	//FTESurf Patch 1413: mode 4, or a frame sys_framepacing 5 started
 		{	//Bound the GPU backlog so the paced flip below IS the real present and the cadence can't
 			//sawtooth.  sys_framepacing_drain chooses how far back to wait:
 			//  1 = this frame -- the original behaviour.  Correct, but it forbids frame N's GPU work
@@ -346,7 +347,7 @@ qboolean GLSCR_UpdateScreen (void)
 				}
 			}
 		}
-		Sys_FramePacePresent();	//sys_framepacing 4: hold the now-complete flip to the present grid (no-op in other modes)
+		Sys_FramePacePresent();	//sys_framepacing 4/5: hold the now-complete flip to the present grid (no-op in other modes)
 		RSpeedEnd(RSPEED_SCR_PACING);
 #endif
 		RSpeedRemark();
@@ -355,6 +356,7 @@ qboolean GLSCR_UpdateScreen (void)
 #if defined(_WIN32) && !defined(FTE_SDL)
 		RSpeedRemark();
 		Sys_FramePace_RecordPresent();	//sample present-to-present cadence for sys_framepacing_stats (every mode)
+		R_FrameTime_Swapped();	//FTESurf Patch 1413: and for r_frametime
 		RSpeedEnd(RSPEED_SCR_PACING);
 #endif
 	}

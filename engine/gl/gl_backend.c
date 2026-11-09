@@ -335,6 +335,8 @@ static struct
 	int view;				//which of its seat's world views that frame rendered them (BE_SeatView)
 	double rendered;		//realtime they rendered (r_capturerate)
 } be_capkeep = {-1};
+static unsigned int blendcentre_gen = 1;	//FTESurf Patch 1409: GLBE_BlendAreaDepthCached's entries are this map's
+void GLBE_BlendCentresFlush(void) { blendcentre_gen++; }
 static int be_capfixframe = -1;	//host_framecount whose top-level draws sample a reused capture through be_capfix; -1 once a level-0 target is written
 static float be_capfix[16];	//its view-projection times the inverse of this frame's (SP_M_CAPTUREFIX)
 static const float be_identity16[16] = {1,0,0,0, 0,1,0,0, 0,0,1,0, 0,0,0,1};
@@ -7249,7 +7251,7 @@ static void GLBE_CaptureLog(batch_t *sub, shader_t *cs, const char *kind, batch_
 //:2253-2392), and every water material samples those same targets (water.cpp:259-266). Per view the
 //water that most fills the screen on the eye's side of it is chosen before anything draws and captured
 //once, for all of its batches together (r_waterviews).
-extern cvar_t r_waterviews;
+extern cvar_t r_waterviews, r_waterwalls;
 #define BE_WATERKINDS (SHADER_HASREFLECT|SHADER_HASREFRACT|SHADER_HASREFRACTDEPTH)
 #define BE_WATERPLANES 128	//on-screen facing water planes weighed per view, each over all its batches before the
 							//choice (the library's most is 82 up-facing planes on a whole map); at 1 any more share
@@ -7302,6 +7304,23 @@ static qboolean GLBE_WaterFacesEye(const plane_t *p, qboolean under)
 		return false;	//behind it: GLR_DrawPortal would refuse the capture
 	return under ? p->normal[2] < -0.99f : p->normal[2] > 0.99f;
 }
+//FTESurf Patch 1386: world Water the eye sees from its front that GLBE_WaterFacesEye turns down (walls, slopes,
+//an underside seen from below out of the water) samples the view's chosen pair at r_waterviews 1 rather than
+//capturing alone: two more scenes per plane every frame, and a second plane stops r_capturerate's keep for all
+//of them. bhop_ceaseless save 35: 217 -> 448 fps. With no level water on screen seen, one of them is chosen
+//(GLBE_WaterViewsBegin). $refractiondepth marks a Water material; LightmappedReflective (vmt/lmreflect, a mirror
+//of its own plane, func_reflective_glass's) does not sample it and keeps its own capture.
+static qboolean GLBE_WaterOtherShares(const shader_t *s, const plane_t *p)
+{
+	return r_waterwalls.ival && r_waterviews.ival == 1 && (s->flags & SHADER_HASREFRACTDEPTH) &&
+		DotProduct(r_refdef.vieworg, p->normal) - p->dist >= -r_refdef.mindist;
+}
+//...and Water on a brush entity (func_brush, func_illusionary)
+static qboolean GLBE_WaterEntityShares(const batch_t *b, const shader_t *s)
+{
+	return r_waterwalls.ival && r_waterviews.ival == 1 && b->ent != &r_worldentity && (s->flags & SHADER_HASREFRACTDEPTH) &&
+		!(s->flags & (SHADER_NODRAW|SHADER_HASPORTAL|SHADER_HASRIPPLEMAP));
+}
 static void GLBE_MeshBox(const mesh_t *mesh, vec3_t lo, vec3_t hi)
 {
 	int v, k;
@@ -7330,17 +7349,19 @@ void GLBE_WaterViewsNewMap(void)
 	memset(be_capstamp, 0, sizeof(be_capstamp));	//FTESurf Patch 1018: the old map's captures
 	be_capkeep.frame = be_capkeep.keptframe = be_capfixframe = -1;	//FTESurf Patch 1245
 	be_waterdepthfailed = false;	//FTESurf Patch 1020: a refused depth copy is tried again
+	GLBE_BlendCentresFlush();	//FTESurf Patch 1409: the old map's mesh centres
 #ifdef PLUGINS
 	be_occluderasked = false;
 	if (!r_waterviews.ival || !cl.worldmodel || cl.worldmodel->loadstate != MLS_LOADED)
 		return;
-	//only what the choice ever weighs: level faces of a capture material (GLBE_WaterFacesEye), so a map whose
-	//only capture surfaces are windows or sloped water builds nothing
+	//only what the choice ever weighs: level faces of a capture material (GLBE_WaterFacesEye) and, under
+	//r_waterwalls, other Water faces (Patch 1386), so a map whose only capture surfaces are windows builds nothing
 	for (i = 0; i < cl.worldmodel->nummodelsurfaces; i++)
 	{
 		msurface_t *s = &cl.worldmodel->surfaces[cl.worldmodel->firstmodelsurface + i];
 		shader_t *sh = (s->texinfo && s->texinfo->texture) ? s->texinfo->texture->shader : NULL;
-		if (sh && s->plane && fabs(s->plane->normal[2]) > 0.99f &&
+		if (sh && s->plane && (fabs(s->plane->normal[2]) > 0.99f ||
+			(r_waterwalls.ival && r_waterviews.ival == 1 && (sh->flags & SHADER_HASREFRACTDEPTH))) &&
 			!(sh->flags & (SHADER_NODRAW|SHADER_HASPORTAL|SHADER_HASRIPPLEMAP)) && (sh->flags & (SHADER_HASREFLECT|SHADER_HASREFRACT)))
 			n++;
 	}
@@ -7350,7 +7371,7 @@ void GLBE_WaterViewsNewMap(void)
 	r = Plug_OccluderTrace(cl.worldmodel, vec3_origin, vec3_origin);
 	if (r >= 0)
 		be_occluderasked = true;
-	Con_DPrintf("water: %i level capture water faces; occluder tree asked for at map load: %s, %.1f ms (the plugin says built now or already built)\n",
+	Con_DPrintf("water: %i capture water faces the choice weighs; occluder tree asked for at map load: %s, %.1f ms (the plugin says built now or already built)\n",
 		n, r >= 0 ? "the map plugin answered" : "the map plugin cannot answer (-1): the first occlusion trace asks again", (Sys_DoubleTime() - t0) * 1000);
 #else
 	Con_DPrintf("water: no plugin hook in this build: occlusion uses the world's movement trace\n");
@@ -7592,7 +7613,8 @@ static qboolean GLBE_WaterPlaneSeen(bewaterplane_t *slot)
 //one batch over every candidate on `pl` -- `first`'s meshes first (GLR_PortalPlane and the reflection's
 //pvsorigin read the first one), then that plane's other on-screen batches -- and with `all`, after them
 //every other on-screen candidate facing the eye, so the capture's PVS covers the water that samples it
-//(as one load-merged batch's did: Mod_Batches_Build splits by plane only if the shader captured at load)
+//(as one load-merged batch's did: Mod_Batches_Build splits by plane only if the shader captured at load).
+//P1386's sharers (walls, undersides, entity Water) are left out: what they sample is the chosen plane's view.
 static void GLBE_WaterGather(bewaterview_t *wv, batch_t *first, const plane_t *pl, qboolean all,
 	batch_t *out, mesh_t ***arr, unsigned int *max, unsigned int *need)
 {
@@ -7631,7 +7653,7 @@ static void GLBE_WaterGather(bewaterview_t *wv, batch_t *first, const plane_t *p
 //before this view submits anything: pick its water
 static void GLBE_WaterViewsBegin(batch_t **worldbatches)
 {
-	int level = r_refdef.recurse, i, n = 0, s, t, best, hidden = -1, kept = 0, seat = 0;
+	int level = r_refdef.recurse, i, n = 0, s, t, best, hidden = -1, kept = 0, seat = 0, pass;
 	bewaterview_t *wv;
 	batch_t *b;
 	plane_t p;
@@ -7659,52 +7681,68 @@ static void GLBE_WaterViewsBegin(batch_t **worldbatches)
 	//each view's own eye (r_viewcontents is the top-level one's): a portal's far camera, a sky room's
 	wv->under = cl.worldmodel && cl.worldmodel->funcs.PointContents &&
 		(cl.worldmodel->funcs.PointContents(cl.worldmodel, NULL, r_refdef.vieworg) & (FTECONTENTS_WATER|FTECONTENTS_SLIME|FTECONTENTS_LAVA));
-	for (i = 0; i < SHADER_SORT_COUNT; i++)
-		for (b = worldbatches[i]; b; b = b->next)
-		{
-			if (!GLBE_WaterCandidate(b) || !GLR_BatchPlane(b, &p) || !GLBE_WaterFacesEye(&p, wv->under))
-				continue;
-			for (s = 0; s < n; s++)
-				if (GLBE_WaterSamePlane(&planes[s].p, &p))
-					break;
-			if (s < n)
-				w = GLBE_WaterWeigh(b, &p, &planes[s]);
-			else
-			{	//a slot only for a plane with water on screen
-				memset(&probe, 0, sizeof(probe));
-				probe.p = p;
-				w = GLBE_WaterWeigh(b, &p, &probe);
-				if (w <= 0 || n == BE_WATERPLANES)
-					continue;
-				planes[s = n++] = probe;
-			}
-			if (w > 0)
-			{
-				planes[s].w += w;
-				wv->needall |= b->shader->flags & BE_WATERKINDS;	//only on-screen water asks
-			}
-		}
-	//the heaviest plane whose water the eye can see past the world's solids (Source picks the eye's fog
-	//volume engine-side; vvis only flags it, vvis.cpp:803-860): a pool behind a wall must not set every
-	//other water's mirror plane. None seen: the heaviest anyway.
-	for (best = -1, t = 0; t < 4; t++)
+	//level water first; when none of it on screen is seen, also the other Water the eye sees from the front
+	//(FTESurf Patch 1386: each captured alone, surf_affliction's lava channel rendered 184 scenes a frame, 2 fps)
+	for (best = -1, pass = 0; pass < 2; pass++)
 	{
-		int top = -1;
-		for (s = 0; s < n; s++)
-			if (planes[s].w > 0 && (top < 0 || planes[s].w > planes[top].w))
-				top = s;
-		if (top < 0)
+		int first = n, pbest = -1, phidden = -1;
+		if (pass && (!r_waterwalls.ival || r_waterviews.ival != 1 || (best >= 0 && GLBE_WaterPlaneSeen(&planes[best]))))
 			break;
-		if (best < 0)
-			best = top;
-		if (GLBE_WaterPlaneSeen(&planes[top]))
+		for (i = 0; i < SHADER_SORT_COUNT; i++)
+			for (b = worldbatches[i]; b; b = b->next)
+			{
+				qboolean facing;
+				if (!GLBE_WaterCandidate(b) || !GLR_BatchPlane(b, &p))
+					continue;
+				facing = GLBE_WaterFacesEye(&p, wv->under);
+				if (pass ? (facing || !GLBE_WaterOtherShares(b->shader, &p)) : !facing)
+					continue;
+				for (s = first; s < n; s++)
+					if (GLBE_WaterSamePlane(&planes[s].p, &p))
+						break;
+				if (s < n)
+					w = GLBE_WaterWeigh(b, &p, &planes[s]);
+				else
+				{	//a slot only for a plane with water on screen
+					memset(&probe, 0, sizeof(probe));
+					probe.p = p;
+					w = GLBE_WaterWeigh(b, &p, &probe);
+					if (w <= 0 || n == BE_WATERPLANES)
+						continue;
+					planes[s = n++] = probe;
+				}
+				if (w > 0)
+				{
+					planes[s].w += w;
+					wv->needall |= b->shader->flags & BE_WATERKINDS;	//only on-screen water asks
+				}
+			}
+		//the heaviest plane whose water the eye can see past the world's solids (Source picks the eye's fog
+		//volume engine-side; vvis only flags it, vvis.cpp:803-860): a pool behind a wall must not set every
+		//other water's mirror plane. None seen: the heaviest anyway, level water before the rest.
+		for (t = 0; t < 4; t++)
 		{
-			if (best != top)
-				hidden = best;
-			best = top;
-			break;
+			int top = -1;
+			for (s = first; s < n; s++)
+				if (planes[s].w > 0 && (top < 0 || planes[s].w > planes[top].w))
+					top = s;
+			if (top < 0)
+				break;
+			if (pbest < 0)
+				pbest = top;
+			if (GLBE_WaterPlaneSeen(&planes[top]))
+			{
+				phidden = pbest != top ? pbest : best;
+				pbest = top;
+				break;
+			}
+			planes[top].w = -planes[top].w;	//tried
 		}
-		planes[top].w = -planes[top].w;	//tried
+		if (pbest >= 0 && (best < 0 || GLBE_WaterPlaneSeen(&planes[pbest])))
+		{
+			hidden = phidden;
+			best = pbest;
+		}
 	}
 	if (best >= 0 && !level && be_waterlastvalid[seat])
 	{	//the top-level view keeps last frame's water while it still has half the best's share and is seen,
@@ -7881,18 +7919,20 @@ static qboolean GLBE_GenerateBatchTextures(batch_t *batch, shader_t *bs)
 
 	//FTESurf Patch 879: the view's water plane is captured once (GLBE_WaterViewsBegin). Below
 	//GLR_DrawPortal's out-of-recursion path, which would submit the combined batch itself.
-	if (r_waterviews.ival && r_refdef.recurse < R_MAX_RECURSE-1 && GLBE_WaterCandidate(batch))
+	if (r_waterviews.ival && r_refdef.recurse < R_MAX_RECURSE-1 && (GLBE_WaterCandidate(batch) || GLBE_WaterEntityShares(batch, bs)))
 	{
 		bewaterview_t *wv = &be_waterview[r_refdef.recurse];
 		plane_t p;
 		unsigned int need;
 		qboolean chosenplane;
+		qboolean world = batch->ent == &r_worldentity;
 		//nothing of it on screen (the walk lists a node's off-screen faces): no capture, nothing to draw
-		if (!GLBE_WaterOnScreen(batch))
+		if (world && !GLBE_WaterOnScreen(batch))
 			return false;
-		if (wv->chosen && VectorCompare(wv->eye, r_refdef.vieworg) && GLR_BatchPlane(batch, &p) && GLBE_WaterFacesEye(&p, wv->under))
+		if (wv->chosen && VectorCompare(wv->eye, r_refdef.vieworg) &&
+			(!world || (GLR_BatchPlane(batch, &p) && (GLBE_WaterFacesEye(&p, wv->under) || GLBE_WaterOtherShares(bs, &p)))))
 		{
-			chosenplane = GLBE_WaterSamePlane(&p, &wv->plane) || r_waterviews.ival == 1;
+			chosenplane = !world || GLBE_WaterSamePlane(&p, &wv->plane) || r_waterviews.ival == 1;
 			if (chosenplane)	//at 1 every water facing the eye samples the chosen plane's capture, as in Source
 			{
 				p = wv->plane;
@@ -7932,7 +7972,12 @@ static qboolean GLBE_GenerateBatchTextures(batch_t *batch, shader_t *bs)
 				GLBE_WaterGather(wv, batch, &p, false, &wv->other, &wv->omesh, &wv->maxomesh, &need);
 				cb = &wv->other;
 			}
-			need &= ~wv->helddone;
+			//P1386: beside kinds kept this frame (be_capfix) a fresh one would come from another camera, and the
+			//keep's record would be stamped fresh: render every kind the targets hold and the record lists
+			if (chosenplane && !r_refdef.recurse && be_capfixframe == host_framecount)
+				need |= wv->helddone | be_capkeep.kinds;
+			else
+				need &= ~wv->helddone;
 			wv->helddone |= need;
 			cf = (bs->flags & ~BE_WATERKINDS) | need;
 			viashare = true;
@@ -8750,26 +8795,27 @@ static double GLBE_BlendFaceDepth(const mesh_t *mesh, const float *matrix)
 }
 
 // Mode2: BSP edge splits must not change a face's sorting centre.
-static double GLBE_BlendAreaDepth(const mesh_t *mesh, const float *matrix)
+static qboolean GLBE_BlendAreaCentre(const mesh_t *mesh, double *center)
 {
-	double center[3] = {0, 0, 0}, total = 0;
+	double total = 0;
 	unsigned int a, b, c;
 	int t, j;
+	center[0] = center[1] = center[2] = 0;
 	if (!mesh->xyz_array || mesh->numvertexes <= 0 || !mesh->indexes ||
 		mesh->numindexes <= 0 || mesh->numindexes % 3)
-		return GLBE_BlendFaceDepth(mesh, matrix);
+		return false;
 	for (t = 0; t < mesh->numindexes; t += 3)
 	{
 		double ab[3], ac[3], cross[3], area;
 		a = mesh->indexes[t]; b = mesh->indexes[t+1]; c = mesh->indexes[t+2];
 		if (a >= (unsigned int)mesh->numvertexes || b >= (unsigned int)mesh->numvertexes ||
 			c >= (unsigned int)mesh->numvertexes)
-			return GLBE_BlendFaceDepth(mesh, matrix);
+			return false;
 		for (j = 0; j < 3; j++)
 		{
 			if (IS_NAN(mesh->xyz_array[a][j]) || IS_NAN(mesh->xyz_array[b][j]) ||
 				IS_NAN(mesh->xyz_array[c][j]))
-				return GLBE_BlendFaceDepth(mesh, matrix);
+				return false;
 			ab[j] = (double)mesh->xyz_array[b][j] - mesh->xyz_array[a][j];
 			ac[j] = (double)mesh->xyz_array[c][j] - mesh->xyz_array[a][j];
 		}
@@ -8785,10 +8831,50 @@ static double GLBE_BlendAreaDepth(const mesh_t *mesh, const float *matrix)
 				mesh->xyz_array[b][j] + mesh->xyz_array[c][j]) / 3;
 	}
 	if (total <= 0)
-		return GLBE_BlendFaceDepth(mesh, matrix);
+		return false;
 	for (j = 0; j < 3; j++)
 		center[j] /= total;
-	return GLBE_BlendCenterDepth(center, matrix);
+	return true;
+}
+static double GLBE_BlendAreaDepth(const mesh_t *mesh, const float *matrix)
+{
+	double center[3];
+	return GLBE_BlendAreaCentre(mesh, center) ? GLBE_BlendCenterDepth(center, matrix) : GLBE_BlendFaceDepth(mesh, matrix);
+}
+/*FTESurf Patch 1409: on a Source map a static mesh's area centre (world faces, brush-entity faces: model space,
+  fixed for the map) is computed once and only transformed each frame. surf_bossfight's ~400 dense blended faces
+  spent 2.1 ms a frame in GLBE_BlendAreaCentre at r_blendsort 2. Keyed by mesh pointer, checked against its
+  arrays and counts; a new map or a purged brush model (Surf_Clear) drops every entry. Not on Quake worlds:
+  their scene cache refills one mesh in place for each PVS (review).*/
+#define BLENDCENTRE_SLOTS 8192
+static struct
+{
+	const mesh_t *mesh;
+	const void *xyz, *idx;
+	int nv, ni;
+	unsigned int gen;
+	qboolean ok;
+	double c[3];
+} blendcentre[BLENDCENTRE_SLOTS];
+static double GLBE_BlendAreaDepthCached(const batch_t *batch, const mesh_t *mesh, const float *matrix)
+{
+	unsigned int h;
+	if (!r_blendcache.ival || !cl.worldmodel || !(cl.worldmodel->engineflags & MDLF_SOURCEBSP) || batch->buildmeshes || !batch->ent ||
+		(batch->ent != &r_worldentity && (!batch->ent->model || batch->ent->model->type != mod_brush)))
+		return GLBE_BlendAreaDepth(mesh, matrix);	//rebuilt each frame (alias, procedural, a Quake world's scene cache)
+	h = (unsigned int)(((size_t)mesh >> 4) * 2654435761u) & (BLENDCENTRE_SLOTS-1);
+	if (blendcentre[h].mesh != mesh || blendcentre[h].gen != blendcentre_gen || blendcentre[h].xyz != (const void*)mesh->xyz_array ||
+		blendcentre[h].idx != (const void*)mesh->indexes || blendcentre[h].nv != mesh->numvertexes || blendcentre[h].ni != mesh->numindexes)
+	{
+		blendcentre[h].mesh = mesh;
+		blendcentre[h].gen = blendcentre_gen;
+		blendcentre[h].xyz = mesh->xyz_array;
+		blendcentre[h].idx = mesh->indexes;
+		blendcentre[h].nv = mesh->numvertexes;
+		blendcentre[h].ni = mesh->numindexes;
+		blendcentre[h].ok = GLBE_BlendAreaCentre(mesh, blendcentre[h].c);
+	}
+	return blendcentre[h].ok ? GLBE_BlendCenterDepth(blendcentre[h].c, matrix) : GLBE_BlendFaceDepth(mesh, matrix);
 }
 
 // Procedural commands must not build or retain the shared alias mesh until replay.
@@ -9692,7 +9778,7 @@ static void GLBE_SubmitBlendedFaces(batch_t *world, batch_t *dynamic)
 						continue;
 					faces[n].batch = batch;
 					faces[n].mesh = mesh;
-					faces[n].facedepth = GLBE_BlendAreaDepth(mesh, matrix);
+					faces[n].facedepth = GLBE_BlendAreaDepthCached(batch, mesh, matrix);
 					faces[n].depth = group ? groupdepth : faces[n].facedepth;
 					faces[n].group = group;
 					faces[n].sequence = n;

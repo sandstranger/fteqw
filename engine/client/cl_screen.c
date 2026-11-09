@@ -370,6 +370,231 @@ static void R_Budget_Publish(double now)
 	memset(budget.quant, 0, sizeof(budget.quant));
 }
 
+//FTESurf Patch 1444: r_budget's window averages hide a single slow frame; this keeps the slowest frames since
+//r_frametime_reset, each with its own self time per budget group and what else it did
+cvar_t r_spikes = CVARFD("r_spikes", "0", 0, "FTESurf Patch 1444. Keeps the slowest frames since r_frametime_reset, each with its own CPU time by r_budget's groups, its late shader compiles and image uploads, packets read and nested views (water, glass, portals); r_frametime_dump lists them under the average frame. Times the engine's buckets, draws nothing.");
+#define SPIKE_KEEP 8
+typedef struct
+{
+	float ms, at;					//frame interval; realtime
+	float grp[BUDGET_GROUPS];		//ms of self time
+	float topms;					//the largest single bucket
+	unsigned char topg, topm;		//...as budget_groups[topg].m[topm]
+	unsigned short compiles, images, packets, views;
+	float predms[3], entms;			//FTESurf Patch 1446: SetSolidEntities/TransitionEntities/PredictMove; CSQC_Ent_Update
+	float pmms, hookms;				//...inside PredictMove: PM_PlayerMove; CSQC_PredictPlayerMove (the trigger hook)
+	float gcms;						//...the QC tempstring collector's main-thread phases (qclib initlib.c)
+	unsigned char gcstarts, gcdones;
+	unsigned int gcbytes;
+	unsigned short entnew, entupd, physents, pmoves, qcpmoves;
+	char qcf[3][40];				//r_spikes 2: the frame's three busiest CSQC functions by self time
+	float qcms[3];
+} spike_t;
+static qboolean spk_qcprof;			//r_spikes 2 turned the CSQC profiler on
+#ifdef CSQC_DAT
+extern unsigned int r_spikes_entnew, r_spikes_entupd, r_spikes_pmoves, r_spikes_qcpmoves;	//pr_csqc.c, FTESurf Patch 1446
+extern double r_spikes_entus, r_spikes_predus[3], r_spikes_pmus, r_spikes_hookus;
+extern int r_spikes_physents;
+extern double pr_gc_mainus;	//qclib initlib.c
+extern unsigned int pr_gc_starts, pr_gc_dones;
+extern size_t pr_gc_bytes;
+#endif
+static struct
+{
+	qboolean on;
+	double last, summs, sum[BUDGET_GROUPS];
+	unsigned int frames, compiles, images, views;	//the counters' previous readings
+	int packets;
+	unsigned int gcphases;			//FTESurf Patch 1446: the collector's main-thread phases since reset
+	float gcmax, gcframemax;		//...the slowest one, and the slowest frame holding one
+	float gcph[12];					//...each one's ms, start positive, finish negative, in order
+	spike_t s[SPIKE_KEEP];			//slowest first
+} spk;
+#ifdef GLQUAKE
+void R_MapReadyLate(unsigned int *compiles, unsigned int *images);	//gl_shader.c
+#endif
+static unsigned short R_Spikes_Delta(unsigned int now, unsigned int *prev)
+{	//r_viewstats zeroes its counters and each activation the late ones
+	unsigned int d = now >= *prev ? now - *prev : now;
+	*prev = now;
+	return min(d, 65535);
+}
+#ifdef CSQC_DAT
+static void R_Spikes_QCFunc(void *ctx, const char *func, const char *file, double selfus, double totalus)
+{	//keeps the three largest, largest first
+	spike_t *f = ctx;
+	float ms = selfus / 1000;
+	int k;
+	for (k = 0; k < 3 && ms <= f->qcms[k]; k++)
+		;
+	if (k == 3)
+		return;
+	memmove(&f->qcms[k+1], &f->qcms[k], sizeof(f->qcms[0]) * (2 - k));
+	memmove(f->qcf[k+1], f->qcf[k], sizeof(f->qcf[0]) * (2 - k));
+	f->qcms[k] = ms;
+	Q_strncpyz(f->qcf[k], func ? func : "?", sizeof(f->qcf[k]));
+}
+#endif
+//r_spikes 2 profiles CSQC unless r_budget_csqc owns the profiler (each read resets it)
+static qboolean R_Spikes_QCProfile(void)
+{
+#ifdef CSQC_DAT
+	qboolean want = r_spikes.ival >= 2 && !(r_budget.ival && r_budget_csqc.ival);
+	if (!CSQC_Inited())
+		spk_qcprof = false;	//a map change reloads the VM with the profiler off
+	else if (want != spk_qcprof && CSQC_SetProfiling(want))
+		spk_qcprof = want;
+	return spk_qcprof;
+#else
+	return false;
+#endif
+}
+//once a frame, from RSpeedShow before R_Budget_Sample (which clears rspeeds_self when it is on)
+static void R_Spikes_Sample(void)
+{
+	double now = Sys_DoubleTime();
+	unsigned int compiles = 0, images = 0, views = 0, i, j, c;
+	qboolean qcprof = R_Spikes_QCProfile();
+	spike_t f;
+	if (!r_spikes.ival)
+	{
+		spk.on = false;
+		return;
+	}
+#ifdef GLQUAKE
+	if (qrenderer == QR_OPENGL)
+		R_MapReadyLate(&compiles, &images);
+#endif
+	for (i = 1; i < R_MAX_RECURSE; i++)
+		views += r_vs_views[i];
+	if (!spk.on)
+	{
+		memset(&spk, 0, sizeof(spk));
+		spk.on = true;
+		spk.last = now;
+		spk.compiles = compiles, spk.images = images, spk.views = views;
+		spk.packets = cls.netchan.incoming_sequence;
+#ifdef CSQC_DAT
+		memset(r_spikes_predus, 0, sizeof(r_spikes_predus));
+		r_spikes_entus = 0, r_spikes_entnew = r_spikes_entupd = 0, r_spikes_physents = 0;
+		r_spikes_pmoves = r_spikes_qcpmoves = 0, r_spikes_pmus = r_spikes_hookus = 0;
+		pr_gc_mainus = 0, pr_gc_starts = pr_gc_dones = 0;
+#endif
+		if (!r_budget.ival)
+			memset(rspeeds_self, 0, sizeof(rspeeds_self));
+		return;
+	}
+	memset(&f, 0, sizeof(f));
+	f.ms = (now - spk.last) * 1000;
+	f.at = now;
+	spk.last = now;
+	for (i = 0; i < BUDGET_GROUPS; i++)
+	{
+		for (j = 0; j < countof(budget_groups[i].m) && budget_groups[i].m[j].b >= 0; j++)
+		{
+			float ms = rspeeds_self[budget_groups[i].m[j].b] / 1000;
+			f.grp[i] += ms;
+			if (ms > f.topms)
+				f.topms = ms, f.topg = i, f.topm = j;
+		}
+		spk.sum[i] += f.grp[i];
+	}
+	spk.summs += f.ms;
+	spk.frames++;
+	f.compiles = R_Spikes_Delta(compiles, &spk.compiles);
+	f.images = R_Spikes_Delta(images, &spk.images);
+	f.views = R_Spikes_Delta(views, &spk.views);
+	f.packets = bound(0, cls.netchan.incoming_sequence - spk.packets, 65535);
+	spk.packets = cls.netchan.incoming_sequence;
+#ifdef CSQC_DAT
+	for (i = 0; i < 3; i++)
+		f.predms[i] = r_spikes_predus[i] / 1000, r_spikes_predus[i] = 0;
+	f.entms = r_spikes_entus / 1000;
+	f.entnew = min(r_spikes_entnew, 65535);
+	f.entupd = min(r_spikes_entupd, 65535);
+	f.physents = bound(0, r_spikes_physents, 65535);
+	f.pmoves = min(r_spikes_pmoves, 65535);
+	f.qcpmoves = min(r_spikes_qcpmoves, 65535);
+	f.pmms = r_spikes_pmus / 1000, f.hookms = r_spikes_hookus / 1000;
+	f.gcms = pr_gc_mainus / 1000, f.gcstarts = min(pr_gc_starts, 255), f.gcdones = min(pr_gc_dones, 255);
+	f.gcbytes = min(pr_gc_bytes, 0xffffffffu);
+	pr_gc_mainus = 0, pr_gc_starts = pr_gc_dones = 0;
+	if (f.gcstarts || f.gcdones)
+	{
+		if (spk.gcphases < countof(spk.gcph))
+			spk.gcph[spk.gcphases] = f.gcstarts ? f.gcms : -f.gcms;
+		spk.gcphases += f.gcstarts + f.gcdones;
+		spk.gcmax = max(spk.gcmax, f.gcms);
+		spk.gcframemax = max(spk.gcframemax, f.ms);
+	}
+	r_spikes_entus = 0, r_spikes_entnew = r_spikes_entupd = 0, r_spikes_physents = 0;
+	r_spikes_pmoves = r_spikes_qcpmoves = 0, r_spikes_pmus = r_spikes_hookus = 0;
+	if (qcprof)
+		CSQC_EnumProfile(R_Spikes_QCFunc, &f);
+#endif
+	if (!r_budget.ival)
+		memset(rspeeds_self, 0, sizeof(rspeeds_self));
+	if (f.ms <= spk.s[SPIKE_KEEP-1].ms)
+		return;
+	for (c = 0; f.ms <= spk.s[c].ms; c++)
+		;
+	memmove(&spk.s[c+1], &spk.s[c], sizeof(spk.s[0]) * (SPIKE_KEEP-1 - c));
+	spk.s[c] = f;
+}
+//the largest four of grp[], as "name ms" pairs
+static void R_Spikes_Groups(char *out, size_t outsize, const float *grp)
+{
+	qboolean used[BUDGET_GROUPS] = {0};
+	int k, i, best;
+	for (k = 0; k < 4; k++)
+	{
+		for (best = -1, i = 0; i < BUDGET_GROUPS; i++)
+			if (!used[i] && (best < 0 || grp[i] > grp[best]))
+				best = i;
+		if (best < 0 || grp[best] < 0.005)
+			break;
+		used[best] = true;
+		Q_strncatz(out, va("%s %s %.2f", k ? "," : "", R_Budget_GroupName(best, true), grp[best]), outsize);
+	}
+}
+static void R_Spikes_Append(char *out, size_t outsize)
+{
+	float avg[BUDGET_GROUPS], timed;
+	double now = Sys_DoubleTime();
+	int i, g;
+	if (!spk.on || !spk.frames)
+		return;
+	for (g = 0; g < BUDGET_GROUPS; g++)
+		avg[g] = spk.sum[g] / spk.frames;
+	Q_strncatz(out, va("  slowest frames by CPU group (r_spikes, %u frames since reset; ms, largest four):\n    average %6.2f:", spk.frames, spk.summs / spk.frames), outsize);
+	R_Spikes_Groups(out, outsize, avg);
+	Q_strncatz(out, "\n", outsize);
+	Q_strncatz(out, va("    qc tempstring collector: %u main-thread phases, slowest %.2f ms, slowest frame holding one %.2f ms;",
+		spk.gcphases, spk.gcmax, spk.gcframemax), outsize);
+	for (i = 0; i < (int)min(spk.gcphases, countof(spk.gcph)); i++)
+		Q_strncatz(out, va(" %s %.2f", spk.gcph[i] >= 0 ? "start" : "finish", fabs(spk.gcph[i])), outsize);
+	Q_strncatz(out, "\n", outsize);
+	for (i = 0; i < SPIKE_KEEP && spk.s[i].ms; i++)
+	{
+		for (timed = 0, g = 0; g < BUDGET_GROUPS; g++)
+			timed += spk.s[i].grp[g];
+		Q_strncatz(out, va("    %7.2f %5.1f s ago:", spk.s[i].ms, now - spk.s[i].at), outsize);
+		R_Spikes_Groups(out, outsize, spk.s[i].grp);
+		Q_strncatz(out, va("; largest bucket %s %.2f; untimed %.2f; compiles %u images %u packets %u views %u\n",
+			budget_groups[spk.s[i].topg].m[spk.s[i].topm].name, spk.s[i].topms, max(0, spk.s[i].ms - timed),
+			spk.s[i].compiles, spk.s[i].images, spk.s[i].packets, spk.s[i].views), outsize);
+		Q_strncatz(out, va("          prediction: solids %.2f transition %.2f move %.2f (pmove %.2f, qc hook %.2f; %u physents, %u moves; qc %u moves); csqc ents new %u updated %u in %.2f ms\n",
+			spk.s[i].predms[0], spk.s[i].predms[1], spk.s[i].predms[2], spk.s[i].pmms, spk.s[i].hookms, spk.s[i].physents, spk.s[i].pmoves, spk.s[i].qcpmoves,
+			spk.s[i].entnew, spk.s[i].entupd, spk.s[i].entms), outsize);
+		if (spk.s[i].gcstarts || spk.s[i].gcdones)
+			Q_strncatz(out, va("          qc tempstring collector: %.2f ms on this thread (%u start, %u finish; snapshot %u KiB)\n",
+				spk.s[i].gcms, spk.s[i].gcstarts, spk.s[i].gcdones, spk.s[i].gcbytes / 1024), outsize);
+		if (*spk.s[i].qcf[0])
+			Q_strncatz(out, va("          qc self: %s %.2f, %s %.2f, %s %.2f\n", spk.s[i].qcf[0], spk.s[i].qcms[0],
+				spk.s[i].qcf[1], spk.s[i].qcms[1], spk.s[i].qcf[2], spk.s[i].qcms[2]), outsize);
+	}
+}
+
 //once a frame, from RSpeedShow: this frame's buckets into the window
 static void R_Budget_Sample(void)
 {
@@ -809,7 +1034,7 @@ static void R_Budget_Dump_f(void)
 //FTESurf Patch 801: r_frametime. One sample per rendered frame, from RSpeedShow. The graph keeps the
 //slowest frame of each column's slice, so a spike is never averaged away; the lows come from a
 //histogram updated as frames arrive and expire, so computing them never costs a frame of its own.
-cvar_t r_frametime = CVARFD("r_frametime", "0", 0, "FTESurf Patch 801. A frame-time graph at the top right: the last r_frametime_seconds, each column the slowest frame in its slice, green, yellow over 1.5x the median and red over 2.5x (a stutter). Above it the last second's fps (show_fps' figure), then estimated average fps and the 1% and 0.1% tails (histogram estimates of the slowest fractions' mean) over r_frametime_window. r_frametime_dump sorts retained raw samples for exact tail means and nearest-rank percentiles, with sample coverage, focus-idle exclusions since reset, the worst frames and where you were; r_frametime_reset starts the window again.");
+cvar_t r_frametime = CVARFD("r_frametime", "0", 0, "FTESurf Patch 801. A frame-time graph at the top right: the last r_frametime_seconds, each column the slowest frame in its slice, green, yellow over 1.5x the median and red over 2.5x (a stutter). Above it the last second's fps (show_fps' figure), then estimated average fps and the 1% and 0.1% tails (histogram estimates of the slowest fractions' mean) over r_frametime_window. On Windows OpenGL frames are timed at the buffer swap (FTESurf Patch 1413). r_frametime_dump sorts retained raw samples for exact tail means and nearest-rank percentiles, with sample coverage, focus-idle exclusions since reset, the worst frames and where you were; r_frametime_reset starts the window again.");
 cvar_t r_frametime_seconds = CVARFD("r_frametime_seconds", "10", 0, "FTESurf Patch 801. Seconds the r_frametime graph spans.");
 cvar_t r_frametime_window = CVARFD("r_frametime_window", "30", 0, "FTESurf Patch 801. Seconds r_frametime's lows and stutter count cover (1 to 120).");
 
@@ -1117,9 +1342,17 @@ static void R_FrameTime_AfterDump(void)
 {
 	ft.last = Sys_DoubleTime();
 }
+#if defined(_WIN32) && !defined(FTE_SDL) && defined(GLQUAKE)
+void R_FrameTime_Swapped(void)
+{	//FTESurf Patch 1413: gl_screen.c, right after the buffer swap -- the display follows the swaps, and with the
+	//swap held (sys_framepacing 4/5) the HUD draws at times that move on purpose
+	R_FrameTime_Sample();
+}
+#endif
 static void R_FrameTime_Reset_f(void)
 {
 	ft.on = false;	//the next frame starts clean
+	spk.on = false;	//FTESurf Patch 1444
 }
 static int R_FrameTime_RawCompare(const void *a, const void *b)
 {
@@ -1128,7 +1361,7 @@ static int R_FrameTime_RawCompare(const void *a, const void *b)
 }
 static void R_FrameTime_Dump_f(void)
 {
-	char out[4096];
+	char out[8192];
 	float *raw;
 	int i, n, p, n1, n01, stutters = 0;
 	static const int pct[] = {500, 900, 990, 999};
@@ -1185,6 +1418,7 @@ static void R_FrameTime_Dump_f(void)
 			? va("    %7.2f  %6.1f s ago  setpos %.0f %.0f %.0f %.0f %.0f 0\n", ft.bad[i].ms, now - ft.bad[i].at,
 				ft.bad[i].org[0], ft.bad[i].org[1], ft.bad[i].org[2], ft.bad[i].ang[0], ft.bad[i].ang[1])
 			: va("    %7.2f  %6.1f s ago  (where was not kept)\n", ft.bad[i].ms, now - ft.bad[i].at), sizeof(out));
+	R_Spikes_Append(out, sizeof(out));	//FTESurf Patch 1444
 	free(raw);
 	{
 		char *line = out, *nl;
@@ -1211,10 +1445,14 @@ void RSpeedShow(void)
 	int frameinterval = 100;
 	int tsize;
 
+	R_Spikes_Sample();	//FTESurf Patch 1444: reads rspeeds_self first
 	R_Budget_Sample();	//FTESurf Patch 782
 	if (r_budget.ival)
 		R_Budget_Draw();
-	R_FrameTime_Sample();	//FTESurf Patch 801
+#if defined(_WIN32) && !defined(FTE_SDL) && defined(GLQUAKE)
+	if (qrenderer != QR_OPENGL)	//FTESurf Patch 1413: there R_FrameTime_Swapped samples
+#endif
+		R_FrameTime_Sample();	//FTESurf Patch 801
 	if (r_frametime.ival)
 		R_FrameTime_Draw();
 	if (!r_speeds.ival)
@@ -1531,6 +1769,7 @@ void CLSCR_Init(void)
 	Cvar_Register(&r_budget, cl_screengroup);	//FTESurf Patch 782
 	Cvar_Register(&r_budget_window, cl_screengroup);
 	Cvar_Register(&r_budget_csqc, cl_screengroup);	//FTESurf Patch 800
+	Cvar_Register(&r_spikes, cl_screengroup);	//FTESurf Patch 1444
 	Cvar_Register(&r_frametime, cl_screengroup);	//FTESurf Patch 801
 	Cvar_Register(&r_frametime_seconds, cl_screengroup);
 	Cvar_Register(&r_frametime_window, cl_screengroup);
@@ -3374,6 +3613,16 @@ int SCR_GetLoadingStage(void)
 {
 	return loading_stage;
 }
+//FTESurf Patch 1453: see SCR_NoteTextureSource.  seen: any thread; sent/order/hold: main thread.
+static volatile qbyte scr_texseen[10];
+static qbyte scr_texsent[10], scr_texorder[10], scr_texcount;
+static qboolean scr_texhold;
+static void SCR_TexSourcesReset(void)
+{
+	memset((void*)scr_texseen, 0, sizeof(scr_texseen));
+	memset(scr_texsent, 0, sizeof(scr_texsent));
+	scr_texcount = 0;
+}
 void SCR_SetLoadingStage(int stage)
 {
 	switch(stage)
@@ -3388,9 +3637,11 @@ void SCR_SetLoadingStage(int stage)
 		scr_loadingreleased = false;	//Patch 1258
 		break;
 	case LS_CONNECTION:
+		SCR_TexSourcesReset();	//Patch 1453: each load lists its own
 		SCR_SetLoadingFile("waiting for connection...");
 		break;
 	case LS_SERVER:
+		SCR_TexSourcesReset();
 		SCR_SetLoadingFile("starting server...");
 		break;
 	case LS_CLIENT:
@@ -3465,11 +3716,72 @@ qboolean SCR_LoadingPumpWanted(void)
 	return false;
 #endif
 }
+static void SCR_LoadingStepSet(const char *str);
+//FTESurf Patch 1453: the games this load's textures came from.  Any thread (the loader workers) marks
+//a game the first time; the main thread's pump turns a new one into the step "textures <list so far>".
+//Once per game per load: the source flips constantly (map, HL2, CS:S), and each step breaks a model run.
+static const char *const scr_texsrcname[] = {"", "CS:S", "HL2", "CS:GO", "TF2", "Portal 2", "Portal", "Momentum",
+	"the map", "World of Surf"};
+void SCR_NoteTextureSource(const char *pack)
+{
+	char low[MAX_OSPATH];
+	int id;
+	if (!pack || !*pack)
+		return;
+	Q_strncpyz(low, pack, sizeof(low));
+	Q_strlwr(low);
+	if (strstr(low, ".bsp"))
+		id = 8;
+	else if (strstr(low, "global offensive") || strstr(low, "csgo"))
+		id = 3;
+	else if (strstr(low, "team fortress") || !strncmp(low, "tf/", 3) || strstr(low, "/tf/"))
+		id = 4;
+	else if (strstr(low, "portal 2") || strstr(low, "portal2"))
+		id = 5;
+	else if (strstr(low, "portal"))
+		id = 6;
+	else if (strstr(low, "counter-strike source") || strstr(low, "cstrike"))
+		id = 1;
+	else if (strstr(low, "momentum"))
+		id = 7;
+	else if (strstr(low, "half-life 2") || strstr(low, "hl2"))
+		id = 2;
+	else
+		id = 9;
+	if (!scr_texseen[id])
+	{
+		if (developer.ival)
+			Con_DPrintf("loadscreen: textures from %s (%s)\n", scr_texsrcname[id], pack);
+		scr_texseen[id] = 1;
+	}
+}
+
 void SCR_LoadingPump(void)
 {
 	double now;
 	qboolean oldwarndraw;
 
+	if (!scr_texhold && loading_stage != LS_NONE && Sys_IsMainThread())
+	{	//Patch 1453: before the early-outs, so a stage with no redraw still records it
+		int id, n = scr_texcount;
+		for (id = 1; id < countof(scr_texseen); id++)
+			if (scr_texseen[id] && !scr_texsent[id])
+			{
+				scr_texsent[id] = 1;
+				scr_texorder[scr_texcount++] = id;
+			}
+		if (scr_texcount != n)
+		{
+			char step[128] = "textures ";
+			for (id = 0; id < scr_texcount; id++)
+			{
+				if (id)
+					Q_strncatz(step, ", ", sizeof(step));
+				Q_strncatz(step, scr_texsrcname[scr_texorder[id]], sizeof(step));
+			}
+			SCR_LoadingStepSet(step);
+		}
+	}
 	if (scr_loadingdraw || qrenderer != QR_OPENGL || !Sys_IsMainThread() || !SCR_LoadingPumpWanted())
 		return;
 #ifdef MENU_DAT
@@ -3488,6 +3800,17 @@ void SCR_LoadingPump(void)
 	SCR_UpdateScreen();
 	scr_loadingpumping = false;
 	r_refdef.warndraw = oldwarndraw;
+}
+
+//Patch 1453: a step before one long call (a game's mount), drawn past the 60 Hz limit -- bhop_landmark's
+//CS:GO mount came 3 ms after "starting server..." drew and stalled 5.6 s on it unseen -- and not replaced
+//by a texture source noted meanwhile (the card picture's, on a lobby join; P1453 review).
+void SCR_SetLoadingFileNow(char *str)
+{
+	scr_loadingswap = 0;
+	scr_texhold = true;
+	SCR_SetLoadingFile(str);
+	scr_texhold = false;
 }
 
 //The step's bookkeeping, without a redraw.  No va(): callers hold va() strings across this

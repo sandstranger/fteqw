@@ -38,7 +38,7 @@ typedef struct
 
 
 extern cvar_t gl_part_flame, r_fullbrightSkins, r_fb_models, ruleset_allow_fbmodels, gl_overbright_models, r_viewmodel_maxlight, r_modellight_fallback, r_modellight_cache;
-extern cvar_t r_viewmodel_lightrate;
+extern cvar_t r_viewmodel_lightrate, r_modellight_moverate;
 extern cvar_t r_propvertexlight, r_propvertexlight_minlight, r_prop_minlight;	//nettest: baked static-prop per-vertex lighting + world-model minlight floor
 extern cvar_t r_showhitboxes;	//nettest: per-bone hitbox overlay for GoldSrc studio models
 extern cvar_t r_noaliasshadows;
@@ -620,6 +620,9 @@ void R_GAliasFlushSkinCache(qboolean final)
 	Mod_WipeAllSkins(final);
 }
 
+//FTESurf Patch 1440: model_t's bodypart arrays (gl_model.h) are sized by hand
+typedef char p1440_geomsets_match[(countof(((model_t*)0)->geomcount) == MAX_GEOMSETS) ? 1 : -1];
+
 static shader_t *GL_ChooseSkin(galiasinfo_t *inf, model_t *model, int surfnum, entity_t *e, texnums_t **forcedtex)
 {
 	galiasskin_t *skins;
@@ -679,8 +682,14 @@ static shader_t *GL_ChooseSkin(galiasinfo_t *inf, model_t *model, int surfnum, e
 #endif
 		}
 	}
-	else if (inf->geomset < MAX_GEOMSETS && 0 != inf->geomid)
-		return NULL;
+	else if (inf->geomset < MAX_GEOMSETS)
+	{	//FTESurf Patch 1440: a Source bodypart draws the model the entity's body picks; other formats keep id 0
+		unsigned int want = 0, n = model->geomcount[inf->geomset];
+		if (n)
+			want = ((unsigned int)e->body / max(1u, model->geombase[inf->geomset])) % n;
+		if (inf->geomid != want)
+			return NULL;
+	}
 
 
 	/*hexen2 feature: global skins */
@@ -1396,7 +1405,9 @@ static void R_DrawShadowVolume(mesh_t *mesh)
   is CORRECT (same point => same sample, by definition). Origin validation also gives
   move-invalidation for free: a prop that moves simply misses.
   Not cached for RF_WEAPONMODEL: it samples the eye position, so it moves constantly (and
-  its post-sample clamps live inside that branch).*/
+  its post-sample clamps live inside that branch).
+  FTESurf Patch 1398 is the one inexact hit: on a Source map a model that moved keeps the entry IT wrote
+  (same keynum and model, keynum not 0) for a moment while within 32 units -- see R_CalcModelLighting.*/
 #define MODELLIGHTCACHE_BUCKETS 4096	//power of 2. ~651 props on the stress map; direct-mapped
 typedef struct
 {
@@ -1406,8 +1417,31 @@ typedef struct
 	vec3_t shadelight;
 	vec3_t ambientlight;
 	vec3_t lightdir;
+	int keynum;				//FTESurf Patch 1398: the entity and model that wrote it (the moved rule's owner check)
+	model_t *model;
+	vec3_t shade0, ambient0, dir0;	//FTESurf Patch 1398: what was shown when the sample above landed,
+	float blend;					//blended to it over this many seconds (0: shown as sampled)
 } modellightcache_t;
 static modellightcache_t modellightcache[MODELLIGHTCACHE_BUCKETS];
+//FTESurf Patch 1398: an entry's light as shown now
+static void R_ModelLightShown(const modellightcache_t *c, vec3_t s, vec3_t a, vec3_t d)
+{
+	float f = (c->blend > 0 && realtime >= c->time) ? (realtime - c->time) / c->blend : 1;
+	int i;
+	if (f >= 1)
+	{	//the sample itself, bit for bit (a + (b-a)*1 need not be b): r_modellight_cache 2 compares it
+		VectorCopy(c->shadelight, s);
+		VectorCopy(c->ambientlight, a);
+		VectorCopy(c->lightdir, d);
+		return;
+	}
+	for (i = 0; i < 3; i++)
+	{
+		s[i] = c->shade0[i] + (c->shadelight[i] - c->shade0[i]) * f;
+		a[i] = c->ambient0[i] + (c->ambientlight[i] - c->ambient0[i]) * f;
+		d[i] = c->dir0[i] + (c->lightdir[i] - c->dir0[i]) * f;
+	}
+}
 
 //FTESurf Patch 1283: the hl2 plugin's light cache (hl2_lt_vcache, not 0) answers a repeated sample partly from
 //memory, refining it call by call, so a kept sample is no longer exact: a still model re-samples once a second,
@@ -1570,22 +1604,37 @@ qboolean R_CalcModelLighting(entity_t *e, model_t *clmodel)
 		else
 		{
 			qboolean cachehit = false;
+			qboolean own = false;		//FTESurf Patch 1398: the entry is this moving model's own, on a Source map
+			float rate = r_modellight_moverate.value;
+			vec3_t moved;
 
 			/*Patch 105: reuse this entity's sample if it has not moved and nothing feeding
 			  the sampler has changed. Bucket by keynum; VALIDATE on origin + seq.*/
 			if (r_modellight_cache.ival)
 			{
+				qboolean exact;
 				cache = &modellightcache[(unsigned int)e->keynum & (MODELLIGHTCACHE_BUCKETS-1)];
-				if (cache->seq == r_modellight_seq && VectorEquals(cache->origin, e->origin) &&
+				VectorSubtract(e->origin, cache->origin, moved);
+				exact = VectorEquals(cache->origin, e->origin) &&
 					(!R_ModelLightSettles() || (realtime >= cache->time &&
-					 realtime - cache->time < 1 + (e->keynum & 63) * (1/64.0))))	//Patch 1283; spread, not all in one frame
+					 realtime - cache->time < 1 + (e->keynum & 63) * (1/64.0)));	//Patch 1283; spread, not all in one frame
+				//FTESurf Patch 1398: on a Source map (where a sample traces world lights) a model that moved keeps the
+				//sample it wrote up to 1/rate s while within 64 units of where it was taken (P1280's rule for the view
+				//model), the interval spread by keynum so a swarm does not re-sample in one frame: surf_centipedes'
+				//105 flying skulls traced every frame. Another entity of the bucket with another keynum or model never
+				//borrows it (two still ones would swap samples); keynum 0 temp entities never use it. Entities sharing
+				//keynum and model (same-model tag children of one parent; FTESurf's QC attaches none) still can.
+				own = rate > 0 && e->keynum && cache->seq == r_modellight_seq && cache->keynum == e->keynum &&
+					cache->model == clmodel && (cl.worldmodel->engineflags & MDLF_SOURCEBSP) && realtime >= cache->time;
+				if (cache->seq == r_modellight_seq && (exact ||
+					(own && DotProduct(moved, moved) < 64*64 &&
+					 realtime - cache->time < (0.75 + (e->keynum & 15) * (1/32.0)) / rate)))
 				{
-					VectorCopy(cache->shadelight, shadelight);
-					VectorCopy(cache->ambientlight, ambientlight);
-					VectorCopy(cache->lightdir, lightdir);
+					R_ModelLightShown(cache, shadelight, ambientlight, lightdir);
 					cachehit = true;	//fall through to the per-frame dlight/clamp tail
 
-					if (r_modellight_cache.ival == 2 && !R_ModelLightSettles())
+					if (r_modellight_cache.ival == 2 && exact && !R_ModelLightSettles() &&
+						(cache->blend <= 0 || realtime - cache->time >= cache->blend))
 					{	/*self-check: re-sample and prove the cached value is EXACT. Any
 						  hit here is a real cache bug (a missed invalidation), not a
 						  rounding difference -- both sides run the same code on the same
@@ -1605,7 +1654,7 @@ qboolean R_CalcModelLighting(entity_t *e, model_t *clmodel)
 				/*r_speeds "ModelLight Samples": props that actually re-walked the world
 				  lightmap this frame. ~0 in the good steady state; ~= visible-prop count
 				  with the cache off or when a flickering style defeats it globally; ticks
-				  up by the number of props currently in motion. Counted here (the genuine
+				  up by the props in motion (on Source maps, r_modellight_moverate of them a second). Counted here (the genuine
 				  resample), NOT inside R_SampleModelLight, so the r_modellight_cache 2
 				  self-check's parallel resample does not double-count.*/
 				RQuantAdd(RQUANT_MODELLIGHTSAMPLE, 1);
@@ -1613,13 +1662,31 @@ qboolean R_CalcModelLighting(entity_t *e, model_t *clmodel)
 				/*store the LADDER'S RESULT, so a ceiling prop's retries happen once rather
 				  than every frame -- the cache must kill the repetition, not the outcome.*/
 				if (cache)
-				{
+				{	//FTESurf Patch 1398: a moving model's new sample is blended in from what it showed, over as long
+					//as its last one was kept (1/rate at most), so one sample a second does not step; a jump of
+					//256 units or more (a teleport) shows the new light at once
+					if (own && DotProduct(moved, moved) < 256*256)
+					{
+						R_ModelLightShown(cache, cache->shade0, cache->ambient0, cache->dir0);
+						cache->blend = min(realtime - cache->time, 1.0 / rate);
+					}
+					else
+					{
+						VectorCopy(shadelight, cache->shade0);
+						VectorCopy(ambientlight, cache->ambient0);
+						VectorCopy(lightdir, cache->dir0);
+						cache->blend = 0;
+					}
 					VectorCopy(e->origin, cache->origin);
 					VectorCopy(shadelight, cache->shadelight);
 					VectorCopy(ambientlight, cache->ambientlight);
 					VectorCopy(lightdir, cache->lightdir);
+					cache->keynum = e->keynum;
+					cache->model = clmodel;
 					cache->time = realtime;
 					cache->seq = r_modellight_seq;	//publish last: the entry is only valid once filled
+					if (cache->blend > 0)
+						R_ModelLightShown(cache, shadelight, ambientlight, lightdir);	//this frame shows the blend's start
 				}
 			}
 		}

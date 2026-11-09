@@ -397,6 +397,7 @@ qbyte		*h2playertranslations;
 cvar_t	host_speeds = CVAR("host_speeds","0");		// set for running times
 cvar_t	cl_debug_spikes = CVARD("cl_debug_spikes", "0", "Logs a timing breakdown whenever a client Host_Frame exceeds cl_debug_spike_ms.");
 extern cvar_t r_budget;	//FTESurf Patch 782, cl_screen.c
+extern cvar_t r_spikes;	//FTESurf Patch 1444, cl_screen.c
 cvar_t	cl_debug_spike_ms = CVARD("cl_debug_spike_ms", "2.0", "Frame time threshold, in milliseconds, for cl_debug_spikes logging.");
 
 int			fps_count;
@@ -507,6 +508,10 @@ void CL_MakeActive(char *gamename)
 		SCR_LoadTimesStage("shader warm list");
 		GLSLWarm_MapActive();
 	}
+#ifdef CSQC_DAT
+	SCR_LoadTimesStage("qc collector buffers");	//FTESurf Patch 1451: their pages here, not in the first collection
+	CSQC_PrewarmGC();
+#endif
 
 	//and now free any textures that were not still needed.
 	SCR_LoadTimesStage("purge images");
@@ -7504,11 +7509,16 @@ extern double   Sys_FramePaceAnchorDelay(double interval, double now, double fra
 #define FRAMEPACING_ACTIVE() Sys_FramePacingActive()
 #define FRAMEPACING_ANCHOR() Sys_FramePacingAnchor()
 #define FRAMEPACING_PRESENT() Sys_FramePacePresentActive()
+extern qboolean Sys_FramePacePredictActive(void);
+extern double Sys_FramePacePredictDelay(double fps);
+#define FRAMEPACING_PREDICT() Sys_FramePacePredictActive()
 #define FRAMEPACING_ANCHORDELAY(interval, now, ref) Sys_FramePaceAnchorDelay(interval, now, ref)
 #else
 #define FRAMEPACING_ACTIVE() false
 #define FRAMEPACING_ANCHOR() false
 #define FRAMEPACING_PRESENT() false
+#define FRAMEPACING_PREDICT() false
+#define Sys_FramePacePredictDelay(fps) 0
 #define FRAMEPACING_ANCHORDELAY(interval, now, ref) ((interval) - ((now) - (ref)))
 #endif
 
@@ -7523,6 +7533,7 @@ double Host_Frame (double time)
 	double newrealtime, spare;
 	float maxfps;
 	qboolean maxfpsignoreserver;
+	qboolean predict;	//FTESurf Patch 1413
 	qboolean idle;
 	static qboolean hadwork;
 	unsigned int vrflags;
@@ -7573,7 +7584,7 @@ double Host_Frame (double time)
 		spike_start = Sys_DoubleTime();
 	//FTESurf Patch 782: latched so every RSpeed bracket in this frame agrees; the frame's own work is
 	//timed from here to its end, and an early return between frames adds nothing to it (that is idle)
-	r_speeds_timing = (r_speeds.ival > 1 || r_budget.ival);
+	r_speeds_timing = (r_speeds.ival > 1 || r_budget.ival || r_spikes.ival);
 	rspeed_depth = 0;	//every bracket of this frame nests under this one; an unclosed one from before is gone
 	hostwork_start = RSpeed_Begin(&hostwork_depth);
 
@@ -7697,7 +7708,26 @@ double Host_Frame (double time)
 	if (vid.isminimized && (maxfps <= 0 || maxfps > 10))
 		maxfps = 10;
 
-	if (maxfps > 0
+	predict = maxfps > 0 && maxfpsignoreserver && !vid.isminimized && !cls.timedemo
+#ifdef HAVE_MEDIA_ENCODER
+		&& Media_Capturing() != 2
+#endif
+		&& !(vrflags&VRF_OVERRIDEFRAMETIME)
+		&& FRAMEPACING_PREDICT();
+	if (!predict)
+		(void)Sys_FramePacePredictDelay(0);	//FTESurf Patch 1413: drops a mode-5 start that never presented
+	if (predict)
+	{	//FTESurf Patch 1413: sys_framepacing 5 starts the frame its predicted render time before its present slot
+		double wait = Sys_FramePacePredictDelay(maxfps);
+		if (wait > 0)
+		{
+			while(COM_DoWork(0, false))
+				;
+			return wait;
+		}
+		spare = 0;
+	}
+	else if (maxfps > 0
 #ifdef HAVE_MEDIA_ENCODER
 		&& Media_Capturing() != 2
 #endif
