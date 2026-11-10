@@ -436,6 +436,10 @@ cvar_t r_voidfog							= CVARFD ("r_voidfog", "1", CVAR_ARCHIVE,
 												"Has no effect anywhere r_voidvis does not.");
 // Center-depth ordering is practical for separated panes, not intersecting polygons/OIT.
 cvar_t r_blendcache = CVARD ("r_blendcache", "1", "FTESurf Patch 1409: on Source maps r_blendsort 2 keeps each static blended face's sorting centre (world and brush-entity faces) instead of recomputing it over every triangle each frame; the order and the picture are the same. 0: recompute every frame (surf_bossfight 287 against 495-538 fps).");
+cvar_t r_blendsort_boxes = CVARD ("r_blendsort_boxes", "1", "FTESurf Patch 1457: r_blendsort 2's overlap proofs skip face and triangle pairs whose screen boxes are apart, which could only prove 'no overlap'; the verdicts match clipping every pair while the proof budget lasts, except a rounding sliver (area ~1e-18, no pixel) that clip found between apart boxes. 0: clip every pair (surf_fairy's worst view: sort 0.92 against 1.2 ms).");
+cvar_t r_blendsort_lazy = CVARD ("r_blendsort_lazy", "1", "FTESurf Patch 1463: r_blendsort 2's second pass asks a strictly ordered pair whether the faces overlap only when the sort needs that edge to choose the next face, not for every pair up front; the order is the same unless the proof budget runs out during that pass. 0: every pair up front.");
+cvar_t r_blendsort_clipcull = CVARD ("r_blendsort_clipcull", "1", "FTESurf Patch 1465: r_blendsort 2 leaves out a translucent static-world (or identity brush entity) face whose every vertex is beyond one plane of the clip volume: off screen, or past a water capture's clip plane. It draws nothing; kept, it joins the plane graph. 0: keep them.");
+cvar_t r_blendsort_cert = CVARD ("r_blendsort_cert", "1", "FTESurf Patch 1465: when r_blendsort 2's sort fails it keeps why passes 1 and 2 failed (a cycle, or an edge that must cross an unsorted draw); while both still hold in a later view the sort is skipped, as it would end in the same unsorted order. 0: sort every view; 2: sort anyway and report a certified view where a pass did not fail.");
 cvar_t r_blendsort = CVARFD ("r_blendsort", "1", CVAR_ARCHIVE,
 	"Blended surface ordering.\n"
 	"0: emit order.\n"
@@ -530,6 +534,7 @@ apply one map's grade to the next one loaded.
 */
 cvar_t r_underwateroverlay					= CVARFD("r_underwateroverlay", "", 0, "Names the post-process drawn in place of the underwater warp while the eye is in a Source water volume.  Set by the hl2 plugin each frame from the volume's $underwateroverlay; \"none\" means that water has none and draws no warp, as Source does; empty leaves the engine's own warp.");	//FTESurf Patch 1013
 cvar_t r_colourcorrection					= CVARAD("r_colourcorrection", "", "r_colorcorrection", "Names the shader used by the colour-correction post-process stage.  Set by the hl2 plugin from a Source map's color_correction entities; setting it by hand is supported but it is overwritten at the next map load.  Switch the feature off with hl2_colourcorrection 0, which is what leaves this empty.");
+cvar_t r_postprocess					= CVARFD("r_postprocess", "1", CVAR_ARCHIVE, "FTESurf Patch 1459: 0 draws the scene as rendered -- no bloom, map colour grade, FXAA, r_postprocshader or underwater warp. Gamma and brightness still apply. The gfx menu's Post-process row.");
 cvar_t r_wallcolour							= CVARAF ("r_wallcolour", "128 128 128",
 													  "r_wallcolor", CVAR_RENDERERCALLBACK|CVAR_SHADERSYSTEM);//FIXME: broken
 //cvar_t r_walltexture						= CVARF ("r_walltexture", "",
@@ -1453,6 +1458,10 @@ void Renderer_Init(void)
 	Cvar_Register (&r_voidfog, GLRENDEREROPTIONS);	//FTESurf Patch 329
 	Cvar_Register (&r_blendsort, GLRENDEREROPTIONS);
 	Cvar_Register (&r_blendcache, GLRENDEREROPTIONS);	//FTESurf Patch 1409
+	Cvar_Register (&r_blendsort_boxes, GLRENDEREROPTIONS);	//FTESurf Patch 1457
+	Cvar_Register (&r_blendsort_lazy, GLRENDEREROPTIONS);	//FTESurf Patch 1463
+	Cvar_Register (&r_blendsort_clipcull, GLRENDEREROPTIONS);	//FTESurf Patch 1465
+	Cvar_Register (&r_blendsort_cert, GLRENDEREROPTIONS);	//FTESurf Patch 1465
 #ifdef GLQUAKE
 	Cmd_AddCommandD("r_blendtrace", GLBE_BlendTrace_f, "Prints anonymous view/command/plane diagnostics for the next main-view r_blendsort 2 pass. One-shot; does not change rendering.");
 #endif
@@ -1606,6 +1615,7 @@ void Renderer_Init(void)
 	Cvar_Register (&r_scenedepth, GRAPHICALNICETIES);	//FTESurf Patch 1230
 	Cvar_Register (&r_scenedepth_drawn, GRAPHICALNICETIES);
 	Cvar_Register (&r_colourcorrection, GRAPHICALNICETIES);	//FTESurf Patch 288
+	Cvar_Register (&r_postprocess, GRAPHICALNICETIES);	//FTESurf Patch 1459
 	Cvar_Register (&r_underwateroverlay, GRAPHICALNICETIES);	//FTESurf Patch 1013
 	Cvar_Register (&r_fxaa, GRAPHICALNICETIES);
 	Cvar_Register (&r_graphics, GRAPHICALNICETIES);

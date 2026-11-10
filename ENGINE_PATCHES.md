@@ -1,5 +1,258 @@
 # Engine patches (fteqw `fteqw64.exe`)
 
+## Patch 1472 -- no frame cap below the Source mover's tick rate while playing (cl_main.c, sys_win.c, client.h)
+
+Problem: below the physics tick rate (1/pm_ticrate: 66.67 surf, 100 bhop) one usercmd covers two of pm_source.c's whole
+ticks, which then share one input (angle and keys). Lex, 10 Nov: "People don't play below 66fps ... we could just cap
+the fps to 66.6667>fps".
+
+Fix: CL_MaxFPSFloor raises a positive cl_maxfps under 1/movevars.ticrate to it while connected and active with
+pm_physicsmode 1, not in a demo. Host_Frame's limiter and Sys_FramePacePresentHold (sys_framepacing 4's present grid)
+both use it, so the start and present grids agree. 0 (uncapped), loading, the minimised throttle and other physics modes
+are unchanged.
+
+Measured (surf_pantheon, rig, sys_framepacing 5): cl_maxfps 30 ran 15.26 ms frames (66 fps); cl_maxfps 100 ran 9.99 ms.
+One review (call sites agree; edge cases noted: the cl_netfps 0 path also floors a server-chosen rate, and CL_FilterTime
+then caps it at 72 on a 100-tick server; fractional caps under 1).
+
+## Patch 1470 -- r_projection draws again on the GL renderer (gl_rmain.c)
+
+Problem: Lex, 10 Nov: r_projection "would be fun but it just produces errors". Under vid_multisample (Patch 1260's
+multisampled scene target) every frame printed glCheckFramebufferStatus GL_FRAMEBUFFER_INCOMPLETE_ATTACHMENT with
+Colour0 "***fish***" 0*0*0 NOT LOADED (520-550 lines per projection in four seconds), the game ran ~7 fps and the screen
+held a stale normal view. R_RenderScene_Cubemap allocated its cube faces with glCopyTexImage2D from the bound
+framebuffer -- the multisampled target, which a copy cannot read (INVALID_OPERATION), so no face ever had storage.
+
+Fix: the faces get storage with glTexImage2D (unsized GL_RGBA, valid on GLES2 too); RDF_FISHEYE, which is in
+RDF_ALLPOSTPROC with no pass of its own, is cleared once the faces are drawn (left set, every post-process pass read it
+as one still to come); on the post-process path the final remap fills the view's own target (viewport at its pixel size,
+drawn over the virtual screen, as R_RenderPostProcess does) rather than GL_Set2D's window rectangle, which at
+r_renderscale 2 filled a quarter of it.
+
+Measured (surf_pantheon, vid_multisample 4, post-processing on): before, every projection 1-6 spammed the errors at ~7
+fps; after, none print and all six draw (fisheye, panini, panoramic, equirectangular screenshots), ~300 fps; at
+r_renderscale 2 fisheye and equirectangular fill the screen. Two review rounds (render scale / inset views, GLES2, a
+size restore with no effect).
+
+## Patch 1469 -- failed similarity collection stays unavailable in the tick summary (FTESurf surfd/sweep.py)
+
+Problem: the store-only similarity wrapper logged setup/collection exceptions to stderr but returned
+an empty note. The normal per-tick sweep summary therefore did not distinguish that unavailable
+attempt from an intentionally disabled or uneventful step. Stderr diagnostics were not absent.
+
+Change: retain the stderr diagnostic and return a fixed "sims unavailable: collection failed
+(coverage not measured)" note through the existing tuple/summary interface. Disabled collection
+still returns its existing empty note. No schema, evidence, metric, verdict, threshold, scheduling,
+resource limit, detector, native pin/tag or QC Build change; this is operator reporting only.
+
+Verified: existing test_simcheck.py, real SQLite authorizer refusal during owner setup, unchanged
+observations/verdicts, explicit-disable silence and actual same-connection pair collection after
+the refusal clears. Original source completes with the one predicted note-assertion failure;
+subject all79 checks pass on Windows and all79 on NanoPi Linux/Python3.11 at03:11:58 UTC10Nov2026,
+using an inspected source Git archive. Source/live provenance limits: FTESurf tools/p1469-sweep-unavailable.md.
+No whole-pass hard-resource, detector/calibration, upstream or live-deployment credit inferred.
+
+## Patch 1465 -- r_blendsort 2 skips a sort whose stored failure still holds, and leaves out faces outside the clip volume (gl_backend.c, renderer.c, render.h)
+
+Problem: after Patches 1457/1463, surf_fairy's main view and its water refraction capture still spent ~0.6-0.75 ms each
+in GLBE_BlendPlaneSort every frame, and every one of those sorts fails (status -2), so the faces keep their baseline
+order. A trace-only timer split the t=7.6 main view's 0.75 ms: plane-side proofs 0.22, pass-0 overlap verdicts 0.33
+(projection 0.14), lazy pass 1 0.11, pass 2 0.02. Counters showed pass 1 fails the barrier check, not on a cycle, in ~19
+of 20 of those sorts (an order that moves a face past an unadmitted slot).
+
+Fix 1, failure certificates (r_blendsort_cert, default 1): a failed sort keeps, for passes 1 and 2, why each failed -- a
+cycle of its graph (depth-first, cut short by chords, at most 16 faces), or a crossing: a strict edge from a face to one
+drawn before it with an unadmitted slot between, which any order keeping that edge carries past the slot. Pass 0's edges
+include pass 1's, so both holding means every pass fails. Up to four are kept (LRU) as mesh pointers; before each sort
+they are re-proved from scratch against the view's faces (admission, pair relation, direction, and for pass 1 the
+overlap verdict) and a hit returns status -2 with faces untouched. Pass-1 steps must survive a spent overlap budget,
+where a verdict becomes its hint: only strict edges, and unproved pairs' edges in baseline order, are kept.
+r_blendsort_cert 2 sorts anyway and counts a certified view where a pass did not fail.
+
+Fix 2, r_blendsort_clipcull (default 1): the gather drops a static-world or identity brush-entity face whose every
+vertex is beyond one plane of the clip volume (m_view x m_projection_std; a capture's near plane is its oblique
+water/mirror plane), with a margin of 1e-5 of each sum's magnitude for the GPU's float transform. It draws nothing;
+kept, it took plane proofs in passes 0 and 2. A view can now come under the 128-face cap or lose a cycle and sort where
+it gave up before, which changes that view's glass order (to a sorted one). Also: r_portaldebug 2 returned after
+enabling GL_DEPTH_CLAMP and left it on for the rest of the view; it returns first now.
+
+Measured (surf_fairy, paused replay views, same exe, cvar A/B): certified views sort in 0.01 ms instead of 0.44-0.75;
+transparent CPU at t=7.6 1.38/1.39 -> 0.54 (certificates) / 0.56 (with the cull), frame 6.55 -> 5.45 ms; at t=16.0
+1.31/1.29 -> 0.89 / 0.75. The cull alone (no certificates) cut the main view's sort 0.75 -> 0.61 ms but brought the
+reflection under the cap into a failing sort (+0.35 ms); certificates absorb that. Verify mode over a 30 s replay plus
+paused views: 2345 hits, 2187 proved by the full sort failing every pass, 0 wrong (158 stopped at a budget, status -1,
+before any Kahn); the same build without the pass-1 check: 1223 wrong of 4357. Replay lows (capped 300, alternating):
+off 1% 109/106, 0.1% 87/84; on 110/109/107, 95/90/88 -- the third off run failed to start (0xC0000142, the machine short
+of memory), so no lows delta is claimed. Five review rounds (certificate predicate, clip cull, and three fix rounds):
+trace counters, verify grading, the r_portaldebug leak, wording.
+
+## Patch 1464 -- the lobby join line reads "<user> joined <mapname>" (FTESurf QC sv_lobby.qc)
+
+Problem: Lex asked for a lobby join message (10 Nov). The existing one (Patch 371) read "server: <user> joined"
+and did not say where.
+
+Fix: Lobby_AnnJoin says "<user> joined <mapname>" to the lobby's other players, the name in its colour as before;
+same lobby_announce switch, same 30 s pace per player, the joiner's welcome line unchanged. QC only.
+
+Measured (dedicated server, log_developer 1, one client): the live lobby build logged "said> ^5server:^7 ^2L49Join^7
+joined", P1464 "said> ^2L49Join^7 joined surf_dune".
+
+## Patch 1463 -- r_blendsort 2's second pass asks for a strict pair's overlap only when the sort needs that edge (gl_backend.c, renderer.c)
+
+Problem: with Patch 1457 in, surf_fairy's worst views still spent ~0.7-0.9 ms per view in GLBE_BlendPlaneSort, and those
+sorts end status -2 (a cycle in every pass). Pass 1 asked GLBE_BlendOverlapOrder for every strictly ordered pair up
+front (1008 of 1309 verdicts in the t=7.6 main view), though only an edge into the face Kahn is about to place can
+change the order, and a cycle needs only one existing edge into each face left.
+
+Fix: pass 1 leaves each strict pair's verdict pending; its direction is the plane proof's (for a strict hint the overlap
+function returns the hint or disjoint), so only whether the edge exists waits. Before placing the lowest-index face with
+no known incoming edge, Kahn resolves that face's pending incoming edges from unplaced faces, through a per-face cursor
+that never revisits a pair (O(n^2) per pass), until one exists (the face waits) or none is left (it is placed). The
+picks, the cycle verdict and the order are eager Kahn's unless eager's overlap budget runs out during pass 1 (lazy
+spends a subset of its work); a resolved edge is always drawn from->pick, so a future change to that contract cannot
+break Kahn's bookkeeping. r_blendsort_lazy 0 resolves every pair up front. In lazy mode r_blendtrace's edges= and work=
+count only what was resolved.
+
+Measured (paused replay views, same exe, cvar A/B): pass-1 verdicts 1008 -> 210 (t=7.6 main), 1024 -> 212 (reflection),
+911 -> 253 (t=16.0 main), 491 -> 141 (t=16.0 reflection, pass 1 succeeds, 4 faces moved); every view's printed face
+order identical between 0 and 1 (r_blendtrace cmd lines, 6 views). t=7.6 transparent CPU 1.86/1.88 -> 1.66 and 1.79/1.85
+-> 1.69 ms in two runs; t=16.0 within noise. Two review rounds (a resolved edge's direction made unconditional).
+
+## Patch 1462 -- the save-load key releases when let go (FTESurf QC cl_saveloc.qc)
+
+Problem: "on a lobby your save-lock key ... loads fast, but then won't release for like 0.5 sec" (Lex, 10 Nov).
+SaveLoc_LeadDone held a key let go until cl_sl_leadin (default 1 s) had passed since the press and the run-up
+had finished. The server never had a minimum.
+
+Fix: a key let go releases once the server has answered the load (a predicted load already has; P1227's
+reason for waiting), with the 1 s backstop from the press; SaveLoc_Release already clears a run-up in progress.
+The hold's HUD text drops its countdown for "Release to play" (nothing for a rewind's keyless countdown).
+Letting go during a run-up cuts the view to the save, where the body already is.
+
+Measured (tools/p1384lead.py's rig, dedicated server, 0.6 s press, 0 and 40 ms added): shipped, lead-in 1 held
+to 1.015 s and the body moved 0.39 s after key-up (lead-in 0: on the key-up frame); P1462, lead-in 1 released at
+0.60-0.63 s and the body moved 0.01 s after key-up, run-up still starting 0.01 s after the press, 0 prediction
+errors. One review (with P1458-P1460): the rewind-countdown prompt, the tooltip, P1459's fog and GL-only scope,
+P1460's state line; fixed in the same delivery.
+
+## Patch 1461 -- timer zones built from a map's own triggers keep their tracks, stages and origins (FTESurf QC sh_zones.qc, sv_zones.qc, cl_zones.qc)
+
+Problem: a map with no zone file is zoned from its trigger_momentum_timer_* entities (56 maps in the Momentum
+library). Every one went on the main track, so bonus starts and ends were extra main starts and ends (surf_domain,
+surf_eggplant, surf_epicube_css, surf_nova_css): a bonus start armed a main run and the nearest end finished it,
+and the zone editor showed three starts and three ends. Stage numbers were used as segments, but Momentum numbers
+stages from 2 (the start is 1), so stage k sat one segment high and ends stayed segment 0 (no splits, `!s` off by
+one, stage legs filed one high); surf_kepler_css's newer zone_number key was not read at all (all 8 stages
+segment 0). The client drew each cage from the submodel's bounds without the entity's origin key, so on maps whose
+triggers carry one (206 of 263 triggers) the lines were drawn elsewhere and culled while the server, from absmin,
+timed the right box; and it walked the lump in file order while the server adds by type, so on 22 maps the two
+zone CRCs could never match.
+
+Fix: Zone_AddLegacy, shared by both VMs: track from track_number (absent or -1 = main), else a bonusN targetname
+("bonus_2" included), refused at 12 (the timer's track arrays); a stage numbered n starts segment n-1 and a
+checkpoint numbered n is ordinal n-1, zone_number preferred over stage; Zone_LegacyEnds puts each end after its
+track's last stage, as Zone_AddTrack numbers a zone file. The client adds the origin key and walks the lump once
+per type in the server's order.
+
+Measured (local game, both VMs from the same build): surf_domain, surf_nova_css, surf_kepler_css. Shipped:
+every zone track 0 segment 0, cages centred near the world origin, client CRC never the server's zonecrc.
+P1461: surf_domain one start/end on each of tracks 0-2, nova tracks 0-3, kepler start 0 / stages 1-8 / end 9,
+cages at the triggers (surf_domain's start drawn around the player), client CRC equal to zonecrc on all three.
+Reviews: round 1 (two lenses) found the stage off-by-one (also on the older stage-key maps),
+the end segment, checkpoint ordinals from 2, the order/CRC mismatch, the 12-track bound, bonus_2, and
+tools/fixtures/zoneprep.qc still calling the old Zone_AddBox; round 2 simulated both tables on all 59 maps
+that zone this way: identical, numbered as a zone file would be, nothing out of range. Map-data leftovers in
+FTESurf BACKLOG.md. Board check: the one ranked main row on an
+affected map (surf_eggplant, 67.995 s) is a main run (KSF main record 47.8 s, bonuses 9-15 s).
+
+## Patch 1460 -- the whole unresolved-material list of a map is saved to data/missing/<map>.txt (hl2 mod_vbsp.c)
+
+Problem: a map load prints at most 24 unresolved materials and the console scrolls them away; a player who wants
+to hand the list over (Lex: "save them for you to check later") has to type hl2_missing and copy it by hand.
+FTESurf P1382's lobby report keeps only the first name.
+
+Fix: VBSP_MissingFile writes every stored name with its reason (the same as hl2_missing), the counts, the automount
+state and the games not found, to <gamedir>/data/missing/<map>.txt at the end of each load, and removes that file
+when a map loads with none missing, so the folder is the current set. Client only (QR_NONE returns). The state
+line is fs_automount_state as published, not the -1 the console text substitutes when a game did not mount.
+
+Measured (fixture install): surf_ferros wrote both of its ELDEN RING prop skins with "a prop skin"; a planted
+data/missing/surf_beginner2.txt was removed when surf_beginner2 loaded clean. The shipped plugin wrote nothing.
+
+## Patch 1459 -- r_postprocess 0 draws the scene as rendered (gl_rmain.c, renderer.c)
+
+Problem: there was no one switch for the full-screen passes: bloom, a Source map's colour grade (P288), FXAA, a
+custom r_postprocshader and the underwater warp each have their own cvar, and the grade is generated per map.
+
+Fix: r_postprocess (archived, default 1). At 0 GLR_RenderView sets none of RDF_BLOOM, RDF_ANTIALIAS,
+RDF_CUSTOMPOSTPROC or RDF_COLOURCORRECT and sets r_uwnowarp, so neither underwater warp draws while RDF_UNDERWATER
+still picks the water fog. Gamma (RDF_SCENEGAMMA), fisheye and render scale are untouched. GL only: the Vulkan and
+D3D renderers keep their own flags. FTESurf's gfx menu row 37 "Post-process".
+
+Measured (surf_tensor2, paused, its colour grade on, r_bloom 0): r_postprocess 0 changed 2,129,954 of 2,133,120
+pixels, 1 again restored the frame exactly (0 px); the shipped exe ("Unknown command") 0 px both ways.
+
+## Patch 1458 -- env_lightglow's fade runs backwards when MaxDist < MinDist; a Light glows gfx row (FTESurf QC cl_sprites.qc, cl_gfx.qc)
+
+Problem: surf_beginner2's stage 7 was a white screen. Its env_lightglow (1500 x 1500, MinDist 150, MaxDist 75)
+was drawn at full strength from anywhere: the distance ramp treated MaxDist < MinDist like Source's equal-endpoint
+case ("on beyond MaxDist"), but RemapValClamped (mathlib.h) remaps it backwards -- full at MaxDist and nearer, off
+from MinDist out. And env_lightglow had no gfx row (vbsp_lightglow), so turning Sprites off left the flares on, and
+the live reload made them fade back in.
+
+Fix: the general remap whenever MinDist != MaxDist; gfx row 36 "Light glows" on vbsp_lightglow ("map has none"
+when the map has none).
+
+Measured (local game, Lex's save 4 position, 529 units from the glow): shipped csprogs "glows 1 reached ... 0 out
+of fade range, 1 drawn" and a white screen; P1458 "1 out of fade range, 0 drawn" and the stage as lit; at ~125
+units both draw it (P1458 dimmed by its ramp). surf_tensor2 at the spawn, Sprites off: shipped "glows 166 reached ... 2
+drawn" and `gfx_menu cycle 36` changed 0 px; P1458 `vbsp_lightglow` 0 and 149,244 px changed.
+## Patch 1457 -- r_blendsort 2's overlap proofs skip pairs whose screen boxes are apart (gl_backend.c, renderer.c)
+
+Problem: on surf_fairy's worst views the glass sort's plane proof (GLBE_BlendPlaneSort) cost ~1.0-1.2 ms per view, in
+two views a frame (the main view and a reflection), and both ended status -2 (a cycle in all three passes), so the frame
+drew the baseline order anyway. 85% of the overlap work was face pairs whose verdict was "disjoint", and 96% of triangle
+clips came out empty; 57% of the triangle pairs had screen boxes that do not touch.
+
+Fix: GLBE_BlendProjectFace keeps each projected triangle's screen box and the face's. GLBE_BlendOverlapOrder returns
+disjoint at once when the face boxes are apart (the triangle loops would end at !seen), and skips a triangle pair whose
+boxes are apart (an empty clip). "Apart" needs a gap over 1e-9 of the boxes' scale. Verdicts, edges and order match
+clipping every pair while the overlap budget lasts, with one exception the review built: slivers along one screen line
+can pass a vertex beyond a tip, and the clip counted that rounding sliver (area 2^-58 in the built cases, no pixel)
+across a real gap as overlap, an edge the box test does not add. Past the budget, skipped pairs leave budget for later
+pairs. r_blendsort_boxes 0 clips every pair. r_blendtrace now prints each view's ms (immediate, gather, sort, submit)
+and the last sort's verdict counts.
+
+Measured (FTESurf artifacts/probe_static.py, paused replay views, same exe, cvar A/B): fairy t=7.6 main view work 81053
+-> 55482 (overlapfull 0 both), edges 1659 both, sort 1.15-1.24 -> 0.92 ms, transparent CPU 2.31/2.29 -> 1.87 ms, frame
+7.25/7.20 -> 6.91 ms; t=16.0 sort 0.62 -> 0.48 ms, transparent 1.40/1.38 -> 1.17 ms. Parked from the same pass: sorting
+an opaque batch's meshes by index position (r_multidraw merged 40-60% fewer sub-draws, CPU 0.06 ms worse: the cost is
+per batch, not per sub-draw) and drawing consecutive same-batch blend faces in one submit (-0.03 ms); both diffs in the
+lows2 task root, artifacts/p1457-experiments.diff.
+
+## Patch 1449 -- tas_rollout follows the view, aims at a ramp face, and reports walls (sv_tas_rollout.inc, pm_source.c, pmove.h, pr_cmds.c, server.h)
+
+Problem: the surf path planner (FTESurf P1443/P1449) searched turn rates, but a human surfs with the view on the
+velocity and a strafe side, which QC could only approximate in repeated rollouts that never converged on a ramp;
+a flight had no way to steer onto a ramp face; and a wall brushed mid-flight read as no contact, so a search
+could not see what cost it 10 u/s.
+
+Fix: tas_rollout row bits FOLLOW (256), PITCHV (512) and AIM (1024). FOLLOW rows carry a turn command q in the
+yaw slot and the engine sets the yaw word and strafe side from the velocity the tick starts with (the wish
+direction's dot with the horizontal velocity is 30 - |q|); PITCHV sets the pitch along the velocity; both write
+the words back, so the tape replays exactly what was rolled. AIM rows, after 3 ticks without a ramp or ground
+contact, steer toward an aim point (6-argument form) and, given a face normal (7-argument form), toward a lead
+point on the heading that meets that face parallel. pm_source.c notes a wall or ceiling clipped in a command
+(outside the ramp band, not a floor; saved and restored with the contact across StepMove's attempts) and
+tas_rollout reports such a tick, with no ramp contact, as contact kind 4.
+
+Measured (FTESurf rigs, tools/p1449_chain3.py): every played search's landing bit-equal to its rollout (21 of 21
+plays in a surf_null chain, 27 of 27 on surf_monolith); with FOLLOW one rollout a candidate, 638 candidates in
+6-8 s; a surf_null flight that lost 10 u/s to a brush 20 u off the demo's line (one tick of 228 u/s velocity
+change) now reports kind 4 there. Two review rounds: round 1 found AIM steering during non-world or ambiguous
+ramp rides, the wall note surviving StepMove's discarded attempt, and an unchecked decode after the write-back;
+round 2 nothing.
+
 ## Patch 1453 -- the loading screen names each game it mounts and where its textures come from (fs.c, cl_screen.c, image.c, screen.h)
 
 Problem: the menu loading screen read "Loading Texture (2x)". Texture loads run on loader threads and set no step, and
@@ -35,6 +288,37 @@ still reads hung to IsHungAppWindow while a long call runs; the ghost that repla
 Measured (FTESurf artifacts/run_hangtest.py, HG_THROTTLE=0: changelevel surf_centipedes -> surf_quarantine with the
 CS:GO mount, top-level windows of class "Ghost" counted every 0.1 s): patch-1451 exe 1 ghost window in each of two
 runs (hung 2.6-2.7 s); P1454 0 in both (hung 2.4-3.8 s).
+
+## Patch 1452 -- keyboard registration and restart resource lifetime (in_win.c, winquake.h, Windows WndProcs)
+
+Problem: enumeration was mistaken for successful keyboard observation before an
+opt-in grab. Refused removal retains the Windows binding, so its raw buffer and
+device tables must remain usable. Accepted teardown also needs exclusion from
+threaded raw reads; a mode-change acknowledgment alone does not protect lifetime.
+
+Change: serialize bounded registration/pairing operations on the input owner and
+quiesce the entire raw buffer/capacity/table/count transaction through restart.
+Refused binding removal preserves its cohort; excluded or late reads cannot
+recreate a bare buffer and skip initialization. Reentrant acquisition is refused.
+Keep known binding mode separate from published observation availability: exclusion
+abandons pending pairing without counting it and publishes partial coverage through
+the existing change counter, even when the binding is retained or sampling coalesces.
+Ordinary keyboard removal does not pause mouse reads. Opt-in flags, game-key policy,
+capture fields, ranking and thresholds are unchanged; the internal channel is not
+a sender-authentication or physical-input attestation boundary.
+
+Verified: literal production Read/lifecycle/pairing and journal-producer controls
+use an owned caller/window-thread boundary, tracked allocation lifetime and acting
+make/break identity checks. The rejected draft, unsafe accepted-cleanup, null-only
+and initial-coverage negatives fail 15/8/4/16 assertions respectively; corrected
+and real registration-success arms pass. Unchanged reader consumption distinguishes
+partial sampled/coalesced coverage from the false whole-count/zero negatives.
+Fresh independent source and evidence reviews clear the bounded correction. Final
+stamped Full-build, warning and installed-client checks are recorded separately in
+FTESurf tools/p1452-keyboard-registration.md, not inferred from focused controls.
+A raw/legacy pair split across resumption can still yield a partial processing-time
+uncorrelated decision: transition/grace and genuine-HID calibration remain pending.
+No false-positive-free hardware, gameplay, numerical detector or promotion claim.
 
 ## Patch 1451 -- the QC tempstring collector's buffers are made during the loading screen (initlib.c, progslib.h, pr_csqc.c, cl_main.c, client.h)
 

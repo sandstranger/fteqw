@@ -210,11 +210,19 @@ typedef struct
 } pms_tas_contact_t;
 static qboolean pms_tas_contact_observe;
 static pms_tas_contact_t pms_tas_contact;
+static qboolean pms_tas_wall;	/* P1449: a wall or ceiling clipped this command (no ramp band, no floor) */
 
 void PMSrc_TASContactBegin(qboolean enabled)
 {
 	pms_tas_contact_observe = enabled;
 	memset(&pms_tas_contact, 0, sizeof(pms_tas_contact));
+	pms_tas_wall = false;
+}
+
+/* P1449: read before PMSrc_TASContactEnd (which clears it). tas_rollout cuts flights that brush a wall. */
+qboolean PMSrc_TASContactWall(void)
+{
+	return pms_tas_contact_observe && pms_tas_wall;
 }
 
 int PMSrc_TASContactEnd(vec3_t normal, float *distance, vec3_t point)
@@ -1491,6 +1499,8 @@ static int PMSrc_TryPlayerMoveCore (vec3_t firstdest, trace_t *firsttrace, qbool
 		   tracing recovers which plane took it. */
 		{
 			float nz = fabs(pm.plane.normal[2]);
+			if (nz < PMSRC_MIN_RAMP_NZ || pm.plane.normal[2] < -standable)
+				pms_tas_wall = true;	/* P1449 */
 			if (nz >= PMSRC_MIN_RAMP_NZ && nz <= standable)
 			{
 				PMSrc_TASContactHit(&pm);
@@ -1778,8 +1788,10 @@ static void PMSrc_StepMove (vec3_t vecDestination, trace_t *trace)
 	trace_t t;
 	float flDownDist, flUpDist;
 	pms_tas_contact_t contactBefore, contactDown;
+	qboolean wallBefore, wallDown;	/* P1449: the wall note follows the attempt kept, as the contact does */
 
 	contactBefore = pms_tas_contact;
+	wallBefore = pms_tas_wall;
 	VectorCopy (vecDestination, vecEndPos);
 	VectorCopy (pmove.origin, vecPos);
 	VectorCopy (pmove.velocity, vecVel);
@@ -1800,9 +1812,11 @@ static void PMSrc_StepMove (vec3_t vecDestination, trace_t *trace)
 	VectorCopy (pmove.origin, vecDownPos);
 	VectorCopy (pmove.velocity, vecDownVel);
 	contactDown = pms_tas_contact;
+	wallDown = pms_tas_wall;
 
 	/* Reset only annotation with the trial; movement policy is unchanged. */
 	pms_tas_contact = contactBefore;
+	pms_tas_wall = wallBefore;
 	/* Reset and try again, stepped up. */
 	VectorCopy (vecPos, pmove.origin);
 	VectorCopy (vecVel, pmove.velocity);
@@ -1850,6 +1864,7 @@ static void PMSrc_StepMove (vec3_t vecDestination, trace_t *trace)
 		VectorCopy (vecDownPos, pmove.origin);
 		VectorCopy (vecDownVel, pmove.velocity);
 		pms_tas_contact = contactDown;
+		pms_tas_wall = wallDown;
 		return;
 	}
 
@@ -1869,6 +1884,7 @@ static void PMSrc_StepMove (vec3_t vecDestination, trace_t *trace)
 		VectorCopy (vecDownPos, pmove.origin);
 		VectorCopy (vecDownVel, pmove.velocity);
 		pms_tas_contact = contactDown;
+		pms_tas_wall = wallDown;
 	}
 	else
 	{	/* keep the stepped position, but the flat move's Z velocity */

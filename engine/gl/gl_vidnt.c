@@ -3292,6 +3292,9 @@ static LONG WINAPI GLMainWndProc (
 			}
 			break;
 
+		case WM_USER_RAWKBD:
+			return lParam || wParam > RAWKBD_RESUME ? 1 : INS_RawInput_KeyboardControl((rawkbdop_t)wParam);
+
 		case WM_INPUT:
 			// raw input handling
 			if (!vid_initializing)

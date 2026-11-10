@@ -65,6 +65,7 @@ static void R_SceneDepthDrawn(int v)
 		Cvar_ForceSetValue(&r_scenedepth_drawn, v);
 }
 extern cvar_t	r_colourcorrection;	//FTESurf Patch 288
+extern cvar_t	r_postprocess;		//FTESurf Patch 1459
 extern cvar_t	r_underwateroverlay;	//FTESurf Patch 1013
 static qboolean r_uwnowarp;	//FTESurf Patch 1013: a Source volume with no overlay draws neither warp
 static shader_t *cc_warned;			//Patch 290: last grade shader we complained about
@@ -2439,6 +2440,8 @@ qboolean R_RenderScene_Cubemap(void)
 	qboolean usefbo = true;		//this appears to be a 20% speedup in my tests.
 	qboolean fboreset = false;
 	int osm = r_refdef.stereomethod;
+	int ofbpwidth = vid.fbpwidth, ofbpheight = vid.fbpheight;	//FTESurf Patch 1470: the view's target
+	float dx, dy, dw, dh;
 
 	/*needs glsl*/
 	if (!gl_config.arb_shader_objects)
@@ -2630,8 +2633,13 @@ qboolean R_RenderScene_Cubemap(void)
 		}
 
 		GL_MTBind(0, GL_TEXTURE_CUBE_MAP_ARB, scenepp_postproc_cube);
+		//FTESurf Patch 1470: storage only. A copy reads the bound framebuffer, which is Patch 1260's multisampled
+		//scene target under vid_multisample: INVALID_OPERATION, no faces, every face's FBO incomplete.
 		for (i = 0; i < 6; i++)
-			qglCopyTexImage2D(GL_TEXTURE_CUBE_MAP_POSITIVE_X_ARB + i, 0, GL_RGB, 0, 0, cmapsize, cmapsize, 0);
+			if (usefbo)
+				qglTexImage2D(GL_TEXTURE_CUBE_MAP_POSITIVE_X_ARB + i, 0, GL_RGBA, cmapsize, cmapsize, 0, GL_RGBA, GL_UNSIGNED_BYTE, NULL);	//unsized: GLES2 too
+			else
+				qglCopyTexImage2D(GL_TEXTURE_CUBE_MAP_POSITIVE_X_ARB + i, 0, GL_RGB, 0, 0, cmapsize, cmapsize, 0);
 		qglTexParameteri(GL_TEXTURE_CUBE_MAP_ARB, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
 		qglTexParameteri(GL_TEXTURE_CUBE_MAP_ARB, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
 		qglTexParameteri(GL_TEXTURE_CUBE_MAP_ARB, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
@@ -2697,6 +2705,9 @@ qboolean R_RenderScene_Cubemap(void)
 	if (usefbo)
 		GLBE_FBO_Pop(oldfbo);
 
+	//FTESurf Patch 1470: RDF_FISHEYE is in RDF_ALLPOSTPROC but no R_RenderPostProcess pass clears it, so left set it
+	//reads as a pass still to come to every pass after it.
+	r_refdef.flags &= ~RDF_FISHEYE;
 	r_refdef.vrect = vrect;
 	r_refdef.pxrect = prect;
 	VectorCopy(saveorg, r_refdef.vieworg);
@@ -2704,6 +2715,19 @@ qboolean R_RenderScene_Cubemap(void)
 
 	//GL_ViewportUpdate();
 	GL_Set2D(false);
+	//FTESurf Patch 1470: on the post-process path the target is the view's own (render scale included) with the view
+	//at its origin, where GL_Set2D set the window's viewport: fill the target, as R_RenderPostProcess does.
+	dx = vrect.x;
+	dy = vrect.y;
+	dw = vrect.width;
+	dh = vrect.height;
+	if (r_refdef.flags & RDF_RENDERSCALE)
+	{
+		qglViewport(0, 0, ofbpwidth, ofbpheight);
+		dx = dy = 0;
+		dw = vid.fbvwidth;
+		dh = vid.fbvheight;
+	}
 	// go 2d
 /*	qglMatrixMode(GL_PROJECTION);
 	qglPushMatrix();
@@ -2717,23 +2741,23 @@ qboolean R_RenderScene_Cubemap(void)
 	if (r_projection.ival == PROJ_EQUIRECTANGULAR)
 	{
 		//note vr screenshots have requirements here
-		R2D_Image(vrect.x, vrect.y, vrect.width, vrect.height, 0, 1, 1, 0, shader);
+		R2D_Image(dx, dy, dw, dh, 0, 1, 1, 0, shader);
 	}
 	else if (r_projection.ival == PROJ_PANORAMA)
 	{
 		float saspect = .5;
 		float taspect = vrect.height / vrect.width * ffov.value / 90;//(0.5 * vrect.width) / vrect.height;
-		R2D_Image(vrect.x, vrect.y, vrect.width, vrect.height, -saspect, taspect, saspect, -taspect, shader);
+		R2D_Image(dx, dy, dw, dh, -saspect, taspect, saspect, -taspect, shader);
 	}
 	else if (vrect.width > vrect.height)
 	{
 		float aspect = (0.5 * vrect.height) / vrect.width;
-		R2D_Image(vrect.x, vrect.y, vrect.width, vrect.height, -0.5, aspect, 0.5, -aspect, shader);
+		R2D_Image(dx, dy, dw, dh, -0.5, aspect, 0.5, -aspect, shader);
 	}
 	else
 	{
 		float aspect = (0.5 * vrect.width) / vrect.height;
-		R2D_Image(vrect.x, vrect.y, vrect.width, vrect.height, -aspect, 0.5, aspect, -0.5, shader);
+		R2D_Image(dx, dy, dw, dh, -aspect, 0.5, aspect, -0.5, shader);
 	}
 
 	if (R2D_Flush)
@@ -2848,12 +2872,12 @@ void GLR_RenderView (void)
 	else
 	{
 		renderscale = r_renderscale.value;
-		if (R_CanBloom())
+		if (r_postprocess.ival && R_CanBloom())	//FTESurf Patch 1459
 			r_refdef.flags |= RDF_BLOOM;
 	}
 
 	//check if we can do underwater warp
-	r_uwnowarp = false;
+	r_uwnowarp = !r_postprocess.ival;	//FTESurf Patch 1459: no underwater warp of either kind; RDF_UNDERWATER (fog) kept
 	if (cls.protocol != CP_QUAKE2)	//quake2 tells us directly
 	{
 		if (r_viewcontents & FTECONTENTS_FLUID)
@@ -2923,9 +2947,14 @@ void GLR_RenderView (void)
 
 	if (!(r_refdef.flags & RDF_NOWORLDMODEL))
 	{
-		if (r_fxaa.ival)
+		//FTESurf Patch 1459: r_postprocess 0 (the gfx menu's Post-process row) draws the scene as rendered:
+		//no FXAA, custom post shader, colour grade or bloom (above), no underwater warp (r_uwnowarp). Gamma and fog stay.
+		qboolean postproc = r_postprocess.ival != 0;
+		if (postproc && r_fxaa.ival)
 			r_refdef.flags |= RDF_ANTIALIAS;
-		if (*r_postprocshader.string)
+		if (!postproc)
+			;
+		else if (*r_postprocshader.string)
 			custompostproc = R_RegisterCustom(NULL, r_postprocshader.string, SUF_NONE, NULL, NULL);
 		else if (!r_graphics.ival)
 			custompostproc = R_RegisterShader("postproc_ascii", 0, 
@@ -2960,7 +2989,7 @@ void GLR_RenderView (void)
 		keeps the grade off the HUD -- correct, and the thing that would look most
 		obviously wrong if it were not.
 		*/
-		if (*r_colourcorrection.string)
+		if (postproc && *r_colourcorrection.string)
 		{
 			qboolean active = true;
 			if (!strncmp(r_colourcorrection.string, "ftesurf/cc/", 11))
