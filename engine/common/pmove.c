@@ -22,13 +22,21 @@ Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
 
 movevars_t		movevars;
 playermove_t	pmove;
+FTE_TLS movevars_t		*mv_ctx = &movevars;	//Patch 1467: pm_thread.h's (a tas_rollout_batch worker binds its own)
+FTE_TLS playermove_t	*pm_ctx = &pmove;
+void PM_ThreadBind(playermove_t *pm, movevars_t *mv)
+{
+	pm_ctx = pm ? pm : &pmove;
+	mv_ctx = mv ? mv : &movevars;
+}
+#include "pm_thread.h"
 extern cvar_t	pm_noround;	//evile.
 
 #define movevars_dpflags		MOVEFLAG_QWCOMPAT
 #define movevars_maxairspeed	30
 #define movevars_jumpspeed		270
 
-float		frametime;
+FTE_TLS float		frametime;
 
 vec3_t		forward, right, up;
 

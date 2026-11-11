@@ -146,9 +146,9 @@ void QCC_PR_AddIncludePath(const char *newinc)
 		{
 			pbool trunc;
 			const char *e = newinc + strlen(newinc)-1;
-			trunc = !QC_strlcpy(qccincludedir[i], newinc, sizeof(qccincludedir));
+			trunc = !QC_strlcpy(qccincludedir[i], newinc, sizeof(qccincludedir[i]));
 			if (*e != '/' && *e != '\\')
-				trunc |= !QC_strlcat(qccincludedir[i], "/", sizeof(qccincludedir));
+				trunc |= !QC_strlcat(qccincludedir[i], "/", sizeof(qccincludedir[i]));
 			if (trunc)
 			{
 				QCC_PR_ParseWarning(WARN_STRINGTOOLONG, "Include path too long.");
@@ -1694,6 +1694,8 @@ void QCC_PR_LexString (void)
 
 		if (flag_qccx && *pr_file_p == ':')
 		{
+			if (len >= sizeof(pr_token)-1)
+				QCC_Error(ERR_INVALIDSTRINGIMMEDIATE, "String length exceeds %u", (unsigned)sizeof(pr_token)-1);
 			pr_file_p++;
 			pr_token[len++] = 0;
 			continue;

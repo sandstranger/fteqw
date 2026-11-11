@@ -72,6 +72,67 @@ Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
 #ifdef HAVE_CLIENT
 #include "cl_master.h"
 #endif
+#include "pm_thread.h"
+#include "com_bih_ts.h"
+
+/* Patch 1467: the mover's per-command state, one a thread (a tas_rollout_batch worker binds its own) */
+// P1344: command-local annotation; only the chosen StepMove path survives.
+// 0 no observed ramp, 1 world ramp, 2 nonworld, 3 ambiguous/unsupported.
+typedef struct
+{
+	int kind;
+	vec3_t normal, point;
+	float distance;
+} pms_tas_contact_t;
+typedef struct
+{
+	float frametime;			//the tick being simulated: always movevars.ticrate
+	qboolean bankgravity_observe, bankgravity_used;	//P1129: armed only around a real server move
+	qboolean tas_contact_observe;
+	pms_tas_contact_t tas_contact;
+	qboolean tas_wall;			//P1449: a wall or ceiling clipped this command (no ramp band, no floor)
+	vec3_t forward, right, up;
+	vec3_t standmins, standmaxs;
+	qboolean warned_hullfloor;
+	float forwardmove, sidemove, upmove;
+	float maxspeed;
+	qboolean surfed;
+	qboolean portalcrossed;
+	qboolean haveportals;
+	qboolean anyslide;
+	int slidecontact, slidetick;
+	int momslide;				//Patch 882: pmove.momslide at mover 10, else 0
+	qboolean physslide;			//Patch 882: pms_anyslide before the trigger slide joined it
+} pms_state_t;
+static pms_state_t pms_main;
+static FTE_TLS pms_state_t *pms_ctx = &pms_main;
+size_t PMSrc_ThreadStateSize(void) { return sizeof(pms_state_t); }
+const void *PMSrc_MainState(void) { return &pms_main; }	//a worker starts from a copy (its latches)
+void PMSrc_ThreadState(void *state) { pms_ctx = state ? state : &pms_main; }
+#define pms_frametime				(pms_ctx->frametime)
+#define pms_bankgravity_observe		(pms_ctx->bankgravity_observe)
+#define pms_bankgravity_used		(pms_ctx->bankgravity_used)
+#define pms_tas_contact_observe		(pms_ctx->tas_contact_observe)
+#define pms_tas_contact				(pms_ctx->tas_contact)
+#define pms_tas_wall				(pms_ctx->tas_wall)
+#define pms_forward					(pms_ctx->forward)
+#define pms_right					(pms_ctx->right)
+#define pms_up						(pms_ctx->up)
+#define pms_standmins				(pms_ctx->standmins)
+#define pms_standmaxs				(pms_ctx->standmaxs)
+#define pms_warned_hullfloor		(pms_ctx->warned_hullfloor)
+#define pms_forwardmove				(pms_ctx->forwardmove)
+#define pms_sidemove				(pms_ctx->sidemove)
+#define pms_upmove					(pms_ctx->upmove)
+#define pms_maxspeed				(pms_ctx->maxspeed)
+#define pms_surfed					(pms_ctx->surfed)
+#define pms_portalcrossed			(pms_ctx->portalcrossed)
+#define pms_haveportals				(pms_ctx->haveportals)
+#define pms_anyslide				(pms_ctx->anyslide)
+#define pms_slidecontact			(pms_ctx->slidecontact)
+#define pms_slidetick				(pms_ctx->slidetick)
+#define pms_momslide				(pms_ctx->momslide)
+#define pms_physslide				(pms_ctx->physslide)
 
 /* ---------------------------------------------------------------- constants */
 
@@ -180,12 +241,7 @@ Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
 
 /* ------------------------------------------------------------------- state */
 
-/* The frametime of the tick currently being simulated.  Always
-   movevars.ticrate -- named for symmetry with pmove.c's `frametime`. */
-static float pms_frametime;
 
-// P1129: armed only around a real server move; never saved or exposed as input.
-static qboolean pms_bankgravity_observe, pms_bankgravity_used;
 
 void PMSrc_BankGravityBegin(qboolean enabled)
 {
@@ -200,17 +256,6 @@ qboolean PMSrc_BankGravityEnd(void)
 	return used;
 }
 
-// P1344: command-local annotation; only the chosen StepMove path survives.
-// 0 no observed ramp, 1 world ramp, 2 nonworld, 3 ambiguous/unsupported.
-typedef struct
-{
-	int kind;
-	vec3_t normal, point;
-	float distance;
-} pms_tas_contact_t;
-static qboolean pms_tas_contact_observe;
-static pms_tas_contact_t pms_tas_contact;
-static qboolean pms_tas_wall;	/* P1449: a wall or ceiling clipped this command (no ramp band, no floor) */
 
 void PMSrc_TASContactBegin(qboolean enabled)
 {
@@ -275,34 +320,25 @@ static void PMSrc_TASContactHit(const trace_t *trace)
 	pms_tas_contact.distance = trace->plane.dist;
 }
 
-static vec3_t pms_forward, pms_right, pms_up;
 
 /* The STANDING hull, captured from the entity on entry.  The duck hull is
    derived from it, so a mod can change player size without the engine
    needing to know about it. */
-static vec3_t pms_standmins, pms_standmaxs;
 
 /* One-shot latch for the "mins[2] is not 0" warning below.  Per session, not
    per map: this is a mod bug, it is loud once, and PMSrc_PlayerMove runs every
    usercmd -- an unlatched Con_Printf here would be 66 lines a second. */
-static qboolean pms_warned_hullfloor;
 
 /* Move values for this tick, after CheckParameters/duck cropping. */
-static float pms_forwardmove, pms_sidemove, pms_upmove;
-static float pms_maxspeed;
 
 /* Set when this tick clipped against a non-standable plane -- i.e. you are
    surfing.  Reported to the mod so the HUD can say so. */
-static qboolean pms_surfed;
 
 static cvar_t pm_jumpzdebug = CVARD("pm_jumpzdebug", "0",
 	"Print successful Source jump-height corrections (also requires developer). Does not change movement.");
 
 extern cvar_t pm_noround;
-extern int bih_sourceclip;	//Patch 492, com_bih.c
-extern int bih_phybrushes;	//Patch 764, com_bih.c
-extern int bih_phyfix;		//Patch 888, com_bih.c
-extern int bih_phypick;		//Patch 1248, com_bih.c
+//bih_sourceclip, bih_phybrushes, bih_phyfix, bih_phypick: com_bih_ts.h (Patches 492, 764, 888, 1248; 1467 a thread's)
 extern cvar_t pm_dispprobe;	//FTESurf Patch 256, temporary -- defined in common.c
 extern cvar_t pm_ladderprobe;	//FTESurf Patch 260, temporary -- defined in common.c
 
@@ -316,9 +352,7 @@ extern cvar_t pm_ladderprobe;	//FTESurf Patch 260, temporary -- defined in commo
   guard and pulls in the whole q2cbrush_t/bihleaf_s family, none of which this
   file has any business seeing.  Patch 258 declared its three the same way.  The
   canonical copies are in com_bih.h beside the prototype. */
-extern int		bih_probe_plane;
-extern int		bih_probe_kind;
-extern model_t *bih_probe_model;
+//bih_probe_plane, bih_probe_kind, bih_probe_model: com_bih_ts.h (Patch 1467)
 void BIH_ProbeReport (const trace_t *t, const char *tag);
 
 /* pmove.c owns these; we reuse its touch list so trigger_push / teleports
@@ -394,7 +428,6 @@ static trace_t PMSrc_TraceHull (vec3_t start, vec3_t end)
    crossing in the flat attempt would be taken a second time in the stepped one:
    two rotations for one doorway, and a final position derived from the far side
    of a portal the player passed through once. */
-static qboolean pms_portalcrossed;
 
 /* FTESurf Patch 206: does this map have portals at all?  Cached once per tick
    in PMSrc_PlayerMove.
@@ -407,7 +440,6 @@ static qboolean pms_portalcrossed;
    would reuse that trace and walk the player into the brushwork with no
    transform run.  So the gate is the coarse one, and on the 1290 maps with no
    portals it is one early-out and nothing changes. */
-static qboolean pms_haveportals;
 
 /* ---- FTESurf Patch 280: func_slide -------------------------------------------
 
@@ -435,11 +467,6 @@ static qboolean pms_haveportals;
    Nothing here is carried between ticks or commands: it is re-derived from the
    trace every tick, so there is no new prediction state and nothing to add to
    pmsourcestate_t. */
-static qboolean pms_anyslide;
-static int      pms_slidecontact;
-static int      pms_slidetick;
-static int      pms_momslide;	/* Patch 882: pmove.momslide at mover 10, else 0 */
-static qboolean pms_physslide;	/* Patch 882: pms_anyslide before the trigger slide joined it */
 
 static void PMSrc_StayOnGround (void);	/* defined below; TryPlayerMove's slide retrace needs it first */
 
@@ -1357,7 +1384,7 @@ static int PMSrc_TryPlayerMoveCore (vec3_t firstdest, trace_t *firsttrace, qbool
 		   those lines are the ones that bury the interesting one.  A wall is a
 		   fraction at or near zero, or a startsolid.  Filtering to those turned a
 		   210 KB log with 190 contacts into the four lines that mattered. */
-		if (pm_dispprobe.ival && pm.fraction < 1 &&
+		if (pm_dispprobe.ival && pm.fraction < 1 && Sys_IsMainThread() &&	/* Patch 1467: its latches are the main thread's */
 		    (pmove.onground || pm_dispprobe.ival >= 2) &&
 		    (pm_dispprobe.ival != 4 || pm.fraction < 0.05 || pm.startsolid))
 		{
@@ -4120,6 +4147,8 @@ static void PMSrc_LadderProbe (void)
 	vec3_t flatforward, fwd;
 	char names[128];
 	float len;
+	if (!Sys_IsMainThread())
+		return;		/* Patch 1467: its accumulator is the main thread's */
 	int extra;
 
 	acc += pms_frametime;

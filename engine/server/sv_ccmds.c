@@ -4243,12 +4243,7 @@ static int SV_DetRange (unsigned int *s, int lo, int hi)
 */
 #define PMDET_TICRATE 0.015f
 
-extern int bih_sourceclip;	//Patch 492, com_bih.c
-extern int bih_phybrushes;	//Patch 764, com_bih.c
-extern int bih_phyfix;		//Patch 888, com_bih.c
-extern int bih_phypick;		//Patch 1248, com_bih.c
-extern int bih_probe_kind;	//Patch 764: which leaf decided the last trace (com_bih.h)
-extern model_t *bih_probe_model;
+#include "com_bih_ts.h"	//bih_sourceclip, bih_phybrushes, bih_phyfix, bih_phypick, bih_probe_kind, bih_probe_model (Patch 1467)
 
 static unsigned long long SV_DetHashTrace(unsigned long long h, const trace_t *tr)
 {

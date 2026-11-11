@@ -1050,6 +1050,8 @@ rename hazard, stream to .part and accept the other failure mode.
 qboolean QC_FixFileName(const char *name, const char **result, const char **fallbackread);
 
 static char			*in_jrn_buf;
+static qboolean		in_jrn_mainactive;	/*main-only lifecycle hints, never buffer access permission*/
+static qboolean		in_jrn_mainsynth;	/*true implies this active journal was observed poisoned*/
 static size_t		in_jrn_len, in_jrn_cap, in_jrn_max;
 static double		in_jrn_base, in_jrn_last;
 static unsigned int	in_jrn_dropreported, in_jrn_dropbase, in_jrn_events, in_jrn_frames, in_jrn_hidden;
@@ -1072,8 +1074,9 @@ static qboolean		in_jrn_full, in_jrn_synth;
 /*Patch 1116: SHA-256 of in_jrn_buf[0, in_jrn_hashed), fed as the journal grows, so its
   close hashes a tail instead of the whole run on the frame the run ends (5.9 ms for
   1.6 MB, measured). NULL, or in_jrn_rehash, means hash the whole buffer at close.
-  Fed and freed on the main thread only. cl_threadedphysics appends from its own thread with
-  no lock against this one (review 2), so a journal that saw it is hashed whole at close.*/
+  Fed and freed on the main thread only. Threaded capture still conservatively
+  hashes whole at close; ordinary main append exclusion does not qualify foreign
+  native producers or change the main-only hash-context rule.*/
 static void			*in_jrn_hctx;
 static size_t		in_jrn_hashed;
 static qboolean		in_jrn_rehash;	//a byte below in_jrn_hashed changed (the synth mark)
@@ -1092,6 +1095,43 @@ static float		in_jrn_vrawx, in_jrn_vrawy;
 static int			in_jrn_vflags;
 static float		in_jrn_vlast[2];
 static qboolean		in_jrn_vhavelast;
+
+/*CPU-only main transactions. Release only our transition BEFORE callbacks;
+  a borrowed false stays owned by its caller. Worker producers inherit indeplock.*/
+typedef struct in_jrn_guard_s
+{
+	qboolean active, owned;
+} in_jrn_guard_t;
+static void IN_Journal_GuardAcquire(in_jrn_guard_t *guard)
+{
+	if (guard->active)
+		return;
+	guard->owned = CL_AllowIndependantSendCmd(false);
+	guard->active = true;
+}
+static void IN_Journal_GuardRelease(void *ctx)
+{
+	in_jrn_guard_t *guard = ctx;
+	qboolean owned = guard->owned;
+
+	if (!guard->active)
+		return;
+	guard->active = guard->owned = false;
+	if (owned)
+		CL_AllowIndependantSendCmd(true);
+}
+static qboolean IN_Journal_Ready(in_jrn_guard_t *guard, qboolean mainthread)
+{
+	if (mainthread)
+	{
+		if (!in_jrn_mainactive)
+			return false;
+		IN_Journal_GuardAcquire(guard);
+	}
+	/*The editor can enter the shared drain off-main. Never read the main hint
+	  or take its permission helper there. Foreign native producers remain unsafe.*/
+	return in_jrn_buf != NULL;
+}
 
 /*Raw append.  Grows by doubling; the caller has already decided the line fits.*/
 static void IN_Journal_Raw(const char *s)
@@ -1181,9 +1221,13 @@ void IN_Journal_Note(const char *text)
 {
 	char clean[96];
 	size_t i;
+	in_jrn_guard_t guard = {false, false};
 
-	if (!in_jrn_buf)
+	if (!IN_Journal_Ready(&guard, Sys_IsMainThread()))
+	{
+		IN_Journal_GuardRelease(&guard);
 		return;
+	}
 
 	/*the gamecode writes this, so it is sanitised rather than trusted: anything
 	  that could introduce a newline would let a note forge a record line.*/
@@ -1212,6 +1256,7 @@ void IN_Journal_Note(const char *text)
 	  what this preserves, at the cost of up to one frame of precision on a
 	  timestamp nobody reads.*/
 	IN_Journal_Line(in_jrn_last, "#", clean);
+	IN_Journal_GuardRelease(&guard);
 }
 
 /*
@@ -1272,11 +1317,67 @@ qboolean IN_Journal_LastDigest(qbyte digest[32], size_t *len, qboolean *kept)
 	return true;
 }
 
+/*Main-only pending closes own detached bytes, never the next active journal.
+  Resource nesting and eligibility to publish are deliberately separate.*/
+typedef struct in_jrn_close_s
+{
+	struct in_jrn_close_s *prev;
+	char *buf;
+	qbyte digest[32];
+	size_t len;
+	double digestms;
+	qboolean digestok;
+} in_jrn_close_t;
+static in_jrn_close_t *in_jrn_closes, *in_jrn_close_current;
+
+static void IN_Journal_CloseDone(in_jrn_close_t *close, qboolean kept)
+{
+	if (in_jrn_close_current == close)
+	{
+		memcpy(in_jrn_digest, close->digest, sizeof(in_jrn_digest));
+		in_jrn_digestlen = close->len;
+		in_jrn_digestms = close->digestms;
+		in_jrn_digestkept = kept;
+		in_jrn_digestok = close->digestok;
+		in_jrn_close_current = NULL;
+	}
+	in_jrn_closes = close->prev;
+	BZ_Free(close->buf);
+}
+
+/*Immediately before host_abort, while these stack records are still live.
+  No callbacks, active-journal changes or worker-permission restoration here.*/
+void IN_Journal_AbortClose(void)
+{
+	in_jrn_close_t *close;
+
+	if (!in_jrn_closes)
+		return;
+	in_jrn_close_current = NULL;
+	in_jrn_digestok = false;
+	while ((close = in_jrn_closes))
+	{
+		in_jrn_closes = close->prev;
+		BZ_Free(close->buf);
+		close->buf = NULL;
+	}
+}
+
 void IN_Journal_Drop(void)
 {
+	/*Main-side lifecycle: the worker already owns indeplock while appending.
+	  Nested Begin/End callers retain their existing ownership.*/
+	qboolean allowed = CL_AllowIndependantSendCmd(false);
+
+	if (in_jrn_close_current)
+	{
+		in_jrn_close_current = NULL;
+		in_jrn_digestok = false;
+	}
 	if (in_jrn_buf)
 		BZ_Free(in_jrn_buf);
 	in_jrn_buf = NULL;
+	in_jrn_mainactive = in_jrn_mainsynth = false;
 	in_jrn_len = in_jrn_cap = 0;
 	if (in_jrn_hctx)
 		BZ_Free(in_jrn_hctx);
@@ -1286,6 +1387,7 @@ void IN_Journal_Drop(void)
 	in_jrn_full = in_jrn_synth = false;
 	in_jrn_events = in_jrn_frames = in_jrn_hidden = 0;
 	memset(in_jrn_haveabs, 0, sizeof(in_jrn_haveabs));
+	CL_AllowIndependantSendCmd(allowed);
 }
 
 static void IN_Journal_Event(struct eventlist_s *ev)
@@ -2171,7 +2273,10 @@ static void IN_JournalBegin_f(void)
 	cvar_t *rawkbd = Cvar_FindVar("in_rawinput_keyboard");
 	cvar_t *nolegacy = Cvar_FindVar("in_rawinput_nolegacy");	/*Patch 307*/
 	char head[1024];
+	qboolean allowed;
 
+	/*Publish/reset the whole replacement only while the worker is excluded.*/
+	allowed = CL_AllowIndependantSendCmd(false);
 	IN_Journal_Drop();
 
 	/*Patch 417: the last journal's digest belongs to the last run.  A receipt
@@ -2185,6 +2290,8 @@ static void IN_JournalBegin_f(void)
 	if (in_jrn_cap > in_jrn_max + 1024)
 		in_jrn_cap = in_jrn_max + 1024;
 	in_jrn_buf = BZ_Malloc(in_jrn_cap);
+	in_jrn_mainactive = true;
+	in_jrn_mainsynth = false;
 	in_jrn_len = 0;
 	in_jrn_hctx = BZ_Malloc(hash_sha2_256.contextsize);
 	hash_sha2_256.init(in_jrn_hctx);
@@ -2327,6 +2434,7 @@ static void IN_JournalBegin_f(void)
 	}
 
 	IN_Journal_Raw("begin\n");
+	CL_AllowIndependantSendCmd(allowed);
 }
 
 static void IN_JournalEnd_f(void)
@@ -2335,9 +2443,14 @@ static void IN_JournalEnd_f(void)
 	char namelocal[MAX_QPATH];	/*Patch 490: a copy that survives COM_WriteFile*/
 	char tail[192];	/*Patch 468: ten trailer fields*/
 	double now, writems;
-	size_t wlen;
-	qboolean discard;	/*Patch 417: decided here, acted on after the trailer*/
+	qboolean discard, allowed, wrote;
+	in_jrn_close_t close;
+	unsigned int events, frames, dropped, hidden;
 
+	/*An empty or nested End also revokes an older pending publication.*/
+	allowed = CL_AllowIndependantSendCmd(false);
+	in_jrn_close_current = NULL;
+	in_jrn_digestok = false;
 	if (!in_jrn_buf)
 	{
 		/*Patch 417: AND FORGET THE LAST ONE'S DIGEST.  A run that ends with no
@@ -2347,6 +2460,7 @@ static void IN_JournalEnd_f(void)
 		  journalled (rec_sign's fourth argument); this is the same fact enforced
 		  at the other end.*/
 		in_jrn_digestok = false;
+		CL_AllowIndependantSendCmd(allowed);
 		if (Cmd_Argc() > 1)
 			Con_Printf("in_journal_end: no journal open\n");
 		return;
@@ -2412,11 +2526,12 @@ static void IN_JournalEnd_f(void)
 	  and such a file already says `truncated`, so the loss is announced.*/
 	INS_EnumerateDevices((void*)"devmap", IN_Journal_DeviceLine);
 
-	/*the trailer is written whether or not the cap was hit -- a truncated file
-	  still has to say how much it was missing.  in_jrn_max is lifted rather than
-	  in_jrn_full cleared, so a second truncated marker cannot appear.*/
+	/*Allow the trailer into a full journal's reserved space, but never lower
+	  the configured limit to the current allocation: an ordinary journal may
+	  need to grow here.  Body truncation remains recorded in the buffer.*/
 	in_jrn_full = false;
-	in_jrn_max = in_jrn_cap;
+	if (in_jrn_max < in_jrn_cap)
+		in_jrn_max = in_jrn_cap;
 	IN_Journal_Line(now, "end", tail);
 	in_jrn_full = true;	//Patch 1116: a threaded-physics line after `end` would make the file outrun its digest
 
@@ -2426,15 +2541,31 @@ static void IN_JournalEnd_f(void)
 	  QC_FixFileName is the same sandbox PF_fopen uses, AND a data/ prefix is required
 	  on top of it, because QC_FixFileName alone also accepts cfg/ and a journal must
 	  not be able to overwrite a config.*/
-	/*Patch 417: ONE DIGEST POINT, over the complete buffer -- trailer, devmap
-	  table and all -- whichever way this journal ends.  `kept` is the only
-	  difference between the two, and it is recorded rather than implied.*/
+	/*Digest the closed bytes once, then transfer storage before any callback-
+	  capable I/O or diagnostic. Only this close's completion may publish it.*/
+	IN_Journal_Digest(false);
+	close.digestok = in_jrn_digestok;
+	memcpy(close.digest, in_jrn_digest, sizeof(close.digest));
+	close.len = in_jrn_digestok ? in_jrn_digestlen : in_jrn_len;
+	close.digestms = in_jrn_digestms;
+	events = in_jrn_events;
+	frames = in_jrn_frames;
+	dropped = in_jrn_dropped - in_jrn_dropbase;
+	hidden = in_jrn_hidden;
+	close.buf = in_jrn_buf;
+	in_jrn_buf = NULL;
+	IN_Journal_Drop();
+	close.prev = in_jrn_closes;
+	in_jrn_closes = &close;
+	in_jrn_close_current = &close;
+	in_jrn_digestok = false;
+	CL_AllowIndependantSendCmd(allowed);
+
 	if (discard)
 	{
-		IN_Journal_Digest(false);
 		Con_DPrintf("in_journal_end: discarded, %u events / %u frames, %uk, digest %.1f ms\n",
-			in_jrn_events, in_jrn_frames, (unsigned)(in_jrn_len/1024), in_jrn_digestms);
-		IN_Journal_Drop();
+			events, frames, (unsigned)(close.len/1024), close.digestms);
+		IN_Journal_CloseDone(&close, false);
 		return;
 	}
 
@@ -2451,12 +2582,10 @@ static void IN_JournalEnd_f(void)
 	    || strcmp(name + strlen(name) - 4, ".hid"))
 	{
 		Con_Printf("in_journal_end: refused \"%s\" -- journals go under data/ as .hid\n", Cmd_Argv(1));
-		IN_Journal_Digest(false);	/*complete bytes; nobody kept them*/
-		IN_Journal_Drop();
+		IN_Journal_CloseDone(&close, false);
 		return;
 	}
 
-	IN_Journal_Digest(true);	/*the bytes as written*/
 	/*Patch 490: COPY THE NAME BEFORE THE WRITE, not after the failure.
 
 	  QC_FixFileName returns either its argument (a Z_Malloc'd Cmd_Argv copy,
@@ -2478,19 +2607,13 @@ static void IN_JournalEnd_f(void)
 	Q_snprintfz(namelocal, sizeof(namelocal), "%s", name);
 	name = namelocal;
 	writems = Sys_DoubleTime();
-	wlen = in_jrn_digestok ? in_jrn_digestlen : in_jrn_len;	//Patch 1116: the signed bytes, exactly
-	if (!COM_WriteFile(name, FS_GAMEONLY, in_jrn_buf, wlen))	//false on a short write too (P1116)
-	{
-		/*A `kept 1` digest for a file that is not there would be the one kind
-		  of commitment nobody can ever check and everybody would believe.*/
-		Con_Printf(CON_WARNING"in_journal_end: %s was not written\n", name);
-		IN_Journal_Digest(false);
-	}
+	wrote = COM_WriteFile(name, FS_GAMEONLY, close.buf, close.len);	//false on a short write too (P1116)
 	writems = (Sys_DoubleTime() - writems) * 1000;
+	if (!wrote)
+		Con_Printf(CON_WARNING"in_journal_end: %s was not written\n", name);
 	Con_DPrintf("in_journal_end: %s, %u events / %u frames / %u dropped / %u hidden, %uk, digest %.1f ms, write %.1f ms\n",
-		name, in_jrn_events, in_jrn_frames, in_jrn_dropped - in_jrn_dropbase, in_jrn_hidden, (unsigned)(in_jrn_len/1024),
-		in_jrn_digestms, writems);
-	IN_Journal_Drop();
+		name, events, frames, dropped, hidden, (unsigned)(close.len/1024), close.digestms, writems);
+	IN_Journal_CloseDone(&close, wrote);
 }
 
 static void IN_JournalNote_f(void)
@@ -2538,9 +2661,25 @@ route -- the one that needs no skill -- and does not pretend to close the others
 void IN_Journal_MarkSynth(const char *source)
 {
 	char note[64];
+	in_jrn_guard_t guard = {false, false};
+	qboolean mainthread = Sys_IsMainThread();
 
-	if (!in_jrn_buf || in_jrn_synth)
-		return;		/*no journal open, or already poisoned -- idempotent*/
+	/*The plugin input API marks every injected event. Do not lock every call
+	  once main has observed this journal poisoned. Foreign callers use neither hint.*/
+	if (mainthread && in_jrn_mainsynth)
+		return;
+	if (!IN_Journal_Ready(&guard, mainthread))
+	{
+		IN_Journal_GuardRelease(&guard);
+		return;
+	}
+	if (in_jrn_synth)
+	{
+		if (mainthread)
+			in_jrn_mainsynth = true;
+		IN_Journal_GuardRelease(&guard);
+		return;		/*already poisoned, including by an admitted worker*/
+	}
 
 	/*rewrite the header's synth key in place -- it is a fixed-width "0" by
 	  construction, so this cannot move anything after it.*/
@@ -2556,6 +2695,8 @@ void IN_Journal_MarkSynth(const char *source)
 		}
 	}
 	in_jrn_synth = true;
+	if (mainthread)
+		in_jrn_mainsynth = true;
 
 	/*NAME THE SOURCE.  `synth 1` alone says the file is inadmissible but not why,
 	  and "a developer ran in_journal_synth to test the format" and "a plugin
@@ -2567,6 +2708,7 @@ void IN_Journal_MarkSynth(const char *source)
 	  the first run of this patch's own falsifier.*/
 	Q_snprintfz(note, sizeof(note), "SYNTH source %s", source?source:"unknown");
 	IN_Journal_Note(note);
+	IN_Journal_GuardRelease(&guard);
 }
 
 static void IN_JournalSynth_f(void)
@@ -2602,12 +2744,25 @@ static void IN_JournalSynth_f(void)
 	Con_Printf("in_journal_synth: injected %i mouse and %i key events\n", n, (n+15)/16);
 }
 
-void CL_Paste_Flush(void);
+/*Capture the desired scalar under exclusion, but never carry our token into
+  the setter. Its callbacks may replace/drop the journal or take new ownership.*/
+static void IN_Journal_PublishCounter(in_jrn_guard_t *guard, cvar_t *var, unsigned int wanted)
+{
+	if ((int)var->ival != (int)wanted)
+	{
+		IN_Journal_GuardRelease(guard);
+		Cvar_ForceSetValue(var, wanted);
+	}
+}
+
+void CL_Paste_FlushGuarded(void (*beforegive)(void *), void *ctx);
 /*a 'pointer' is either a multitouch pointer, or a separate device
 note that mice use the keyboard button api, but separate devices*/
 static void IN_Commands_Internal(qboolean deliverpaste)
 {
 	struct eventlist_s *ev;
+	in_jrn_guard_t guard = {false, false};
+	qboolean mainthread = Sys_IsMainThread();
 
 	in_real_keydown = false;	/*Patch 625: nothing is being dispatched yet*/
 	INS_Commands();
@@ -2626,7 +2781,7 @@ static void IN_Commands_Internal(qboolean deliverpaste)
 
 	/*Patch 484: publish the identity counters the same way, on the same guard.
 
-	  ALL FOUR read -1 until a journal has been opened in this process, because
+	  ALL FIVE read -1 until a journal has been opened in this process, because
 	  -1 means "never measured" and 0 means "measured, and found nothing".  Those
 	  are different facts about a player and collapsing them is the failure Patch
 	  301's essay warns about -- a reader who sees 0 violations on a client that
@@ -2657,35 +2812,42 @@ static void IN_Commands_Internal(qboolean deliverpaste)
 	}
 	else
 	{
-		if ((int)in_jrn484_frames.ival != (int)in_jrn_vcount)
-			Cvar_ForceSetValue(&in_jrn484_frames, in_jrn_vcount);
-		if ((int)in_jrn484_ghosts.ival != (int)(in_jrn_ghosts[PITCH] + in_jrn_ghosts[YAW]))
-			Cvar_ForceSetValue(&in_jrn484_ghosts, in_jrn_ghosts[PITCH] + in_jrn_ghosts[YAW]);
-		if ((int)in_jrn484_violations.ival != (int)(in_jrn_violations[PITCH] + in_jrn_violations[YAW]))
-			Cvar_ForceSetValue(&in_jrn484_violations, in_jrn_violations[PITCH] + in_jrn_violations[YAW]);
-		if ((int)in_jrn484_badframes.ival != (int)in_jrn_vbad)
-			Cvar_ForceSetValue(&in_jrn484_badframes, in_jrn_vbad);
-		if ((int)in_jrn484_skipped.ival != (int)in_jrn_vskip)
-			Cvar_ForceSetValue(&in_jrn484_skipped, in_jrn_vskip);
+		/*Ready may be false after Drop: retained last-capture values still publish.
+		  Recheck before each read because an actual setter may run callbacks.*/
+		IN_Journal_Ready(&guard, mainthread);
+		IN_Journal_PublishCounter(&guard, &in_jrn484_frames, in_jrn_vcount);
+		IN_Journal_Ready(&guard, mainthread);
+		IN_Journal_PublishCounter(&guard, &in_jrn484_ghosts, in_jrn_ghosts[PITCH] + in_jrn_ghosts[YAW]);
+		IN_Journal_Ready(&guard, mainthread);
+		IN_Journal_PublishCounter(&guard, &in_jrn484_violations, in_jrn_violations[PITCH] + in_jrn_violations[YAW]);
+		IN_Journal_Ready(&guard, mainthread);
+		IN_Journal_PublishCounter(&guard, &in_jrn484_badframes, in_jrn_vbad);
+		IN_Journal_Ready(&guard, mainthread);
+		IN_Journal_PublishCounter(&guard, &in_jrn484_skipped, in_jrn_vskip);
 	}
 
 	/*Patch 202: the frame marker, and the per-event append below, both sit ABOVE
 	  the IEV_MOUSEDELTA case's ptr[].delta summation -- which is the whole point.
 	  By the time that runs the individual reports have been added together and
 	  are unrecoverable.  Emitted only on a non-empty drain, so an idle frame
-	  costs nothing and the .view already carries one line per rendered frame.*/
-	if (in_jrn_buf && events_used != events_avail)
+	  emits no row (identity publication still needs bounded exclusion), and the
+	  .view already carries one line per rendered frame.*/
+	if (events_used != events_avail && IN_Journal_Ready(&guard, mainthread))
 		IN_Journal_Frame();
 
 	if (deliverpaste)
-		CL_Paste_Flush();	/*P939: an async answer precedes the next input, too*/
+		CL_Paste_FlushGuarded(IN_Journal_GuardRelease, &guard);	/*P939: same stream position*/
 	while (events_used != events_avail)
 	{
 		ev = &eventlist[events_used & (EVENTQUEUELENGTH-1)];
 
-		if (in_jrn_buf)
+		if (IN_Journal_Ready(&guard, mainthread))
 			IN_Journal_Event(ev);
 
+		/*Only relative dispatch is callback-free. Empty paste keeps the group;
+		  actual delivery releases it immediately before entering the recipient.*/
+		if (ev->type != IEV_MOUSEDELTA)
+			IN_Journal_GuardRelease(&guard);
 		switch(ev->type)
 		{
 		case IEV_KEYRELEASE:
@@ -2884,8 +3046,9 @@ static void IN_Commands_Internal(qboolean deliverpaste)
 		}
 		events_used++;
 		if (deliverpaste)
-			CL_Paste_Flush();	/*handler returned; real-key/VM capabilities are cleared*/
+			CL_Paste_FlushGuarded(IN_Journal_GuardRelease, &guard);
 	}
+	IN_Journal_GuardRelease(&guard);
 }
 void IN_Commands(void)
 {

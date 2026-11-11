@@ -31,6 +31,18 @@
  * degrees off. On the bearing the side flips as the heading crosses it -- the strafe zigzag that flies
  * straight while gaining. The ramp ride keeps the row's own command. */
 #define SV_TAS_ROLL_AIM 1024
+/* P1466: the row's tick reports a wall or ceiling clipped (pm_source.c's pms_tas_wall) as bit 2 of out[7] beside
+ * ducked (bit 1), on a ramp or the ground too -- contact kind 4 is only set with no ramp under the body, so a ride
+ * rubbing a side wall said nothing (Lex, 10 Nov: the bot rubs walls and loses speed). Opt-in: a caller that does
+ * not ask reads out[7] as ducked, as before. Like the bits above it is cleared from each row that runs (the row
+ * the loop stops on too; rows past it keep it), so a caller sets it again before rolling the same rows. */
+#define SV_TAS_ROLL_WALLBIT 2048
+/* P1476: with AIM, the strafe side holds until the bearing is SV_TAS_AIMWIDE_DEG past the other way and the side has been
+ * held SV_TAS_AIMWIDE_TICKS: wider weaves instead of a flip each tick the heading crosses the bearing (Lex, 10 Nov: the
+ * "hyper wiggle" reads badly; a little accuracy for the look). Held against the error, the command is 30, the most speed. */
+#define SV_TAS_ROLL_AIMWIDE 4096
+#define SV_TAS_AIMWIDE_DEG 3
+#define SV_TAS_AIMWIDE_TICKS 8
 
 static float SV_TASRollWord(double deg)
 {
@@ -67,8 +79,9 @@ static void SV_TASRollFollow(float *r, int fl)
  * lead point set back from the aim along the heading that meets the face parallel -- along the ramp's
  * horizontal run (signed by the heading now), tilted out from the face so the horizontal motion cancels
  * the fall into it (v.n = 0 at this vertical speed) -- so the flight curves in along the ramp, not onto
- * its top or into its side (Lex, 9 Nov). */
-static float SV_TASRollAim(const float *aim, float gain, const float *n)
+ * its top or into its side (Lex, 9 Nov). P1466: set back lead x the distance (0.5 before; 0 flies straight
+ * at the aim and boards with a snap -- a long launch past geometry wants that, taken wide it was lost: Lex). */
+static float SV_TASRollAim(const float *aim, float gain, const float *n, float lead)
 {
 	double tx = aim[0], ty = aim[1];
 	double err, mag;
@@ -83,7 +96,7 @@ static float SV_TASRollAim(const float *aim, float gain, const float *n)
 		if (s < -0.9) s = -0.9;
 		c = sqrt(1 - s * s);
 		dx = rx * c + ux * s; dy = ry * c + uy * s;
-		tx -= dx * 0.5 * dist; ty -= dy * 0.5 * dist;
+		tx -= dx * lead * dist; ty -= dy * lead * dist;
 	}
 	err = atan2(ty - pmove.origin[1], tx - pmove.origin[0]) - atan2(pmove.velocity[1], pmove.velocity[0]);
 	err *= 180.0 / M_PI;
@@ -97,14 +110,29 @@ static float SV_TASRollAim(const float *aim, float gain, const float *n)
 static int SV_TASRollFlags(const float *r)
 {
 	int b;
-	if (!(r[6] >= 0 && r[6] <= 7 + SV_TAS_ROLL_FOLLOW + SV_TAS_ROLL_PITCHV + SV_TAS_ROLL_AIM && floor(r[6]) == r[6]))
+	if (!(r[6] >= 0 && r[6] <= 7 + SV_TAS_ROLL_FOLLOW + SV_TAS_ROLL_PITCHV + SV_TAS_ROLL_AIM + SV_TAS_ROLL_WALLBIT + SV_TAS_ROLL_AIMWIDE && floor(r[6]) == r[6]))
 		return -1;
 	b = (int)r[6];
 	if ((b & SV_TAS_ROLL_FOLLOW) && !(r[4] >= -180 && r[4] <= 180))
 		return -1;
 	if ((b & SV_TAS_ROLL_AIM) && !(b & SV_TAS_ROLL_FOLLOW))
 		return -1;
-	return b & (SV_TAS_ROLL_FOLLOW | SV_TAS_ROLL_PITCHV | SV_TAS_ROLL_AIM);
+	if ((b & SV_TAS_ROLL_AIMWIDE) && !(b & SV_TAS_ROLL_AIM))
+		return -1;
+	return b & (SV_TAS_ROLL_FOLLOW | SV_TAS_ROLL_PITCHV | SV_TAS_ROLL_AIM | SV_TAS_ROLL_WALLBIT | SV_TAS_ROLL_AIMWIDE);
+}
+
+/* Patch 1467: this thread is a tas_rollout_batch worker: per-tick entity and trigger queries use their own visit
+ * lists (the shared stamps are the main thread's), and what only the main thread may do aborts the candidate. */
+static FTE_TLS qboolean sv_tasroll_worker;
+/* a worker's brush trigger needs its model loaded already (loading is the main thread's) */
+static qboolean SV_TASModelLoaded (world_t *w, int mi)
+{
+	model_t *m = ((unsigned int)mi < MAX_PRECACHE_MODELS) ? sv.models[mi] : NULL;
+	if (m && m->loadstate == MLS_LOADED)
+		return true;
+	pm_threadabort = true;
+	return false;
 }
 
 /* The first entity per-command QC could act on after this tick (0 none): SV_RunCmd's touch loop
@@ -136,7 +164,8 @@ static int SV_TASRolloutActor(edict_t *e, int *kind)
 	if (!rep && pmove.onground && pmove.groundent >= 0 && pmove.groundent < pmove.numphysent &&
 		pmove.physents[pmove.groundent].info)
 		rep = pmove.physents[pmove.groundent].info;
-	if (!rep && (t = World_TriggerAt(&sv.world, (wedict_t*)e, pmove.origin, pmove.player_mins, pmove.player_maxs, true)))
+	if (!rep && (t = (sv_tasroll_worker ? World_TriggerAtLocal(&sv.world, (wedict_t*)e, pmove.origin, pmove.player_mins, pmove.player_maxs, true, SV_TASModelLoaded)
+		: World_TriggerAt(&sv.world, (wedict_t*)e, pmove.origin, pmove.player_mins, pmove.player_maxs, true))))
 		rep = NUM_FOR_EDICT(svprogfuncs, (edict_t*)t);
 	return rep;
 }
@@ -147,21 +176,15 @@ static int SV_TASRolloutActor(edict_t *e, int *kind)
  * -6 water/ladder/duck transition, -7 non-default gravity (bank gravity would observe it),
  * -8 the TAS clock, -9 a carrier (QC's run_basevel, or standing on a non-world entity),
  * -10 a row that does not decode. A trigger volume the body starts in is named, negated, on the first tick. */
-int SV_TASRollout(edict_t *e, float *in, int n, float *out, const float *aim, float aimgain, const float *aimn)
+/* Patch 1467: the checks every rollout makes, 0 or SV_TASRollout's negative reason. */
+static int SV_TASRollCheck(edict_t *e, client_t **pcl, int *pmsec)
 {
-	static playermove_t saved;
-	extern float frametime;
-	movevars_t savedmv;
-	vec3_t savedmins, savedmaxs, normal, point;
-	float savedframetime, distance;
-	sv_tas_input_t row;
 	client_t *cl;
 	eval_t *ev;
-	wedict_t *start;
 	extern cvar_t pm_physicsmode;
-	int i, k, msec, kind, rep, startrep, ran, airk, wall;
+	int msec;
 	cl = SV_TASRewindClient(e);
-	if (!cl || !SV_TASInputPool(cl) || n < 1 || n > SV_TAS_ROLL_MAX || !in || !out)
+	if (!cl || !SV_TASInputPool(cl))
 		return -1;
 	if (pm_physicsmode.ival != PHYSMODE_SOURCE || sv.gamespeed != 1 ||
 		e->v->movetype != MOVETYPE_WALK || !(e->v->health > 0))
@@ -190,9 +213,18 @@ int SV_TASRollout(edict_t *e, float *in, int n, float *out, const float *aim, fl
 		return -9;
 	if (((int)e->v->flags & FL_ONGROUND) && e->v->groundentity)
 		return -9;
-	msec = SV_TASTickMsec(SV_TASCurrentTick());
+	*pmsec = msec = SV_TASTickMsec(SV_TASCurrentTick());
 	if (!msec)
 		return -8;
+	*pcl = cl;
+	return 0;
+}
+
+/* Patch 1467: n rows decode (an AIM row needs an aim point): 0 or -10. */
+static int SV_TASRollRows(const float *in, int n, const float *aim)
+{
+	sv_tas_input_t row;
+	int k;
 	for (k = 0; k < n; ++k)
 	{	/* P1449: a FOLLOW row's yaw slot is a command, checked by SV_TASRollFlags, not as a word */
 		const float *r = in + k*SV_TAS_ROLL_IN;
@@ -204,13 +236,15 @@ int SV_TASRollout(edict_t *e, float *in, int n, float *out, const float *aim, fl
 		if (!SV_TASInputDecode(r, ang, r[6] - fl, &row))
 			return -10;
 	}
+	return 0;
+}
 
-	memcpy(&saved, &pmove, sizeof(pmove));
-	savedmv = movevars;
-	VectorCopy(pmove_mins, savedmins);
-	VectorCopy(pmove_maxs, savedmaxs);
-	savedframetime = frametime;
-
+/* Patch 1467: SV_RunCmd's setup into this thread's pmove and movevars (main thread: it may queue a reliable
+ * message); returns the trigger volume the body starts in. */
+static int SV_TASRollSetup(edict_t *e, client_t *cl)
+{
+	wedict_t *start;
+	int startrep;
 	// SV_RunCmd's setup, the plain case
 	VectorCopy(e->v->mins, pmove.player_mins);
 	VectorCopy(e->v->maxs, pmove.player_maxs);
@@ -240,18 +274,53 @@ int SV_TASRollout(edict_t *e, float *in, int n, float *out, const float *aim, fl
 	// A volume the body already stands in: PreThink finds limit/slide volumes by overlap
 	start = World_TriggerAt(&sv.world, (wedict_t*)e, pmove.origin, pmove.player_mins, pmove.player_maxs, true);
 	startrep = start ? NUM_FOR_EDICT(svprogfuncs, (edict_t*)start) : 0;
+	return startrep;
+}
 
+/* Patch 1467: the ticks, from this thread's pmove as SV_TASRollSetup left it. */
+static int SV_TASRollRun(edict_t *e, float *in, int n, float *out, const float *aim, float aimgain, const float *aimn, float aimlead,
+	int msec, int startrep)
+{
+	vec3_t normal, point;
+	float distance;
+	sv_tas_input_t row;
+	int i, k, kind, rep, ran, airk, wall, wallbit, aimheld;
+	float aimside;
 	ran = 0;
 	airk = 0;
+	aimside = 0; aimheld = 0;
 	if (!(aimgain > 0)) aimgain = 10;	/* NaN too */
+	if (!(aimlead >= 0 && aimlead <= 1)) aimlead = 0.5;	/* P1466: P1449's set-back; NaN too */
+	if (aimlead > 0.9) aimlead = 0.9;	/* at 1 an approach along the face puts the lead point on the body (review) */
 	if (pmove.pm_type == PM_NORMAL && !pmove.waterjumptime)
 	for (k = 0; k < n; ++k)
 	{
 		float *r = in + k*SV_TAS_ROLL_IN;
 		float *o = out + k*SV_TAS_ROLL_OUT;
 		int fl = SV_TASRollFlags(r);
+		wallbit = (fl & SV_TAS_ROLL_WALLBIT) != 0;	/* SV_TASRollFollow clears every flag from r[6] */
 		if ((fl & SV_TAS_ROLL_AIM) && airk >= 3)
-			r[4] = SV_TASRollAim(aim, aimgain, aimn);	/* P1449: a flight steers to the aim point */
+		{
+			r[4] = SV_TASRollAim(aim, aimgain, aimn, aimlead);	/* P1449: a flight steers to the aim point */
+			if (fl & SV_TAS_ROLL_AIMWIDE)
+			{	/* P1476: |q| = 30 + 30 min(1, |err| / gain), so the error is read back from the command */
+				float side = r[4] >= 0 ? 1 : -1, err = (fabs(r[4]) - 30) / 30 * aimgain;
+				/* the error reads back capped at aimgain: a gain under 2x the hold would never let go (review) */
+				if (aimside != 0 && side != aimside && (err < (aimgain * 0.5 < SV_TAS_AIMWIDE_DEG ? aimgain * 0.5 : SV_TAS_AIMWIDE_DEG) || aimheld < SV_TAS_AIMWIDE_TICKS))
+					r[4] = aimside * 30;
+				else if (side != aimside)
+				{
+					aimside = side;
+					aimheld = 0;
+				}
+				aimheld++;
+			}
+		}
+		else
+		{
+			aimside = 0;
+			aimheld = 0;
+		}
 		if (fl > 0)
 			SV_TASRollFollow(r, fl & ~SV_TAS_ROLL_AIM);	/* P1449: from the velocity this tick starts with */
 		if (fl & SV_TAS_ROLL_AIM)
@@ -270,12 +339,30 @@ int SV_TASRollout(edict_t *e, float *in, int n, float *out, const float *aim, fl
 		pmove.jump_msec = 0;
 		pmove.numphysent = 1;
 		pmove.physents[0].model = sv.world.worldmodel;
-		for (i = 0; i < 3; ++i)
-		{
-			pmove_mins[i] = pmove.origin[i] - 256;
-			pmove_maxs[i] = pmove.origin[i] + 256;
+		if (sv_tasroll_worker)
+		{	/* Patch 1467: its own box (pmove_mins/maxs are the main thread's), its own visit list (the shared
+			 * stamps are too); and a portal's trace runs QC */
+			vec3_t bmins, bmaxs;
+			for (i = 0; i < 3; ++i)
+			{
+				bmins[i] = pmove.origin[i] - 256;
+				bmaxs[i] = pmove.origin[i] + 256;
+			}
+			AddAllLinksToPmoveLocal(&sv.world, (wedict_t*)e, bmins, bmaxs);
+			if (PM_AnyPortals())
+				pm_threadabort = true;
+			if (pm_threadabort)
+				break;
 		}
-		AddAllLinksToPmove(&sv.world, (wedict_t*)e);
+		else
+		{
+			for (i = 0; i < 3; ++i)
+			{
+				pmove_mins[i] = pmove.origin[i] - 256;
+				pmove_maxs[i] = pmove.origin[i] + 256;
+			}
+			AddAllLinksToPmove(&sv.world, (wedict_t*)e);
+		}
 		PMSrc_TASContactBegin(true);
 		PMSrc_BankGravityBegin(false);
 		PM_PlayerMove(sv.gamespeed);
@@ -293,7 +380,7 @@ int SV_TASRollout(edict_t *e, float *in, int n, float *out, const float *aim, fl
 		VectorCopy(pmove.origin, o);
 		VectorCopy(pmove.velocity, o + 3);
 		o[6] = pmove.onground;
-		o[7] = pmove.ducked;
+		o[7] = pmove.ducked + ((wallbit && wall) ? 2 : 0);	/* P1466 */
 		o[8] = kind;
 		if (kind == 1)
 			VectorCopy(normal, o + 9);
@@ -303,6 +390,34 @@ int SV_TASRollout(edict_t *e, float *in, int n, float *out, const float *aim, fl
 		ran = k + 1;
 		airk = ((kind >= 1 && kind <= 3) || pmove.onground) ? 0 : airk + 1;	/* P1449: ticks since the last ramp or ground contact */
 	}
+	return ran;
+}
+
+int SV_TASRollout(edict_t *e, float *in, int n, float *out, const float *aim, float aimgain, const float *aimn, float aimlead)
+{
+	static playermove_t saved;
+	extern FTE_TLS float frametime;
+	movevars_t savedmv;
+	vec3_t savedmins, savedmaxs;
+	float savedframetime;
+	client_t *cl;
+	int msec, startrep, ran;
+	if (n < 1 || n > SV_TAS_ROLL_MAX || !in || !out)
+		return -1;
+	ran = SV_TASRollCheck(e, &cl, &msec);
+	if (ran)
+		return ran;
+	if (SV_TASRollRows(in, n, aim))
+		return -10;
+
+	memcpy(&saved, &pmove, sizeof(pmove));
+	savedmv = movevars;
+	VectorCopy(pmove_mins, savedmins);
+	VectorCopy(pmove_maxs, savedmaxs);
+	savedframetime = frametime;
+
+	startrep = SV_TASRollSetup(e, cl);
+	ran = SV_TASRollRun(e, in, n, out, aim, aimgain, aimn, aimlead, msec, startrep);
 
 	memcpy(&pmove, &saved, sizeof(pmove));
 	movevars = savedmv;
@@ -310,4 +425,178 @@ int SV_TASRollout(edict_t *e, float *in, int n, float *out, const float *aim, fl
 	VectorCopy(savedmaxs, pmove_maxs);
 	frametime = savedframetime;
 	return ran;
+}
+
+/* Patch 1467: tas_rollout_batch -- count candidates of n rows each (rows count*n*7, out count*n*13) from the same
+ * paused body, on sv_tas_threads worker threads. params holds 5 floats a candidate: its aim point (x y z) and
+ * aimlead, and on return the ticks it ran (SV_TASRollout's value). A worker that meets what only the main thread
+ * may do (a model to load, a portal, more nearby edicts than its own visit list holds) leaves its candidate to the
+ * main thread, which runs it as tas_rollout does; so does every candidate where threads cannot run (no MULTITHREAD,
+ * a map with portals, a Quake 2/3 BSP: its trace keeps statics). Returns how many workers ran, or SV_TASRollout's
+ * negative reason. */
+#define SV_TAS_BATCH_PARAMS 5
+#define SV_TAS_BATCH_MAX 256
+static cvar_t sv_tas_threads = CVARD("sv_tas_threads", "6", "Patch 1467: worker threads for tas_rollout_batch (1: none)");
+typedef struct
+{
+	edict_t *e;
+	float *in, *out, *params;
+	int n, count, nthreads, msec, startrep;
+	float aimgain;
+	const float *aimn;
+	const playermove_t *pm0;
+	movevars_t mv0;
+} sv_tasroll_batch_t;
+typedef struct
+{
+	sv_tasroll_batch_t *b;
+	int t;
+} sv_tasroll_thread_t;
+
+static const void *pms_snapshot;	/* the main thread's mover state, copied before the workers start */
+static int SV_TASRollWorker(void *arg)
+{
+	sv_tasroll_thread_t *th = arg;
+	sv_tasroll_batch_t *b = th->b;
+	/* allowed to fail (BZ_Malloc would Sys_Error from a worker): then its candidates stay the main thread's */
+	float *rows = BZF_Malloc(b->n * SV_TAS_ROLL_IN * sizeof(float));
+	float *outs = BZF_Malloc(b->n * SV_TAS_ROLL_OUT * sizeof(float));
+	/* its own movement state: pmove, movevars, the mover's, the traces' box hulls and clip flags (pm_thread.h) */
+	playermove_t *pm = BZF_Malloc(sizeof(playermove_t));
+	movevars_t *mv = BZF_Malloc(sizeof(movevars_t));
+	void *pms = BZF_Malloc(PMSrc_ThreadStateSize()), *pmt = BZF_Malloc(PM_ThreadStateSize());
+	void *wbs = BZF_Malloc(World_ThreadStateSize()), *bs = BZF_Malloc(BIH_ThreadStateSize());
+	int k, ran;
+	if (!rows || !outs || !pm || !mv || !pms || !pmt || !wbs || !bs)
+	{	/* its candidates stay -12: the main thread runs them */
+		BZ_Free(rows); BZ_Free(outs); BZ_Free(pm); BZ_Free(mv); BZ_Free(pms); BZ_Free(pmt); BZ_Free(wbs); BZ_Free(bs);
+		return 0;
+	}
+	memcpy(pms, pms_snapshot, PMSrc_ThreadStateSize());	/* the main thread's latches (a one-time warning stays one) */
+	memset(pmt, 0, PM_ThreadStateSize());
+	memset(wbs, 0, World_ThreadStateSize());
+	memset(bs, 0, BIH_ThreadStateSize());
+	sv_tasroll_worker = true;
+	PM_ThreadBind(pm, mv);
+	PMSrc_ThreadState(pms);
+	PM_ThreadState(pmt);
+	World_ThreadState(wbs);
+	BIH_ThreadState(bs);
+	bih_probe_plane = -1;
+	PM_InitBoxHull();
+	World_InitThreadBoxHull();
+	for (k = th->t; k < b->count; k += b->nthreads)
+	{
+		float *p = b->params + k * SV_TAS_BATCH_PARAMS;
+		float *in = b->in + (size_t)k * b->n * SV_TAS_ROLL_IN;
+		memcpy(&pmove, b->pm0, sizeof(pmove));
+		movevars = b->mv0;
+		pm_threadabort = false;
+		memcpy(rows, in, b->n * SV_TAS_ROLL_IN * sizeof(float));		/* rows and outputs land only if it finishes */
+		ran = SV_TASRollRun(b->e, rows, b->n, outs, (b->aimgain > 0) ? p : NULL, b->aimgain, b->aimn, p[3], b->msec, b->startrep);
+		if (pm_threadabort)
+			continue;		/* p[4] stays -12: the main thread runs it */
+		memcpy(in, rows, b->n * SV_TAS_ROLL_IN * sizeof(float));
+		memcpy(b->out + (size_t)k * b->n * SV_TAS_ROLL_OUT, outs, (size_t)(ran > 0 ? ran : 0) * SV_TAS_ROLL_OUT * sizeof(float));
+		p[4] = ran;
+	}
+	PM_ThreadBind(NULL, NULL);
+	PMSrc_ThreadState(NULL);
+	PM_ThreadState(NULL);
+	World_ThreadState(NULL);
+	BIH_ThreadState(NULL);
+	BZ_Free(rows); BZ_Free(outs); BZ_Free(pm); BZ_Free(mv); BZ_Free(pms); BZ_Free(pmt); BZ_Free(wbs); BZ_Free(bs);
+	return 0;
+}
+
+int SV_TASRolloutBatch(edict_t *e, float *in, int n, float *out, int count, float *params, float aimgain, const float *aimn)
+{
+	extern FTE_TLS float frametime;
+	static playermove_t saved;
+	movevars_t savedmv;
+	vec3_t savedmins, savedmaxs;
+	float savedframetime;
+	sv_tasroll_batch_t b;
+	sv_tasroll_thread_t th[16];
+	void *thread[16];
+	playermove_t *pm0;
+	client_t *cl;
+	int k, t, msec, r, done = 0, nthreads;
+	qboolean threads;
+	if (n < 1 || n > SV_TAS_ROLL_MAX || count < 1 || count > SV_TAS_BATCH_MAX || !in || !out || !params)
+		return -1;
+	r = SV_TASRollCheck(e, &cl, &msec);
+	if (r)
+		return r;
+	for (k = 0; k < count; ++k)
+		if (SV_TASRollRows(in + (size_t)k * n * SV_TAS_ROLL_IN, n, (aimgain > 0) ? params : NULL))
+			return -10;
+	pm0 = BZ_Malloc(sizeof(*pm0));
+	if (!pm0)
+		return -1;
+	for (k = 0; k < count; ++k)
+		params[k * SV_TAS_BATCH_PARAMS + 4] = -12;
+
+	memcpy(&saved, &pmove, sizeof(pmove));
+	savedmv = movevars;
+	VectorCopy(pmove_mins, savedmins);
+	VectorCopy(pmove_maxs, savedmaxs);
+	savedframetime = frametime;
+
+	b.startrep = SV_TASRollSetup(e, cl);
+	memcpy(pm0, &pmove, sizeof(pmove));
+	b.e = e; b.in = in; b.out = out; b.params = params; b.n = n; b.count = count; b.msec = msec;
+	b.aimgain = aimgain; b.aimn = aimn; b.pm0 = pm0; b.mv0 = movevars;
+	nthreads = bound(1, sv_tas_threads.ival, (int)countof(thread));
+	if (nthreads > count)
+		nthreads = count;
+	threads = nthreads > 1;
+#if !defined(MULTITHREAD) || !defined(FTE_TLS_OK)
+	threads = false;		/* no threads, or no per-thread pointers to give them */
+#endif
+#ifdef USEAREAGRID
+	if (sv.world.portallist.l.next && sv.world.portallist.l.next != &sv.world.portallist.l)
+		threads = false;		/* a portal's trace runs QC (camera_transform) */
+#else
+	threads = false;			/* the worker queries are the area grid's */
+#endif
+	if (sv.world.worldmodel && (sv.world.worldmodel->fromgame == fg_quake2 || sv.world.worldmodel->fromgame == fg_quake3))
+		threads = false;		/* CM_NativeTrace keeps its trace in statics */
+	if (threads)
+	{
+		PM_PrepareThreads();
+		pms_snapshot = PMSrc_MainState();
+		b.nthreads = nthreads;
+		for (t = 0; t < nthreads; ++t)
+		{
+			th[t].b = &b;
+			th[t].t = t;
+			thread[t] = Sys_CreateThread(va("tasroll_%i", t), SV_TASRollWorker, &th[t], THREADP_NORMAL, 1024 * 1024);
+		}
+		for (t = 0; t < nthreads; ++t)
+			if (thread[t])
+				Sys_WaitOnThread(thread[t]);
+	}
+	for (k = 0; k < count; ++k)
+	{
+		float *p = params + k * SV_TAS_BATCH_PARAMS;
+		if (p[4] != -12)
+		{
+			++done;
+			continue;
+		}
+		memcpy(&pmove, pm0, sizeof(pmove));	/* a worker left it, or none ran: as tas_rollout runs it */
+		movevars = b.mv0;
+		pm_threadabort = false;
+		p[4] = SV_TASRollRun(e, in + (size_t)k * n * SV_TAS_ROLL_IN, n, out + (size_t)k * n * SV_TAS_ROLL_OUT,
+			(aimgain > 0) ? p : NULL, aimgain, aimn, p[3], msec, b.startrep);
+	}
+
+	memcpy(&pmove, &saved, sizeof(pmove));
+	movevars = savedmv;
+	VectorCopy(savedmins, pmove_mins);
+	VectorCopy(savedmaxs, pmove_maxs);
+	frametime = savedframetime;
+	BZ_Free(pm0);
+	return done;
 }

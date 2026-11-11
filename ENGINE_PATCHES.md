@@ -1,5 +1,598 @@
 # Engine patches (fteqw `fteqw64.exe`)
 
+QC P1492–P1495 combined development delivery (11 Nov): both Windows installs and
+all12lobbies verified,217recorder/resume payload+captured metadata rows unchanged;
+full public provenance/limits in FTESurf tools/playerfix-20261111-delivery.md.
+No new native build by that QC delivery; P1498 native/compiler delivery is separate.
+
+## Patch 1502 -- scoped public map admission (backend only)
+
+Problem: importing one qualified set through the global map watcher also touched
+unrelated approvals, variants, ports and catalogue/download entries, and repeated
+network body downloads despite an already verified operator stage.
+Change: optional exact public name/ID/build/zone scope reuses stable regular
+staged bodies through existing archive/copy/quiet/data gates. Retain full source
+censuses, floors and locks; preserve unselected catalogue/download/track rows.
+Normalize confinement before containment checks; merge download rows using the
+reader's case-insensitive identity and whitespace grammar without rewriting
+unselected row text. Default unscoped operation is unchanged.
+Verified: staged replacement and predecessor retention act; malformed/private/
+unproved identity and bad or changed source refuse without fetch fallback.
+Discriminating review regressions: prerepair3 failures, repaired0; full Windows
+suite0 failures with platform skips; Linux0 failures plus completed missing-tool
+catalogue-merge arm0 failures/no skips. Independent initial and repair reviews
+clear. Earlier fixture/reader/launcher refusals retained. Source only, no canonical
+map admission or privileged runtime promotion claimed; see FTESurf
+ tools/p1502-scoped-map-admission.md. No native pin/tag, mover or QC Build change.
+
+## Patch 1500 -- bound compiler string separator appends
+
+Problem: one compatibility-dialect string append skipped the existing token
+capacity check and could consume space reserved for the final terminator.
+Change: apply the same destination-capacity refusal before that append. Valid
+strings, embedded-NUL payloads, dialect selection and diagnostics are unchanged.
+Verified: actual standalone compiler preserves six full produced string payloads
+and refuses three boundary violations; safely intercepted omitted-guard and
+one-byte-too-strict controls distinguish the correction. Independent frozen
+source review clear. Supported full Windows client/server/five-default-plugin
+build:74 existing warning payloads match the prior baseline exactly, zero new;
+three QC VMs zero warnings. Initial private fixture/environment failures retained.
+No untreated old unsafe execution, measured exploit or remote-reachability claim.
+Final clean tag-linked build/delivery provenance: FTESurf tools/p1500-compiler-strings.md.
+No capture, evidence grammar, scoring, enforcement, mover or QC Build change.
+
+## Patch 1498 -- bound compiler include-path entry operations
+
+Problem: include-path insertion supplied an aggregate destination extent to
+operations writing one entry, bypassing its existing truncation refusal.
+Change: use the selected entry's capacity for both copy and optional separator
+append. Preserve the existing entry limit, include search and warning/clear path.
+Verified: 106 source-bound controls using the production function/helpers; unsafe
+old operations suppressed before writing, both omission mutants discriminated,
+exact supported boundaries and subsequent valid insertion retained. Five actual
+standalone compiler controls prove include use, missing-include refusal and
+corrected rejection while a valid include remains effective. Untreated malformed
+old compiler inputs were not executed; no measured exploit or remote-dispatch
+claim. Full client/server/five default plugins build: 74 existing warning payloads
+exactly match the prior qualified full-build baseline, zero new; three QC VMs
+zero warnings. Independent frozen review CLEAR for the exact two-expression
+repair; final clean source/deployment provenance remains a separate state tracked
+in FTESurf tools/p1498-compiler-includes.md. No recorder/reader format,
+capture, scoring, settings or enforcement change.
+
+## Patch 1496 -- public native bhop asset acquisition (backend/tools only)
+
+Problem: prefix-only acquisition missed native mode3 bhop maps; isolated gzip
+cron could not import its sibling. New native admission initially lacked a
+publication-status check, caught by independent review before bulk publication.
+Change: validated mode3 census floor38, preserve mode1/2 floor150/precedence;
+optional exact sidecar native identity and strict byte/zone gates. Shared exact
+integer public-status0/3 check covers acquisition and all cached/live/retained/
+offline media projections and new aliases. Preserve archived/predecessor bytes.
+Restore only resolved trusted script siblings for isolated gzip imports; digest
+both compressed/decompressed bodies, main publisher ledger remains read-only.
+Verified: Windows/Linux media20/0 and projection controls, full Linux watcher
+0failed/no skips, gzip12/0 plus isolated hostile-path regression. Parent integrated
+all11accepted files,33Windows tests pass and actual isolated CLI starts. Final
+independent review clear. Known eligible589 != full fresh authenticated Beta
+census or complete2470image gallery. Source is NOT a publication receipt. No
+mover/default/native pin/tag, evidence format or QC Build change. See FTESurf
+tools/p1496-public-bhop-import.md for staging/provenance/remaining gates.
+
+## Patch 1495 -- remembered knife equip and guarded cold-model retry (QC only)
+
+Problem: linked combo did not remember equip across maps; late account/content
+callbacks could override a newer Drop/gun choice, and readiness-only mounting
+left a missing model's failed presentation cache permanently latched.
+Change: local archived unset/Drop/equip intent, migrate only applied saved enabled
+account row, ACK before restore, own live stats/capability gate and retry cadence.
+Explicit-choice epochs guard deferred completions. Readiness completion reopens
+only the same failed current knife model cache when its file actually exists;
+ordinary Frame reloads it. No cosmetic protocol/visibility/lighting/native change.
+Verified: sourcebound helper C controls, four causal guard-disabled red controls,
+still-missing20ordinaryframes without added probes/mounts, three VMs0warnings;
+final independent review clear. These are NOT full QC VM/socket/render/performance
+acceptance. Black-skin cause remains unproven; no all-combo visual claim or per-frame
+lightmap work. See FTESurf tools/knife-map-default.md, BACKLOG.md and lextest.md.
+
+## Patch 1494 -- ordered held reset/load and terminal hold ownership (QC only)
+
+Problem: resetting during a held save load fell back to a different reliable
+channel, allowing an older WOP load to run later and revive hold/camera ownership.
+Change: keep admitted held resets in the existing ordered queue, cancel local
+preview/angle/hold state only after admission, and suppress held-key repeats.
+Retain reset-specific terminal release obligation for lost/refused resets; delay
+recovery until server progression and settled coherent HOLD. New load ownership
+or successful rewind adoption cancels it; unresolved rewind fences it, refusal
+retains recovery. No immediate cross-channel release or server/evidence change.
+Verified: production-QC normal100/0, rewind36/0; reset omission100/11 and handoff
+omission36/4 acting red controls, original17/8 retained. Three VMs zero warnings,
+independent final review clear after two ownership findings fixed. Service/event
+publication doubles are explicit, NOT actual latency/UpdateView/camera acceptance.
+No native pin/tag/Build change. See FTESurf tools/p1494-reset-order.md/lextest.md.
+
+## Patch 1493 -- show local game version in map-info HUD (QC only)
+
+Problem: the in-game World of Surf title did not identify the player's release.
+Change: append client-local release metadata, with the local compiled menu's
+version/dev label as fallback; never infer it from downloaded lobby CSQC. Measure
+and draw the same complete right-aligned title. No native source/pin/Build change.
+Verified: three VMs zero warnings, independent review clear. Native menu producer
+control lacked the new field; subject published0.1.44(dev) without overwriting a
+local0.1.42 release fixture. Menu-only evidence, not a CSQC/framebuffer pass;
+owner visual check pending. FTESurf tools/p1493-mapinfo-version.md.
+
+## Patch 1492 -- real bunnyrace doors and retained bhop landing reset (QC only)
+
+Problem: bhop_bunnyrace Open inputs changed state but not either glass brush.
+Non-lobby bhop counters forgot the previous platform during airborne frames,
+so ResetOnOtherBlock could not clear its count on the next landing.
+Change: map+CRC+complete-entity guarded real solid pushers for the two authored
+bunnyrace doors; preserve speed/travel/wait/IO. Retain then consume previous
+resettable bhop handle across air/ordinary ground; preserve reset-false and
+lobby behavior. No native/evidence format change. No teleport/checkpoint patch.
+Verified: native dedicated22checks/0 versus named baseline7expectedfailures;
+Open input acted in both, only subject moved solid brushes/opened passage,
+waited3seconds/closed. Wrong-map/CRC/entity and stale-handle/ordinary-ground
+negative cases pass. Exclusive manifest refusal preserved an existing file.
+Combined three-VM build zero warnings; independent review clear. Empty-world
+traces are not real-player/obstruction/camera acceptance; see lextest.md and
+FTESurf tools/p1492-bhop-entities.md. Claimed before parallel1493; keep combined
+ENGINE patch marker at the already-higher number rather than decrement it.
+
+## Patch 1491 -- size collector peer prefetch by its remaining pair allowance (backend only)
+
+**Problem:** the store-only similarity collector could select up to 200 peers
+when its shared remaining pair-attempt allowance was one. Selected-read work on
+peers that could not be admitted could exhaust a supported SQL allowance before
+any useful comparison, without proving coverage or a measured zero.
+
+**Change:** only the owned collector callsite supplies the lesser of its existing
+200-peer window and remaining pair allowance. Generic direct comparison windows,
+including late-overlap lookahead, remain unchanged. No new setting/default,
+schema, capture, metric, threshold, badge, ranking or enforcement policy. No
+native source, engine commit/tag pin or QC Build change.
+
+**Verified:** actual sweep/real-reader synthetic 201-replay control at the same
+20000 selected-read allowance: predecessor selects LIMIT 200 and stores nothing
+with SQL-unavailable; subject selects LIMIT 1 and stores the same real 80-move
+comparison, match and captured sources as the predecessor's normal positive.
+Windows 281 tests/0 failures/6 known skips; ARM Python 3.11 same 281/0/0, plus
+legacy real-reader/badge/independent-writer controls on both. Initial 15000 arms
+both abstain, not a successful discriminator. Existing direct late-overlap
+regression exposed an initially broader cap; retained and fixed at the collector
+callsite, not by weakening the test. ARM exposed a test wrapper's duplicate peer
+keyword; preserving its one-peer cap fixes the adapter and real contention and
+recovery controls pass. Supported isolated production three-VM QC build passes
+with zero warnings. All six reader/parser/crypto sources and all 568 corpus-member
+hashes remain unchanged: prior 949/0 reader qualification and 356 pre-existing
+faulted records remain applicable, not a fresh sweep or a clean-corpus claim.
+
+A smaller collector window may provide less same-pass lookahead when a candidate
+becomes stored after selection; no fake attempt, skip, observation or cursor
+advance replaces it. This is not full allowance utilization, exhaustive coverage,
+fleet fairness, calibration, or a hard total time/RSS/I/O/UDF/write bound. Source
+only: no live backend/native/progs/lobby deployment. FTESurf
+`tools/p1491-simcheck-peer-window.md` records qualification and delivery limits.
+
+## Patch 1490 -- r_blendsort 2 remembers a failure no certificate can keep (gl_backend.c, renderer.c, render.h)
+
+Problem: surf_fairy, the worst 0.1%-low map after P1488, spends its slowest frames at one place ~33 s into its board
+replay, where r_blendsort 2's sort fails every frame in the main view and the water reflection: 66 of 128 faces
+admitted, ~34k work, status -2. Patch 1465's certificate needs passes 1 and 2 to fail for a reason it can re-prove;
+here pass 2 has a 3-face cycle but pass 1 crosses a barrier only through an unproved pair (no strict crossing edge),
+so nothing was certified and the doomed sort repeated, also on a paused camera.
+
+Fix: such a failure keeps its pass-2 cycle (or crossing) in one of 16 slots, owned by the sort that stored it: its
+key (sort site -- world-only or combined --, view depth, capture kind) and the exact face set it gathered (an
+order-free fingerprint and the count). While a slot of that sort re-proves (GLBE_BlendCertCycle), the sort is
+skipped -- the baseline order, as the failure gave -- except on every r_blendsort_retry'th frame (default 4) of its
+key, decided by the key's first sort in the frame. A full run that fails again refreshes the slot; a success forgets
+the slots it holds, tested on the baseline order. A certificate still wins; r_blendsort_cert 0 or 2 and
+r_blendsort_retry 1 sort every view as before. r_blendtrace prints the memo's hits.
+
+Measured (lows2 rig, the PC, paused at fairy's spot, A/B/A in one session, beside a peer's headless runs; final
+code): at Lex's settings (glows and sprites off) frame 4.34 -> 3.80 ms, transparent CPU 1.11 -> 0.65 ms, control
+4.34; every effect on, transparent 1.21 -> 0.65. In motion (the board replay, retry 1 against 4, two pairs beside the
+peer) the lows moved within that noise -- not claimed: a memo holds only while the gathered face set is identical.
+
+Six review rounds (control flow, failure modes): 1, the skip count was per slot and shared by a view's two sorts
+(one could skip forever) -> frames per key; 2, an alternate-frame capture could never get a run frame under a (site,
+depth) key -> capture kind in the key, and the success-clear ran after the reorder (it never fired: a sortable view
+would flicker 1 frame in 4) -> asked of the baseline order; 3 and 4, memos leaked between sorts and same-key views ->
+owned by key, then by the view's place; 5, that place drifted -> the face set is the identity; 6, no defect.
+
+Known: a view that becomes sortable again keeps the unsorted order for up to three frames of its key (~10 ms at 300
+fps); stereo eyes or split-screen seats gathering identical faces still share memos; the fingerprint is a plain sum
+(colliding swaps ~2% within one allocation run -- only those shared views care); a face set seen only on non-run
+frames is not re-tested until it changes (not constructed).
+
+## Patch 1488 -- gettime(2): seconds since the frame's first gettime(2), for per-frame time budgets (pr_bgcmd.c; QC cl_sprites.qc, cl_main.qc)
+
+Problem: surf_fairy and surf_jumble, the two worst 0.1%-low maps of Lex's 11 Nov survey, spent their slowest frames
+in the glare and sky-test traces: 66-98 tracelines a frame at ~100 us on fairy (r_spikes 2 with per-builtin
+attribution). Both loops are budgeted in rays, which cannot know a map's ray cost; a clock can, but CSQC had none
+finer than gettime(1)'s whole milliseconds, which a float loses past ~2.3 h of uptime.
+
+Fix: gettime(2) answers the seconds since the current frame's first gettime(2), in 0.1 ms steps (small, so a float
+keeps them; a static base reset whenever realtime moves; differences stay right if realtime repeats). QC (FTESurf
+P1488): Sprite_SkyTick (up to half) and Sprite_Glare share vbsp_sprite_tracems (default 1 ms) of tracing a frame;
+the sprite or glow that would have been next is first next frame, a sky burst keeps the credit it did not spend. An
+engine without mode 2 answers realtime there (>= 1 s from Host_Init on), and the QC then caps nothing.
+
+Measured (lows2 rig, quiet machine, board replays, Lex's settings, uncapped; the PC i9-9900K / RTX 2080 SUPER):
+surf_fairy warm pass, two alternating rounds, vbsp_sprite_tracems 0 / 1.5 / 1: avg 296 / 310 / 324, 1% 105 / 137 /
+148, 0.1% 86 / 114 / 125, worst frame 12.4-12.9 / 9.5-9.7 / 8.4-8.5 ms, stutters 745-913 / 81-126 / 34-48.
+surf_jumble 0 / 1: 412 / 434 avg, 1% 203 / 279, 0.1% 183 / 252. One review (control flow, failure modes): the
+census line named a time stop "running out of map" and the stop counter was never printed (both fixed); found sound:
+no starvation (the first traced glow of a frame always runs), cursors and burst credit consistent, the old-engine
+fallback, mode 2 in every build and VM.
+
+Known: the glare's answers refresh more slowly on expensive maps (that is the trade); one glow's five rays may run past
+the budget; a 1 ms clock (sys_clocktype 1) quantises the budget.
+
+## Patch 1487 -- keep vertical travel out of replay idle spans (QC only)
+
+**Problem:** replay idle classification discarded recorded vertical velocity.
+An upward or downward ladder climb with little horizontal speed therefore became
+an idle interval and was skipped when hud_watch_skipidle was enabled.
+
+**Change:** Watch_ScanRange uses the complete velocity vector already parsed from
+the sample. Speed/duration/padding thresholds, pause guards, failed-stage skips,
+recording bytes and import/evidence semantics are unchanged. No native source,
+commit/tag pin or QC Build change.
+
+**Verified:** qualified production three-VM build, zero warnings. Native unchanged
+CSQC control versus subject at 66.7 and 100 Hz: 961/1441 samples, four versus two
+idle stretches, genuine mid-run and terminal stationary periods both retained.
+The removed stretches are upward/downward travel separated by horizontal travel.
+Both arms complete without VM errors. Headless scans prove classification, not
+Watch_Frame playback/rendering; the small owner acceptance is pending in lextest.md.
+See FTESurf tools/p1487-idle.md. The Story allocation screenshot matches the exact
+P1417 error already guarded and shipped in 0.1.42; no new native crash fix claimed.
+
+## Patch 1486 -- guard journal identity values before cvar publication
+
+**Problem:** ordinary drain guards start too late for the five diagnostic cvars:
+main reads seven worker-updated unsigned identity scalars first, even on an empty
+drain. Callback-capable setters cannot simply be put inside a whole-drain lock.
+
+**Change:** capture each desired unsigned value under existing Ready exclusion;
+compare with the same int casts, then release only our transition before the
+entire setter. Recheck before each next expression, not an old tuple across a
+callback. Unknown -1 branch and order stay unchanged. Ready false after Drop does
+NOT suppress the retained last-capture measurements. Unchanged values reuse one
+token into Frame/relative work. Active empty publication now needs one bounded
+read group; inactive and worker-disabled add zero OS locks. No per-event wait,
+new captured field, arithmetic/grammar/consent/enforcement policy or interface.
+
+**Verified:** complete actual identity/View/drain/lifecycle/permission C bodies,
+real OS worker/mutex and controlled field reads: published8131 control982checks/
+42failures versus971/0. 38 repeated failures are read-ownership assertions, not
+cheat cases. The primary joined worker actually advances governed/ghost/bad and
+emits its View row; control stops before unsafe load. Actual violation/skip paths
+also act. Model cvar update-before-callback exercises Begin/Drop/new values and
+retained false ownership; not execution of Cvar_SetCore or native gameplay.
+Initial subject968/4 (quiet worker from stale synthetic previous angle) and
+control982/44 retained, not accepted as an acting comparison; only fixture last
+angle precondition corrected. Full unchanged identity body replaces old no-op
+adapter; host counters now match actual unsigned types. Three exact frozen
+signedness warnings remain visible, changed code/hosts strictWerror. Typed life18/0
+and close actualcrypto136/0 regressions. Independent frozen review clear;
+standard build/native promotion follow separately. Backend/ring/foreign/lifecycle-
+affinity and cross-callback tuple atomicity remain unclaimed.
+
+## Patch 1485 -- serialize ordinary main journal transactions (in_generic.c, pr_clcmd.c)
+
+**Problem:** Ordinary main Frame/Event/Note/Synth compounds could overlap the
+admitted physics producer. A whole input-drain lock would cross input/paste
+callbacks; releasing for every empty paste poll would instead lock every move.
+
+**Change:** Main-qualified activity hint avoids inactive buffer reads/acquisitions.
+Scoped tokens borrow or own existing exclusion and clear before releasing only
+their transition. Relative-only CPU groups share exclusion; other dispatch and
+actual paste recipients release it first, with fresh acquisition afterward.
+Frame/Event/annotation positions remain unchanged. Share actual paste body with
+a release-before-give hook; preserve the plain interface and all early returns.
+The shared editor route can enter off-main: never read the main hint or take its
+permission helper there. Main Note/Synth protect full compounds; no per-Raw lock.
+A separate main-only poisoned hint, reset by actual Begin/Drop and derived only
+under exclusion, keeps already-poisoned main plugin input from locking per call.
+No header/VM/plugin layout, capture/consent/grammar or enforcement policy change.
+
+**Verified:** Actual producers/drain/paste/lifecycle/permission with explicit
+hosts and real OS mutex/threads: pinned bb3e control851 checks/754 failures vs
+subject857/0, including three admitted-worker arms, fresh post-paste worker,
+700-row growth/one relative group acquisition, inactive zero acquisitions,
+borrowed false, callback-owned false, replacement chronology and off-main hint
+trap. Most control failures are repeated row-ownership checks, NOT cheat cases.
+Three old extra signedness warnings remain visible ONLY in the exact pinned
+unchanged dispatch block; new journal/guard/host code stays Wall/Wextra/Werror.
+Lifecycle18/0, actual-crypto close136/0; byte-identical Raw/Line/End/context closure
+retains prior cap628/0 evidence. Independent frozen-diff review: no issues.
+Cache regression against initial fe169 guard: 868/3 vs868/0; 1000 marks own once,
+actual reset and worker-first observation retain original poison provenance.
+The five plugin shims are live default-client Input-table entries; their unused
+warnings are SERVERONLY, not evidence of dead client code. Separate cache review
+clear; integrated published P1477/P1481/P1482 is preserved in the final source.
+Mutex call counts are not latency measurements. Status/cvar reads, backend/ring,
+clipboard/cvar and foreign-native races, fatal allocation paths and native
+editor/no-thread/runtime input acceptance remain unqualified.
+
+## Patch 1484 -- own a closing journal through callbacks and host abort (in_generic.c)
+
+**Problem:** End finalized shared storage without excluding the independent
+worker, then used mutable journal globals across callback-capable file work.
+A newer capture/digest could be dropped or rehashed by the older completion;
+nonlocal exits also bypassed normal cleanup/publication rules.
+
+**Change:** Finalize/hash under existing worker exclusion, detach into a scoped
+main-only close owner, and restore prior permission before I/O or diagnostics.
+Separate resource nesting from revocable digest-publication identity. Completion
+uses only saved bytes/digest/statistics, never a callback's active capture; pending
+or aborted close is not an available commitment. Drop/new Begin/no-open End revoke
+pending publication without freeing detached storage. Internal cleanup runs before
+all four reviewed host_abort sites, including the client SV_Error alternate and
+Android quit/error. Filename predicates and evidence grammar are unchanged.
+Normal append/backend-counter/foreign-plugin synchronization remains open.
+
+**Verified:** Actual End/Digest/LastDigest/Begin/Drop, permission and four actual
+abort functions with actual SHA-256/CalcHash plus explicit callback/OS-thread hosts:
+pinned prechange132 checks/37 failures; subject136/0. Safe stops/quarantine avoid
+executing deliberate UAF. Cap regression628/0; Begin/Drop regression18/0. Strict
+journal/host Wall/Wextra/Werror; unchanged crypto separately retains the same five
+extra signedness diagnostics in both arms. Independent source/callback/caller
+review: no issues. The discovered VFS path consumes bytes before hash-work pumping;
+returning command callbacks are injected controls, not a claimed production
+command-dispatch exploit or post-callback VFS read. No physical-input, Android
+runtime, general thread safety or detector-calibration claim.
+
+## Patch 1482 -- r_spikes splits the input bucket (cl_main.c, cl_screen.c, sys_win.c, cmd.c)
+
+Problem: Lex's 0.1%-low survey (11 Nov) put 18 of the 80 slowest frames on its first six maps in r_spikes' "input,
+console" bucket, 5-15 ms each, and the bucket (window messages, stdin, INS_Move/IN_Commands, Cbuf_Execute) could not
+say which.
+
+Fix: with r_spikes on, a slow frame holding 1 ms or more of input prints the stdin pipe, the message pump (messages,
+the slowest one and its time), INS_Move+IN_Commands, and the console with its slowest command, named by its command
+word only (r_frametime_dump copies to the clipboard; an rcon or password line would carry its secret). Off, nothing
+is timed.
+
+Found: on the rig's windowed client, WM_PAINT's dispatch, 3.7-5.1 ms, often in the same moments as 7-15 ms
+swap/present stalls. Handling WM_PAINT in the window procedure (ValidateRect, no BeginPaint) was tried and left it
+unchanged (29 of 29 input rows still WM_PAINT at 3.7-5.1 ms, surf_nuclear), so the cost is outside the window
+procedure and nothing was changed there. One review (lifetimes/builds): the pump counters exist only where
+sys_win.c's body builds (SDL and WINRT builds would not have linked); gamma is not counted as stdin.
+
+Known: the pump counters also include other Sys_SendKeyEvents callers while r_spikes runs.
+
+## Patch 1481 -- tempstring collections copy only the QC memory and slot-table pages written since the last (initlib.c, progsint.h, progslib.h, pr_bgcmd.c, VM setups)
+
+Problem: every collection's start (Patch 1292's threaded collector) copied the VM's scanned memory and the whole slot
+table on the main thread, and its finish cleared the dead slots there too. A board replay's load burst (~1M temps live
+at once) grows CSQC's table to 2,094,080 slots, and it never shrinks: from then on each collection waited for about a
+million new temps, then paid a 16 MB table copy plus 9 MB of memory (start 1.5-4.3 ms) and a million-slot clear
+(finish 2.2-4.9 ms), each in one frame -- surf_nuclear's replay, the PC (i9-9900K / RTX 2080 SUPER).
+
+Fix (Windows): the hunk and the table are VirtualAlloc'd MEM_WRITE_WATCH. Each start refreshes two persistent mirrors
+-- the hunk's at the collector's segments, the table whole -- from the pages GetWriteWatch reports written since the
+last start (reset in the same call); a relocation, a flush, a new table, a changed memnostrings list or a failed call
+recopies everything once. The worker and the finish read the mirrors, which only the next start writes. Past the
+table floor (131072) a collection runs every 65536 new live temps instead of at half the table. pr_gc_writewatch 0
+copies as before (the allocations stay watched); 2 compares both mirrors with the real memory every start and prints
+the counts. Other platforms keep the old collector.
+
+Measured (lows2 rig, board replays, Lex's settings, uncapped): pr_gc_writewatch 2 on surf_nuclear and surf_tendies,
+125 checks over 63 collections, 0 differing bytes or slots; a mutant that skipped the written pages differed in 6 of
+11 starts (up to 31,802 bytes), so the check sees a stale mirror. A start copies 0.5-1.6 MB (was 25 MB). surf_nuclear,
+3 rotated rounds, warm pass, this build with 1 / with 0 / the installed patch-1476 exe: slowest collector phase
+0.48-0.49 / 2.27-2.87 / 2.34-2.71 ms, slowest frame holding one 2.8-4.2 / 4.3-4.7 / 4.2-4.6 ms; avg 604 / 607 / 603,
+1% 282 / 283 / 285, 0.1% 160 / 162 / 165 (within noise: on this map the collector's frames sit in the 1% tail).
+
+Two review lenses, one round (predicates/threads; lifetimes/builds): the mirrors' two reads in PR_RunGC sat under
+THREADEDGC only, so Linux builds broke (now under the Windows guard; Linux syntax-checked with server and client
+defines, the unfixed file failing at those two lines); prewarm no longer budgets a table copy when the table is
+mirrored. Found sound: every hunk and table writer is tracked; the worker reads only the mirrors, which change only at
+a start with no collection running.
+
+Known: the mirror is sized as the whole hunk (commit charge; only the segments' pages are touched); the first
+collection after a replay loads copies the segments once (9 MB); a failed mirror malloc with an oversized table falls
+back to full copies every 65536 temps.
+
+## Patch 1480 -- exclude the physics worker during journal replacement/drop (in_generic.c)
+
+**Problem:** Main-side Begin/Drop could free, reset or publish journal storage
+while the independent-physics worker still owned it for an append. The existing
+worker lock alone did not exclude these main-side lifecycle transitions.
+
+**Change:** Save/disable/restore the existing independent-send permission around
+whole Begin and whole Drop. An already-held main-side guard stays held across
+nested Drop; the worker and per-event append paths are unchanged. Never extend
+this guard over callback-capable End filesystem writing: normal append/counter
+and End/hash/write synchronization remain open. No new API, capture, consent,
+record grammar, detector or enforcement policy.
+
+**Verified:** `tools/test_input_journal_lifecycle.py` compiles actual Begin/Drop,
+Raw/Line and the permission helper with real nonrecursive OS mutex/thread hosts.
+Pinned prechange:12 checks/4 unsafe-admission failures, stopped BEFORE free/UAF;
+subject:18/0, including completed worker bytes before free, replacement header or
+storage reset, nested-owner preservation and disabled-worker controls. Extra
+post-release assertions run only after safe admission. Strict Wall/Wextra/Werror;
+independent source review approved this bounded main-side change.
+Clock/cvar/device/hash/filesystem calls and worker ownership interval are explicit
+host stubs/model: not actual input, actual worker-loop coverage, a concurrency-
+free journal or a detector calibration claim.
+
+## Patch 1479 -- journal close preserves the configured growth limit (in_generic.c)
+
+Numbering correction: the independently published game-repo P1478 claim arrived
+while this fix was qualifying. Preserve that claim. The provisional engine
+commit0e22be20c/tag patch-1478 remain immutable history; this is the same product
+change, renamed forward-only with no C/test changes. Current pin is patch-1479.
+
+**Problem:** Closing an input journal replaced its configured byte limit with its
+current allocation. An otherwise complete journal near a 64/128 KiB allocation
+boundary could therefore receive `truncated` instead of `end`, despite room under
+its configured limit. This is the allocation-lowering P1116 backlog item.
+
+**Change:** Only raise the terminal limit when the existing reserved allocation
+exceeds it; never lower it to an ordinary allocation. Existing append growth,
+body-cap enforcement, record fields, capture/consent policy and close lifecycle
+remain unchanged. This does not repair the separate threaded-physics race or
+promise an end record for every configured-cap/headroom relationship.
+
+**Verified:** `tools/test_input_journal_end.py` compiles actual Raw/Line and the
+whole close handler with explicit host/digest/filesystem stubs, strict C99
+Wall/Wextra/Werror. Prechange:628 checks/50 terminal/truncation failures;
+subject:628/0. Controls cover ordinary growth, actual body-cap truncation with
+reserved space, kept/discarded/refused/failed-write and stale-digest close.
+Independent source review: no issues. The digest stub checks bytes submitted by
+the handler, not SHA-256 correctness, real durability, capture or concurrency.
+
+## Patch 1478 -- Jargon courses: one click for the main course, a bonus or a stage, and Continue (QC sv_tasautosurf.qc, cl_jargon.qc, cl_tasoptui.qc, cl_main.qc)
+
+Problem. Jargon (P1449's `tas autosurf`) started every run from zone 0, the main start, and its guide list was the
+leaderboard's lines plus every KSF replay of the map -- `ksf_monolith_nex.rec` is bonus 4 (`track 4` in its header) and
+was offered for the main start, where its plan began in the wrong box. Stages and bonuses had no start at all, a chain
+lived only in memory (a stop, a crash or a low-memory reap lost it), and a stuck chain simply stopped.
+
+Change.
+- Courses. The panel lists the map's courses from its zones (Main, Stage 1..N from Zone_TrackSegs(0), each Bonus; 40 at
+  most). Guide runs are read once a map for their header (map, track, leg, ksftime) and offered only for their course:
+  the board's lines on, then the leaderboard cache (Online_CacheDir, 3), KSF (3), data/momentum/<map>/<leg>/ (3),
+  data/*.rec; for a stage, whole runs of its track after those, marked "(full run)". The pick follows its file across
+  the 5 s rescans; a requested plan clears the shown one until it arrives.
+- `tas autosurf <guide> ... course T L` (`start` / `plan` without it take the guide's own header). The server refuses a
+  guide of another track or stage, finds the start zone as `!b`/`!s` do (SV_ZoneFindLeg), and cuts the guide to the
+  course: a stage of a full-run guide from its first exit from that stage's box (the timer's hull test) to its entry into
+  the next stage's box; every course at its first END-box row (KSF demos run on past their finish). The plan's
+  nearest-row search starts 64 rows before the course's first row. Stage 1 starts at the main box as a full run (the v3
+  project format has no stage-1 flag) and ends at the split into stage 2. `course` is refused with zone/onjump/onexit.
+- The guide's own start. When the body lands within 64 u of where the guide last stood still before its run, the start
+  replays the guide's rows a tick each (`tas next manual`, the jump read from the physics); within 1500 u on the same
+  floor it walks there first. Otherwise the P1449 runway steering.
+- The end. With `finish` (the panel sends it for a course) a course's finish target counts at any speed; once reached,
+  a no-key coast is predicted with the exact rollout first: a teleport into the course's end box is played (the finish),
+  any other teleport makes the last stretch a failed try (retried or backtracked). The finish is read from the timer's
+  finish record (run_t_finrec / finticks / finleg): a stage run's finish hands over to the next stage's arm at once.
+- Continue. A course chain begun at its box saves the run as a legal-start project `jg_<leg folder>` each time it
+  reaches a stretch further than before (SV_TASProjectSaveLegal), with notes beside it (data/tasproj/<map>/<name>.jargon:
+  guide and its fingerprint, course, options, the stretch reached, head tick and origin, each stretch's records and
+  start state, the plan itself), read back after writing. A new Start does not replace a saved run that got further
+  until it passes it. `tas autosurf continue T L [effort words]` checks the whole notes file (numbers, ranges, indices,
+  counts) before changing anything, checks the guide against its fingerprint, loads the project (an exact replay from
+  the start zone), checks the head tick and origin, and goes on along the saved plan with its own budgets; the panel's
+  effort words replace the saved ones except `finish` and `air`.
+- A stuck course chain tries harder by itself twice (3 tries and ride knots, then 4 tries, polish and boarding spots),
+  again from two stretches before its furthest failure, before it stops.
+- A route capped at 64 points (TAS_ASMAX) says so ("surf it stage by stage"): surf_tensor2's main course plans 64.
+
+Verified (rig, dedicated fteqwsv64 + windowed client, this tree's build-nodeploy outputs, 0 warnings; driver
+tools/p1478_courses.py):
+- t2plan1: surf_tensor2 stage 2 cut from farsh's 3:23 full run plans the same 4 boards as proto's stage-2 replay (within
+  ~40 u, identical faces); a stage-2 guide asked for stage 3 or bonus 1 is refused naming both courses. shape1: a bonus-1
+  guide asked for the main course, and the reverse, refused.
+- t2chain1 -> 2: the runway start jumped 375 u off the line in stage 2's 270 u box; the guide-prestrafe replay (20 u off
+  its standstill) boarded stretch 1 at 1130 u/s against the guide's 1129. shape2: the walk (111 u -> 12 u) then the replay.
+- t2chain2: stretches 1-2 saved, stopped; `continue 0 2` "reproduced every saved state exactly", went on from stretch 3,
+  backtracked after the Continue, saved again.
+- t2chain3-7 (the end): the 95% floor on the finish, a 400 u reach coasting into a wall and into the fail teleport, a
+  96 u target the guide's rows ran out before, and those rows padded (still 350 u short, cut by a trigger) -- hence the
+  predicted coast. shape3: "trying harder ... step 1" fired at its stuck stretch.
+- Two independent reviews (control flow; files, saves and client) found 17 issues, none a crash in the reviewed tree
+  except a hand-edited notes number (NaN, fractions) reaching an array bound check; all fixed as listed above.
+- A third review (of the fixes) found a coast retry that never ended, a last-stretch save that blocked Continue, a
+  load refusal after the chain was cleared, and teleport classes the prediction missed: fixed (FTESurf b5d836d7), build
+  0 warnings, not rerun on the rig (another session's frame-time survey held it).
+- Delivered 11 Nov ~05:30 local from FTESurf main 2360c4a9 (fteqcc 73f9a1a4): the 12 lobbies and both installs run
+  csprogs 56522910 / qwprogs fdce20d0 (.prev 01d9d44e / 91ef42d5), menu unchanged; tasrevd codes.txt 117 -> 118.
+  QC only: no engine commit, tag or pin change. FTESurf tools/p1443-path-planner.md has the rig runs.
+
+## Patch 1477 -- forced water captures staggered too; r_capturerate down to 10 (gl_backend.c, render.h, renderer.c)
+
+Problem: Lex, 10 Nov, after r_capturerate 10 looked the same as 20: the engine floored the rate at 20, and Patch 1474's
+stagger spaced only the clock's redraws -- groups rendered together (after a jump, a plane change) tripped the camera
+limits (128 units, 30 degrees) together and stayed in step.
+
+Fix: a group past the limits but inside 1.5 times them (192 units, 45 degrees) may wait one frame while the other
+renders, as a due group does (never two frames running), above 100 fps only; a due group waits before a beyond one.
+The floor is 10. r_viewstats counts the keeps that rendered both groups by cause (plane, record, kinds, camera, due,
+one camera).
+
+Measured (surf_nuclear replay at a 300 cap, 3 alternating windows): one-group capture frames a window 1715 (rate 60),
+567 (20), 430 (10); two-group frames 8-9 at every rate (a plane change 4, a record reset 4: unstaggerable); lows within
+noise. One review (control flow): the beyond hold above 100 fps only, a due group first.
+
+## Patch 1476 -- tas_rollout's flight steering can weave wider: the AIMWIDE row bit (sv_tas_rollout.inc)
+
+Problem: AIM (Patch 1449) sets each tick's strafe side from which side of the heading the aim bearing lies, so on the
+bearing the side flips every tick -- the TAS planner's flights strafed left-right a frame at a time; Lex: it reads
+badly, "more realistic to be a bit wider, slightly less accuracy for visuals".
+
+Fix: an opt-in row bit, AIMWIDE (4096), with AIM: the side holds until the bearing is SV_TAS_AIMWIDE_DEG (3) past the
+other way and the side has been held SV_TAS_AIMWIDE_TICKS (8); held against the error the command is 30, the most
+speed. The error is read back from SV_TASRollAim's command (|q| = 30 + 30 min(1, |err| / gain)). The hold is per
+rollout (locals of SV_TASRollRun, so worker threads keep their own); off AIM it resets. AIMWIDE without AIM is refused
+like AIM without FOLLOW. Without the bit nothing changes.
+
+Measured (FTESurf rig, surf_null from a placed state, the played line's strafe-side flips a stretch): without 1, 12,
+27, 46 (then stuck); with 5, 4, 23, 8, 1, and the stretches' energies as close to the replay's or closer. One review: the hold's
+threshold is capped at half the aim gain (the error reads back capped at the gain).
+
+## Patch 1475 -- parallax for reused water captures: a kept reflection or refraction moves with the eye (gl_backend.c, gl_rmain.c, gl_shader.c, gl_vidcommon.c, shader.h, renderer.c, plugin.c, d3d, vk; hl2 water.glsl, mat_vmt.c)
+
+Problem: Lex, 10 Nov: at lower capture rates the reflection "falls off the water edges" while moving -- "could a
+parallax capture adjustment work? ... doesn't need to be perfect". A kept capture (Patches 1245/1281/1474) was turned
+with the camera but not moved, so near things in it slid with the old view.
+
+Fix: each kept group also gets the eye's travel since it rendered, through its turned-only projection (m_captureshift,
+m_captureshiftrefl; 0 on fresh frames or at r_captureparallax 0). vmt/water moves each sample to c = t + s*t.w / (D -
+s.w): t the turned clip position, D the content's depth along that capture's forward read at t (one step; held at least
+at the surface's depth, so above-water geometry in the refraction's depth does not throw it). The refraction's D comes
+from its depth target (standard projection, as Patch 877's fog reads it); the reflection's from a new target,
+$reflectiondepth (tex_reflectiondepth[0]): made when a shader reads it on a Source map (not GLES), then attached for
+every level-0 reflection so mixed planes do not rebuild the FBO and its multisampled targets, resolved under
+r_reflectmultisample, read through the inverse of the oblique projection it rendered with (GLR_DrawPortal records
+r_portalproj; m_capturedepthrefl). Depth 1 (nothing drawn, sky) and a decode behind that camera are far: no shift. The
+refraction's fog depth gains the travel along the capture's forward (a P1245 known issue). The plugin emits #PARALLAX
+and the map only when the engine has the cvar. Plug_Cvar_GetString compared the cvar's NAME length with the buffer and
+then strcpy'd its value (the plugin's 16-byte probe was refused, and a long value overflowed the caller); it now checks
+the value and copies it truncated when it does not fit, answering false.
+
+Measured (artifacts/run_reproj.py + score_reproj.py in the lows2 root): a capture kept ~480 ms against a fresh one at
+the new pose, mean absolute difference (pixels off by more than 8/255), HUD masked, noise floor 0.001-0.028. surf_boreas
+pose 002: slide 24 units 0.684 (51435 px) -> 0.120 (1410), slide 64 0.985 -> 0.318, forward 48 0.882 -> 0.233;
+surf_garden 001: slide 24 0.100 -> 0.018, forward 48 0.056 -> 0.022; a 3 degree turn unchanged (0.19, 0.019). Cost,
+surf_nuclear board replay, 3 alternating windows a side: uncapped avg 603 -> 595, 1% 322 -> 301; at a 300 cap within
+noise. Two review lenses, three rounds (round 1: the plugin probe never passed, so only the refraction moved; the depth
+target was paid where unread; the foreground over-shift).
+
+Known: one step, so large moves keep some error (slide 64: a third); vmt/lmreflect glass is turned only; level-0
+reflections have no stencil once the depth target exists; it lives until the video mode changes.
+
+## Patch 1474 -- water and glass captures staggered: reflection and refraction render on different frames (gl_backend.c, gl_rmain.c, gl_shader.c, gl_vidcommon.c, shader.h, renderer.c, render.h, d3d; hl2 water.glsl, lmreflect.glsl)
+
+Problem: Lex, 10 Nov: "Doing over multiple frames?" A capture frame rendered the plane's reflection and refraction
+together -- one keep record and one m_capturefix for both -- so at r_capturerate 60 and 300 fps a quarter of frames
+carried two extra scene renders and the rest none.
+
+Fix: the keep is per group (refraction with its depth, the reflection), each with its own render time, reuse count, eye
+and forward, kinds and matrix; m_capturefixrefl turns the reflection (water.glsl, lmreflect.glsl). When both groups are
+due on one frame, the one rendered more recently is served once more -- never two frames running, and only if, a frame
+late, it still renders within 1.25 intervals (at 300 fps: r_capturerate 60 yes, 144 no), so the rate holds. Shaders
+without m_capturefixrefl keep or render both together, as before. A plane's other batches reuse what this view rendered
+this frame (glass with several batches rendered it twice). r_capturestagger 0 is the old behaviour. r_viewstats also
+counts top-level views by their captures (0/1/2/3+).
+
+Measured: r_viewstats on surf_garden pose 001, about 880 frames a window: at r_capturerate 60 frames rendering two
+captures 25% -> 0.1% (repeated), at 30 12.5% -> 0.1%, captures per frame unchanged (0.50, 0.25); on boreas the
+reflection is exactly a frame (3.3 ms) older than the refraction. surf_nuclear board replay, 3 alternating windows a
+side: uncapped avg 477 -> 530, 1% 160 -> 217, 0.1% 99 -> 135 (every pair); at a 300 cap no measurable change (1%
+227/227, 0.1% 149/165 -- capture frames already fit the cap). r_capturelog sampled one view at a time disturbs the
+frames it samples (37 of 40 rendered both with stagger off): use the histogram. r_capturerate 30 against 60 at the 300
+cap (nuclear, 3 + 3): 1% 257/269, 0.1% 169/212 -- no reason to lower it. Two review lenses; control flow three rounds
+(round 1: an unbounded hold, unrendered kinds served from the same-frame path, kinds growing stale), the last clean.
+
 ## Patch 1472 -- no frame cap below the Source mover's tick rate while playing (cl_main.c, sys_win.c, client.h)
 
 Problem: below the physics tick rate (1/pm_ticrate: 66.67 surf, 100 bhop) one usercmd covers two of pm_source.c's whole
@@ -85,6 +678,53 @@ before any Kahn); the same build without the pass-1 check: 1223 wrong of 4357. R
 off 1% 109/106, 0.1% 87/84; on 110/109/107, 95/90/88 -- the third off run failed to start (0xC0000142, the machine short
 of memory), so no lows delta is claimed. Five review rounds (certificate predicate, clip cull, and three fix rounds):
 trace counters, verify grading, the r_portaldebug leak, wording.
+
+## Patch 1467 -- tas_rollout_batch: a generation of rollouts on worker threads (sv_tas_rollout.inc, pmove.c, pm_source.c, pmovetst.c, com_bih.c, world.c, sv_user.c, pr_cmds.c)
+
+Problem: the surf planner (FTESurf P1449) rolls ~20 candidates a generation one at a time on the server's thread,
+about 12 ms a 500-tick candidate; Lex asked for the searches on all cores.
+
+Fix: tas_rollout_batch(player, rows, ticks, out, count, params, aimgain, aimface) validates and sets up on the main
+thread once, snapshots pmove and movevars, then runs the candidates on sv_tas_threads worker threads (6), each
+from the snapshot with its own aim point and lead (params). The movement code's state is a plain struct a thread
+reached through a thread-local POINTER (pm_thread.h: pmove and movevars, included last by pmove.c, pm_source.c,
+pmovetst.c and sv_user.c only, since Quake 2 structs have members named pmove; pm_source.c's per-command state,
+pmovetst.c's and world.c's box hulls, com_bih.c's clip flags and probe record via com_bih_ts.h); the main
+thread's pointers are the old globals, so nothing else changes. A worker binds its own, queries nearby entities and
+triggers with its own visit list (the shared edict stamps are the main thread's) and passes its own box; a
+candidate it cannot finish -- a model to load, a portal, a full visit list -- is rerun on the main thread as
+tas_rollout runs it. No threads with portals, Q2/Q3 BSP (CM_NativeTrace's statics), or without MULTITHREAD.
+
+Thread-local objects first: GCC 16's native TLS on mingw took a thread-local struct's plain .refptr address (the
+TLS template) for indexed writes, so air acceleration was lost on every thread -- the batch matched one-at-a-time
+exactly and both were wrong; a comparison with Patch 1466 and an in-function print found it.
+engine/tools/check_tls_refptr.py checks built objects: thread-local pointers and scalars only, no .refptr use.
+
+Measured (FTESurf rigs, surf_null, 60 candidates of 500 ticks from a placed state): 6 threads 3.76x against one at
+a time with the trace cache (4.20x without, 8 threads 4.35x), every output value and written-back row equal; the
+planner reached surf_null's ramps 9 and 10 on worker batches as on Patch 1466. Reviews: races (bih_probe_surf,
+the input thread's movevars), equivalence (the worker's out scratch), the pointer rework (low items only).
+
+## Patch 1466 -- tas_rollout reports walls clipped on rides too, and its face aim takes a lead (sv_tas_rollout.inc, pr_cmds.c, server.h)
+
+Problem: P1449's contact kind 4 (a wall or ceiling clipped) was only set with no ramp under the body, so a ride
+rubbing a ramp's side wall said nothing and the surf planner (FTESurf P1449 autosurf) could not score it; Lex saw
+the bot rub walls and lose speed. And the face aim always set its lead point back half the distance along the
+ramp, an approach parallel to the face: on a long launch past geometry, where a player goes straight for the
+ramp's nearest part once clear and snaps aboard, the bot came in wide and missed.
+
+Fix: row bit WALLBIT (2048): that tick's out[7] is ducked + 2 when pm_source.c's wall note is set, on a ramp or
+the ground too; without the bit out[7] is ducked as before, and like the other row bits it is cleared from each
+row that runs. An optional 8th argument aimlead (0..0.9; unset, NaN or out of range 0.5, P1449's) sets how far
+back along the face the lead point sits: 0 steers straight at the aim. Older callers (4, 6 or 7 arguments, rows
+without the bit) get byte-identical results; an older engine refuses the bit (-10) and 8 arguments (-1), which the
+QC probes for.
+
+Measured (FTESurf rigs, surf_null, the same segment from Lex's ramp 4): played lines touching a wall fell from 23 of
+50 (101 ticks, flights only counted) to 1 of 46 (2 ticks, rides counted too) with the QC scoring ride walls; the
+searched lead ranged 0.30-0.71 on the ramp 9 to 10 flight. Review: one round (engine) found nothing blocking --
+the write-back of a WALLBIT-only row documented, aimlead capped at 0.9 (at 1 an approach along the face put the
+lead point on the body); a second on the fix found nothing.
 
 ## Patch 1464 -- the lobby join line reads "<user> joined <mapname>" (FTESurf QC sv_lobby.qc)
 

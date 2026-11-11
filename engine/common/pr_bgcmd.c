@@ -52,6 +52,7 @@ cvar_t pr_gc_threaded = CVARFD("pr_gc_threaded", "1", CVAR_NOSAVE, "Says whether
 #else
 cvar_t pr_gc_threaded = CVARFD("pr_gc_threaded", "0", CVAR_NOSET|CVAR_NOSAVE, "Says whether to use a separate thread for tempstring garbage collections. This avoids main-thread stalls but at the expense of more memory usage. 2 is a FTESurf DIAGNOSTIC value that disables the collector outright, leaking every tempstring for the life of the VM -- see PR_RunGC.");
 #endif
+cvar_t pr_gc_writewatch = CVARFD("pr_gc_writewatch", "1", CVAR_NOSAVE, "FTESurf Patch 1481 (Windows): a tempstring collection's start copies only the QC memory pages written since the last one, not all of it. 0: copy all (as before); 2: also compare the copy with the memory and report any difference (a check, costs more than 0). Latched when a VM loads.");
 cvar_t	pr_sourcedir = CVARD("pr_sourcedir", "src", "Subdirectory where your qc source is located. Used by the internal compiler and qc debugging functionality.");
 cvar_t pr_enable_uriget = CVARD("pr_enable_uriget", "1", "Allows gamecode to make direct http requests");
 cvar_t pr_enable_profiling = CVARD("pr_enable_profiling", "0", "Enables profiling support. Will run more slowly. Change the map and then use the profile_ssqc/profile_csqc commands to see the results.");
@@ -114,6 +115,7 @@ void PF_Common_RegisterCvars(void)
 	Cvar_Register (&pr_tempstringcount, cvargroup_progs);
 	Cvar_Register (&pr_tempstringsize, cvargroup_progs);
 	Cvar_Register (&pr_gc_threaded, cvargroup_progs);
+	Cvar_Register (&pr_gc_writewatch, cvargroup_progs);
 #ifdef WEBCLIENT
 	Cvar_Register (&pr_enable_uriget, cvargroup_progs);
 #endif
@@ -7702,7 +7704,15 @@ void QCBUILTIN PF_gettimed (pubprogfuncs_t *prinst, struct globalvars_s *pr_glob
 	case 1:		//actual time, ish. we round to milliseconds to reduce spectre exposure
 		G_DOUBLE(OFS_RETURN) = (qint64_t)Sys_Milliseconds()/1000.0;
 		break;
-	//case 2:	//highres.. looks like time into the frame
+	case 2:		//FTESurf Patch 1488: seconds since this frame's first gettime(2), 0.1 ms steps -- small, so a float keeps them
+		{	//(gettime(1) is whole ms and loses even those past ~2.3 h as a float); for per-frame time budgets
+			static double base, baseframe = -1;
+			double now = Sys_DoubleTime();
+			if (realtime != baseframe)
+				baseframe = realtime, base = now;
+			G_DOUBLE(OFS_RETURN) = floor((now - base) * 10000) / 10000;
+		}
+		break;
 	//case 3:	//uptime
 	//case 4:	//cd track
 #ifndef SERVERONLY

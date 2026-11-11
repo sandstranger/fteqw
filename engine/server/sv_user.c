@@ -26,6 +26,8 @@ Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
 #include "pr_common.h"
 #include "sv_held_session.h"
 #include "sv_tas.h"
+#include "pm_thread.h"	//Patch 1467: last -- pmove and movevars are this thread's
+#include "com_bih_ts.h"	//Patch 1467: the BIH clip flags and probe record, a worker binds its own
 
 #define Q2EDICT_NUM(i) (q2edict_t*)((char *)ge->edicts+i*ge->edict_size)
 #define Q2NUM_FOR_EDICT(ent) (((char *)ent - (char *)ge->edicts) / ge->edict_size)
@@ -8159,6 +8161,71 @@ void AddAllLinksToPmove (world_t *w, wedict_t *player)
 
 	AddPortalsToPmove(w, player, &w->portallist);
 }
+
+/* Patch 1467: AddAllLinksToPmove for a tas_rollout_batch worker: the same edicts in the same order, each visit kept
+ * in its own list instead of the shared stamp gridareasequence; no portals (a batch refuses maps with any). More
+ * visits than the list holds leaves the candidate to the main thread. */
+#define PMLOCAL_SEEN 1024
+static void AddLinksToPmoveLocal (world_t *w, wedict_t *player, areagridlink_t *node, wedict_t **seen, int *nseen, const vec3_t mins, const vec3_t maxs)
+{
+	link_t		*l, *next;
+	wedict_t	*check;
+	int			pl, i, s, solid;
+	pl = EDICT_TO_PROG(w->progs, player);
+	for (l = node->l.next ; l != &node->l ; l = next)
+	{
+		next = l->next;
+		check = ((areagridlink_t*)l)->ed;
+		for (s = 0; s < *nseen && seen[s] != check; s++)
+			;
+		if (s < *nseen)
+			continue;
+		if (*nseen == PMLOCAL_SEEN)
+		{
+			pm_threadabort = true;
+			return;
+		}
+		seen[(*nseen)++] = check;
+
+		if (check->v->owner == pl)
+			continue;		// player's own missile
+		if (check == player)
+			continue;
+		solid = check->v->solid;
+		if (
+			(solid == SOLID_TRIGGER && check->v->skin < 0)
+			|| solid == SOLID_BSP
+			|| solid == SOLID_PORTAL
+			|| solid == SOLID_BBOX
+			|| solid == SOLID_SLIDEBOX
+			|| solid == SOLID_LADDER
+			|| solid == SOLID_PHYSICS_TRIMESH
+			|| solid == SOLID_PHYSICS_BOX
+			)
+		{
+			for (i=0 ; i<3 ; i++)
+				if (check->v->absmin[i] > maxs[i]
+				|| check->v->absmax[i] < mins[i])
+					break;
+			if (i != 3)
+				continue;
+
+			if (!AddEntityToPmove(w, player, check))
+				break;
+		}
+	}
+}
+void AddAllLinksToPmoveLocal (world_t *w, wedict_t *player, const vec3_t mins, const vec3_t maxs)
+{
+	wedict_t *seen[PMLOCAL_SEEN];
+	int nseen = 0;
+	int ming[2], maxg[2], g[2];
+	CALCAREAGRIDBOUNDS(w, mins, maxs);
+	AddLinksToPmoveLocal(w, player, &w->jumboarea, seen, &nseen, mins, maxs);
+	for (g[0] = ming[0]; g[0] < maxg[0]; g[0]++)
+		for (g[1] = ming[1]; g[1] < maxg[1]; g[1]++)
+			AddLinksToPmoveLocal(w, player, &w->gridareas[g[0] + g[1]*w->gridsize[0]], seen, &nseen, mins, maxs);
+}
 #else
 /*
 ====================
@@ -11247,6 +11314,7 @@ SV_UserInit
 */
 void SV_UserInit (void)
 {
+	Cvar_Register (&sv_tas_threads, "FTESurf TAS");	//Patch 1467
 #ifdef VOICECHAT
 	Cvar_Register (&sv_voip, cvargroup_serverpermissions);
 	Cvar_Register (&sv_voip_echo, cvargroup_serverpermissions);

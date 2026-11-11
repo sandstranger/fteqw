@@ -177,6 +177,8 @@ cvar_t r_refract_fbo						= CVARD ("r_refract_fbo", "1", "Use an fbo for refract
 //FTESurf Patch 850: the entity list before the top-level view's world walk added its own props and
 //statics. A nested view sees those and its own walk's, not the outer views' ones again.
 int r_visdynamic;
+unsigned int r_vs_capviews, r_vs_caphist[4];
+unsigned int r_vs_capwhy[BE_CAPWHY_N];
 unsigned int r_vs_frames, r_vs_views[R_MAX_RECURSE], r_vs_skydrawn, r_vs_skyskipped, r_vs_entskipped;
 unsigned int r_vs_skycam;	//FTESurf Patch 880: 3D skies drawn from the sky camera's vis (gl_warp.c)
 unsigned int r_vs_copies;	//FTESurf Patch 878: $currentrender screen copies in top-level views (gl_backend.c)
@@ -225,6 +227,12 @@ static void R_ViewStats_f(void)
 	Con_Printf("; 3D skies drawn %.2f skipped %.2f; nested entities passed over %.1f; 3D skies from the sky camera %.2f; screen copies %.2f (%.2f Mpx)\n",
 		r_vs_skydrawn / (double)f, r_vs_skyskipped / (double)f, r_vs_entskipped / (double)f, r_vs_skycam / (double)f, r_vs_copies / (double)f,
 		r_vs_copypixels / f / 1e6);
+	Con_Printf("r_viewstats: top-level views with 0/1/2/3+ water or glass captures: %u %u %u %u\n",
+		r_vs_caphist[0], r_vs_caphist[1], r_vs_caphist[2], r_vs_caphist[3]);
+	Con_Printf("r_viewstats: plane keeps rendering both captures, by cause: another plane/view %u, record (gap, 2 views, size) %u, "
+		"kinds/targets %u, camera past 1.5x the limits %u, both due %u, shader without m_capturefixrefl %u\n",
+		r_vs_capwhy[BE_CAPWHY_PLANE], r_vs_capwhy[BE_CAPWHY_RECORD], r_vs_capwhy[BE_CAPWHY_KINDS], r_vs_capwhy[BE_CAPWHY_CAMERA],
+		r_vs_capwhy[BE_CAPWHY_DUE], r_vs_capwhy[BE_CAPWHY_ONECAMERA]);
 	Con_Printf("r_viewstats: cpu self ms / draw calls:");
 	for (i = 0; i < R_VS_KINDS; i++)
 		Con_Printf(" %s %.3f/%.0f", r_vs_kindname[i], r_vs_ms[i] / f, r_vs_draws[i] / (double)f);
@@ -232,6 +240,8 @@ static void R_ViewStats_f(void)
 	r_vs_frames = r_vs_skydrawn = r_vs_skyskipped = r_vs_entskipped = r_vs_skycam = r_vs_copies = 0;
 	r_vs_copypixels = 0;
 	memset(r_vs_views, 0, sizeof(r_vs_views));
+	memset(r_vs_caphist, 0, sizeof(r_vs_caphist));
+	memset(r_vs_capwhy, 0, sizeof(r_vs_capwhy));
 	memset(r_vs_ms, 0, sizeof(r_vs_ms));
 	memset(r_vs_draws, 0, sizeof(r_vs_draws));
 }
@@ -249,7 +259,9 @@ cvar_t r_nearestsort						= CVARD ("r_nearestsort", "1", "FTESurf Patch 878: how
 cvar_t r_alphacoverage					= CVARFD ("r_alphacoverage", "1", CVAR_ARCHIVE, "FTESurf Patch 1262: under vid_multisample, surfaces cut out by an alpha test (leaves, fences, grates) spread the cut edge over the samples instead of cutting it (alpha-to-coverage), as MSAA smooths a polygon's edge. 0: cut, as without MSAA. Source maps' materials (the hl2 plugin's vmt shaders).");
 cvar_t r_reflectmultisample			= CVARFD ("r_reflectmultisample", "-1", CVAR_ARCHIVE, "FTESurf Patch 1276: MSAA samples for the main view's water and glass reflection captures (drawn at r_refractreflect_scale of the view). -1: as vid_multisample. 0: none.");
 cvar_t r_capturehalfrate				= CVARD ("r_capturehalfrate", "0", "FTESurf Patch 1245: the main view's water and glass reflection/refraction captures are reused for this many frames after each one rendered, turned with the camera in between (what they show is taken as distant: a turn lines up, a slide shows the frame-old view of nearby things). 0: every frame. 1: every second frame (surf_eternity's glass 201 -> 294 fps). Ignored while r_capturerate is set: both at 0 renders every capture.");
-cvar_t r_capturerate				= CVARFD ("r_capturerate", "144", CVAR_ARCHIVE, "FTESurf Patch 1281: on Source maps, the main view's water and glass captures are redrawn about this many times a second (at least 20), whatever the frame rate; between, the last one is reused and turned with the camera (as r_capturehalfrate keeps it), and past 128 units or 30 degrees it is redrawn at once. At or below this frame rate every frame captures. 0: r_capturehalfrate's frame count instead.");
+cvar_t r_capturestagger			= CVARD ("r_capturestagger", "1", "FTESurf Patch 1474: when a water or glass plane's reflection and refraction captures are both due on one frame (r_capturerate), the one rendered more recently is reused once more if the camera is still within 128 units and 30 degrees of it, so each frame renders one of them rather than both and the frame that captures costs about half. Needs a shader that reads the reflection through m_capturefixrefl (the hl2 plugin's water and glass since 1474). 0: both together, as before.");
+cvar_t r_captureparallax			= CVARD ("r_captureparallax", "1", "FTESurf Patch 1475: a reused water capture (r_capturerate) is moved by how far the eye has travelled since it rendered, each pixel by its own depth (one parallax step), so near things in a reflection or under the surface stay put while you move instead of sliding with the old view. Turns are corrected either way. Costs a depth copy of the reflection and a texture read. 0: turned only, as before.");
+cvar_t r_capturerate				= CVARFD ("r_capturerate", "144", CVAR_ARCHIVE, "FTESurf Patch 1281: on Source maps, the main view's water and glass captures are redrawn about this many times a second (at least 10), whatever the frame rate; between, the last one is reused and turned with the camera (as r_capturehalfrate keeps it), and past 128 units or 30 degrees it is redrawn at once. At or below this frame rate every frame captures. 0: r_capturehalfrate's frame count instead.");
 cvar_t r_waterforcereflectentities			= CVARD ("r_waterforcereflectentities", "0", "Source's cvar. 0: a water reflection draws entities and props only if its material says $reflectentities, as Source does -- most Source water reflects only the world and the 2D sky. 1: every water reflection draws them, as before Patch 868.");
 cvar_t r_drawviewmodel						= CVARF  ("r_drawviewmodel", "1", CVAR_ARCHIVE);
 cvar_t r_drawviewmodelinvis					= CVAR  ("r_drawviewmodelinvis", "0");
@@ -439,6 +451,7 @@ cvar_t r_blendcache = CVARD ("r_blendcache", "1", "FTESurf Patch 1409: on Source
 cvar_t r_blendsort_boxes = CVARD ("r_blendsort_boxes", "1", "FTESurf Patch 1457: r_blendsort 2's overlap proofs skip face and triangle pairs whose screen boxes are apart, which could only prove 'no overlap'; the verdicts match clipping every pair while the proof budget lasts, except a rounding sliver (area ~1e-18, no pixel) that clip found between apart boxes. 0: clip every pair (surf_fairy's worst view: sort 0.92 against 1.2 ms).");
 cvar_t r_blendsort_lazy = CVARD ("r_blendsort_lazy", "1", "FTESurf Patch 1463: r_blendsort 2's second pass asks a strictly ordered pair whether the faces overlap only when the sort needs that edge to choose the next face, not for every pair up front; the order is the same unless the proof budget runs out during that pass. 0: every pair up front.");
 cvar_t r_blendsort_clipcull = CVARD ("r_blendsort_clipcull", "1", "FTESurf Patch 1465: r_blendsort 2 leaves out a translucent static-world (or identity brush entity) face whose every vertex is beyond one plane of the clip volume: off screen, or past a water capture's clip plane. It draws nothing; kept, it joins the plane graph. 0: keep them.");
+cvar_t r_blendsort_retry = CVARD ("r_blendsort_retry", "4", "FTESurf Patch 1490: when r_blendsort 2's sort fails in a way no certificate can keep (r_blendsort_cert), the view keeps that unsorted order and sorts again only every this many frames while the failure's pass-2 cycle still holds. 1: sort every frame, as before.");
 cvar_t r_blendsort_cert = CVARD ("r_blendsort_cert", "1", "FTESurf Patch 1465: when r_blendsort 2's sort fails it keeps why passes 1 and 2 failed (a cycle, or an edge that must cross an unsorted draw); while both still hold in a later view the sort is skipped, as it would end in the same unsorted order. 0: sort every view; 2: sort anyway and report a certified view where a pass did not fail.");
 cvar_t r_blendsort = CVARFD ("r_blendsort", "1", CVAR_ARCHIVE,
 	"Blended surface ordering.\n"
@@ -1462,6 +1475,7 @@ void Renderer_Init(void)
 	Cvar_Register (&r_blendsort_lazy, GLRENDEREROPTIONS);	//FTESurf Patch 1463
 	Cvar_Register (&r_blendsort_clipcull, GLRENDEREROPTIONS);	//FTESurf Patch 1465
 	Cvar_Register (&r_blendsort_cert, GLRENDEREROPTIONS);	//FTESurf Patch 1465
+	Cvar_Register (&r_blendsort_retry, GLRENDEREROPTIONS);	//FTESurf Patch 1490
 #ifdef GLQUAKE
 	Cmd_AddCommandD("r_blendtrace", GLBE_BlendTrace_f, "Prints anonymous view/command/plane diagnostics for the next main-view r_blendsort 2 pass. One-shot; does not change rendering.");
 #endif
@@ -1597,6 +1611,8 @@ void Renderer_Init(void)
 	Cvar_Register (&r_waterforcereflectentities, GRAPHICALNICETIES);
 	Cvar_Register (&r_capturehalfrate, GRAPHICALNICETIES);	//FTESurf Patch 1245
 	Cvar_Register (&r_capturerate, GRAPHICALNICETIES);	//FTESurf Patch 1281
+	Cvar_Register (&r_capturestagger, GRAPHICALNICETIES);	//FTESurf Patch 1474
+	Cvar_Register (&r_captureparallax, GRAPHICALNICETIES);	//FTESurf Patch 1475
 	Cvar_Register (&r_reflectmultisample, GRAPHICALNICETIES);	//FTESurf Patch 1276
 	Cvar_Register (&r_alphacoverage, GRAPHICALNICETIES);	//FTESurf Patch 1262
 	Cvar_Register (&r_capturelog, GRAPHICALNICETIES);	//FTESurf Patch 879
