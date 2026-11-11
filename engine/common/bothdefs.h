@@ -24,6 +24,7 @@ Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
 // release version
 #define FTE_VER_MAJOR 1
 #define FTE_VER_MINOR 7
+#define MULTITHREAD 1
 
 #if defined(FTE_SDL3) && !defined(FTE_SDL)	//sdl3 uses different include names, so we need two defines
 	#define FTE_SDL		//but I'm too lazy to constantly test both.
@@ -88,7 +89,6 @@ Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
 	#endif
 #endif
 
-#undef MULTITHREAD
 #define HEADLESSQUAKE	//usable renderers are normally specified via the makefile, but HEADLESS is considered a feature rather than an actual renderer, so usually gets forgotten about...
 
 //yup, C89 allows this (doesn't like C's token concat though).
