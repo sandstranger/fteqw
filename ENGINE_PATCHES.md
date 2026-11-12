@@ -5,6 +5,506 @@ all12lobbies verified,217recorder/resume payload+captured metadata rows unchange
 full public provenance/limits in FTESurf tools/playerfix-20261111-delivery.md.
 No new native build by that QC delivery; P1498 native/compiler delivery is separate.
 
+## Patch 1524 — Unusable input models neither accuse nor pass (12 Nov 2026)
+
+**Problem.** Six NaN model constant/term contexts made the native observation
+primitive count29BAD frames; finite gain overflow counted29clean. Four NaN
+headers and finite-header gain overflow retained reader/receipt OK. Float
+conversion alone proved neither a usable equation nor native float32 arithmetic.
+
+**Change.** Native observation derives/checks finite model gains, predictions
+and angle differences before publishing governed/bad counts. Reuse the engine
+exponent predicate (infinity too); unusable frames abstain. Equations, operation
+order, tolerances and actual movement remain unchanged. The reader respects
+native float32 constants/products; unusable numeric models refuse data quality
+and withhold whole identity comparisons, not partial healthy zeroes or bogus
+angle/count findings. Preserve unknown clipped/legacy terms, NativeQ_atof string
+semantics, supported profiles and independent finite counts joins. No wire,
+capture, numeric cutoff, policy/ranking, regrading or Build change.
+
+**Verified.** Windows HID878/0, receipt618/0, recording reader949/0. Literal native
+10-arm baseline/subject: sixNaN falseBAD and gain-overflow falseclean become
+29skip/0governed/0bad, finite29clean/nonlinear29skip/real contradiction29BAD
+remain;30views each/zero compiler warnings. Prior300native finite movement,
+callback, camera and view-stat rows identical. Cached actual digest/no-reopen/
+signature-status controls act.136same-byteHID3faulty identical;568REC automatic
+pairedVIEW356faulty unchanged/751hashes stable. Supported FullNoDeploy3VMzero
+warnings/native74existing warning lines/zeroNEW; all1399frozen SDK input hashes
+stable. See tools/p1524-model-constants.md. Minimal declared native context is
+NOT a full input pipeline, hardware, ARM, calibration, whole-domain/parser or
+native vulnerability audit. Independent review and deployment remain pending.
+
+## Patch 1523 — Unusable observer terms are not clean comparisons (12 Nov 2026)
+
+**Problem.** Six view terms and two raw-annotation terms accepted NaN into numeric
+comparisons. Eight acting cases retained receipt content OK, angle/join metrics
+and healthy-zero input totals; converted-to-float did not mean usable arithmetic.
+Malformed observer rows could also leave a partial baseline or imply that a raw
+annotation was absent/equal when it was actually unusable.
+
+**Change.** Validate finite raw/view terms. Keep record descriptions separate
+from comparative measurements. An unusable view invalidates both-axis identity
+and raw-target join; an unusable raw annotation withholds the join, not independent
+finite view arithmetic. Existing profile exclusions account for unavailable
+axes; no measured zero or bogus angle/count accusation. Preserve older optional
+keyboard None, valid current/legacy/wrap/clamp/keyboard/controller paths, genuine
+contradictions and cached digest/signature separation. No native code/pin/tag,
+wire/schema, capture, numeric cutoff, policy/ranking, regrading or Build change.
+
+**Verified.** Windows HID805/0, receipt529/0, recording reader949/0.13original
+actual-reader/cached-consumer controls:8false OK,2finite OK/19judged+joined,
+2lexical/contradictionFAULT,controllerBLIND. Subject all/single-poisoned terms
+refuse quality, measurements absent not zero; good raw-annotation-independent
+view arithmetic still judges19. Real digest/no-reopen/signature-status controls
+act.136same-byte HID3faulty/identical lists;568REC automatic pairedVIEW356faulty
+unchanged,751hashes unchanged. NaN-only controls, no infinity-loop demonstration
+or native/hardware/whole-parser/calibration claim. tools/p1523-observer-values.md;
+required independent review and deployment remain pending.
+
+## Patch 1522 — Refuse unusable pointer-coordinate observations (12 Nov 2026)
+
+**Problem.** The input reader silently ignored malformed relative coordinates,
+never parsed absolute coordinates, and let NaN compare as an unbroken counts
+join. Five acting bad-payload cases retained receipt content OK and measured zero
+input totals. Individually finite samples could also overflow a sum while still
+retaining OK. The comment claiming a catch-all numeric fault was false; width
+validation already existed and was not the missing check.
+
+**Change.** Parse both pointer coordinates before modifying a window; require
+finite coordinates and finite next sums. Refuse unusable data as quality, not an
+angle/count accusation. Withhold the whole counts join after malformed pointer
+shape/coordinates or overflow instead of measuring a surviving partial stream.
+Existing receipt quality handling then withholds unproved input totals without
+changing digest/signature status. Preserve finite signed/fractional values,
+absolute unjoinability, controller BLIND and genuine finite contradiction faults.
+No native code/pin/tag, capture, wire/schema, threshold, ranking or Build change.
+
+**Verified.** Windows HID714/0, receipt471/0, recording reader949/0. Actual cached
+bytes/digests/no-reopen consumer controls act, invalid data FAULT rather than OK,
+input/join absence rather than zero, signature status unchanged.136same-byte HID:
+3faulty/identical lists.568REC automatic pairedVIEW:356faulty unchanged,751input
+hashes unchanged. Initial false missing-width expectation and own missing global
+math-import failure retained; not passes. Native float32/hardware does not follow
+from large-value numeric closure controls. tools/p1522-pointer-coordinates.md;
+independent reviews/deployment remain pending.
+
+## Patch 1521 — Do not attribute controller look to missing mouse counts (12 Nov 2026)
+
+**Problem.** The recorded keyboard-turn term is tapped before joystick movement.
+Legitimate controller look is applied later, so both angle observers could accuse
+it of unexplained motion despite the native controller path producing the turn.
+
+**Change.** Preserve the turn arithmetic and journal format. The native observer
+marks actual primary-view controller accumulator changes and abstains for that
+frame; quiet/normal emission and begin reset the private marker. Other seats,
+zero/unmapped inputs and inactive capture do not mark it. Offline analysis lacks
+the mapping and persistent initial axis state: assigned controller tables or axis
+records therefore use existing unsupported-profile exclusions on both axes. The
+receipt consumer retains BLIND, never a clean-angle judgement. No new capture,
+wire, policy, ranking, signature verdict, threshold or QC Build; no regrading.
+
+**Verified.** Literal native deadzone/move/identity/view functions300rows, zero
+compiler warnings;120parent motion rows identical. Look/pitch/roll skip29 with
+zero bad; unmapped/zero/null/zero-scale/other-seat controls judge29 clean. Actual
+view emission/quiet reset and next mouse frame act; begin reset is source-only.
+Windows HID606/0, receipt413/0, reader949/0. Actual parent look contribution
+previously broke29/29 now refuses offline judgement; missing axis records still
+refuse assigned controllers. Malformed-clock/header, captured-scalar ambiguity,
+namespace/pad faults and mouse angle-fault controls remain active. Full native/QC
+build and corpus qualification are recorded in tools/p1521-controller-identity.md.
+Independent reviews, promotion and real-controller calibration remain pending.
+
+## Patch 1518 — Keep input device identities in their actual namespaces (12 Nov 2026)
+
+**Problem.** The HID reader globally keyed device IDs although native pointer,
+keyboard and joystick allocators are independent. Legal shared numbers became
+false identity conflicts. Joystick axes also spent a touchpad's pointer budget.
+
+**Change.** Namespace claims by actual event routing; keep pointer subclasses
+in the same namespace and preserve genuine within-namespace ambiguity. Count
+joystick axes separately; another class cannot establish missing pointer/key/
+axis identity. Legacy non-keyboard keys are not impossible keyboard events or
+raw-key attestation. Python only: no native/capture/wire/rank/signature-verdict/
+threshold/Build change, no historical regrading, native pins unchanged.
+
+**Verified.** Literal native allocators5rows0warnings. Exact P1516 reader plus
+fixtures570/20fail; subject Windows/ARM570/0. Windows receipt408/0 with actual
+nested metrics/healthy-zero controls (also corrects the P1516 wrapper assertion);
+ARM4captured-byte consumers preserve content/signature separation. Full ARM
+receipt suite not run: flat HID stage lacks backend fixture. Reader949/0;
+751corpus hashes unchanged, actual supported568REC paired sweep349REC/7VIEW
+faulty and136HID3faulty/identical lists. Wrong standalone/orphan-assuming corpus
+callers retained as failures, not evidence of new faults. Actual healthy/fault
+CLI controls act. tools/p1518-hid-namespaces.md; independent reviews/deployment
+and real-device/human calibration remain pending.
+
+## Patch 1517 — Select the strict halfspace before scanning alpha faces (12 Nov 2026)
+
+**Problem.** P1511 already stops an inconclusive plane-side scan early, but a
+strictly separated face still maintains both distance extrema. After its first
+vertex, only one halfspace can possibly prove that separation.
+
+**Change.** Classify the first vertex with the unchanged double dot expression,
+then test remaining vertices only against that strict halfspace. A band vertex
+or opposing side still returns unknown. Keep component order, epsilon, eye-side
+mapping, empty-face behavior, admission, memo keys and original vertex-budget
+charges unchanged. No renderer-quality, geometry or sort-order change.
+
+**Verified.** Independent finite/source/oracle review clear; actual P1511 and
+subject each match the frozen full-scanner oracle on1312 existing plus84 added
+finite cases, ordinary and fast-math builds. Original full scanner fails the
+acted early-exit work control. Native16-byte XYZ layout/offsets separately checked;
+optimized raw-helper and actual native GL translation-unit disassembly remove
+both extrema instructions (native code grows72bytes). Supported incremental native
+compile/link exits0 with unchanged header/flag dependencies. Both baseline and
+subject ACT in moving Fairy transparent-sort views with positive edges/work and
+nonblank1920x1200 RGB output; no detected renderer/VM fatal. Paused camera alignment
+was not qualified, so no paired order/pixel-equality claim. Clean tagged Full
+exits0; native74warning payloads equal baseline (zeroNEW); TLS365objects/10symbols/
+0plain-address uses. Final normal client with installed legacy server/plugin
+advances actual Fairy0->12.0125s, acts on85transparent commands and renders
+nonblank RGB1920x1200. Both Windows clients installed12Nov05:02:33Z; independent
+05:08:37Z live/archive and19,595protected-file rehash clear, rollback retained.
+No server/plugin/VM/Pi/backend shipment. Later owner-authorized full-FX shared
+Fairy ABBA/BAAB8run measurement of matched diagnostics P1517vsP1511 shows NOgain:
+meanavg295.4->267.2FPS,1%122.3->99.8,0.1%95.2->78.6. Mirroredblockavg+0.5%,
+0.1%-6.8%; varying sharedload limits causal/significance claims. All8retained/
+independentlyrecomputed. This does not establish a precise17.4%regression or
+production/allpatch gain. Earlier render smoke left sprites/glow0; full-FX
+benchmark explicitly enables/readbacks both1. No rollback or further deployment.
+
+## Patch 1516 — Refuse unproved identity constants from clipped text (12 Nov 2026)
+
+**Problem.** Legacy cvar buffers can capture identical text for different actual
+integer/float values. Reading that prefix as complete caused false angle findings
+or unsupported journal-OK results; decoding cannot recover missing suffixes.
+
+**Change.** Keep encoded token spans; ambiguous boundary prefixes for all six
+identity constants become explicit data-quality refusal and unknown until valid
+replacement. Proven terminated/character prefixes still act; existing non-linear
+exclusions and typed header scalars stay intact. Python only: no native/wire/
+capture/rank/signature-verdict/threshold/Build change or historical regrading.
+
+**Verified.** Literal native encoder/Q_atoi20rows and encoder/Q_atof5rows, zero
+warnings. Exact P1515 parent with corrected fixtures535checks/92fail; subject
+Windows/ARM535/0,157new assertions. Receipt388/0 including120new captured-digest/
+content-refusal/no-false-accusation/signature-separation checks; reader949/0.
+136HID3faulty and568REC183VIEW349/7faulty remain byte/fault equivalent. Prior
+bad-printf/wrong-sign fixtures retained, not product claims. Complete legacy
+capture/non-default console codec remain open; tools/p1516-hid-capture.md.
+Source-qualified, not independently reviewed/deployed or human calibration.
+
+## Patch 1515 — Decode native quoted cvars in the HID reader (12 Nov 2026)
+
+**Problem.** hidcheck did not invert COM_QuotedString: prefixed escapes and
+literal plain backslashes changed recorded cvar values, falsely breaking angle
+identity. Header/change tokenization also collapsed value whitespace.
+
+**Change.** Decode the two default native quote forms and preserve their raw
+payload spacing. Malformed quoted values are explicit format faults; a damaged
+change invalidates its scale/sign until a valid update, not a stale-value angle
+accusation. Python only: no native/wire/capture/ranking/threshold or Build change.
+Legacy producer truncation/non-default console codecs remain explicit limits.
+
+**Verified.** Literal native encoder:16/16 actual rows at64/128-byte capacities,
+zero compiler warnings. Old reader fails32 new checks; subject HID378/0 including
+64 new assertions, receipt268/0, reader949/0. Existing136HID bytes give unchanged
+3faulty/fault lists;568REC183VIEW hashes/results unchanged,349/7faulty existing.
+CLI and ARM reader qualification are recorded in tools/p1515-hid-quotes.md.
+Source qualification is not independent review, deployment or human calibration.
+
+## Patch 1514 — Observe retained gravity used by a clear water-jump move (12 Nov 2026)
+
+**Problem.** The Source11+ water-jump early return could move an airborne body
+with non-default retained gravity while skipping the existing start-gravity use
+observer. Admission of that property was not proof that movement used it.
+
+**Change.** Capture the actual forced-XY move's velocity, clear-first-trace result
+and accepted pre-categorization endpoint. For finite shallow/no-water airborne
+assists only, reuse the existing default-gravity clear-path/landing proof before
+setting the existing command-local use signal. Expiry during the tick still
+moves. Collision, landing, legacy/deep-water, portal/slide and nonfinite cases
+remain unsupported. No physics, wire field, reader, new rank rule or calibrated
+threshold change.
+
+**Verified.** Windows full isolated NoDeploy build: 74 inherited warnings, none
+in pm_source; incremental subject zero warnings. ARM64 server build: 16 inherited
+warnings, none in pm_source. Both actual native pm_selftest invocations exit0,
+1690 checks/0 failures, including 82 new assertions over 14 cases. Final-fixture
+ARM old-runtime control acts and fails exactly the four expected use assertions;
+subject passes. Observer-on/off entire playermove state matches byte-for-byte;
+positive default-gravity controls actually change the body; collision/landing/
+expiry controls act. Reader949/0; identical568REC+183VIEW bytes/results, existing
+349REC/7VIEW faulty unchanged. Source qualification is NOT independent review,
+deployment, human acceptance or complete retained-state coverage. Delivery held
+for independent frozen-source review and normal native deployment gates.
+
+## Patch 1513 -- optional signed-run journal admission budget (backend only)
+
+Problem: the uploader has an absolute64MiB body ceiling but no operator-configured
+run-length allowance. Missing rate/floor policy blocks choosing a default, not
+implementing a separately opt-in mechanism.
+Change: require both explicit base-byte and per-signed-counted-tick integer
+settings via existing environment-first/surfd.env configuration. Neither present
+keeps legacy behavior; invalid/partial policy fails registration. After existing
+signature/receipt/run/nonce/hash/size joins, apply min(64MiB,base+ticks*rate)
+before body consumption or temporary creation. Unknown clock503 is operational,
+not a player fault; excess413 preserves existing evidence. No coefficient guessed
+or enabled. Rate/absolute/hash/no-replace checks remain.
+Verified: untouched correctly signed/authorized short-run upload actually stored200
+and failed the new413 assertion. Fixed Windows17/17 and ARM17/17 (no skips) cover
+boundary/excess, duration growth, exact capped arithmetic, clock unavailable,
+config validation/snapshot, auth ordering, header-only WSGI read/no temporary,
+existing-file preservation and legacy multi-MiB positive. Actual-app config-file
+and environment-precedence arms ACT. Original ARM Flask2.2 fixture-name failure
+retained, corrected without runtime change. Receipt snapshot checks pass both
+platforms; directory controls pass Windows with explicit mode skip. Separate
+Linux directory test's unchanged FakeClock/monotonic fixture failure reproduces
+on correctly bound subject and prior control with identical keeper code; retained,
+not repaired or called a whole-suite pass. Python syntax/LSP/diff checks pass.
+No reader/recorder/evidence schema/capture/verdict/score/history, native source/
+binary pin/tag or QCBuild change. Source publication is not review/deployment or
+policy activation. Two independent clean-source reviews and existing guarded
+current-source/DATA/fallback/live path pending. Counted ticks are not wall time;
+no calibrated policy, proxy-buffer/aggregate-storage/retention/wall-time claim.
+FTESurf tools/p1513-hid-run-budget.md.
+
+## Patch 1512 -- ordinary save-load preview owns its sent acknowledgement
+
+Problem: the ordinary registered sl_load console path predicted the saved view
+but did not bind its preview to that load's acknowledgement. An old zero ACK could
+start refusal settling and expire the preview before the actual load reply. The
+fallback key path alone assigned the target after its load/hold calls, which was
+not actual deferred-send ownership.
+
+Change: the actual sender binds an immediate load preview to its own counter only
+after context cleanup and in send order. Busy requests do not arm a new preview;
+the existing FIFO still dispatches the real load, without borrowing a newer
+preview. The fallback no longer assigns an ACK after returning from send admission.
+Existing charge, clean-return, hold-release and modern WarpOp paths remain intact.
+Client render preview only: no server/body physics, recording or evidence protocol
+change, native rebuild, engine pin/tag or QC build bump.
+
+Verified: extracted production console/sender/FIFO/camera CPU controls pass71/71
+with an injected300ms ACK. Actual pre-patch helpers from QC abc8caf and the old-ACK
+mutation each act and fail nine checks over eight labels (56checks), including
+pre-reply preview expiry. Existing normal100/100 and rewind36/36 controls pass;
+all fixture compiles have zero warnings. Independent final source/acting-artifact
+review clear. After binding the qualified published P1505 compiler1f2efd06,
+subject71/0, actual prepatch56/9, normal100/0 and rewind36/0 confirmed; all three
+production VMs build with zero warnings via build.ps1 -NoDeploy and all six
+existing Windows program hashes remain unchanged. Not real network, framebuffer,
+body or Mark's reported-jitter acceptance; owner check pending. Public commands,
+source hashes, delivery status and limits: FTESurf tools/p1512-save-preview.md.
+
+## Patch 1511 -- stop ambiguous plane-side scans conservatively
+
+Problem: transparent plane ordering visits every mesh vertex even after the
+running extrema have disproved both strict half-space results. Ambiguous pairs
+cannot gain an ordering proof from the remaining vertices.
+Change: return unknown once the running minimum is at most +2EPS and maximum
+at least -2EPS. Epsilon, eye mapping, admission, face order, graph/memo keys and
+full-vertex work-budget charges are unchanged. The explicit --side-only CPU
+mode checks this helper without claiming the unrelated legacy sort suite.
+Verified: exact extracted C against an independent frozen full-scan reference,
+1,312 cases in each normal/fast-math strict warning-free build; return counts
+375/562/375 agree. Untouched helper's acted work control fails64/64; candidate
+passes2/64. Independent source/oracle review clear. Controlled working-tree Full
+native baseline and C-only incremental candidate both build, all3QCVMs0warnings,
+zero new native warning payloads against the affected baseline translation units;
+only gl_backend.o changes. Same headers/flags/owned JPEG9c cache in both arms.
+Initial compiler PATH/header-line-ending/reader refusals retained, not regraded.
+Real Fairy33811 render/replay advances through39s both arms; alpha-sort trace
+acted. Earlier paused15s exact-pixel claim RETRACTED: an RGBA difference
+getbbox reader tested alpha only; corrected direct bytes/RGB comparison differ.
+Screenshots inspected, not human/full visual equivalence. Numerical native FPS gain
+UNMEASURED: bounded quiet gate refused peer games/lock, no arm ran. This is a
+semantics/acted-work optimization, not a measured gameplay FPS claim. Final
+clean-tag Full0/297.79s completed11Nov23:45:03Z at24a3d0104/tagpatch-1511:
+client532842ea / clean git-8704-patch-1511-0-g24a3d0104;74same warningpayloads,
+zero new; TLS365objects/10symbols/0plainuses. Actual final-client Fairy0->39s,
+then15s paused, canonicalP1508server/plugin compatibility smoke also passes.
+BOTH Windows clients verified12Nov00:04:26Z, independentreadback00:05:04Z:
+exact532842ea/clean1511stamp;19594capturedexistingprotectedfilesbyteunchanged,
+oldprevarchivedandP1508clientin.prev/pre1511. No othernative/progs/config/data
+promotion. ONE reviewed transaction, no owner/peer kill or healthy redeploy.
+Owner wider visual/feel acceptance pending. Default
+legacy CPU suite still stops at its stale three-argument sort-call assertion;
+neither it nor its reported historical cycle failure is qualified here.
+No recorder/physics/protocol/QC Build change. FTESurf tools/p1511-plane-side.md.
+
+## Patch 1510 -- retain the contained worker's lifetime lease (backend only)
+
+Problem: the new contained Popen used close_fds=True by default, dropping the
+transition guard's explicitly inheritable lease. Loss of the parent's descriptor
+could therefore permit a premature drain while its comparison was still alive.
+Change: preserve already inheritable descriptors across prlimit/Python exec;
+ordinary CLOEXEC handles remain private. No new descriptor is made inheritable.
+Existing resource limits, bounded IPC, comparison/observation/ranking behavior,
+database admission and owned timeout/reap remain unchanged.
+Verified: actual untouched P1509 control comparison ACTED; after the parent
+released its own shared lease, the exclusive probe succeeded during blocked
+work and the new assertion failed. Fixed ARM17/17: child retains original lease
+inode/inheritability, child-only lock contends, ordinary private FD inode stays
+excluded, and drain succeeds after exit. Windows11pass/6actual-Linuxskips;
+Python parsing/diff checks pass. Unchanged P1509 reader/corpus evidence reused,
+not remeasured or regraded. Two independent clean-source reviews and existing
+guarded-generation/live rollout PENDING. No native source/binary pin/tag,
+evidence/capture/schema/threshold/verdict or QCBuild change. This is not a
+whole-generation promotion, parent-death recovery or bounded orphan-reap proof;
+parent loss may leave a lease holder and closure must fail closed.
+FTESurf tools/p1510-simcheck-lease.md.
+
+## Patch 1509 -- contained cron similarity phase (backend only)
+
+Problem: cooperative comparison deadlines do not bound an in-flight load/compare
+inside the cron process before badge verification. A new child also must not
+rerun account-policy migrations or wait five seconds before its lock budget.
+Change: the existing sweep entrypoint runs only similarity under pre-bootstrap
+Linux address-space/CPU limits, bounded IPC and a finite parent kill/reap wait.
+Missing containment abstains. Existing-only exact-schema admission skips runtime
+initialization and uses the requested native lock wait from its first RO probe;
+normal callers retain their default. Historical committed rows/source recovery
+survive interruption; final counters are unknown, not measured zero.
+Verified: actual ARM16/16 process/admission controls, original cooperative acting
+control overruns the same three-second test wait, and existing ARM schema/CLI/
+similarity/sweep controls pass. Windows37-entrypoint campaign has zero new
+failures; two admin UDP assertions reproduce on untouched source. Reader949/0;
+all568REC/183VIEW bytes and fault lists unchanged, including349/7existing faulty
+files. An initial real tier-migration failure was corrected, not accepted.
+Independent clean-source review and guarded-generation/live rollout remain
+PENDING; source publication is not deployment. No new capture/schema/threshold,
+verdict/ranking/physics, native source/pin/tag or QCBuild change. Address-space/
+CPU/wait containment is not total RSS, scheduler fairness or an unconditional
+kernel-uninterruptible reap/startup deadline. FTESurf tools/p1509-simcheck-process.md.
+
+## Patch 1508 -- bounded QuakeWorld snapshot delivery
+
+Problem: replacement stats can starve mandatory output; locally discarded QW
+snapshots can retire unsent resend records. Voice admission misses one header byte.
+Change: prepare every seat's stats before measuring clientdata once; reserve its
+bytes plus shared entity/VR admission, preserving wire order and resend limits.
+Recover explicit discarded/stale frames; retain sequence checks for network loss.
+NQ/legacy flow unchanged; correct voice's six-byte header budget.
+Verified: CPU seam44/44; production datagram/drop/ACK/budget15/15 versus baseline's
+nine expected failures, zero fixture warnings; independent source review clear.
+Full Windows client/server/five plugins74 and ARM server16/HL2one warning payloads
+match actual baselines: zero new. Old/new Windows and ARM each pass1608 numeric
+checks; all90 full-content physics rows agree, plus approved historical controls.
+Delivered11Nov2026UTC: BOTH Windows/default10 at18:12Z, exact native/prev hashes,
+all20 preimages archived before writes and protected16430 entries unchanged.
+Minimal patch-1508-arm pair at19:03-19:09Z: ALL12 fresh native actors/plugins and
+prev hashes verified, protected58271 entries unchanged, native UID/GID retained.
+Complete native4/parts9/resume207 preimages verified off-box before staging;
+initial live-writer and inherited-group guard refusals preserved, no data waiver,
+Root action, ownership change or verifier downgrade. Progs/configs/backend stay.
+Human save/load acceptance remains pending; no player-cause or crash-fixed claim.
+Scope: transport/clientdata/entity PVS fixture services remain bounded doubles.
+Public provenance/limits: FTESurf tools/p1508-snapshot-delivery.md.
+
+## Patch 1507 -- stable sprite draw lists (QuakeC only)
+
+Problem: material-major sprite drawing scanned every slot once per material and
+again for light glows; QC's eager hide test also read mismatched slots.
+Change: lazy, stable material/glow index chains retain ascending slot order,
+original sprite identities and all existing fade/trace/cull/geometry work.
+Every successful add and map-table reload invalidates the lists, including
+same-count template reuse. Cold FX-only frames initialize empty lists safely.
+Verified: all three QC programs compile with zero warnings; exact builder in a
+native dedicated-server QC VM passes 12,824 synthetic ordering/lifetime checks.
+Independent corrected-source review has no blockers. Fairy full-replay quiet
+A/B old/new/new/old: first paired 0.1% lows 90/111 -> 96/116 FPS; reverse pair
+86/124 new vs 82/93 old. Final control slowed broadly, so no stable pooled
+percentage or every-map gain is claimed. Screenshots show no obvious difference;
+owner visual acceptance remains pending. tools/p1507-sprite-drawlists.md retains
+all measurements, limits and failed diagnostic evidence. No native pin/tag,
+mover, recorder/evidence format, sort policy or QCBuild change. Delivery separate.
+
+## Patch 1506 -- defensive raw preprocessor and include extents
+
+Problem: raw include and pragma acquisition bypassed ordinary token bounds,
+include parsing did not stop on a raw source terminator, empty pragma trimming
+formed a before-object pointer, and core include loading copied a resolved name
+into a smaller fixed destination without a complete-copy check.
+Change: reserve acquisition terminators before append, reject raw include EOF,
+trim from a bounded one-past endpoint, and require a complete bounded core-name
+copy before loading. Existing fitting operands, pragmas, syntax/diagnostics,
+include search and both compilation-unit paths are unchanged.
+Verified: actual compiler controls include short quote/angle includes with decoded
+values, supported pragma output-CRC changes, fitting-argument boundaries, empty
+pragmas and acting refusals; seven fitting predecessor counterparts agree.
+Sixty-three exact acquisition-fragment and 30 exact core-include observations
+intercept original invalid accesses/pointer formation before execution, preserve
+canaries, and distinguish over-strict guards. Core boundaries are source-bound
+with a stubbed loader, not maximum OS-path acceptance. Ordinary file loading
+appends a newline, so its existing line-boundary refusal is distinct from the
+raw-NUL EOF guard. Two bounded independent source reviews are clear. Full native/
+plugin build matches 74 prior warning payloads and three QC programs have none.
+Final tagged/installed provenance is separate; no remote exploit, full parser
+or anti-cheat closure claim.
+
+## Patch 1505 -- defensive identifier token extents
+
+Problem: identifier scanning and its malformed-text diagnostic copied bytes
+without consistently enforcing the shared token destination extent.
+Change: one private append guard reserves the final terminator in both paths,
+using the existing name-length category and compile-fatal handler. Accepted
+identifier syntax, UTF8 decoding, diagnostics within capacity and the smaller
+language-level declaration-name limit are unchanged.
+Verified: production compiler controls preserve emitted scalar values for eight
+ordinary ASCII/UTF8 and declaration-boundary counterparts, preserve the existing
+syntax-limit refusals, and cleanly refuse excessive token/diagnostic data.
+Forty-two source-bound observations use the exact scanner and UTF8 decoder,
+intercept original invalid stores before access, distinguish an over-strict
+guard and preserve canaries. Independent source review is clear for this bounded
+change and its qualified scalar-declaration test route. Full Windows native and
+plugin build matches all 74 predecessor warning payloads; three QC programs
+compile without warnings. Final installed provenance is recorded separately.
+No remote-exploitability, full parser audit or anti-cheat completion claim.
+
+## Patch 1503 -- defensive numeric token extents
+
+Problem: compiler numeric scanning did not consistently enforce the destination
+extent before appending token bytes.
+Change: one private append guard reserves the final terminator across the numeric
+scanners and uses the existing compile-fatal error path. Accepted syntax, value
+conversion, suffix/type selection and caller dispatch are unchanged. No compiler
+API, gameplay, evidence format, policy or default change.
+Verified: production compiler controls include 33 accepted counterparts and 31
+clean refusals, with decoded values/vectors/CRC and accepted diagnostic parity;
+four additional function-body/source-list controls prove fatal error contexts.
+Source-bound helper controls distinguish removed and overly strict guards before
+an invalid store, with unchanged canaries. Independent source review is clear
+following an error-path correction. Full Windows native/plugin and three-VM build
+passes with no new warning payloads (74 native, six clean standalone compiler,
+matching predecessor); runtime installation provenance is recorded separately.
+No remote-exploitability or complete security/anti-cheat acceptance claim.
+
+## Patch 1483 -- Jargon search: the finish's reach, repeatable searches, fixes (QC only)
+
+**Problem:** Jargon (`tas autosurf`) gave up a course's finish after one short search, because a 400 u reach near the
+end tied every line on energy and its coast fell into a fail teleport, and a chain-wide coast counter cut every later
+visit to one 30-generation search. The search used random(), so no result could be repeated or compared. Old saves
+could be replaced by a new Start that got less far, and reviews found a server crash, an effort step that stopped a
+run, and editor handles that changed nothing.
+
+**Change (FTESurf QC: sv_tasoptimize.qc, sv_tasautosurf.qc, cl_jargon.qc, cl_tasoptui.qc, cl_main.qc):** a seeded
+search RNG (`seed`; fresh per Start/Continue unless tas_jargon_seed is set); a course's end as the finish's reach
+(`endz`/`endtrack`: entering the end box, swept, or the teleport into it outranks any reach; a near-end reach is ranked
+by and played to its nearest approach); each visit to the finish its tries; falls diagnosed only into the course's own
+start/stage box (`startz`/`startz2`); an archive of a search's distinct reaching lines, `play K` and autosurf `beam`;
+per-ramp priors (data/jargon/<map>/<leg>.prior); switches for the older repair rules (tas_jargon_off); opt-in turn
+points (`turns`) and an air point's heading (`airdir`); the lookahead weight as an option (`lookw`). No engine change.
+
+**Verified:** a seeded benchmark (FTESurf tools/p1483_bench.py; pinned client 7930cc92, server a801824e, plugin
+8204a248; three courses, two runs each, 25 min a run): surf_tensor2 stage 2 finished 2 of 2 (0:12.825, 0:12.330; the
+replay 12.570), was 1 of 2; stage 5 and surf_shape bonus 1 no further than before. Measured and not kept: turn points
+(stage 5 one board earlier), launch points, a 240 turn clamp (stage 5 less far, reverted), a 10x lookahead weight (no
+change). Reviews D-K (lenses, then one per fix); the crash (a `||` guard read topt_arco[-3]) was found by the bench.
+Delivered 11 Nov from FTESurf main 46264909 (record 563833bc), compiler b4741193: 12 lobbies and both installs
+cs 9b89f51e / qw dc411980; tasrevd codes.txt 119. Open: FTESurf BACKLOG "Jargon" (stage 5's S of hard air strafes;
+the bonus's ramp-1 board).
+
 ## Patch 1502 -- scoped public map admission (backend only)
 
 Problem: importing one qualified set through the global map watcher also touched
@@ -24,6 +524,30 @@ catalogue-merge arm0 failures/no skips. Independent initial and repair reviews
 clear. Earlier fixture/reader/launcher refusals retained. Source only, no canonical
 map admission or privileged runtime promotion claimed; see FTESurf
  tools/p1502-scoped-map-admission.md. No native pin/tag, mover or QC Build change.
+
+## Patch 1501 -- static prop models load behind the loading screen (gl_shader.c; plugin mod_vbsp.c)
+
+Problem: on Source maps the hl2 plugin requested only solid static props at load (collision); the rest loaded in the
+first frame that drew them (P1364's light warm waits for all of them there) and registered their materials then. A
+program first created by such a material was never warmed -- P1277's activation compiles remembered permutations only
+for shaders in use, and a new program's base permutation compiles at creation. surf_fairy, Lex's warm list and render
+settings: ~120 prop shaders registered in the first rendered frame, 4 late compiles a play (2 of them remembered in
+the warm list), 66 late texture uploads. Lex's fullscreen dump had a 52.83 ms frame with 1 compile, two ~15 ms with 2.
+
+Fix: VBSP_BuildBIHMain (main thread, queued before the world finishes, so before activation) requests every prop
+model when hl2_lt_prewarm is on and the plugin has an image interface; r_mapready's first drain also waits for every
+model in mod_known still MLS_LOADING, for at most half of r_mapready_budget so the compiles keep the rest;
+ready-closure needs none pending.
+
+Measured (lows2 rig, a diag build logging each late compile and late shader registration; Lex's warm list and render
+settings): fairy late prop shaders ~120 -> 0, late compiles 4 -> 0, late uploads 66 -> 1; bhop_orgrimmar 15 -> 0,
+2 -> 0, 31 -> 1; surf_tendies unchanged (its one late compile is the CSQC sun glare's material, registered on first
+sight). Load time unchanged (fairy 31 s, orgrimmar 10 s, two launches each); fairy's activation 0.05 -> 0.13 s, 97
+programs warmed (95). One review: the prop wait shared the compile deadline (now half), ready-closure ignored props,
+a HAVE_CLIENT guard did nothing (the plugin's own qrenderer is the test).
+
+Known: fairy's first frame after spawn is still ~2 s (network 1.2 s, hl2 props 0.6 s); a headless client now loads
+every prop; the sun glare's material still registers on first sight.
 
 ## Patch 1500 -- bound compiler string separator appends
 

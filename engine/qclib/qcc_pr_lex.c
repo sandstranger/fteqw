@@ -1019,11 +1019,15 @@ static pbool QCC_PR_Precompiler(void)
 			a=0;
 			while(*pr_file_p != sm)
 			{
+				if (!*pr_file_p)
+					QCC_Error(ERR_EOF, "Unterminated #include");
 				if (*pr_file_p == '\n')
 				{
 					QCC_PR_ParseError(0, "#include continued over line boundry\n");
 					break;
 				}
+				if ((unsigned)a >= sizeof(msg)-1)
+					QCC_Error(ERR_NAMETOOLONG, "Include name exceeds %u bytes", (unsigned)sizeof(msg)-1);
 				msg[a++] = *pr_file_p;
 				pr_file_p++;
 			}
@@ -1096,14 +1100,16 @@ static pbool QCC_PR_Precompiler(void)
 					if (*pr_file_p != '(')
 						continue;
 				}
+				if ((unsigned)a >= sizeof(msg)-1)
+					QCC_Error(ERR_NAMETOOLONG, "Pragma token exceeds %u bytes", (unsigned)sizeof(msg)-1);
 				msg[a++] = *pr_file_p;
 			}
 
 			msg[a] = '\0';
 			{
 				char *end;
-				for (end = msg + a-1; end>=msg && qcc_iswhite(*end); end--)
-					*end = '\0';
+				for (end = msg + a; end>msg && qcc_iswhite(end[-1]); )
+					*--end = '\0';
 			}
 
 			if (!*qcc_token)
@@ -1114,8 +1120,8 @@ static pbool QCC_PR_Precompiler(void)
 
 			{
 				char *end;
-				for (end = msg + a-1; end>=msg && qcc_iswhite(*end); end--)
-					*end = '\0';
+				for (end = msg + a; end>msg && qcc_iswhite(end[-1]); )
+					*--end = '\0';
 			}
 
 			if (!QC_strcasecmp(qcc_token, "DONT_COMPILE_THIS_FILE"))
@@ -2018,6 +2024,14 @@ forcebyte:
 PR_LexNumber
 ==============
 */
+// Every data append reserves the caller's final NUL; overflow aborts the compile.
+static void QCC_PR_NumberChar (int *len, int c)
+{
+	if ((unsigned)*len >= sizeof(pr_token)-1)
+		QCC_Error(ERR_NOTANUMBER, "Numeric token exceeds %u bytes", (unsigned)sizeof(pr_token)-1);
+	pr_token[(*len)++] = c;
+}
+
 int QCC_PR_LexInteger (void)
 {
 	int		c;
@@ -2027,15 +2041,13 @@ int QCC_PR_LexInteger (void)
 	c = *pr_file_p;
 	if (pr_file_p[0] == '0' && (pr_file_p[1] == 'x' || pr_file_p[1] == 'X'))
 	{
-		pr_token[0] = '0';
-		pr_token[1] = 'x';
-		len = 2;
+		QCC_PR_NumberChar(&len, '0');
+		QCC_PR_NumberChar(&len, 'x');
 		c = *(pr_file_p+=2);
 	}
 	do
 	{
-		pr_token[len] = c;
-		len++;
+		QCC_PR_NumberChar(&len, c);
 		pr_file_p++;
 		c = *pr_file_p;
 	} while ((c >= '0' && c<= '9') || (c == '.'&&pr_file_p[1]!='.') || (c>='a' && c <= 'f'));
@@ -2063,15 +2075,15 @@ static void QCC_PR_LexNumber (void)
 		sign=-1;
 		pr_file_p++;
 
-		pr_token[tokenlen++] = '-';
+		QCC_PR_NumberChar(&tokenlen, '-');
 	}
 	if (pr_file_p[0] == '0' && (pr_file_p[1] == 'x' || pr_file_p[1] == 'X'))
 	{
 		pr_file_p+=2;
 		base = 16;
 
-		pr_token[tokenlen++] = '0';
-		pr_token[tokenlen++] = 'x';
+		QCC_PR_NumberChar(&tokenlen, '0');
+		QCC_PR_NumberChar(&tokenlen, 'x');
 	}
 	else if (pr_file_p[0] == '0')
 	{
@@ -2080,7 +2092,7 @@ static void QCC_PR_LexNumber (void)
 			QCC_PR_ParseWarning(WARN_OCTAL_IMMEDIATE, "A leading 0 is interpreted as base-8.");
 		base = 8;
 
-		pr_token[tokenlen++] = '0';
+		QCC_PR_NumberChar(&tokenlen, '0');
 	}
 
 	pr_immediate_type = NULL;
@@ -2092,25 +2104,25 @@ static void QCC_PR_LexNumber (void)
 	{
 		if (c >= '0' && c <= '9' && c < '0'+base)
 		{
-			pr_token[tokenlen++] = c;
+			QCC_PR_NumberChar(&tokenlen, c);
 			num*=base;
 			num += c-'0';
 		}
 		else if (c >= 'a' && c <= 'z' && c < 'a'+base-10)
 		{
-			pr_token[tokenlen++] = c;
+			QCC_PR_NumberChar(&tokenlen, c);
 			num*=base;
 			num += c -'a'+10;
 		}
 		else if (c >= 'A' && c <= 'Z' && c < 'A'+base-10)
 		{
-			pr_token[tokenlen++] = c;
+			QCC_PR_NumberChar(&tokenlen, c);
 			num*=base;
 			num += c -'A'+10;
 		}
 		else if (c == '.' && pr_file_p[1]!='.')
 		{
-			pr_token[tokenlen++] = c;
+			QCC_PR_NumberChar(&tokenlen, c);
 			pr_file_p++;
 			pr_immediate_type = flag_assume_double?type_double:type_float;
 			while(1)
@@ -2118,7 +2130,7 @@ static void QCC_PR_LexNumber (void)
 				c = *pr_file_p;
 				if (c >= '0' && c <= '9')
 				{
-					pr_token[tokenlen++] = c;
+					QCC_PR_NumberChar(&tokenlen, c);
 				}
 				else if (c == 'f' || c == 'F')
 				{
@@ -2147,7 +2159,7 @@ static void QCC_PR_LexNumber (void)
 		}
 		else if (c == 'f' || c == 'F')
 		{
-			pr_token[tokenlen++] = c;
+			QCC_PR_NumberChar(&tokenlen, c);
 			pr_token[tokenlen++] = 0;
 			pr_file_p++;
 			pr_immediate_type = type_float;
@@ -2160,7 +2172,7 @@ static void QCC_PR_LexNumber (void)
 		}
 		else if (c == 'd' || c == 'D')
 		{	//note: conflicts with hex. add a dot before it or something.
-			pr_token[tokenlen++] = c;
+			QCC_PR_NumberChar(&tokenlen, c);
 			pr_token[tokenlen++] = 0;
 			pr_file_p++;
 			pr_immediate_type = type_double;
@@ -2175,18 +2187,18 @@ static void QCC_PR_LexNumber (void)
 		{	//length and sign flags can be any order. LL suffix must have the same case (but not necessarily match the sign suffix)
 			int isunsigned;
 			int islong = (c == 'l')||(c == 'L');
-			pr_token[tokenlen++] = c;
+			QCC_PR_NumberChar(&tokenlen, c);
 			pr_file_p++;
 			if (islong)
 			{	//length suffix was first.
 				//long-long?
 				if (*pr_file_p == c)
-					islong++, pr_token[tokenlen++] = *pr_file_p++;
+					islong++, QCC_PR_NumberChar(&tokenlen, *pr_file_p++);
 				//check for signed suffix...
 				c = *pr_file_p;
 				isunsigned = (c == 'u')||(c=='U');
 				if (c == 'i' || c == 'I' || isunsigned)	//ignore an explicit redundant 'i' char, for not-a-float.
-					pr_token[tokenlen++] = *pr_file_p++;
+					QCC_PR_NumberChar(&tokenlen, *pr_file_p++);
 			}
 			else
 			{
@@ -2195,11 +2207,11 @@ static void QCC_PR_LexNumber (void)
 				c = *pr_file_p;
 				if (c == 'l' || c == 'L')
 				{
-					pr_token[tokenlen++] = *pr_file_p++;
+					QCC_PR_NumberChar(&tokenlen, *pr_file_p++);
 					islong = true;
 					//long-long?
 					if (*pr_file_p == c)
-						islong++, pr_token[tokenlen++] = *pr_file_p++;
+						islong++, QCC_PR_NumberChar(&tokenlen, *pr_file_p++);
 				}
 			}
 			pr_token[tokenlen++] = 0;
@@ -2294,8 +2306,7 @@ static float QCC_PR_LexFloat (void)
 	c = *pr_file_p;
 	do
 	{
-		pr_token[len] = c;
-		len++;
+		QCC_PR_NumberChar(&len, c);
 		pr_file_p++;
 		c = *pr_file_p;
 	} while ((c >= '0' && c<= '9') || (c == '.'&&pr_file_p[1]!='.'));	//only allow a . if the next isn't too...
@@ -2406,6 +2417,14 @@ PR_LexName
 Parses an identifier
 ==============
 */
+// Both identifier bytes and diagnostic text leave room for the final NUL.
+static void QCC_PR_NameChar (int *len, int c)
+{
+	if ((unsigned)*len >= sizeof(pr_token)-1)
+		QCC_Error(ERR_NAMETOOLONG, "Name token exceeds %u bytes", (unsigned)sizeof(pr_token)-1);
+	pr_token[(*len)++] = c;
+}
+
 static void QCC_PR_LexName (void)
 {
 	unsigned int		c;
@@ -2434,7 +2453,7 @@ static void QCC_PR_LexName (void)
 			{
 				len = 0;
 				while (*pr_file_p && !qcc_iswhite(*pr_file_p))
-					pr_token[len++] = *pr_file_p++;
+					QCC_PR_NameChar(&len, *pr_file_p++);
 				pr_token[len++] = 0;
 				pr_file_p = o;
 				QCC_PR_ParseError(ERR_NOTANAME, "Invalid UTF-8 code sequence before %s. Lead byte was %#2x", pr_token, lead);
@@ -2442,10 +2461,7 @@ static void QCC_PR_LexName (void)
 			return;
 		}
 		while(b-->0)
-		{
-			pr_token[len] = *pr_file_p++;
-			len++;
-		}
+			QCC_PR_NameChar(&len, *pr_file_p++);
 		c = *pr_file_p;
 	} while ( (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || c == '_'
 	|| (c >= '0' && c <= '9') || (c & 0x80));

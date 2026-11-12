@@ -105,6 +105,7 @@ static struct
 	int models, modelpending, modelfailed, modelunrequested;
 	int images, imagepending, imagefailed, imageunrequested;
 	unsigned int latecompiles, latefailed, lateimages, lateimagefailed;
+	int otherpending;	//FTESurf Patch 1501: requested models outside the precache lists (static props), still loading
 	double seconds, lateseconds, lateimageseconds;
 	char lastprogram[MAX_QPATH], lastimage[MAX_QPATH];
 	unsigned int lastperm;
@@ -5745,6 +5746,7 @@ static void MapReady_Model(model_t *mod, const char *name)
 		mapready.modelpending++;
 }
 
+extern int mod_numknown;	//gl_model.c; mod_known is in merged.h
 static void MapReady_Resources(void)
 {
 	int i;
@@ -5755,6 +5757,12 @@ static void MapReady_Resources(void)
 		MapReady_Model(cl.model_csqcprecache[i], cl.model_csqcname[i]);
 	for (i = 0; i < MAX_VWEP_MODELS; i++)
 		MapReady_Model(cl.model_precache_vwep[i], cl.model_name_vwep[i]);
+	//FTESurf Patch 1501: and any other model already asked for -- the hl2 plugin's static props, which register
+	//their materials when they finish; first drawn after activation, their programs were never warmed
+	mapready.otherpending = 0;
+	for (i = 0; mod_known && i < mod_numknown; i++)
+		if (mod_known[i].loadstate == MLS_LOADING)
+			mapready.otherpending++;
 	Image_Readiness(&mapready.images, &mapready.imagepending, &mapready.imagefailed, &mapready.imageunrequested);
 }
 
@@ -5771,13 +5779,13 @@ static void MapReady_KeepAlive(void)
 #endif
 }
 
-static void MapReady_Drain(double deadline)
+static void MapReady_Drain(double deadline, double otherdeadline)	//Patch 1501: other models wait to otherdeadline
 {
 	for (;;)
 	{
 		MapReady_KeepAlive();
 		MapReady_Resources();
-		if (!mapready.modelpending && !mapready.imagepending)
+		if (!mapready.modelpending && !mapready.imagepending && (!mapready.otherpending || Sys_DoubleTime() >= otherdeadline))
 			break;
 		if (Sys_DoubleTime() >= deadline)
 		{
@@ -5807,6 +5815,7 @@ void R_MapReadyInfo_f(void)
 		mapready.seconds, mapready.budgethit, mapready.overflow);
 	Con_Printf("mapready: programs %i unavailable %i eligible %i available %i compiled %i failed %i pending %i\n",
 		mapready.programs, mapready.unavailable, mapready.eligible, mapready.available, mapready.compiled, mapready.failed, mapready.pending);
+	Con_Printf("mapready: other requested models still loading %i\n", mapready.otherpending);	//FTESurf Patch 1501
 	Con_Printf("mapready: activation models %i pending %i failed %i unrequested %i images %i pending %i failed %i unrequested %i\n",
 		mapready.models, mapready.modelpending, mapready.modelfailed, mapready.modelunrequested,
 		mapready.images, mapready.imagepending, mapready.imagefailed, mapready.imageunrequested);
@@ -5837,7 +5846,7 @@ void GLSLWarm_MapActive(void)
 	else
 	{
 		GLSLWarm_Load();
-		MapReady_Drain(deadline);
+		MapReady_Drain(deadline, start + (deadline - start) * 0.5);	//Patch 1501: props get half; the rest stays the compiles'
 		capacity = min(r_numshaders, 32768) * (SHADER_PASS_MAX + 1);
 		programs = malloc(max(1, capacity) * sizeof(*programs));
 		if (!programs || !glslwarm_mem)
@@ -5916,8 +5925,8 @@ void GLSLWarm_MapActive(void)
 			}
 		}
 		free(programs);
-		MapReady_Drain(deadline);
-		if (!mapready.overflow && !mapready.unavailable && !mapready.failed && !mapready.pending &&
+		MapReady_Drain(deadline, 0);	//a prop finishing now is past the shader walk anyway
+		if (!mapready.overflow && !mapready.unavailable && !mapready.failed && !mapready.pending && !mapready.otherpending &&
 			!mapready.modelpending && !mapready.modelfailed && !mapready.modelunrequested &&
 			!mapready.imagepending && !mapready.imagefailed && !mapready.imageunrequested)
 			mapready.state = "ready-closure";
