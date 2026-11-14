@@ -255,6 +255,7 @@ typedef struct {
 	qboolean blit_noscale;					//glBlitFramebuffer is GL_ANGLE_framebuffer_blit's: same-size rectangles, GL_NEAREST, whole depth buffers only
 	int defaultfb_samples;					//GL_SAMPLES of the window's own framebuffer (EGL multisample surface)
 	int mali_driver[2];						//Mali r<major>p<minor> from GL_VERSION, {-1,-1} when not a Mali driver
+	qboolean angle;							//the GLES driver is ANGLE (GL_RENDERER / GL_VERSION name it)
 	int num_program_binary_formats;			//GL_NUM_PROGRAM_BINARY_FORMATS (0: binaries cannot be cached)
 	qboolean program_binary_core;			//glProgramBinary/glProgramParameteri core (gles3/gl4.1), else OES_get_program_binary
 

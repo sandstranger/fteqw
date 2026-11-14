@@ -766,6 +766,8 @@ static qboolean GL_CheckExtensions (void *(*getglfunction) (char *name))
 	else
 		gl_config.ext_color_buffer_float = gl_config.ext_color_buffer_half_float = gl_config.glversion >= 3 || GL_CheckExtension("GL_ARB_texture_float");
 
+	gl_config.angle = (gl_renderer && strstr(gl_renderer, "ANGLE")) || (gl_version && strstr(gl_version, "ANGLE"));
+
 	//Mali drivers say "OpenGL ES 3.2 v1.r44p0-..." in GL_VERSION; the minor 'p' number tracks hotfix releases.
 	gl_config.mali_driver[0] = gl_config.mali_driver[1] = -1;
 	if (gl_renderer && strstr(gl_renderer, "Mali"))

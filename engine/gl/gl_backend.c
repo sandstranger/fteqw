@@ -1649,7 +1649,7 @@ The draw/copy/read/blit entry points are wrapped on GLES (GLBE_InstallTileHooks)
 always issued before anything can touch the target, whichever code path draws first.
 ======================================================================================================*/
 static cvar_t gl_tilerenderer = CVARD("gl_tilerenderer", "-1", "Optimise render passes for tile-based gpus: defer clears to the first draw and invalidate attachments that are not needed after their pass. -1: on for OpenGL ES.");
-static cvar_t r_msaa_backend = CVARD("r_msaa_backend", "auto", "How vid_multisample is done on OpenGL ES: auto (render-to-texture with on-chip resolve where available, else multisample renderbuffers with an explicit resolve), rtt, blit, off.");
+static cvar_t r_msaa_backend = CVARD("r_msaa_backend", "auto", "How vid_multisample is done on OpenGL ES: auto (render-to-texture with on-chip resolve where available, else multisample renderbuffers with an explicit resolve; on ANGLE the renderbuffers, its render-to-texture being emulated on Vulkan), rtt, blit, off.");
 static cvar_t gl_workaround_mali3809560 = CVARD("gl_workaround_mali3809560", "-1", "Arm erratum 3809560 (OpenGL ES surface reads missing their dependency on earlier MSAA writes, Mali drivers r44p0-r45p0): use an explicit resolve instead of implicitly resolved render-to-texture MSAA. -1 auto (affected driver versions), 0 off, 1 always.");
 
 static struct
@@ -2143,6 +2143,20 @@ static qboolean MSAA_Mali3809560(void)
 		return gl_workaround_mali3809560.ival > 0;
 	return gl_config.mali_driver[0] >= 44 && gl_config.mali_driver[0] <= 45;
 }
+/*
+ANGLE on Vulkan lists EXT_multisampled_render_to_texture even where the Vulkan driver lacks
+VK_EXT_multisampled_render_to_single_sampled, and then emulates it: each render pass resolves at its end and,
+when it starts by loading, first "unresolves" the texture into a hidden multisampled image with a full-screen
+draw. Every capture, screen copy (refraction, water) and post-process pass breaks the scene's pass, so that is
+several full-screen copies a frame (UZDoom's MSAA crawled that way on a Snapdragon 8 Elite through ANGLE while
+the native driver was fine). Multisample renderbuffers resolved by a blit and then invalidated (MSAA_End) are
+what ANGLE turns into a render pass resolve attachment with no store of the samples: auto takes those there.
+r_msaa_backend rtt still forces ANGLE's render-to-texture (a driver with the Vulkan extension).
+*/
+static qboolean MSAA_AngleAvoidsRTT(void)
+{
+	return gl_config.angle && gl_config.es3_maxsamples > 1 && Q_strcasecmp(r_msaa_backend.string, "rtt");
+}
 //which backend this context could use at all (no target knowledge); 0 when none
 static int MSAA_Possible(bemsaa_t *t, int *maxsamples)
 {
@@ -2165,7 +2179,7 @@ static int MSAA_Possible(bemsaa_t *t, int *maxsamples)
 		return MSAAB_NONE;	//the EGL surface is multisampled already: the scene draws straight into it
 	if (!Q_strcasecmp(r_msaa_backend.string, "off"))
 		return MSAAB_NONE;
-	if (gl_config.msrtt && Q_strcasecmp(r_msaa_backend.string, "blit") && !(MSAA_Mali3809560() && gl_config.es3_maxsamples > 1))
+	if (gl_config.msrtt && Q_strcasecmp(r_msaa_backend.string, "blit") && !(MSAA_Mali3809560() && gl_config.es3_maxsamples > 1) && !MSAA_AngleAvoidsRTT())
 	{
 		*maxsamples = gl_config.msrtt_maxsamples;
 		return MSAAB_RTT;
@@ -2287,6 +2301,8 @@ static int MSAA_ChooseBackend(bemsaa_t *t, int *samples, int depnum, int w, int 
 	}
 	else if (MSAA_Mali3809560() && gl_config.msrtt)
 		*why = "Mali driver erratum 3809560 (implicit resolve)";
+	else if (MSAA_AngleAvoidsRTT() && gl_config.msrtt)
+		*why = "ANGLE emulates multisampled render-to-texture on Vulkan (a resolve and an unresolve draw per render pass)";
 	if (b == MSAAB_BLIT && depnum && gl_config.blit_noscale)
 	{
 		*why = "the depth is read afterwards and GL_ANGLE_framebuffer_blit resolves no depth textures";
