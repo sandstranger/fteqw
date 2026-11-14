@@ -2177,6 +2177,44 @@ static int MSAA_Possible(bemsaa_t *t, int *maxsamples)
 	}
 	return MSAAB_NONE;
 }
+//the most samples, at most 'want', that a multisample renderbuffer of this format supports (0: none at all).
+//'want' itself where the driver cannot be asked (gles2, desktop before 4.2): GL_MAX_SAMPLES has to do there.
+static struct {GLenum fmt; GLint n; GLint counts[8];} msaa_fmtcache[16];
+static int msaa_fmtcached;
+static int MSAA_FormatSamples(GLenum fmt, int want)
+{
+	int i, best = 0;
+	GLint n, *counts;
+	if (!qglGetInternalformativ || !fmt || want < 2)
+		return want;
+	for (i = 0; i < msaa_fmtcached; i++)
+		if (msaa_fmtcache[i].fmt == fmt)
+			break;
+	if (i == msaa_fmtcached)
+	{
+		if (i == countof(msaa_fmtcache))
+			return want;
+		while (qglGetError())
+			;
+		msaa_fmtcache[i].fmt = fmt;
+		msaa_fmtcache[i].n = 0;
+		qglGetInternalformativ(GL_RENDERBUFFER_EXT, fmt, GL_NUM_SAMPLE_COUNTS, 1, &msaa_fmtcache[i].n);
+		if (qglGetError() != GL_NO_ERROR)
+			return want;	//not cached: not a format the query knows
+		msaa_fmtcache[i].n = bound(0, msaa_fmtcache[i].n, (GLint)countof(msaa_fmtcache[i].counts));
+		if (msaa_fmtcache[i].n)
+			qglGetInternalformativ(GL_RENDERBUFFER_EXT, fmt, GL_SAMPLES_FTE, msaa_fmtcache[i].n, msaa_fmtcache[i].counts);
+		if (qglGetError() != GL_NO_ERROR)
+			return want;
+		msaa_fmtcached++;
+	}
+	n = msaa_fmtcache[i].n;
+	counts = msaa_fmtcache[i].counts;
+	for (i = 0; i < n; i++)
+		if (counts[i] <= want && counts[i] > best)
+			best = counts[i];
+	return best;
+}
 static int MSAA_Samples(bemsaa_t *t, int s)
 {
 	int maxs, b;
@@ -2247,6 +2285,11 @@ static int MSAA_ChooseBackend(bemsaa_t *t, int *samples, int depnum, int w, int 
 	}
 	else if (MSAA_Mali3809560() && gl_config.msrtt)
 		*why = "Mali driver erratum 3809560 (implicit resolve)";
+	if (b == MSAAB_BLIT && depnum && gl_config.blit_noscale)
+	{
+		*why = "the depth is read afterwards and GL_ANGLE_framebuffer_blit resolves no depth textures";
+		return MSAAB_NONE;
+	}
 	if (b == MSAAB_BLIT)
 	{
 		size_t budget = (size_t)max(0, r_rtpool_budget_mb.ival) * 1024*1024;
@@ -2295,8 +2338,21 @@ static qboolean MSAA_Begin(bemsaa_t *t, int samples, texid_t col, texid_t depth,
 			MSAA_Free(t);
 		return false;
 	}
-	MSAA_Report(t, backend, why);
 	stencil = Sh_StencilShadowsActive();
+	if (backend == MSAAB_BLIT || backend == MSAAB_DESKTOP)
+	{	//real multisample storage: no more samples than both of its formats have
+		GLint dfmt = depnum ? GLBE_TexInternalFormat(depth) : GLBE_DepthRenderbufferFormat(stencil);
+		int s = min(MSAA_FormatSamples(cfmt, samples), MSAA_FormatSamples(dfmt, samples));
+		if (s < 2)
+		{
+			MSAA_Report(t, 1000, "the scene's colour or depth format has no multisample support on this device");
+			if (t->fbo)
+				MSAA_Free(t);
+			return false;
+		}
+		samples = s;
+	}
+	MSAA_Report(t, backend, why);
 	if (backend == MSAAB_RTT)
 		grow = false;	//the texture itself is attached: the target is exactly its size
 	{
@@ -3110,6 +3166,24 @@ void GLBE_Init(void)
 #ifndef GL_STATIC
 	memset(&be_msaa, 0, sizeof(be_msaa));	//FTESurf Patch 1260: a new context may take what the last refused
 	memset(&be_reflmsaa, 0, sizeof(be_reflmsaa));	//Patch 1276
+	msaa_fmtcached = 0;	//a new context answers the format queries again
+	{	//vid_multisample (and r_reflectmultisample) above what this device has for its msaa path come down to
+		//that, a power of two, so the menu and the config say what is really drawn. Not where no path exists
+		//yet: gles2 without one takes the count for a multisampled window at the next start (gl_gles2_eglmsaa).
+		int maxs = 0, p2 = 1;
+		if (MSAA_Possible(&be_msaa, &maxs) != MSAAB_NONE && maxs > 1)
+		{
+			while (p2*2 <= maxs)
+				p2 *= 2;
+			if (vid_multisample.ival > p2)
+			{
+				Con_Printf("vid_multisample %i: this device supports up to %ix MSAA, set to %i\n", vid_multisample.ival, maxs, p2);
+				Cvar_ForceSet(&vid_multisample, va("%i", p2));
+			}
+			if (r_reflectmultisample.ival > p2)
+				Cvar_ForceSet(&r_reflectmultisample, va("%i", p2));
+		}
+	}
 #endif
 	be_a2con = false;	//FTESurf Patch 1262: a new context starts with A2C off
 
@@ -12637,7 +12711,7 @@ static qboolean GLBE_DrawSkyroomScaled(shader_t *skyshader)
 	//R_DrawSkyroom's own refusals first, so a sky it will not draw costs no target; then what a blit
 	//cannot serve: anaglyph eyes (a blit ignores the colour mask), CSQC render targets (it writes every
 	//draw buffer), multisampled targets
-	if (!(s > 0 && s < 1) || r_refdef.recurse || !qglBlitFramebufferEXT || !gl_config.ext_framebuffer_objects ||
+	if (!(s > 0 && s < 1) || r_refdef.recurse || !qglBlitFramebufferEXT || gl_config.blit_noscale || !gl_config.ext_framebuffer_objects ||
 		be_skyroombroken || r_refdef.colourmask || *r_refdef.rt_destcolour[0].texname || *r_refdef.rt_depth.texname ||
 		r_viewcluster == -1 || r_fastsky.value || !r_refdef.skyroom_enabled)
 		return R_DrawSkyroom(skyshader);

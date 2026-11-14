@@ -165,6 +165,7 @@ void (APIENTRY *qglInvalidateFramebuffer)(GLenum target, GLsizei numattachments,
 void (APIENTRY *qglDiscardFramebufferEXT)(GLenum target, GLsizei numattachments, const GLenum *attachments);
 void (APIENTRY *qglFramebufferTexture2DMultisample)(GLenum target, GLenum attachment, GLenum textarget, GLuint texture, GLint level, GLsizei samples);
 void (APIENTRY *qglRenderbufferStorageMultisampleMSRTT)(GLenum target, GLsizei samples, GLenum internalformat, GLsizei width, GLsizei height);
+void (APIENTRY *qglGetInternalformativ)(GLenum target, GLenum internalformat, GLenum pname, GLsizei bufSize, GLint *params);
 
 //the renderer's GLSL ES ceiling. The GLES path targets OpenGL ES 3.0 / GLSL ES 3.00 even when the driver hands
 //out a 3.1 or 3.2 context: nothing generated may depend on 3.1/3.2 features (compute, SSBO, image load/store,
@@ -1380,10 +1381,34 @@ static qboolean GL_CheckExtensions (void *(*getglfunction) (char *name))
 		qglFramebufferRenderbufferEXT	= (void *)getglext("glFramebufferRenderbuffer");
 		qglCheckFramebufferStatusEXT	= (void *)getglext("glCheckFramebufferStatus");
 		qglGetFramebufferAttachmentParameteriv	= (void *)getglext("glGetFramebufferAttachmentParameteriv");
+		gl_config.blit_noscale = false;
 		if (gl_config.glversion >= 3 || GL_CheckExtension("GL_ARB_framebuffer_object"))
 		{
 			qglBlitFramebufferEXT	= (void *)getglext("glBlitFramebuffer");	//FTESurf Patch 1237: not in gles2
 			qglRenderbufferStorageMultisampleEXT = (void *)getglext("glRenderbufferStorageMultisample");	//FTESurf Patch 1260
+		}
+		else if (gl_config.gles && (GL_CheckExtension("GL_OES_rgb8_rgba8") || GL_CheckExtension("GL_ARM_rgba8")))
+		{	//gles2: multisample renderbuffers with an explicit resolve, from the vendor extensions that have them,
+			//for drivers without multisampled render-to-texture (MSAA_* prefers that one wherever it exists).
+			//Same entry point shapes and enums (GL_MAX_SAMPLES, GL_READ/DRAW_FRAMEBUFFER) as gles3's. The scene
+			//is rgba8, and without OES_rgb8_rgba8 no renderbuffer of that format exists on gles2.
+			if (GL_CheckExtension("GL_NV_framebuffer_multisample") && GL_CheckExtension("GL_NV_framebuffer_blit"))
+			{
+				qglBlitFramebufferEXT	= (void *)getglext("glBlitFramebufferNV");
+				qglRenderbufferStorageMultisampleEXT = (void *)getglext("glRenderbufferStorageMultisampleNV");
+			}
+			else if (GL_CheckExtension("GL_ANGLE_framebuffer_multisample") && GL_CheckExtension("GL_ANGLE_framebuffer_blit"))
+			{
+				qglBlitFramebufferEXT	= (void *)getglext("glBlitFramebufferANGLE");
+				qglRenderbufferStorageMultisampleEXT = (void *)getglext("glRenderbufferStorageMultisampleANGLE");
+				gl_config.blit_noscale = true;	//no scaling, no filtering, depth only as a whole
+			}
+			if (!qglBlitFramebufferEXT || !qglRenderbufferStorageMultisampleEXT)
+			{
+				qglBlitFramebufferEXT = NULL;
+				qglRenderbufferStorageMultisampleEXT = NULL;
+				gl_config.blit_noscale = false;
+			}
 		}
 
 		gl_config.arb_framebuffer_srgb = GL_CheckExtension("GL_ARB_framebuffer_sRGB");
@@ -1483,6 +1508,10 @@ static qboolean GL_CheckExtensions (void *(*getglfunction) (char *name))
 			qglRenderbufferStorageMultisampleMSRTT = NULL;
 		}
 	}
+	//the sample counts each renderbuffer format really has (MAX_SAMPLES is only the most any format has)
+	qglGetInternalformativ = NULL;
+	if ((gl_config.gles && gl_config.glversion >= 3) || (!gl_config.gles && (gl_config.glversion >= 4.2 || GL_CheckExtension("GL_ARB_internalformat_query"))))
+		qglGetInternalformativ = (void *)getglext("glGetInternalformativ");
 	gl_config.es3_maxsamples = 0;
 	if (gl_config.ext_framebuffer_objects && qglRenderbufferStorageMultisampleEXT && qglBlitFramebufferEXT)
 	{
@@ -1508,7 +1537,7 @@ static qboolean GL_CheckExtensions (void *(*getglfunction) (char *name))
 		extern cvar_t vid_multisample;
 		cvar_t *eglmsaa = Cvar_Get("gl_gles2_eglmsaa", "0", CVAR_ARCHIVE, "GL");
 		int want = 0;
-		if (!gl_config.msrtt && vid_multisample.ival > 1)
+		if (!gl_config.msrtt && gl_config.es3_maxsamples < 2 && vid_multisample.ival > 1)
 			want = (vid_multisample.ival >= 4) ? 4 : 2;	//what gles2 gpus with msaa offer as EGL configs
 		if (eglmsaa->ival != want)
 		{
@@ -3766,6 +3795,7 @@ void GL_ForgetPointers(void)
 	qglFramebufferTexture2DEXT	= NULL;
 	qglBlitFramebufferEXT		= NULL;
 	qglRenderbufferStorageMultisampleEXT = NULL;
+	qglGetInternalformativ		= NULL;
 #endif
 
 	//no GL_EXT_stencil_two_side

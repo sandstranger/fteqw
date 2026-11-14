@@ -252,6 +252,7 @@ typedef struct {
 	qboolean msrtt2;						//GL_EXT_multisampled_render_to_texture2: depth/other attachments may be multisampled textures too
 	int msrtt_maxsamples;					//GL_MAX_SAMPLES_EXT / GL_MAX_SAMPLES_IMG
 	int es3_maxsamples;						//GL_MAX_SAMPLES for gles3 multisample renderbuffers (explicit-resolve fallback)
+	qboolean blit_noscale;					//glBlitFramebuffer is GL_ANGLE_framebuffer_blit's: same-size rectangles, GL_NEAREST, whole depth buffers only
 	int defaultfb_samples;					//GL_SAMPLES of the window's own framebuffer (EGL multisample surface)
 	int mali_driver[2];						//Mali r<major>p<minor> from GL_VERSION, {-1,-1} when not a Mali driver
 	int num_program_binary_formats;			//GL_NUM_PROGRAM_BINARY_FORMATS (0: binaries cannot be cached)
@@ -1159,6 +1160,7 @@ extern void (APIENTRY *qglInvalidateFramebuffer)(GLenum target, GLsizei numattac
 extern void (APIENTRY *qglDiscardFramebufferEXT)(GLenum target, GLsizei numattachments, const GLenum *attachments);	//GL_EXT_discard_framebuffer (gles2)
 extern void (APIENTRY *qglFramebufferTexture2DMultisample)(GLenum target, GLenum attachment, GLenum textarget, GLuint texture, GLint level, GLsizei samples);	//GL_EXT/IMG_multisampled_render_to_texture
 extern void (APIENTRY *qglRenderbufferStorageMultisampleMSRTT)(GLenum target, GLsizei samples, GLenum internalformat, GLsizei width, GLsizei height);	//the same extension's renderbuffer half
+extern void (APIENTRY *qglGetInternalformativ)(GLenum target, GLenum internalformat, GLenum pname, GLsizei bufSize, GLint *params);	//gles3 / gl4.2: sample counts per renderbuffer format
 extern void (APIENTRY *qglProgramParameteri)(GLuint program, GLenum pname, GLint value);	//gles3 / gl4.1
 extern void (APIENTRY *qglGetProgramBinary)(GLuint program, GLsizei bufSize, GLsizei *length, GLenum *binaryFormat, GLvoid *binary);
 extern void (APIENTRY *qglProgramBinary)(GLuint program, GLenum binaryFormat, const GLvoid *binary, GLint length);
@@ -1177,6 +1179,9 @@ extern void (APIENTRY *qglProgramBinary)(GLuint program, GLenum binaryFormat, co
 #endif
 #ifndef GL_MAX_SAMPLES_IMG
 #define GL_MAX_SAMPLES_IMG						0x9135
+#endif
+#ifndef GL_NUM_SAMPLE_COUNTS
+#define GL_NUM_SAMPLE_COUNTS					0x9380
 #endif
 #ifndef GL_SAMPLES_FTE
 #define GL_SAMPLES_FTE							0x80A9	//GL_SAMPLES
