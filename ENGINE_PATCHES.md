@@ -1,5 +1,46 @@
 # Engine patches (fteqw `fteqw64.exe`)
 
+## Patch 1551 — Android GLES renderer: GLES 3.0 baseline, tile-based render passes, GLES MSAA, render target pool, program binary cache, bounded texture decode (14 Nov 2026)
+
+**Problem.** The GLES path compiled GLSL ES 3.10/3.20 on 3.1/3.2 contexts (`maxglslversion`, `sh_config.maxver`,
+`GLSlang_CreateShader`) and enabled geometry/tessellation/texture buffers there, so a 3.0 device ran untested code.
+Several embedded shaders never compiled on any GLES driver (no default precision for `sampler2DShadow`/`sampler3D`/
+`sampler2DArray` — every fake-shadow permutation of rtlight/lpp_light; `texture3D` and a 2D-declared LUT in colourtint;
+int→float in default2danim; the reserved word `sample` in crepuscular_rays). `MSAA_Samples` refused GLES outright.
+No attachment was ever invalidated; the scene target was cleared depth-only (a tile GPU loaded last frame's colour) and
+its clear-only pass was split off by the shadow maps/sky room. Post-process kept one full-screen target per stage
+name. `GLSlang_LoadBlob` returned false; nothing loaded a program binary. `glGenerateMipmap` was resolved before
+`gl_config.glversion` existed (always NULL). GLES3: packed depth-stencil never detected (16-bit scene depth),
+DEPTH_COMPONENT24 with UNSIGNED_BYTE, RGBA16F with UNSIGNED_BYTE, GL_RGB-with-GL_RGBA water copies, half-float
+targets chosen without EXT_color_buffer_half_float (black view with scene gamma). Gles-only entry points (sync,
+instancing, map buffer, texture buffer, GetTexLevelParameteriv) were trusted from a name lookup. A decoded image kept
+its compressed file alive through mip generation; the decoded-upload queue was unbounded (4 workers).
+
+**Change.** `gl_vidcommon.c`: GLSL ES 3.00 ceiling (`GLES_GLSL_BASELINE`), source built without GL calls
+(`GLSlang_BuildShaderSource`) and keyed by sha256 (`GLSlang_HashProgram`); sampler precisions/aliases in the GLES
+preamble; extension/version-gated pointers; invalidate/discard, EXT/IMG multisampled-render-to-texture, ES3 MSAA,
+program-binary format probing; `GLSlang_LoadBlob` restored with bounds checks. New `gl_shadercache.c`: per-driver
+`<dir>/<driverhash>/<key>.bin` (versioned header, CRC32, tmp+fsync+rename, refused/corrupt entries deleted and
+recompiled), bounded RAM LRU (bytes+entries, per ABI), bounded GPU program residency (LRU, min age, only persisted
+non-fallback permutations), low-memory trim, `FTE_SetShaderCacheDirectory` (JNA), `r_shadercache_stats/_trim`. New
+`gl_rtpool.c`: lazy, pooled render targets/renderbuffers with per-ABI budget, age/LRU eviction, `r_rtpool_stats`.
+`gl_backend.c`: render-pass model (deferred full clear via wrapped draw/copy/read/blit entry points, invalidation,
+pass counters), MSAA backends RTT/explicit-resolve/desktop with interruption detection (RTT depth is undefined after
+an implicit resolve), memory check, Arm erratum 3809560 (Mali r44–r45: explicit resolve), depth format by stencil use.
+`gl_rmain.c`/`gl_bloom.c`/`gl_screen.c`: deferred scene clear, depth invalidation, pooled ping-pong post-process,
+renderable-format checks, window depth/stencil invalidated before swap. `image.c`: file freed after decode, bounded
+decode/upload queue (`r_image_uploadqueue_kb`), overflow-safe LMP/WAL sizes; `common.c`: 2 loader threads on armv7.
+`gl_vidsdl.c`: GLES3 keeps the window single-sampled (MSAA on the scene target).
+
+**Verified.** NDK r30 clang `-fsyntax-only` with `-Werror=implicit-function-declaration,incompatible-pointer-types,
+int-conversion,return-type` for armeabi-v7a and arm64-v8a: every changed file clean (image.c's one error is identical
+in the unmodified file under the same flags). glslangValidator on the embedded programs as the engine builds them
+(directives, permutation defines, preambles, sys/*.h): GLSL ES 3.00 133/133 variants (9 failed before the shader and
+preamble fixes); GLSL ES 1.00 129/131 (colourtint needs 3D textures). Host unit tests of verbatim copies of gl_shadercache.c
+(2215 checks: LRU and budgets, oversized entries, disk reload after eviction, corrupt/truncated/refused entries,
+driver change, residency protection, low memory, 2000-frame session) and gl_rtpool.c (419 checks) under ASan/UBSan.
+Not run on a device: no frame, FPS, bandwidth or memory figures exist for this patch.
+
 ## Patch 1550 — a game ended inside a menu call no longer stops menu.dat collecting (14 Nov 2026)
 
 **Problem.** Crash records of 8-10 Nov (Akatosh x3 on patch-1476, MetalGio on 8 Nov "every story-mode map

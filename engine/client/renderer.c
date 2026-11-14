@@ -1534,6 +1534,10 @@ void Renderer_Init(void)
 	Cvar_Register (&r_softwarebanding_cvar, GRAPHICALNICETIES);
 
 	Cvar_Register(&r_keepimages, GRAPHICALNICETIES);
+	{
+		extern cvar_t r_image_uploadqueue_kb;
+		Cvar_Register(&r_image_uploadqueue_kb, GRAPHICALNICETIES);
+	}
 	Cvar_Register(&r_ignoremapprefixes, GRAPHICALNICETIES);
 	Cvar_ForceCallback(&r_keepimages);
 	Cvar_ForceCallback(&r_ignoremapprefixes);

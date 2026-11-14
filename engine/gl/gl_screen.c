@@ -350,6 +350,11 @@ qboolean GLSCR_UpdateScreen (void)
 		Sys_FramePacePresent();	//sys_framepacing 4/5: hold the now-complete flip to the present grid (no-op in other modes)
 		RSpeedEnd(RSPEED_SCR_PACING);
 #endif
+		//tile gpus: the window's depth/stencil are never read after the frame, so they need not be stored
+		GLBE_InvalidateAttachments(BEPASS_DEPTH|BEPASS_STENCIL);
+		GLBE_PassStats_FrameEnd();
+		GLRT_FrameEnd();
+		GLSC_FrameEnd();	//bounded program residency / memory-pressure trims, with the context current
 		RSpeedRemark();
 		VID_SwapBuffers();
 		RSpeedEnd(RSPEED_PRESENT);

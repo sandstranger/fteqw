@@ -848,6 +848,8 @@ GLQUAKE_OBJS =		\
 	gl_screen.o		\
 	gl_bloom.o		\
 	gl_vidcommon.o		\
+	gl_rtpool.o		\
+	gl_shadercache.o	\
 	$(VKQUAKE_OBJS)
 
 D3DQUAKE_OBJS =		\

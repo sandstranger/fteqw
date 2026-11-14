@@ -4843,12 +4843,96 @@ static void Image_FixupImageSize(texid_t tex, unsigned int w, unsigned int h, un
 	}
 	//FIXME: check loaded wad files too.
 }
+/*
+Decoded images waiting for their upload. Loader threads decode (file -> rgba -> mips -> converted) and queue
+the result for the main thread, which uploads it between frames. Nothing bounded that queue: with four workers
+and a slow main thread a large map could hold dozens of fully decoded mip chains at once. A worker now waits
+(bounded, never forever: the main thread may itself be waiting on that worker) before decoding another image
+while the queued bytes exceed r_image_uploadqueue_kb, and armeabi-v7a's budget is much smaller than arm64's.
+*/
+#if defined(__arm__) && !defined(__aarch64__)
+	#define IMAGE_DEF_UPLOADQUEUE_KB "24576"
+#elif defined(__aarch64__)
+	#define IMAGE_DEF_UPLOADQUEUE_KB "98304"
+#else
+	#define IMAGE_DEF_UPLOADQUEUE_KB "524288"
+#endif
+cvar_t r_image_uploadqueue_kb = CVARD("r_image_uploadqueue_kb", IMAGE_DEF_UPLOADQUEUE_KB, "Decoded image data (KB) allowed to wait for upload at once. Loader threads wait before decoding more while it is exceeded (0 unbounded).");
+static volatile size_t image_queuedbytes;
+static size_t image_queuedpeak;
+static unsigned int image_queuewaits, image_queuetimeouts;
+static size_t Image_MipsBytes(const struct pendingtextureinfo *mips)
+{
+	size_t b = 0;
+	int i;
+	for (i = 0; i < mips->mipcount; i++)
+		if (mips->mip[i].data)
+			b += mips->mip[i].datasize;
+	return b;
+}
+static void Image_QueueBytes(size_t bytes, int sign)
+{
+#ifdef LOADERTHREAD
+	if (com_resourcemutex)
+		Sys_LockMutex(com_resourcemutex);
+#endif
+	if (sign > 0)
+	{
+		image_queuedbytes += bytes;
+		if (image_queuedbytes > image_queuedpeak)
+			image_queuedpeak = image_queuedbytes;
+	}
+	else
+		image_queuedbytes = (image_queuedbytes > bytes)?image_queuedbytes - bytes:0;
+#ifdef LOADERTHREAD
+	if (com_resourcemutex)
+		Sys_UnlockMutex(com_resourcemutex);
+#endif
+}
+//loader threads only: hold off decoding while the upload queue is over budget (2 seconds at most)
+static void Image_WaitForUploadQueue(void)
+{
+	size_t budget = (size_t)max(0, r_image_uploadqueue_kb.ival) * 1024;
+	int waited = 0;
+	if (!budget || Sys_IsMainThread())
+		return;	//the main thread does the uploads: it must never wait for itself
+	if (image_queuedbytes <= budget)
+		return;
+	image_queuewaits++;
+	while (image_queuedbytes > budget && !com_workererror)
+	{
+		if (waited >= 2000)
+		{
+			image_queuetimeouts++;
+			break;
+		}
+		Sys_Sleep(0.002);
+		waited += 2;
+	}
+}
+static void Image_LoadTextureMips(void *ctx, void *data, size_t a, size_t b);
+//a worker's decoded image goes to the main thread for its upload, counted against the queue budget
+static void Image_QueueUpload(texid_t tex, struct pendingtextureinfo *mips)
+{
+	Image_QueueBytes(Image_MipsBytes(mips), 1);
+	COM_AddWork(WG_MAIN, Image_LoadTextureMips, tex, mips, 0, 1);	//b=1: counted in image_queuedbytes
+}
+void Image_QueueStats(size_t *queued, size_t *peak, unsigned int *waits, unsigned int *timeouts)
+{
+	*queued = image_queuedbytes;
+	*peak = image_queuedpeak;
+	*waits = image_queuewaits;
+	*timeouts = image_queuetimeouts;
+}
+
 static void Image_LoadTextureMips(void *ctx, void *data, size_t a, size_t b)
 {
 	int i;
 	texid_t tex = ctx;
 	struct pendingtextureinfo *mips = data;
 	double ready_start = R_MapReadyImageStart();
+	if (b == 1)	//queued by Image_QueueUpload: the bytes leave the queue once uploaded and freed below
+		Image_QueueBytes(Image_MipsBytes(mips), -1);
 
 	//setting the dimensions here can break npot textures, so lets not do that.
 //	tex->width = mips->mip[0].width;
@@ -7704,6 +7788,20 @@ void Image_PrintInputFormatVersions(void)
 }
 
 //if force_rgba8 then it guarentees rgba8 or rgbx8, otherwise can return l8, etc
+//width*height*bpp for an image whose dimensions came out of a file: 0 when they are nonsense or when the product
+//would not fit. int arithmetic here overflowed (UB) and on armeabi-v7a even size_t is 32 bits, so a crafted or
+//damaged header could pass a "size matches" check with a wrapped product and then be written far past the buffer.
+static size_t Image_SafeSize(int w, int h, size_t bpp)
+{
+	if (w <= 0 || h <= 0 || w > 65536 || h > 65536 || !bpp)
+		return 0;
+	if ((size_t)w > ((size_t)-1) / (size_t)h)
+		return 0;
+	if ((size_t)w*(size_t)h > ((size_t)-1) / bpp)
+		return 0;
+	return (size_t)w*(size_t)h*bpp;
+}
+
 qbyte *ReadRawImageFile(qbyte *buf, int len, int *width, int *height, uploadfmt_t *format, qboolean force_rgba8, const char *fname)
 {
 	size_t l, i;
@@ -7920,9 +8018,10 @@ qbyte *ReadRawImageFile(qbyte *buf, int len, int *width, int *height, uploadfmt_
 		int w = LittleLong(((int*)buf)[0]);
 		int h = LittleLong(((int*)buf)[1]);
 		int i;
-		if (((w >= 3 && h >= 4)
+		size_t pix = Image_SafeSize(w, h, 1);
+		if (pix && Image_SafeSize(w, h, 4) && ((w >= 3 && h >= 4)
 			||(w==26&&h==1) //hack for hexen2. stupid lack of a magic.
-			) && w*h+sizeof(int)*2 == len)
+			) && pix+sizeof(int)*2 == (size_t)len)
 		{	//quake lmp
 			if (force_rgba8)
 			{
@@ -7949,7 +8048,7 @@ qbyte *ReadRawImageFile(qbyte *buf, int len, int *width, int *height, uploadfmt_
 			}
 			return data;
 		}
-		else if (w >= 3 && h >= 4 && w*h+sizeof(int)*2+768+2 == len)
+		else if (pix && Image_SafeSize(w, h, 4) && w >= 3 && h >= 4 && pix+sizeof(int)*2+768+2 == (size_t)len)
 		{	//halflife. should probably verify that those 2 extra bytes read as 256.
 			qboolean foundalpha = false;
 			qbyte *in = buf+sizeof(int)*2;
@@ -7993,13 +8092,16 @@ qbyte *ReadRawImageFile(qbyte *buf, int len, int *width, int *height, uploadfmt_
 	if (len >= sizeof(q2miptex_t))	//.lmp has no magic id. guess at it.
 	{
 		const q2miptex_t *wal = (const q2miptex_t *)buf;
-		size_t w = LittleLong(wal->width), h = LittleLong(wal->height);
-		size_t sz = sizeof(*wal) +
+		int iw = LittleLong(wal->width), ih = LittleLong(wal->height);
+		size_t w = (iw > 0)?iw:0, h = (ih > 0)?ih:0;
+		size_t sz = 0;
+		if (Image_SafeSize(iw, ih, 8))	//the mip chain is below 2x level 0, and the rgba expansion 4x: neither may wrap
+			sz = sizeof(*wal) +
 					(w>>0)*(h>>0) +
 					(w>>1)*(h>>1) +
 					(w>>2)*(h>>2) +
 					(w>>3)*(h>>3);
-		if (sz == len)
+		if (sz && sz == (size_t)len)
 		{
 			if (force_rgba8)
 			{
@@ -14034,6 +14136,11 @@ struct pendingtextureinfo *Image_LoadMipsFromMemory(int flags, const char *iname
 
 	if ((rgbadata = ReadRawImageFile(filedata, filesize, &imgwidth, &imgheight, &format, false, fname)))
 	{
+		//every decoder above returns its own allocation, never a pointer into the file: the compressed file is
+		//not needed while the decoded copy is mipmapped and format-converted below. Holding both doubled the
+		//peak for every png/jpg/tga (file + rgba + mips + converted copy at once).
+		BZ_Free(filedata);
+		filedata = NULL;
 #ifdef HAVE_CLIENT
 		extern cvar_t vid_hardwaregamma;
 		if (!(flags&IF_NOGAMMA) && !vid_hardwaregamma.value && !V_UseSceneGamma())
@@ -14371,7 +14478,7 @@ static qboolean Image_LoadRawTexture(texid_t tex, unsigned int flags, void *rawd
 	if (flags & IF_NOWORKER)
 		Image_LoadTextureMips(tex, mips, 0, 0);
 	else
-		COM_AddWork(WG_MAIN, Image_LoadTextureMips, tex, mips, 0, 0);
+		Image_QueueUpload(tex, mips);
 	return true;
 }
 
@@ -14409,7 +14516,7 @@ qboolean Image_LoadTextureFromMemory(texid_t tex, int flags, const char *iname, 
 		if ((flags & IF_NOWORKER) || Sys_IsMainThread())
 			Image_LoadTextureMips(tex, mips, 0, 0);
 		else
-			COM_AddWork(WG_MAIN, Image_LoadTextureMips, tex, mips, 0, 0);
+			Image_QueueUpload(tex, mips);
 		return true;
 	}
 	return false;
@@ -14720,6 +14827,9 @@ static void Image_LoadHiResTextureWorker(void *ctx, void *data, size_t a, size_t
 	uploadfmt_t format;
 	int ttype = (tex->flags & IF_TEXTYPEMASK)>>IF_TEXTYPESHIFT;
 
+	//do not decode yet another image while the main thread has not uploaded the ones already decoded
+	Image_WaitForUploadQueue();
+
 	if (ttype == PTI_CUBE)
 	{	//cubemaps require special handling because they are (normally) 6 files instead of 1.
 		//the exception is single-file dds/ktx/etc cubemaps.
@@ -14813,7 +14923,7 @@ static void Image_LoadHiResTextureWorker(void *ctx, void *data, size_t a, size_t
 				if (tex->flags & IF_NOWORKER)
 					Image_LoadTextureMips(tex, mips, 0, 0);
 				else
-					COM_AddWork(WG_MAIN, Image_LoadTextureMips, tex, mips, 0, 0);
+					Image_QueueUpload(tex, mips);
 				return;
 			}
 		}

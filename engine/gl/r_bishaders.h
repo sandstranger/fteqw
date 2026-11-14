@@ -1633,7 +1633,7 @@ YOU SHOULD NOT EDIT THIS FILE BY HAND
 #endif
 #ifdef GLQUAKE
 {QR_OPENGL, 110, "colourtint",
-"!!samps 2\n"
+"!!samps screen=0 lut:3D=1\n"
 //this glsl shader is useful for cubemapped post processing effects (see csaddon for an example)
 "varying vec4 tf;\n"
 "#ifdef VERTEX_SHADER\n"
@@ -1716,9 +1716,9 @@ YOU SHOULD NOT EDIT THIS FILE BY HAND
 "for(int i=0; i < NUM_SAMPLES ; i++)\n"
 "{\n"
 "textCoo -= deltaTextCoord;\n"
-"vec4 sample = texture2D(s_t0, textCoo);\n"
-"sample *= illuminationDecay * crep_weight;\n"
-"gl_FragColor += sample;\n"
+"vec4 raysample = texture2D(s_t0, textCoo);\n"
+"raysample *= illuminationDecay * crep_weight;\n"
+"gl_FragColor += raysample;\n"
 "illuminationDecay *= crep_decay;\n"
 "}\n"
 "gl_FragColor *= vec4(l_lightcolour, 1.0);\n"
@@ -2303,7 +2303,7 @@ YOU SHOULD NOT EDIT THIS FILE BY HAND
 "{\n"
 //figure out which frame to use.
 "ivec3 sz = textureSize(s_anim, 0);\n"
-"float layer = mod(e_time*10, sz.z-1);\n"
+"float layer = mod(e_time*10.0, float(sz.z-1));\n"
 
 "vec4 f = vc;\n"
 "#ifdef PREMUL\n"

@@ -158,7 +158,18 @@ void (APIENTRY *qglGetQueryObjectui64v)(GLuint id, GLenum pname, unsigned long l
 //GL_OES_get_program_binary
 void (APIENTRY *qglGetProgramBinary)(GLuint program, GLsizei bufSize, GLsizei *length, GLenum *binaryFormat, GLvoid *binary);
 void (APIENTRY *qglProgramBinary)(GLuint program, GLenum binaryFormat, const GLvoid *binary, GLint length);
-#define GL_PROGRAM_BINARY_LENGTH	0x8741
+void (APIENTRY *qglProgramParameteri)(GLuint program, GLenum pname, GLint value);
+
+//tile-based renderer helpers (all optional, see GL_CheckExtensions)
+void (APIENTRY *qglInvalidateFramebuffer)(GLenum target, GLsizei numattachments, const GLenum *attachments);
+void (APIENTRY *qglDiscardFramebufferEXT)(GLenum target, GLsizei numattachments, const GLenum *attachments);
+void (APIENTRY *qglFramebufferTexture2DMultisample)(GLenum target, GLenum attachment, GLenum textarget, GLuint texture, GLint level, GLsizei samples);
+void (APIENTRY *qglRenderbufferStorageMultisampleMSRTT)(GLenum target, GLsizei samples, GLenum internalformat, GLsizei width, GLsizei height);
+
+//the renderer's GLSL ES ceiling. The GLES path targets OpenGL ES 3.0 / GLSL ES 3.00 even when the driver hands
+//out a 3.1 or 3.2 context: nothing generated may depend on 3.1/3.2 features (compute, SSBO, image load/store,
+//geometry/tessellation stages, texture buffers), so a 3.0-only device runs exactly what was tested elsewhere.
+#define GLES_GLSL_BASELINE 300
 
 //standard 1.1 opengl calls
 void (APIENTRY *qglAlphaFunc) (GLenum func, GLclampf ref);
@@ -657,13 +668,10 @@ static qboolean GL_CheckExtensions (void *(*getglfunction) (char *name))
 
 	gl_config.maxglslversion = 0;
 	if (gl_config.gles && gl_config.glversion >= 2)
-	{
-		if (gl_config.glversion >= 3.2)
-			gl_config.maxglslversion = 320;
-		else if (gl_config.glversion >= 3.1)
-			gl_config.maxglslversion = 310;
-		else if (gl_config.glversion >= 3)
-			gl_config.maxglslversion = 300;
+	{	//a gles 3.1/3.2 context is backwards compatible with 3.0, and the renderer is held to 3.0 (GLSL ES 3.00):
+		//a 3.2 driver must not get shaders that a 3.0 driver would refuse.
+		if (gl_config.glversion >= 3)
+			gl_config.maxglslversion = GLES_GLSL_BASELINE;
 		else
 			gl_config.maxglslversion = 100;
 	}
@@ -743,7 +751,32 @@ static qboolean GL_CheckExtensions (void *(*getglfunction) (char *name))
 	if (qglDrawRangeElements == NULL)
 		qglDrawRangeElements = GL_DrawRangeElementsEmul;
 
-	gl_config.ext_packed_depth_stencil = GL_CheckExtension("GL_EXT_packed_depth_stencil");
+	//DEPTH24_STENCIL8 is core in gl3 and gles3; gles2 names the extension OES (the EXT one is desktop only), so
+	//gles3 devices used to be treated as having no packed depth+stencil at all.
+	gl_config.ext_packed_depth_stencil = GL_CheckExtension("GL_EXT_packed_depth_stencil") ||
+		(gl_config.gles && (gl_config.glversion >= 3 || GL_CheckExtension("GL_OES_packed_depth_stencil"))) ||
+		(!gl_config.gles && (gl_config.glversion >= 3 || GL_CheckExtension("GL_ARB_framebuffer_object")));
+	gl_config.ext_depth24 = !gl_config.gles || gl_config.glversion >= 3 || GL_CheckExtension("GL_OES_depth24");
+	if (gl_config.gles)
+	{	//gles3.0 core only makes 8-bit normalised formats colour-renderable; half/float targets need these
+		gl_config.ext_color_buffer_float = gl_config.glversion >= 3 && GL_CheckExtension("GL_EXT_color_buffer_float");
+		gl_config.ext_color_buffer_half_float = gl_config.ext_color_buffer_float || GL_CheckExtension("GL_EXT_color_buffer_half_float");
+	}
+	else
+		gl_config.ext_color_buffer_float = gl_config.ext_color_buffer_half_float = gl_config.glversion >= 3 || GL_CheckExtension("GL_ARB_texture_float");
+
+	//Mali drivers say "OpenGL ES 3.2 v1.r44p0-..." in GL_VERSION; the minor 'p' number tracks hotfix releases.
+	gl_config.mali_driver[0] = gl_config.mali_driver[1] = -1;
+	if (gl_renderer && strstr(gl_renderer, "Mali"))
+	{
+		const char *r = strstr(gl_version, "v1.r");
+		if (r)
+		{
+			char *e;
+			gl_config.mali_driver[0] = strtol(r+4, &e, 10);
+			gl_config.mali_driver[1] = (*e == 'p') ? strtol(e+1, NULL, 10) : 0;
+		}
+	}
 
 	if ((!gl_config.gles && gl_config.glversion >= 4.6) || GL_CheckExtension("GL_EXT_texture_filter_anisotropic") || GL_CheckExtension("GL_ARB_texture_filter_anisotropic"))
 	{
@@ -930,7 +963,12 @@ static qboolean GL_CheckExtensions (void *(*getglfunction) (char *name))
 		qglPNTrianglesfATI = (void *)getglext("glPNTrianglesfATI");
 		qglPNTrianglesiATI = (void *)getglext("glPNTrianglesiATI");
 	}
-	if ((!gl_config.gles && gl_config.glversion >= 4.0) || (gl_config.gles && gl_config.glversion >= 3.2))
+	if (gl_config.gles)
+	{	//tessellation is gles3.2 core / an extension of gles3.1: outside the gles3.0 baseline.
+		gl_config.arb_tessellation_shader = false;
+		qglPatchParameteriARB = NULL;
+	}
+	else if (gl_config.glversion >= 4.0)
 	{
 		gl_config.arb_tessellation_shader = true;
 		qglPatchParameteriARB = getglext("glPatchParameteri");
@@ -939,11 +977,6 @@ static qboolean GL_CheckExtensions (void *(*getglfunction) (char *name))
 	{
 		gl_config.arb_tessellation_shader = true;
 		qglPatchParameteriARB = getglext("glPatchParameteriARB");
-	}
-	else if (GL_CheckExtension("GL_OES_tessellation_shader"))
-	{
-		gl_config.arb_tessellation_shader = true;
-		qglPatchParameteriARB = getglext("glPatchParameteriOES");
 	}
 	else
 		qglPatchParameteriARB = NULL;
@@ -986,8 +1019,22 @@ static qboolean GL_CheckExtensions (void *(*getglfunction) (char *name))
 		qglBindBufferARB = (void *)getglext("glBindBuffer");
 		qglBufferDataARB = (void *)getglext("glBufferData");
 		qglBufferSubDataARB = (void *)getglext("glBufferSubData");
-		qglMapBufferARB = (void *)getglext("glMapBuffer");
-		qglUnmapBufferARB = (void *)getglext("glUnmapBuffer");
+		if (!gl_config.gles)
+		{
+			qglMapBufferARB = (void *)getglext("glMapBuffer");
+			qglUnmapBufferARB = (void *)getglext("glUnmapBuffer");
+		}
+		else
+		{	//gles has no core glMapBuffer at all (OES_mapbuffer), and glUnmapBuffer only from 3.0. android's loader
+			//exports every gles3.2 symbol whatever the context is, so a name lookup alone proves nothing.
+			qglMapBufferARB = GL_CheckExtension("GL_OES_mapbuffer")?(void *)getglext("glMapBufferOES"):NULL;
+			if (gl_config.glversion >= 3)
+				qglUnmapBufferARB = (void *)getglext("glUnmapBuffer");
+			else if (GL_CheckExtension("GL_OES_mapbuffer") || GL_CheckExtension("GL_EXT_map_buffer_range"))
+				qglUnmapBufferARB = (void *)getglext("glUnmapBufferOES");
+			else
+				qglUnmapBufferARB = NULL;
+		}
 	}
 	else if (GL_CheckExtension("GL_ARB_vertex_buffer_object"))
 	{
@@ -1012,7 +1059,12 @@ static qboolean GL_CheckExtensions (void *(*getglfunction) (char *name))
 #endif
 
 	//ARB_map_buffer_range: core in gl3.0/gles3.0, the extension is backported, and thus no ARB postfix on functions.
-	qglMapBufferRange = qglUnmapBufferARB?(void *)getglext("glMapBufferRange"):NULL;
+	if (!qglUnmapBufferARB)
+		qglMapBufferRange = NULL;
+	else if (gl_config.gles && gl_config.glversion < 3)
+		qglMapBufferRange = GL_CheckExtension("GL_EXT_map_buffer_range")?(void *)getglext("glMapBufferRangeEXT"):NULL;
+	else
+		qglMapBufferRange = (void *)getglext("glMapBufferRange");
 
 	if (qglBufferSubDataARB && qglMapBufferRange)
 	{
@@ -1182,18 +1234,46 @@ static qboolean GL_CheckExtensions (void *(*getglfunction) (char *name))
 
 	qglGetProgramBinary = NULL;
 	qglProgramBinary = NULL;
+	qglProgramParameteri = NULL;
+	gl_config.num_program_binary_formats = 0;
+	gl_config.program_binary_core = false;
 	if (gl_config.arb_shader_objects)
 	{
-		if (gl_config.glversion >= 4.1 || GL_CheckExtension("GL_ARB_get_program_binary"))
-		{
+		if ((gl_config.gles && gl_config.glversion >= 3) || (!gl_config.gles && (gl_config.glversion >= 4.1 || GL_CheckExtension("GL_ARB_get_program_binary"))))
+		{	//core in gles3.0 and gl4.1, with the retrievable hint
 			qglGetProgramBinary = (void *)getglext("glGetProgramBinary");
 			qglProgramBinary = (void *)getglext("glProgramBinary");
+			qglProgramParameteri = (void *)getglext("glProgramParameteri");
+			gl_config.program_binary_core = true;
 		}
 		else if (GL_CheckExtension("GL_OES_get_program_binary"))
 		{
 			//no PROGRAM_BINARY_RETRIEVABLE_HINT
 			qglGetProgramBinary = (void *)getglext("glGetProgramBinaryOES");
 			qglProgramBinary = (void *)getglext("glProgramBinaryOES");
+		}
+		if (qglGetProgramBinary && qglProgramBinary)
+		{	//a driver may expose the entry points and still accept no format at all (several android drivers do):
+			//without a format there is nothing a binary could ever be loaded as.
+			GLint n = 0;
+			while (qglGetError())
+				;
+			qglGetIntegerv(GL_NUM_PROGRAM_BINARY_FORMATS, &n);
+			if (qglGetError() != GL_NO_ERROR)
+				n = 0;
+			gl_config.num_program_binary_formats = max(0, n);
+			if (!gl_config.num_program_binary_formats)
+			{
+				qglGetProgramBinary = NULL;
+				qglProgramBinary = NULL;
+				qglProgramParameteri = NULL;
+			}
+		}
+		else
+		{
+			qglGetProgramBinary = NULL;
+			qglProgramBinary = NULL;
+			qglProgramParameteri = NULL;
 		}
 		qglGetIntegerv(GL_MAX_VERTEX_ATTRIBS_ARB, &gl_config.maxattribs);
 	}
@@ -1208,8 +1288,13 @@ static qboolean GL_CheckExtensions (void *(*getglfunction) (char *name))
 	else
 		qglGetGraphicsResetStatus = NULL;				//its not allowed to crash us. probably will. grr. oh well.
 #else
-	qglGetGraphicsResetStatus = !g_useGLES2_0 && gl_config.maxglslversion == 320 ?
-			(void *)getglext("glGetGraphicsResetStatus") : nullptr;
+	//glGetGraphicsResetStatus is gles3.2 core; at the gles3.0 baseline only the robustness extensions provide it.
+	if (GL_CheckExtension("GL_KHR_robustness"))
+		qglGetGraphicsResetStatus = (void *)getglext("glGetGraphicsResetStatusKHR");
+	else if (GL_CheckExtension("GL_EXT_robustness"))
+		qglGetGraphicsResetStatus = (void *)getglext("glGetGraphicsResetStatusEXT");
+	else
+		qglGetGraphicsResetStatus = NULL;
 #endif
 
 	//we only use vao if we don't have a choice.
@@ -1260,7 +1345,7 @@ static qboolean GL_CheckExtensions (void *(*getglfunction) (char *name))
 		qglEnable(0x884F);	//TEXTURE_CUBE_MAP_SEAMLESS                   0x884F
 
 	if (gl_config.gles)
-		gl_config.geometryshaders = (gl_config.glversion >= 3.2) || GL_CheckExtension("GL_OES_geometry_shader");
+		gl_config.geometryshaders = false;	//gles3.2 core / OES_geometry_shader needs gles3.1: outside the gles3.0 baseline
 	else
 		gl_config.geometryshaders = (gl_config.glversion >= 3.2);
 
@@ -1339,6 +1424,83 @@ static qboolean GL_CheckExtensions (void *(*getglfunction) (char *name))
 	}
 */
 #endif
+
+	//tile-based gpus: tell the driver what need not be loaded into / stored from tile memory.
+	qglInvalidateFramebuffer = NULL;
+	qglDiscardFramebufferEXT = NULL;
+	gl_config.fbo_invalidate = 0;
+	if (gl_config.ext_framebuffer_objects)
+	{
+		if ((gl_config.gles && gl_config.glversion >= 3) || (!gl_config.gles && (gl_config.glversion >= 4.3 || GL_CheckExtension("GL_ARB_invalidate_subdata"))))
+			qglInvalidateFramebuffer = (void *)getglext("glInvalidateFramebuffer");
+		if (qglInvalidateFramebuffer)
+			gl_config.fbo_invalidate = 1;
+		else if (gl_config.gles && GL_CheckExtension("GL_EXT_discard_framebuffer"))
+		{
+			qglDiscardFramebufferEXT = (void *)getglext("glDiscardFramebufferEXT");
+			if (qglDiscardFramebufferEXT)
+				gl_config.fbo_invalidate = 2;
+		}
+	}
+
+	//multisampled render-to-texture: the samples live only in tile memory and are resolved as the tile is written
+	//out, so msaa costs neither a separate multisample allocation in memory nor a resolve pass. The EXT and IMG
+	//extensions are distinct apis (different entry points and MAX_SAMPLES enums): never mix them.
+	qglFramebufferTexture2DMultisample = NULL;
+	qglRenderbufferStorageMultisampleMSRTT = NULL;
+	gl_config.msrtt = 0;
+	gl_config.msrtt2 = false;
+	gl_config.msrtt_maxsamples = 0;
+	if (gl_config.gles && gl_config.ext_framebuffer_objects)
+	{
+		if (GL_CheckExtension("GL_EXT_multisampled_render_to_texture"))
+		{
+			qglFramebufferTexture2DMultisample = (void *)getglext("glFramebufferTexture2DMultisampleEXT");
+			qglRenderbufferStorageMultisampleMSRTT = (void *)getglext("glRenderbufferStorageMultisampleEXT");
+			if (qglFramebufferTexture2DMultisample && qglRenderbufferStorageMultisampleMSRTT)
+			{
+				gl_config.msrtt = 1;
+				gl_config.msrtt2 = GL_CheckExtension("GL_EXT_multisampled_render_to_texture2");
+				qglGetIntegerv(GL_MAX_SAMPLES_EXT, &gl_config.msrtt_maxsamples);
+			}
+		}
+		else if (GL_CheckExtension("GL_IMG_multisampled_render_to_texture"))
+		{
+			qglFramebufferTexture2DMultisample = (void *)getglext("glFramebufferTexture2DMultisampleIMG");
+			qglRenderbufferStorageMultisampleMSRTT = (void *)getglext("glRenderbufferStorageMultisampleIMG");
+			if (qglFramebufferTexture2DMultisample && qglRenderbufferStorageMultisampleMSRTT)
+			{
+				gl_config.msrtt = 2;
+				qglGetIntegerv(GL_MAX_SAMPLES_IMG, &gl_config.msrtt_maxsamples);
+			}
+		}
+		if (!gl_config.msrtt || gl_config.msrtt_maxsamples < 2)
+		{
+			gl_config.msrtt = 0;
+			gl_config.msrtt2 = false;
+			gl_config.msrtt_maxsamples = 0;
+			qglFramebufferTexture2DMultisample = NULL;
+			qglRenderbufferStorageMultisampleMSRTT = NULL;
+		}
+	}
+	gl_config.es3_maxsamples = 0;
+	if (gl_config.ext_framebuffer_objects && qglRenderbufferStorageMultisampleEXT && qglBlitFramebufferEXT)
+	{
+		while (qglGetError())
+			;
+		qglGetIntegerv(GL_MAX_SAMPLES_EXT, &gl_config.es3_maxsamples);
+		if (qglGetError())
+			gl_config.es3_maxsamples = 0;
+	}
+	gl_config.defaultfb_samples = 0;
+	if (gl_config.gles)
+	{	//an EGL multisample window surface already resolves on-chip: the scene must not be multisampled twice.
+		while (qglGetError())
+			;
+		qglGetIntegerv(GL_SAMPLES_FTE, &gl_config.defaultfb_samples);
+		if (qglGetError())
+			gl_config.defaultfb_samples = 0;
+	}
 #ifdef DEBUG
 	if (GL_CheckExtension("GL_ARB_debug_output"))
 	{
@@ -2352,26 +2514,17 @@ static qboolean GLSlang_GenerateIncludes(struct glslparts_s *glsl, const char *s
 }
 
 // glslang helper api function definitions
-// type should be GL_FRAGMENT_SHADER_ARB or GL_VERTEX_SHADER_ARB
-//doesn't check to see if it was okay. use FinishShader for that.
-static GLuint GLSlang_CreateShader (program_t *prog, const char *name, int ver, const char **precompilerconstants, const char *shadersource, GLenum shadertype, qboolean silent)
+//maps a program's requested glsl version onto what this context compiles, and builds its #version line.
+//false: the version is not available on this context (the program cannot be built at all).
+static qboolean GLSlang_MapVersion(int *inoutver, char *verline, size_t verlinesize)
 {
-	GLuint shader;
-	int i;
-	struct glslparts_s glsl;
-	char verline[64];
-
-	glsl.strings = 0;
-	glsl.error = NULL;
-
-	if (!shadersource)
-		return 0;
-
+	int ver = *inoutver;
+	*verline = 0;
 	if (ver)
 	{
 		/*required version not supported, don't even try*/
 		if (ver > gl_config.maxglslversion)
-			return 0;
+			return false;
 #ifdef FTE_TARGET_WEB
 		//emscripten prefixes our shader with a precision specifier, and then the browser bitches at the following (otherwise valid) #version, so don't say anything at all if its ver 100, and the browser won't complain
 		if (ver != 100)
@@ -2391,11 +2544,19 @@ static GLuint GLSlang_CreateShader (program_t *prog, const char *name, int ver, 
 			//330, 400, 410, 420, 430 [core|compatibility] == gl?.??
 
 			if (gl_config_gles)
-			{
-				if (ver <= 110)		//gles2 is rougly gl2 so 100(es)==110ish
+			{	//gles2 is rougly gl2 so 100(es)==110ish; gles3 is roughly gl3.3 so 300es==330ish.
+				//The GLES renderer is held to GLSL ES 3.00 whatever the context reports (maxglslversion is
+				//clamped to 300 for gles3+), so a 3.1/3.2 driver compiles exactly what a 3.0 one would.
+				//Anything above 300 (310/320/desktop 4xx) is not available at the baseline: refuse it here
+				//rather than silently rewriting it into a version whose features it would then lack.
+				if (ver <= 110)
 					ver = 100;
-				else if (ver <= 330)	//gles3 is rougly gl3.3 so 300es==330ish. use the newest glsl es the context really has (320 on gles3.2) so shaders can use gles3.1/3.2 features.
-					ver = gl_config.maxglslversion;
+				else if (ver <= 330)
+					ver = (gl_config.maxglslversion >= GLES_GLSL_BASELINE) ? GLES_GLSL_BASELINE : 100;
+				else
+					return 0;
+				if (ver > GLES_GLSL_BASELINE)
+					ver = GLES_GLSL_BASELINE;
 			}
 			else
 			{
@@ -2406,16 +2567,55 @@ static GLuint GLSlang_CreateShader (program_t *prog, const char *name, int ver, 
 			}
 
 			if (gl_config_gles && ver != 100)
-				Q_snprintfz(verline, sizeof(verline), "#version %u es\n", ver);
+				Q_snprintfz(verline, verlinesize, "#version %u es\n", ver);
 			else if (!gl_config_gles && ver >= 150 && !gl_config_nofixedfunc)
 				//favour compatibility profile, simply because we want ftransform to work properly
 				//note that versions 130+140 are awkward due to deprecation stuff, both assume compatibility profiles where supported.
 				//  however, 130 REMOVED ftransform in revision 2 and then re-added it as deprecated in revision 4 (of 10).
-				Q_snprintfz(verline, sizeof(verline), "#version %u compatibility\n", ver);
+				Q_snprintfz(verline, verlinesize, "#version %u compatibility\n", ver);
 			else
-				Q_snprintfz(verline, sizeof(verline), "#version %u\n", ver);	//core assumed, where defined
-			GLSlang_GenerateInternal(&glsl, verline);
+				Q_snprintfz(verline, verlinesize, "#version %u\n", ver);	//core assumed, where defined
 		}
+	}
+	*inoutver = ver;
+	return true;
+}
+
+//builds the complete source text the driver would be given for one stage, without any gl calls, so the
+//program binary cache can key on exactly what would be compiled (permutation defines, includes, cvar
+//values, the version line and the engine's own preamble all end up in the parts).
+// type should be GL_FRAGMENT_SHADER_ARB or GL_VERTEX_SHADER_ARB
+static qboolean GLSlang_BuildShaderSource (program_t *prog, const char *name, int ver, const char *verline, const char **precompilerconstants, const char *shadersource, GLenum shadertype, struct glslparts_s *out)
+{
+	int i;
+	struct glslparts_s glsl;
+
+	glsl.strings = 0;
+	glsl.error = NULL;
+
+	if (!shadersource)
+		return false;
+
+	if (*verline)
+		GLSlang_GenerateInternal(&glsl, verline);
+	if (gl_config_gles && ver >= 300)
+	{	//GLSL ES 3.00 gives these sampler types no default precision in ANY stage, and they can be declared by the
+		//program's own preamble (!!samps 2DArray/3D) or used as function parameters in shared headers (sys/pcf.h's
+		//ShadowmapFilter in vertex shaders) before anything else is emitted: fake-shadow permutations of
+		//rtlight/lpp_light and default2danim did not compile on any gles3 driver. Must precede precompilerconstants.
+		GLSlang_GenerateInternal(&glsl,
+			"#ifdef GL_FRAGMENT_PRECISION_HIGH\n"
+				"precision highp sampler2DShadow;\n"
+				"precision highp samplerCubeShadow;\n"
+				"precision highp sampler2DArrayShadow;\n"
+			"#else\n"
+				"precision mediump sampler2DShadow;\n"
+				"precision mediump samplerCubeShadow;\n"
+				"precision mediump sampler2DArrayShadow;\n"
+			"#endif\n"
+			"precision mediump sampler3D;\n"
+			"precision mediump sampler2DArray;\n"
+			);
 	}
 
 	while(*precompilerconstants)
@@ -2431,13 +2631,22 @@ static GLuint GLSlang_CreateShader (program_t *prog, const char *name, int ver, 
 		GLSlang_GenerateInternal(&glsl, "#define FRAGMENT_SHADER\n");
 		if (gl_config.gles)
 		{
-			GLSlang_GenerateInternal(&glsl, 
+			GLSlang_GenerateInternal(&glsl,
 					"#ifdef GL_FRAGMENT_PRECISION_HIGH\n"
 					"precision highp float;\n"
 					"#else\n"
 					"precision mediump float;\n"
 					"#endif\n"
 				);
+			//a program that does not declare s_shadowmap itself (rtlight without #PCF) still gets sys/pcf.h's
+			//ShadowmapFilter(sampler2DShadow...) under FAKESHADOWS: glsl es 1.00 has no such type without the
+			//extension, so map it the way the s_shadowmap declaration below does
+			if (!(prog && !prog->explicitsyms && (prog->defaulttextures & (1u<<S_SHADOWMAP))))
+				GLSlang_GenerateInternal(&glsl,
+						"#ifndef USE_ARB_SHADOW\n"
+							"#define sampler2DShadow sampler2D\n"
+						"#endif\n"
+					);
 		}
 		if (ver >= 130)
 		{
@@ -2448,6 +2657,7 @@ static GLuint GLSlang_CreateShader (program_t *prog, const char *name, int ver, 
 				//now only the 'texture' function exists, with overloads for each sampler type.
 				"#define texture2D texture\n"
 				"#define textureCube texture\n"
+				"#define texture3D texture\n"	//glsl es 3.00 has no texture3D at all (colourtint's LUT did not compile on gles)
 				"#define shadow2D texture\n"
 				//gl_FragColor and gl_FragData got deprecated too, need to make manual outputs
 				"#if __VERSION__ >= 300\n"	//gl3.3, gles3 (gles3 requires layout stuff)
@@ -2573,6 +2783,23 @@ static GLuint GLSlang_CreateShader (program_t *prog, const char *name, int ver, 
 					"#define varying out\n"
 				);
 		}
+		if (gl_config_gles)
+		{	//shared headers (sys/pcf.h's ShadowmapFilter) are compiled into vertex shaders too. GLSL ES 3.00 has only
+			//texture() there, and GLSL ES 1.00 has no sampler2DShadow without EXT_shadow_samplers: the fake-shadow
+			//permutations of rtlight/lpp_light failed to compile their vertex stage on every gles driver.
+			if (ver >= 300)
+				GLSlang_GenerateInternal(&glsl,
+						"#define texture2D texture\n"
+						"#define textureCube texture\n"
+						"#define texture3D texture\n"
+						"#define shadow2D texture\n"
+					);
+			GLSlang_GenerateInternal(&glsl,
+					"#ifndef USE_ARB_SHADOW\n"
+						"#define sampler2DShadow sampler2D\n"
+					"#endif\n"
+				);
+		}
 
 		if (!prog || !prog->explicitsyms)
 		{
@@ -2621,21 +2848,38 @@ static GLuint GLSlang_CreateShader (program_t *prog, const char *name, int ver, 
 	}
 
 	GLSlang_GenerateIncludes(&glsl, shadersource, name, 1);
+	*out = glsl;
+	return true;
+}
+
+//doesn't check to see if it was okay. use FinishShader for that.
+static GLuint GLSlang_CompileShaderParts (const struct glslparts_s *glslp, GLenum shadertype, qboolean hasversion)
+{
+	GLuint shader;
+	int i;
+	const struct glslparts_s *g = glslp;
+#define glsl (*g)
 
 	shader = qglCreateShaderObjectARB(shadertype);
 
 	if (developer.ival)
 	{
 		GLchar *combined;
-		int totallen = 1;
+		size_t totallen = 1;
 		for (i = 0; i < glsl.strings; i++)
 			totallen += glsl.len[i] + 64 + (glsl.file[i]?strlen(glsl.file[i]):0);
 		combined = malloc(totallen);
+		if (!combined)
+		{	//out of memory: hand the parts over as they are
+			qglShaderSourceARB(shader, glsl.strings, glsl.str, glsl.len);
+			qglCompileShaderARB(shader);
+			return shader;
+		}
 		totallen = 0;
 		combined[totallen] = 0;
 		for (i = 0; i < glsl.strings; i++)
 		{
-			if (ver && !i)
+			if (hasversion && !i)
 				; //#version MUST be the first line, don't prefix it with a #line, it'll just break things.
 			else if (!totallen || combined[totallen-1] == '\n')
 			{	//last line was a newline, hurrah. safe to insert without breaking anything
@@ -2669,10 +2913,16 @@ static GLuint GLSlang_CreateShader (program_t *prog, const char *name, int ver, 
 		if ati can feck it up so much on a system with no real system memory issues, I wouldn't be surprised if embedded systems also mess it up.
 		*/
 		GLcharARB *combined;
-		int totallen = 1;
+		size_t totallen = 1;
 		for (i = 0; i < glsl.strings; i++)
 			totallen += glsl.len[i];
 		combined = malloc(totallen);
+		if (!combined)
+		{
+			qglShaderSourceARB(shader, glsl.strings, glsl.str, glsl.len);
+			qglCompileShaderARB(shader);
+			return shader;
+		}
 		totallen = 0;
 		combined[totallen] = 0;
 		for (i = 0; i < glsl.strings; i++)
@@ -2689,6 +2939,7 @@ static GLuint GLSlang_CreateShader (program_t *prog, const char *name, int ver, 
 	qglCompileShaderARB(shader);
 
 	return shader;
+#undef glsl
 }
 
 //called after CreateShader. Checks for success.
@@ -2823,9 +3074,57 @@ GLuint GLSlang_CreateProgramObject (program_t *prog, const char *name, GLuint ve
 		}
 	}
 
+	//gles3/gl4.1: some drivers only keep a retrievable binary when asked before the link
+	if (qglProgramParameteri && GLSC_Available())
+		qglProgramParameteri(program, GL_PROGRAM_BINARY_RETRIEVABLE_HINT, GL_TRUE);
+
 	qglLinkProgramARB(program);
 	return program;
 }
+
+//the key a program binary is cached under: sha256 of every string the driver is handed for every stage, the
+//stage types, the attribute bindings the link applies, and the generator revision. Anything that changes
+//the source (permutation defines, include files, cvar-driven #defines, the version line) changes the key.
+#define GLSL_GENERATOR_REVISION "fte-glsl-gen-3"
+static void GLSlang_HashProgram(program_t *prog, int ver, const struct glslparts_s *parts, const GLenum *types, const qboolean *has, int stages, unsigned char key[32])
+{
+	void *ctx = alloca(hash_sha2_256.contextsize);
+	unsigned int i, s, v;
+	hash_sha2_256.init(ctx);
+	hash_sha2_256.process(ctx, GLSL_GENERATOR_REVISION, strlen(GLSL_GENERATOR_REVISION)+1);
+	v = ver;
+	hash_sha2_256.process(ctx, &v, sizeof(v));
+	v = (prog && prog->explicitsyms) ? 1 : 0;
+	hash_sha2_256.process(ctx, &v, sizeof(v));
+	v = gl_config.maxattribs;
+	hash_sha2_256.process(ctx, &v, sizeof(v));
+	for (i = 0; shader_attr_names[i].name; i++)
+	{
+		v = shader_attr_names[i].ptype;
+		hash_sha2_256.process(ctx, &v, sizeof(v));
+		hash_sha2_256.process(ctx, shader_attr_names[i].name, strlen(shader_attr_names[i].name)+1);
+	}
+	for (s = 0; s < stages; s++)
+	{
+		if (!has[s])
+			continue;
+		v = types[s];
+		hash_sha2_256.process(ctx, &v, sizeof(v));
+		v = parts[s].strings;
+		hash_sha2_256.process(ctx, &v, sizeof(v));
+		for (i = 0; i < parts[s].strings; i++)
+		{
+			v = parts[s].len[i];
+			hash_sha2_256.process(ctx, &v, sizeof(v));
+			hash_sha2_256.process(ctx, parts[s].str[i], parts[s].len[i]);
+		}
+	}
+	hash_sha2_256.terminate(key, ctx);
+}
+
+//set by GLSlang_CreateProgram for GLSlang_CreateProgramPermu: the cache key of the program it just made
+static unsigned char glsl_lastkey[32];
+static qboolean glsl_lastkeyvalid, glsl_lastfrombinary;
 
 qboolean GLSlang_ValidateProgram(union programhandle_u *h, const char *name, qboolean silent, vfsfile_t *blobfile)
 {
@@ -2883,6 +3182,8 @@ union programhandle_u GLSlang_CreateProgram(program_t *prog, const char *name, i
 	GLuint cs;
 	GLuint es;
 	const char *nullconstants = NULL;
+	char verline[64];
+	struct glslparts_s parts[5];
 
 	memset(&ret, 0, sizeof(ret));
 
@@ -2902,11 +3203,42 @@ union programhandle_u GLSlang_CreateProgram(program_t *prog, const char *name, i
 	if (!precompilerconstants)
 		precompilerconstants = &nullconstants;
 
-	fs = GLSlang_CreateShader(prog, name, ver, precompilerconstants, frag, GL_FRAGMENT_SHADER_ARB, silent);
-	gs = GLSlang_CreateShader(prog, name, ver, precompilerconstants, geom, GL_GEOMETRY_SHADER_ARB, silent);
-	vs = GLSlang_CreateShader(prog, name, ver, precompilerconstants, vert, GL_VERTEX_SHADER_ARB, silent);
-	cs = GLSlang_CreateShader(prog, name, ver, precompilerconstants, cont, GL_TESS_CONTROL_SHADER_ARB, silent);
-	es = GLSlang_CreateShader(prog, name, ver, precompilerconstants, eval, GL_TESS_EVALUATION_SHADER_ARB, silent);
+	glsl_lastkeyvalid = false;
+	glsl_lastfrombinary = false;
+	if (!GLSlang_MapVersion(&ver, verline, sizeof(verline)))
+		return ret;	//this context cannot compile that glsl version at all
+
+	{
+		//order matters only for the key: fragment, geometry, vertex, control, evaluation (the order compiled)
+		static const GLenum types[5] = {GL_FRAGMENT_SHADER_ARB, GL_GEOMETRY_SHADER_ARB, GL_VERTEX_SHADER_ARB, GL_TESS_CONTROL_SHADER_ARB, GL_TESS_EVALUATION_SHADER_ARB};
+		const char *src[5];
+		qboolean has[5];
+		int s;
+		src[0] = frag; src[1] = geom; src[2] = vert; src[3] = cont; src[4] = eval;
+		for (s = 0; s < 5; s++)
+			has[s] = GLSlang_BuildShaderSource(prog, name, ver, verline, precompilerconstants, src[s], types[s], &parts[s]);
+		if (!has[0] || !has[2])
+			return ret;	//no vertex or fragment stage: nothing could link
+
+		//a program linked before, by this driver, from exactly this source: no compile, no link
+		if (GLSC_Available())
+		{
+			GLSlang_HashProgram(prog, ver, parts, types, has, 5, glsl_lastkey);
+			glsl_lastkeyvalid = true;
+			if (GLSC_TryLoad(glsl_lastkey, &ret.glsl.handle, &ret.glsl.usetesselation))
+			{
+				glsl_lastfrombinary = true;
+				return ret;
+			}
+		}
+
+		fs = has[0]?GLSlang_CompileShaderParts(&parts[0], types[0], *verline!=0):0;
+		gs = has[1]?GLSlang_CompileShaderParts(&parts[1], types[1], *verline!=0):0;
+		vs = has[2]?GLSlang_CompileShaderParts(&parts[2], types[2], *verline!=0):0;
+		cs = has[3]?GLSlang_CompileShaderParts(&parts[3], types[3], *verline!=0):0;
+		es = has[4]?GLSlang_CompileShaderParts(&parts[4], types[4], *verline!=0):0;
+		GLSC_NoteSourceCompile();
+	}
 
 	fs = GLSlang_FinishShader(fs, name, GL_FRAGMENT_SHADER_ARB, &silent);
 	gs = GLSlang_FinishShader(gs, name, GL_GEOMETRY_SHADER_ARB, &silent);
@@ -2967,7 +3299,17 @@ qboolean GLSlang_ValidateProgramPermu(program_t *prog, struct programpermu_s *pe
 {
 	if (!permu)
 		return false;
-	return GLSlang_ValidateProgram(&permu->h, prog->name, noerrors, blobfile);
+	if (permu->persisted && permu->h.glsl.handle)
+		return true;	//came from a cached binary: GLSC_TryLoad already checked its link status
+	if (!GLSlang_ValidateProgram(&permu->h, prog->name, noerrors, blobfile))
+		return false;
+	//linked from source: keep the driver's binary so the next load (and the next run) skips the compile
+	if (permu->haskey)
+	{
+		//only a binary that really went to the ram cache or the writer lets the residency cache evict this
+		permu->persisted = GLSC_Store(permu->cachekey, permu->h.glsl.handle, permu->h.glsl.usetesselation);
+	}
+	return true;
 }
 qboolean GLSlang_CreateProgramPermu(program_t *prog, struct programpermu_s *permu, int ver, const char **precompilerconstants, const char *vert, const char *tcs, const char *tes, const char *geom, const char *frag, qboolean noerrors, vfsfile_t *blobfile)
 {
@@ -2979,7 +3321,8 @@ qboolean GLSlang_CreateProgramPermu(program_t *prog, struct programpermu_s *perm
 		else
 			ver = 110;
 #else
-        ver = useGLes2_0Version() ? 100 : gl_config.maxglslversion;
+		//gles3 contexts get the gles3.0 baseline (maxglslversion is clamped to 300 for any gles3.x context)
+		ver = useGLes2_0Version() ? 100 : min(gl_config.maxglslversion, GLES_GLSL_BASELINE);
 #endif
 	}
 	if ((permu->permutation & PERMUTATION_SKELETAL) && gl_config.maxattribs < 10)
@@ -2990,6 +3333,10 @@ qboolean GLSlang_CreateProgramPermu(program_t *prog, struct programpermu_s *perm
 #endif
 
 	permu->h = GLSlang_CreateProgram(prog, prog->name, ver, precompilerconstants, vert, tcs, tes, geom, frag, noerrors, blobfile);
+	permu->haskey = glsl_lastkeyvalid;
+	if (glsl_lastkeyvalid)
+		memcpy(permu->cachekey, glsl_lastkey, sizeof(permu->cachekey));
+	permu->persisted = glsl_lastfrombinary;
 	if (permu->h.glsl.handle)
 		return true;
 	return false;
@@ -3005,34 +3352,63 @@ GLint GLSlang_GetUniformLocation (GLuint prog, char *name)
 	return i;
 }
 
+//sh_config.pLoadBlob: one permutation from the legacy per-program blob stream (fmt, length, binary,
+//usetesselation), as GLSlang_ValidateProgram/GLSlang_CreateProgram write it. The old body indexed permu[]
+//as structs (it is an array of pointers) and trusted every length it read, so it had been stubbed out.
+//The persistent cache (gl_shadercache.c) is what the renderer itself uses; this keeps the hook working.
 static qboolean GLSlang_LoadBlob(program_t *prog, unsigned int permu, vfsfile_t *blobfile)
 {
-	return false;
-/*
 	unsigned int fmt;
 	unsigned int length;
 	void *binary;
-	GLint success;
-	if (!qglProgramBinary)
+	GLint success = 0;
+	qboolean usetess = false;
+	struct programpermu_s *pp;
+	qboolean created = false;
+	GLuint handle;
+
+	if (!qglProgramBinary || !blobfile || !prog || permu >= PERMUTATIONS)
 		return false;
-	VFS_READ(blobfile, &fmt, sizeof(fmt));
-	VFS_READ(blobfile, &length, sizeof(length));
+	if (VFS_READ(blobfile, &fmt, sizeof(fmt)) != sizeof(fmt) || VFS_READ(blobfile, &length, sizeof(length)) != sizeof(length))
+		return false;
+	if (!length || length > 64*1024*1024)
+		return false;	//corrupt
 	binary = BZ_Malloc(length);
-	VFS_READ(blobfile, binary, length);
-	VFS_READ(blobfile, &prog->permu[permu].h.glsl.usetesselation, sizeof(prog->permu[permu].h.glsl.usetesselation));
-
-	prog->permu[permu].h.glsl.handle = qglCreateProgramObjectARB();
-	qglProgramBinary(prog->permu[permu].h.glsl.handle, fmt, binary, length);
-	BZ_Free(binary);
-	qglGetProgramParameteriv_(prog->permu[permu].h.glsl.handle, GL_OBJECT_LINK_STATUS_ARB, &success);
-
-	if (!success)
+	if (!binary)
+		return false;
+	if (VFS_READ(blobfile, binary, length) != (int)length || VFS_READ(blobfile, &usetess, sizeof(usetess)) != sizeof(usetess))
 	{
-		qglDeleteProgramObject_(prog->permu[permu].h.glsl.handle);
-		memset(&prog->permu[permu].h, 0, sizeof(prog->permu[permu].h));
+		BZ_Free(binary);
+		return false;
 	}
-	return !!success;
-*/
+
+	while (qglGetError())
+		;
+	handle = qglCreateProgramObjectARB();
+	qglProgramBinary(handle, fmt, binary, length);
+	BZ_Free(binary);
+	if (qglGetError() == GL_NO_ERROR)
+		qglGetProgramParameteriv_(handle, GL_OBJECT_LINK_STATUS_ARB, &success);
+	if (!success)
+	{	//another driver's binary, or a different driver version: the caller compiles from source
+		qglDeleteProgramObject_(handle);
+		return false;
+	}
+
+	pp = prog->permu[permu];
+	if (!pp || (permu && pp == prog->permu[0]))
+	{
+		pp = Z_Malloc(sizeof(*pp));
+		pp->permutation = permu;
+		created = true;
+	}
+	else if (pp->h.glsl.handle)
+		qglDeleteProgramObject_(pp->h.glsl.handle);
+	pp->h.glsl.handle = handle;
+	pp->h.glsl.usetesselation = usetess;
+	if (created)
+		prog->permu[permu] = pp;
+	return true;
 }
 
 static void GLSlang_DeleteProg(program_t *prog)
@@ -3048,6 +3424,7 @@ static void GLSlang_DeleteProg(program_t *prog)
 			if (pp == prog->permu[0] && permu)
 				continue;	//entry 0 (only) can get copied to avoid constant recompile failures (0 is always precompiled)
 
+			GLSC_ProgramForget(pp);
 			qglDeleteProgramObject_(pp->h.glsl.handle);
 			pp->h.glsl.handle = 0;
 
@@ -3211,6 +3588,9 @@ static void GLSlang_ProgAutoFields(program_t *prog, struct programpermu_s *pp, c
 			}
 		}
 	}
+
+	//the program is complete and usable: the residency cache may now account for (and later evict) it
+	GLSC_ProgramResident(pp, prog);
 }
 
 void GL_ForgetPointers(void)
@@ -3452,6 +3832,11 @@ void GL_ForgetPointers(void)
 
 	qglGetProgramBinary = NULL;
 	qglProgramBinary = NULL;
+	qglProgramParameteri = NULL;
+	qglInvalidateFramebuffer = NULL;
+	qglDiscardFramebufferEXT = NULL;
+	qglFramebufferTexture2DMultisample = NULL;
+	qglRenderbufferStorageMultisampleMSRTT = NULL;
 
 	qglGetGraphicsResetStatus = NULL;				//its not allowed to crash us. probably will. grr. oh well.
 
@@ -3601,10 +3986,9 @@ qboolean GL_Init(rendererstate_t *info, void *(*getglfunction) (char *name))
 	if (!qglBindBufferARB)
 		qglBindBufferARB	= GL_BindBufferARBStub;
 
-	if (gl_config.glversion >= 3.0)
-		qglGenerateMipmap	= (void *)getglext("glGenerateMipmap");
-	else
-		qglGenerateMipmap = NULL;
+	//resolved after GL_CheckExtensions below: gl_config.glversion is still zero here (GL_ForgetPointers and
+	//GL_CheckExtensions both clear gl_config), so testing it here always disabled glGenerateMipmap.
+	qglGenerateMipmap = NULL;
 #endif
 
 	if (!qglGetString)
@@ -3633,6 +4017,45 @@ qboolean GL_Init(rendererstate_t *info, void *(*getglfunction) (char *name))
 	//any name they are asked for. only trust the extension's entry point when it is actually advertised.
 	if (gl_config.gles)
 		qglMultiDrawElements = GL_CheckExtension("GL_EXT_multi_draw_arrays")?(void *)getglext("glMultiDrawElementsEXT"):NULL;
+
+#ifndef GL_STATIC
+	//glGenerateMipmap: core in gles2, gles3 and gl3; EXT/ARB_framebuffer_object on older desktop gl.
+	if (gl_config.gles ? gl_config.glversion >= 2 : gl_config.glversion >= 3.0)
+		qglGenerateMipmap = (void *)getglext("glGenerateMipmap");
+	else if (GL_CheckExtension("GL_ARB_framebuffer_object"))
+		qglGenerateMipmap = (void *)getglext("glGenerateMipmap");
+	else if (GL_CheckExtension("GL_EXT_framebuffer_object"))
+		qglGenerateMipmap = (void *)getglext("glGenerateMipmapEXT");
+	else
+		qglGenerateMipmap = NULL;
+#endif
+
+	if (gl_config.gles)
+	{	//the gles3.0 baseline. Android's libGLESv3 exports every gles3.2 symbol regardless of the context version,
+		//so a non-NULL lookup does not mean the call is legal on this context.
+		if (gl_config.glversion < 3)
+		{	//gles2: sync objects are gles3 (APPLE_sync is not used); instancing only via the extensions
+#ifndef GL_STATIC
+			qglFenceSync		= NULL;
+			qglClientWaitSync	= NULL;
+			qglDeleteSync		= NULL;
+#endif
+			if (GL_CheckExtension("GL_EXT_instanced_arrays"))
+				qglDrawElementsInstanced = (void *)getglext("glDrawElementsInstancedEXT");
+			else if (GL_CheckExtension("GL_ANGLE_instanced_arrays"))
+				qglDrawElementsInstanced = (void *)getglext("glDrawElementsInstancedANGLE");
+			else
+				qglDrawElementsInstanced = NULL;
+		}
+		else
+			qglDrawElementsInstanced = (void *)getglext("glDrawElementsInstanced");
+		//texture buffers: gles3.2 core, EXT/OES_texture_buffer require gles3.1. Not part of the baseline.
+		qglTexBuffer = NULL;
+#ifndef FTE_TARGET_WEB
+		//glGetTexLevelParameteriv is gles3.1.
+		qglGetTexLevelParameteriv = NULL;
+#endif
+	}
 
 #ifndef FTE_TARGET_WEB
 	if (!gl_config.gles)
@@ -3769,12 +4192,8 @@ qboolean GL_Init(rendererstate_t *info, void *(*getglfunction) (char *name))
 	if (gl_config.gles)
 	{
 		sh_config.minver = 100;
-		if (gl_config.glversion >= 3.2)
-			sh_config.maxver = 320;
-		else if (gl_config.glversion >= 3.1)
-			sh_config.maxver = 310;
-		else if (gl_config.glversion >= 3.0)
-			sh_config.maxver = 300;
+		if (gl_config.glversion >= 3.0)
+			sh_config.maxver = GLES_GLSL_BASELINE;	//never 310/320, even on a 3.1/3.2 context
 		else
 			sh_config.maxver = 100;
 		sh_config.blobpath = "gles/%s.blob";
@@ -3865,6 +4284,18 @@ qboolean GL_Init(rendererstate_t *info, void *(*getglfunction) (char *name))
 
 
 //	Con_Printf("sh_config.progs supported: %i, required: %i, vers: %i - %i\n", sh_config.progs_supported, sh_config.progs_required, sh_config.minver, sh_config.maxver);
+
+	if (gl_config.gles)
+	{
+		Con_Printf("GLES %.1f (glsl es %i baseline): invalidate %s, msaa-rtt %s (%i), es3 msaa %i, window msaa %i, packed d/s %i, d24 %i, f16 rt %i, program binary formats %i%s\n",
+			gl_config.glversion, sh_config.maxver,
+			gl_config.fbo_invalidate==1?"glInvalidateFramebuffer":gl_config.fbo_invalidate==2?"EXT_discard_framebuffer":"none",
+			gl_config.msrtt==1?(gl_config.msrtt2?"EXT+EXT2":"EXT"):gl_config.msrtt==2?"IMG":"none", gl_config.msrtt_maxsamples,
+			gl_config.es3_maxsamples, gl_config.defaultfb_samples, gl_config.ext_packed_depth_stencil, gl_config.ext_depth24,
+			gl_config.ext_color_buffer_half_float, gl_config.num_program_binary_formats,
+			(gl_config.mali_driver[0] >= 0)?va(", mali r%ip%i", gl_config.mali_driver[0], gl_config.mali_driver[1]):"");
+		GLBE_InstallTileHooks();
+	}
 
 	return true;
 }

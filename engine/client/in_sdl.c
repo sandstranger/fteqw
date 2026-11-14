@@ -1667,6 +1667,15 @@ SDL_AppResult SDLCALL SDL_AppEvent(void *appstate, SDL_Event *event)
 	case SDL_EVENT_WINDOW_CLOSE_REQUESTED:
 		Cbuf_AddText("quit prompt\n", RESTRICT_LOCAL);
 		break;
+#if SDL_VERSION_ATLEAST(3, 0, 0) && defined(GLQUAKE)
+	case SDL_EVENT_LOW_MEMORY:	//android onLowMemory/onTrimMemory: drop what can be rebuilt (acted on at the next frame end)
+		if (qrenderer == QR_OPENGL)
+		{
+			void GL_LowMemory(void);
+			GL_LowMemory();
+		}
+		break;
+#endif
 
 	case SDL_EVENT_KEY_UP:
 	case SDL_EVENT_KEY_DOWN:
@@ -2332,6 +2341,16 @@ static int SDLCALL AndroidLifeCycleEventFilter(void*, SDL_Event* event)
 		case SDL_APP_DIDENTERFOREGROUND:
 			vid.activeapp = true;
 			break;
+#ifdef GLQUAKE
+		case SDL_APP_LOWMEMORY:
+			//may arrive on the java thread: this only raises a flag; the renderer thread releases the shader
+			//binary ram cache, idle gpu programs and spare render targets at its next frame end
+			{
+				void GL_LowMemory(void);
+				GL_LowMemory();
+			}
+			break;
+#endif
 	}
 	return 1;
 }

@@ -1,4 +1,4 @@
-!!samps 2
+!!samps screen=0 lut:3D=1
 //this glsl shader is useful for cubemapped post processing effects (see csaddon for an example)
 varying vec4 tf;
 #ifdef VERTEX_SHADER

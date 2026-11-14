@@ -566,6 +566,16 @@ struct programpermu_s
 	int a2cval;			//the value last written to it, -1 none
 	int lmsizeuniform;	//FTESurf Patch 1275: e_lmsize, the batch's lightmap page (w, h, 1/w, 1/h)
 	int lmsizew, lmsizeh;	//the size last written to it, 0 none
+
+	//gl_shadercache.c: gpu program residency (bounded, LRU). A permutation whose binary is known to be on disk
+	//(or in the ram cache) may have its gl program evicted when unused; the next use reloads the binary.
+	struct programpermu_s *lru_prev, *lru_next;
+	struct programshared_s *owner;
+	unsigned int lastframe;		//GLSC frame counter at last use (BE_RenderMeshProgram)
+	unsigned char cachekey[32];	//sha256 of everything the driver was given (0s: not cacheable)
+	qboolean haskey;
+	qboolean persisted;			//a valid binary for cachekey exists on disk or in the ram cache
+	qboolean resident;			//linked into the residency list
 #endif
 	unsigned int permutation;
 	unsigned int attrmask;
@@ -865,6 +875,7 @@ typedef struct
 	int rb_depthstencil;
 	texid_t colour;
 	unsigned int enables;
+	unsigned int rb_depthfmt;	//internal format rb_depth was allocated with (memory accounting)
 } fbostate_t;
 #define FBO_RB_DEPTH		2
 #define FBO_RB_STENCIL		4

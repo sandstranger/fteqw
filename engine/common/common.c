@@ -6751,7 +6751,13 @@ static void QDECL COM_WorkerCount_Change(cvar_t *var, char *oldvalue)
 
 	if (!*var->string)
 	{
+#if defined(__arm__) && !defined(__aarch64__)
+		//armeabi-v7a: every loader thread can hold a whole decoded image (file + rgba + mips) at once, in a
+		//32-bit address space. Two keep loading parallel without doubling that peak.
+		count = var->ival = 2;
+#else
 		count = var->ival = 4;
+#endif
 	}
 
 	//try to respond to any kill requests now, so we don't get surprised by the cvar changing too often.

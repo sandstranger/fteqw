@@ -2273,6 +2273,9 @@ R_Clear
 */
 int gldepthfunc = GL_LEQUAL;
 qboolean depthcleared;
+//set by GLR_RenderView while its own scene target (rt/$lastgameview, maybe multisampled) is bound: that target is
+//rewritten completely every frame, so on a tile gpu it starts from a full clear instead of loading last frame's
+static qboolean r_clearwholescene;
 void R_Clear (qboolean fbo)
 {
 	// P1345: forced void visibility leaves uncovered pixels, even with decoration on.
@@ -2291,6 +2294,16 @@ void R_Clear (qboolean fbo)
 		clearoverview = (cluster == -1);
 	}
 	/*tbh, this entire function should be in the backend*/
+	if (r_clearwholescene && fbo && !clearoverview && r_refdef.stereomethod != STEREO_RED_BLUE && r_refdef.stereomethod != STEREO_RED_GREEN)
+	{	//tile gpu: colour+depth+stencil cleared together, deferred until the scene's first draw so the shadow
+		//maps and the sky room rendered before it do not split the scene pass (a cleared-only pass would be
+		//stored, then loaded back). r_clear's colour is black here as below.
+		GLBE_DeferFullClear(BEPASS_ALL, 0, 0, 0, 1);
+		gldepthmin = 0;
+		gldepthmax = 1;
+		gldepthfunc=GL_LEQUAL;
+		return;
+	}
 	{
 		if (!depthcleared || fbo || clearoverview)
 		{
@@ -2780,6 +2793,28 @@ qboolean R_RenderScene_Cubemap(void)
 }
 #endif
 
+//a render target format the scene/post-process passes can actually draw into. gles3.0 only makes 8-bit
+//normalised (and RGB10_A2) formats colour-renderable: half/float targets need EXT_color_buffer_(half_)float, and
+//sampling support (sh_config.texfmt) says nothing about rendering. An unrenderable choice left the fbo
+//incomplete, so the whole view was black on gles3 devices without those extensions once scene gamma was on.
+static qboolean R_RTFormatRenderable(uploadfmt_t fmt)
+{
+	if (!sh_config.texfmt[fmt])
+		return false;
+	if (!gl_config.gles)
+		return true;
+	switch(fmt)
+	{
+	case PTI_RGBA16F:
+		return gl_config.ext_color_buffer_half_float;
+	case PTI_RGBA32F:
+	case PTI_B10G11R11F:
+		return gl_config.ext_color_buffer_float;
+	default:
+		return true;
+	}
+}
+
 texid_t R_RenderPostProcess (texid_t sourcetex, texid_t sourcedepth, int type, shader_t *shader, char *restexname)
 {
 	if (r_refdef.flags & type)
@@ -2791,19 +2826,27 @@ texid_t R_RenderPostProcess (texid_t sourcetex, texid_t sourcedepth, int type, s
 			//thus we need to write this output to a texture.
 			int w = (r_refdef.vrect.width * vid.pixelwidth) / vid.width;
 			int h = (r_refdef.vrect.height * vid.pixelheight) / vid.height;
+			texid_t out;
+			uploadfmt_t fmt;
 			if (R2D_Flush)
 				R2D_Flush();
 			GLBE_FBO_Sources(sourcetex, sourcedepth);
 			// Keep the graded scene precise through exposure; never expand an 8-bit grade.
-			sourcetex = R2D_RT_Configure(restexname, w, h,
-				(sh_config.texfmt[PTI_RGBA16F] && ((r_refdef.flags & RDF_SCENEGAMMA) || shader == scenepp_gamma || sourcetex->format == PTI_RGBA16F || sourcetex->format == PTI_RGBA32F)) ? PTI_RGBA16F : TF_RGBA32,
-				RT_IMAGEFLAGS);
-			GLBE_FBO_Update(&fbo_postproc, 0, &sourcetex, 1, r_nulltex, w, h, 0);
+			fmt = (R_RTFormatRenderable(PTI_RGBA16F) && ((r_refdef.flags & RDF_SCENEGAMMA) || shader == scenepp_gamma || sourcetex->format == PTI_RGBA16F || sourcetex->format == PTI_RGBA32F)) ? PTI_RGBA16F : TF_RGBA32;
+			//stages only ever read the previous stage's output: two pooled targets ping-pong through the whole
+			//chain instead of one persistent full-screen texture per stage name
+			out = GLRT_AcquireTexture(RTP_POSTPROC, restexname, w, h, fmt, RT_IMAGEFLAGS);
+			if (!TEXVALID(out))
+				out = R2D_RT_Configure(restexname, w, h, fmt, RT_IMAGEFLAGS);
+			GLBE_FBO_Update(&fbo_postproc, 0, &out, 1, r_nulltex, w, h, 0);
+			GLBE_InvalidateAttachments(BEPASS_COLOUR);	//every pixel is rewritten below: nothing to load
 			qglViewport(0,0,w,h);
 			R2D_ScalePic(0, 0, vid.fbvwidth, vid.fbvheight, shader);
 			if (R2D_Flush)
 				R2D_Flush();
 			GLBE_RenderToTextureUpdate2d(true);
+			GLRT_ReleaseTexture(sourcetex);	//consumed (a no-op for the scene's own named target)
+			sourcetex = out;
 		}
 		else
 		{	//yay, dump it to the screen
@@ -3184,18 +3227,19 @@ void GLR_RenderView (void)
 		if (r_hdr_framebuffer.ival < 0)
 		{	//cvar change handler will set ival negative if it matches a known format name, doesn't mean its supported.
 			fmt = -r_hdr_framebuffer.ival;
-			if (fmt >= PTI_FIRSTCOMPRESSED || !sh_config.texfmt[fmt])
+			if (fmt >= PTI_FIRSTCOMPRESSED || !R_RTFormatRenderable(fmt))
 				fmt = PTI_RGB565;
 		}
 		else if ((r_refdef.flags&RDF_SCENEGAMMA)||(vid.flags&(VID_SRGBAWARE|VID_FP16))||r_hdr_framebuffer.ival)
 		{	//gamma ramps really need higher colour precision, otherwise the entire thing looks terrible.
-			if ((r_refdef.flags & RDF_SCENEGAMMA) && sh_config.texfmt[PTI_RGBA16F])
+			//(renderable, not merely sampleable: see R_RTFormatRenderable)
+			if ((r_refdef.flags & RDF_SCENEGAMMA) && R_RTFormatRenderable(PTI_RGBA16F))
 				fmt = PTI_RGBA16F;
-			else if (sh_config.texfmt[PTI_B10G11R11F])
+			else if (R_RTFormatRenderable(PTI_B10G11R11F))
 				fmt = PTI_B10G11R11F;
-			else if (sh_config.texfmt[PTI_RGBA16F])
+			else if (R_RTFormatRenderable(PTI_RGBA16F))
 				fmt = PTI_RGBA16F;
-			else if (sh_config.texfmt[PTI_A2BGR10])
+			else if (R_RTFormatRenderable(PTI_A2BGR10))
 				fmt = PTI_A2BGR10;
 		}
 
@@ -3274,7 +3318,9 @@ void GLR_RenderView (void)
 	{
 		GL_SetShaderState2D(false);
 
+		r_clearwholescene = dofbo && !rtview && GLBE_TileRenderer();	//our own scene target only, never a csqc one
 		R_Clear (dofbo);
+		r_clearwholescene = false;
 
 	//	GLR_SetupFog ();
 
@@ -3317,7 +3363,10 @@ void GLR_RenderView (void)
 	//update stuff now that we're not rendering the 3d scene
 	if (dofbo)
 	{
+		GLBE_FlushPendingClear();	//a view that drew nothing still presents its clear colour
 		GLBE_SceneMSAA_End();	//FTESurf Patch 1260: into rt/$lastgameview, under this bucket
+		if (!rtview && !TEXVALID(sourcedepth))
+			GLBE_InvalidateAttachments(BEPASS_DEPTH|BEPASS_STENCIL);	//renderbuffer depth: never read again, never stored
 		GLBE_FBO_Pop(oldfbo);
 	}
 
@@ -3353,6 +3402,7 @@ void GLR_RenderView (void)
 		R2D_Flush();
 
 	GLBE_FBO_Sources(r_nulltex, r_nulltex);
+	GLRT_ReleaseTexture(sourcetex);	//the post-process chain's last pooled target (bloom above has read it)
 
 	if (gl_motionblur.value>0 && gl_motionblur.value < 1 && qglCopyTexImage2D)
 		R_RenderMotionBlur();

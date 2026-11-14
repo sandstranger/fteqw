@@ -483,8 +483,10 @@ static qboolean SDLVID_Init (rendererstate_t *info, unsigned char *palette, r_qr
 #else
             extern bool useGLes2_0Version();
             const bool useLegacyOpenGLES2_0 = useGLes2_0Version();
+            //a 3.2 context is requested (drivers hand out their newest compatible one anyway), but the renderer
+            //itself is held to the OpenGL ES 3.0 API and GLSL ES 3.00 (gl_vidcommon.c, GLES_GLSL_BASELINE)
             SDL_Log(useLegacyOpenGLES2_0 ? "Legacy OpenGL ES 2.0 is using for rendering" :
-                    "OpenGL ES 3.2 is using for rendering");
+                    "OpenGL ES 3.x context, OpenGL ES 3.0 / GLSL ES 3.00 renderer baseline");
             SDL_GL_SetAttribute(SDL_GL_CONTEXT_MAJOR_VERSION, useLegacyOpenGLES2_0 ? 2 : 3);
             SDL_GL_SetAttribute(SDL_GL_CONTEXT_MINOR_VERSION, useLegacyOpenGLES2_0 ? 0 : 2);
             vid_isfullscreen = true;
@@ -505,11 +507,28 @@ static qboolean SDLVID_Init (rendererstate_t *info, unsigned char *palette, r_qr
 #else
             SDL_GL_SetAttribute(SDL_GL_CONTEXT_PROFILE_MASK, SDL_GL_CONTEXT_PROFILE_ES);
 #endif
+#ifdef ANDROID
+		//gles3: vid_multisample is done on the scene's own target (on-chip resolved render-to-texture where the
+		//driver has it, gl_backend.c MSAA_*), so the window itself stays single-sampled: the hud does not need
+		//samples, and a multisampled window would make the scene path refuse its own msaa. Legacy gles2 keeps the
+		//multisampled EGL surface, its only msaa where render-to-texture msaa is missing.
+		if (info->multisample && useLegacyOpenGLES2_0)
+		{
+			SDL_GL_SetAttribute(SDL_GL_MULTISAMPLESAMPLES, info->multisample);
+			SDL_GL_SetAttribute(SDL_GL_MULTISAMPLEBUFFERS, 1);
+		}
+		else
+		{
+			SDL_GL_SetAttribute(SDL_GL_MULTISAMPLESAMPLES, 0);
+			SDL_GL_SetAttribute(SDL_GL_MULTISAMPLEBUFFERS, 0);
+		}
+#else
 		if (info->multisample)
 		{
 			SDL_GL_SetAttribute(SDL_GL_MULTISAMPLESAMPLES, info->multisample);
 			SDL_GL_SetAttribute(SDL_GL_MULTISAMPLEBUFFERS, 1);
 		}
+#endif
 #ifdef __ANDROID__
           SDL_GL_LoadLibrary(NULL);
 #endif

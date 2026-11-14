@@ -515,6 +515,8 @@ SET(FTE_GL_FILES
 	engine/gl/gl_rsurf.c
 	engine/gl/gl_screen.c
 	engine/gl/gl_vidcommon.c
+	engine/gl/gl_rtpool.c
+	engine/gl/gl_shadercache.c
 	engine/gl/glmod_doom.c
 )
 SET(FTE_VK_FILES

@@ -5234,7 +5234,9 @@ TRACE(("dbg: Surf_NewMap: tp\n"));
 	if (qrenderer == QR_OPENGL)
 	{
 		void GLBE_WaterViewsNewMap(void);
+		void GLRT_Trim(qboolean all);
 		GLBE_WaterViewsNewMap();	//FTESurf Patch 879: the occluder tree now, not on the first frame with water
+		GLRT_Trim(true);	//render targets of the last map's views are not reused across a map change
 	}
 #endif
 	P_LoadedCensus("Surf_NewMap end");	//FTESurf Patch 272

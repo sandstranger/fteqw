@@ -242,6 +242,21 @@ typedef struct {
 	qboolean arb_depth_clamp;
 	int ext_texture_filter_anisotropic;
 
+	//mobile/TBDR renderer capabilities (GLES path). Every one of these is probed from the real context
+	//(version AND extension string), never assumed from the version number alone.
+	qboolean ext_depth24;					//GL_DEPTH_COMPONENT24 renderbuffers/textures (gl/gles3 core, gles2 GL_OES_depth24)
+	qboolean ext_color_buffer_half_float;	//RGBA16F is colour-renderable (gles3: EXT_color_buffer_half_float / EXT_color_buffer_float)
+	qboolean ext_color_buffer_float;		//RGBA32F/R11G11B10F colour-renderable (gles3: EXT_color_buffer_float)
+	int fbo_invalidate;						//0 none, 1 glInvalidateFramebuffer (gles3/gl4.3), 2 glDiscardFramebufferEXT (gles2 ext)
+	int msrtt;								//0 none, 1 GL_EXT_multisampled_render_to_texture, 2 GL_IMG_multisampled_render_to_texture
+	qboolean msrtt2;						//GL_EXT_multisampled_render_to_texture2: depth/other attachments may be multisampled textures too
+	int msrtt_maxsamples;					//GL_MAX_SAMPLES_EXT / GL_MAX_SAMPLES_IMG
+	int es3_maxsamples;						//GL_MAX_SAMPLES for gles3 multisample renderbuffers (explicit-resolve fallback)
+	int defaultfb_samples;					//GL_SAMPLES of the window's own framebuffer (EGL multisample surface)
+	int mali_driver[2];						//Mali r<major>p<minor> from GL_VERSION, {-1,-1} when not a Mali driver
+	int num_program_binary_formats;			//GL_NUM_PROGRAM_BINARY_FORMATS (0: binaries cannot be cached)
+	qboolean program_binary_core;			//glProgramBinary/glProgramParameteri core (gles3/gl4.1), else OES_get_program_binary
+
 	struct glfmt_s formatinfo[PTI_MAX];
 	int unpackalignment;
 } gl_config_t;
@@ -1137,6 +1152,102 @@ void GL_SelectProgram(GLuint program);
 #define GLSlang_UseProgram(prog) GL_SelectProgram(prog)
 #define GLSlang_SetUniform1i(uni, parm0) qglUniform1iARB(uni, parm0)
 #define GLSlang_SetUniform1f(uni, parm0) qglUniform1fARB(uni, parm0)
+
+//mobile / tile-based renderer entry points. All of these are NULL unless the context really offers them
+//(version AND extension checked in GL_CheckExtensions); callers must test before use.
+extern void (APIENTRY *qglInvalidateFramebuffer)(GLenum target, GLsizei numattachments, const GLenum *attachments);	//gles3 / gl4.3
+extern void (APIENTRY *qglDiscardFramebufferEXT)(GLenum target, GLsizei numattachments, const GLenum *attachments);	//GL_EXT_discard_framebuffer (gles2)
+extern void (APIENTRY *qglFramebufferTexture2DMultisample)(GLenum target, GLenum attachment, GLenum textarget, GLuint texture, GLint level, GLsizei samples);	//GL_EXT/IMG_multisampled_render_to_texture
+extern void (APIENTRY *qglRenderbufferStorageMultisampleMSRTT)(GLenum target, GLsizei samples, GLenum internalformat, GLsizei width, GLsizei height);	//the same extension's renderbuffer half
+extern void (APIENTRY *qglProgramParameteri)(GLuint program, GLenum pname, GLint value);	//gles3 / gl4.1
+extern void (APIENTRY *qglGetProgramBinary)(GLuint program, GLsizei bufSize, GLsizei *length, GLenum *binaryFormat, GLvoid *binary);
+extern void (APIENTRY *qglProgramBinary)(GLuint program, GLenum binaryFormat, const GLvoid *binary, GLint length);
+
+#ifndef GL_PROGRAM_BINARY_LENGTH
+#define GL_PROGRAM_BINARY_LENGTH				0x8741
+#endif
+#ifndef GL_NUM_PROGRAM_BINARY_FORMATS
+#define GL_NUM_PROGRAM_BINARY_FORMATS			0x87FE
+#endif
+#ifndef GL_PROGRAM_BINARY_RETRIEVABLE_HINT
+#define GL_PROGRAM_BINARY_RETRIEVABLE_HINT		0x8257
+#endif
+#ifndef GL_MAX_SAMPLES_EXT
+#define GL_MAX_SAMPLES_EXT						0x8D57	//EXT_multisampled_render_to_texture (same value as gl3's GL_MAX_SAMPLES)
+#endif
+#ifndef GL_MAX_SAMPLES_IMG
+#define GL_MAX_SAMPLES_IMG						0x9135
+#endif
+#ifndef GL_SAMPLES_FTE
+#define GL_SAMPLES_FTE							0x80A9	//GL_SAMPLES
+#endif
+#ifndef GL_COLOR_EXT
+#define GL_COLOR_EXT							0x1800	//EXT_discard_framebuffer's names for the default framebuffer
+#define GL_DEPTH_EXT							0x1801
+#define GL_STENCIL_EXT							0x1802
+#endif
+#ifndef GL_DEPTH_STENCIL_ATTACHMENT_FTE
+#define GL_DEPTH_STENCIL_ATTACHMENT_FTE			0x821A
+#endif
+
+//render pass model (gl_backend.c). The GL driver ends a tile render pass whenever the bound framebuffer
+//changes; these helpers let callers say what a pass starts and ends with so tile memory is neither loaded
+//from nor stored to external memory without a reason.
+#define BEPASS_COLOUR		1u
+#define BEPASS_DEPTH		2u
+#define BEPASS_STENCIL		4u
+#define BEPASS_ALL			(BEPASS_COLOUR|BEPASS_DEPTH|BEPASS_STENCIL)
+void GLBE_InvalidateAttachments(unsigned int which);		//contents of the bound framebuffer's attachments are not needed any more
+void GLBE_DeferFullClear(unsigned int which, float r, float g, float b, float a);	//clear the bound fbo when the first real work hits it
+void GLBE_FlushPendingClear(void);							//issue a deferred clear now if its fbo is bound
+qboolean GLBE_TileRenderer(void);							//gles: optimise for tile memory (clears/invalidates are free, loads/stores are not)
+void GLBE_PassStats_FrameEnd(void);							//rolls the per-frame render-pass counters
+void GLBE_InstallTileHooks(void);							//gl_vidcommon.c: wraps the draw entry points for the deferred clear
+
+//render target pool (gl_rtpool.c): every transient full-screen target goes through here so passes whose
+//lifetimes do not overlap share storage, and storage is only ever allocated on first real use.
+enum rtpool_purpose_e
+{
+	RTP_POSTPROC,		//post-process chain intermediates (ping-pong)
+	RTP_SCENE,			//the main scene's colour/depth
+	RTP_MSAA,			//multisample storage (renderbuffers)
+	RTP_DEPTH,			//depth/stencil renderbuffers of fbos
+	RTP_CAPTURE,		//reflection/refraction/ripple
+	RTP_OTHER,
+	RTP_MAX
+};
+texid_t GLRT_AcquireTexture(enum rtpool_purpose_e purpose, const char *name, int width, int height, uploadfmt_t fmt, unsigned int imageflags);
+void GLRT_ReleaseTexture(texid_t tex);
+GLuint GLRT_AcquireRenderbuffer(enum rtpool_purpose_e purpose, GLenum internalformat, int width, int height, int samples, int msrtt);
+void GLRT_ReleaseRenderbuffer(GLuint rb);
+void GLRT_TrackAllocation(enum rtpool_purpose_e purpose, size_t bytes, int delta);	//storage owned elsewhere, counted in the stats/budget
+size_t GLRT_FormatBytes(GLenum internalformat);
+void GLRT_FrameEnd(void);
+void GLRT_NoteFBORecreate(void);
+void GLBE_PassStats_Print(void);
+void GLRT_Trim(qboolean all);
+void GLRT_Init(void);
+void GLRT_Shutdown(qboolean contextalive);
+
+//shader program binary cache (gl_shadercache.c)
+struct programpermu_s;
+void GLSC_Init(void);
+void GLSC_Shutdown(void);
+void GLSC_FrameEnd(void);
+void GLSC_LowMemory(void);
+void GLSC_ProgramResident(struct programpermu_s *pp, struct programshared_s *prog);	//a permutation now owns a gl program
+void GLSC_ProgramForget(struct programpermu_s *pp);		//it is being destroyed
+qboolean GLSC_Available(void);
+qboolean GLSC_TryLoad(const unsigned char key[32], GLuint *outprogram, qboolean *usetesselation);
+qboolean GLSC_Store(const unsigned char key[32], GLuint program, qboolean usetesselation);	//true: the binary is now in the ram cache and/or (being) written
+void GLSC_Reject(const unsigned char key[32]);
+void GLSC_NoteSourceCompile(void);
+void GLSC_ProgramTouch(struct programpermu_s *pp);	//marks a permutation used this frame (lru)
+unsigned int GLSC_Frame(void);
+void GLBE_ForgetProgramCache(void);	//gl_backend.c: drop cached program names after programs were deleted
+void GL_LowMemory(void);
+//FTE_SetShaderCacheDirectory(const char *path) is the exported JNA / native C ABI entry (gl_shadercache.c). It is
+//deliberately not declared here: a prior hidden-visibility declaration would override its default visibility.	//android onTrimMemory/SDL low-memory: give back what can be rebuilt (renderer thread, next frame)
 
 
 #ifdef _DEBUG

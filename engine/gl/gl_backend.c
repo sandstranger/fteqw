@@ -1634,13 +1634,366 @@ static qboolean GLBE_FlatRefractPane(void)
 	return !why;
 }
 
+/*======================================================================================================
+Tile-based render pass model (GLES).
+
+A GLES driver starts a render pass when a framebuffer is bound and drawn to, and ends it at the next bind,
+flush or read. Starting a pass on attachments whose old contents were not discarded makes a tile gpu load
+them from memory; ending a pass stores every attachment that was not invalidated. So:
+  - the scene target's clear is deferred until the first real work reaches it (GLBE_DeferFullClear), so the
+    shadow maps / sky room / lightmap work that runs between R_Clear and the first world batch do not split
+    the scene pass into a clear-only pass (stored) plus a pass that loads it back;
+  - attachments nobody will read again are invalidated at the end of their pass (GLBE_InvalidateAttachments);
+  - full-screen passes that overwrite every pixel invalidate first, so nothing is loaded.
+The draw/copy/read/blit entry points are wrapped on GLES (GLBE_InstallTileHooks) so a deferred clear is
+always issued before anything can touch the target, whichever code path draws first.
+======================================================================================================*/
+static cvar_t gl_tilerenderer = CVARD("gl_tilerenderer", "-1", "Optimise render passes for tile-based gpus: defer clears to the first draw and invalidate attachments that are not needed after their pass. -1: on for OpenGL ES.");
+static cvar_t r_msaa_backend = CVARD("r_msaa_backend", "auto", "How vid_multisample is done on OpenGL ES: auto (render-to-texture with on-chip resolve where available, else multisample renderbuffers with an explicit resolve), rtt, blit, off.");
+static cvar_t gl_workaround_mali3809560 = CVARD("gl_workaround_mali3809560", "-1", "Arm erratum 3809560 (OpenGL ES surface reads missing their dependency on earlier MSAA writes, Mali drivers r44p0-r45p0): use an explicit resolve instead of implicitly resolved render-to-texture MSAA. -1 auto (affected driver versions), 0 off, 1 always.");
+
+static struct
+{
+	unsigned int binds, clears, deferred, deferreddropped, invalidates, resolves, blits, copies, reads;
+} be_pass, be_passlast, be_passtotal;
+static unsigned int be_passframes;
+static struct
+{
+	qboolean pending;
+	int fbo;
+	unsigned int which;
+	float col[4];
+} be_pendingclear;
+static qboolean be_scissoron;	//GL_SCISSOR_TEST as BE_Scissor last set it: blits are scissored
+static qboolean be_fbodrawn;		//something was drawn/copied into the bound framebuffer since it was bound
+static qboolean be_tilehooks;		//the gl entry points below are wrapped
+static void GLBE_MSAA_NoteSwitch(int newfbo);
+static void GLBE_MSAA_NoteRead(void);
+
+qboolean GLBE_TileRenderer(void)
+{
+	if (gl_tilerenderer.ival >= 0)
+		return gl_tilerenderer.ival > 0 && gl_config.ext_framebuffer_objects;
+	return gl_config.gles && gl_config.ext_framebuffer_objects;
+}
+
+static void GLBE_DoInvalidate(GLenum target, qboolean defaultfb, unsigned int which)
+{
+	GLenum att[3];
+	int n = 0;
+	if (!which || !gl_config.fbo_invalidate)
+		return;
+	if (target != GL_FRAMEBUFFER_EXT && gl_config.fbo_invalidate != 1)
+		return;	//EXT_discard_framebuffer only knows GL_FRAMEBUFFER (the draw one): never guess
+	if (defaultfb)
+	{	//GL_COLOR/GL_DEPTH/GL_STENCIL (== EXT_discard_framebuffer's GL_COLOR_EXT...) for the window's buffers
+		if (which & BEPASS_COLOUR)	att[n++] = GL_COLOR_EXT;
+		if (which & BEPASS_DEPTH)	att[n++] = GL_DEPTH_EXT;
+		if (which & BEPASS_STENCIL)	att[n++] = GL_STENCIL_EXT;
+	}
+	else
+	{
+		if (which & BEPASS_COLOUR)	att[n++] = GL_COLOR_ATTACHMENT0_EXT;
+		if (which & BEPASS_DEPTH)	att[n++] = GL_DEPTH_ATTACHMENT_EXT;
+		if (which & BEPASS_STENCIL)	att[n++] = GL_STENCIL_ATTACHMENT_EXT;
+	}
+	if (gl_config.fbo_invalidate == 1)
+		qglInvalidateFramebuffer(target, n, att);
+	else
+		qglDiscardFramebufferEXT(GL_FRAMEBUFFER_EXT, n, att);	//gles2: the only target the extension knows
+	be_pass.invalidates++;
+}
+//the bound framebuffer's attachments will not be read again: no store at the end of this pass
+void GLBE_InvalidateAttachments(unsigned int which)
+{
+	if (!GLBE_TileRenderer())
+		return;
+	if (be_pendingclear.pending && be_pendingclear.fbo == shaderstate.fbo_current)
+		be_pendingclear.which &= ~which;	//what is invalidated needs no clear either... the rest still does
+	GLBE_DoInvalidate(GL_FRAMEBUFFER_EXT, !shaderstate.fbo_current, which);
+}
+
+static void GLBE_FullClear(unsigned int which, const float *col)
+{
+	GLboolean cmask[4] = {GL_TRUE,GL_TRUE,GL_TRUE,GL_TRUE}, dmask = GL_TRUE;
+	GLbitfield bits = 0;
+	qboolean scissor = qglIsEnabled?qglIsEnabled(GL_SCISSOR_TEST):be_scissoron;
+	//a full clear is what lets a tile gpu skip the load: no masked channels, no scissor
+	if (scissor)
+		qglDisable(GL_SCISSOR_TEST);
+	if (which & BEPASS_COLOUR)
+	{
+		qglGetBooleanv(GL_COLOR_WRITEMASK, cmask);
+		qglColorMask(GL_TRUE, GL_TRUE, GL_TRUE, GL_TRUE);
+		qglClearColor(col[0], col[1], col[2], col[3]);
+		bits |= GL_COLOR_BUFFER_BIT;
+	}
+	if (which & BEPASS_DEPTH)
+	{
+		qglGetBooleanv(GL_DEPTH_WRITEMASK, &dmask);
+		qglDepthMask(GL_TRUE);
+		bits |= GL_DEPTH_BUFFER_BIT;
+	}
+	if (which & BEPASS_STENCIL)
+		bits |= GL_STENCIL_BUFFER_BIT;	//the engine never changes the stencil write mask (all bits)
+	if (bits)
+		qglClear(bits);
+	if (which & BEPASS_COLOUR)
+		qglColorMask(cmask[0], cmask[1], cmask[2], cmask[3]);
+	if (which & BEPASS_DEPTH)
+		qglDepthMask(dmask);
+	if (scissor)
+		qglEnable(GL_SCISSOR_TEST);
+}
+
+//the target bound now is to start fully cleared, but only once something is drawn into it
+void GLBE_DeferFullClear(unsigned int which, float r, float g, float b, float a)
+{
+	float col[4] = {r,g,b,a};
+	if (!be_tilehooks || !GLBE_TileRenderer() || (be_pendingclear.pending && be_pendingclear.fbo != shaderstate.fbo_current))
+	{	//no way to catch the first draw (or another target is already waiting): clear now
+		GLBE_FullClear(which, col);
+		return;
+	}
+	if (be_pendingclear.pending)
+		be_pendingclear.which |= which;
+	else
+	{
+		be_pendingclear.pending = true;
+		be_pendingclear.fbo = shaderstate.fbo_current;
+		be_pendingclear.which = which;
+	}
+	memcpy(be_pendingclear.col, col, sizeof(col));
+	be_pass.deferred++;
+}
+void GLBE_FlushPendingClear(void)
+{
+	if (!be_pendingclear.pending || be_pendingclear.fbo != shaderstate.fbo_current)
+		return;
+	be_pendingclear.pending = false;
+	GLBE_FullClear(be_pendingclear.which, be_pendingclear.col);
+}
+#define BE_TILECHECK() do { if (be_pendingclear.pending && be_pendingclear.fbo == shaderstate.fbo_current) GLBE_FlushPendingClear(); be_fbodrawn = true; } while(0)
+
+//all framebuffer binds of the backend go through here: counts passes, and spots a multisampled
+//render-to-texture pass being interrupted (its depth would be lost)
+static void BE_BindFBO(int newfbo)
+{
+	if (shaderstate.fbo_current != newfbo)
+	{
+		GLBE_MSAA_NoteSwitch(newfbo);
+		be_fbodrawn = false;
+		be_pass.binds++;
+	}
+	qglBindFramebufferEXT(GL_FRAMEBUFFER_EXT, newfbo);
+	shaderstate.fbo_current = newfbo;
+}
+
+#ifndef GL_STATIC
+static void (APIENTRY *be_real_DrawElements) (GLenum mode, GLsizei count, GLenum type, const GLvoid *indices);
+static void (APIENTRY *be_real_DrawArrays) (GLenum mode, GLint first, GLsizei count);
+static void (APIENTRY *be_real_DrawElementsInstanced) (GLenum mode, GLsizei count, GLenum type, const GLvoid *indices, GLsizei instancecount);
+static void (APIENTRY *be_real_MultiDrawElements) (GLenum mode, const GLsizei * count, GLenum type, const GLvoid * const * indices, GLsizei drawcount);
+static void (APIENTRY *be_real_CopyTexImage2D) (GLenum target, GLint level, GLenum internalFormat, GLint x, GLint y, GLsizei width, GLsizei height, GLint border);
+static void (APIENTRY *be_real_CopyTexSubImage2D) (GLenum target, GLint level, GLint xoffset, GLint yoffset, GLint x, GLint y, GLsizei width, GLsizei height);
+static void (APIENTRY *be_real_ReadPixels) (GLint x, GLint y, GLsizei width, GLsizei height, GLenum format, GLenum type, GLvoid *pixels);
+static void (APIENTRY *be_real_Clear) (GLbitfield mask);
+static void (APIENTRY *be_real_BlitFramebuffer) (GLint sx0, GLint sy0, GLint sx1, GLint sy1, GLint dx0, GLint dy0, GLint dx1, GLint dy1, GLbitfield mask, GLenum filter);
+static void APIENTRY BE_Hook_DrawElements(GLenum mode, GLsizei count, GLenum type, const GLvoid *indices)
+{
+	BE_TILECHECK();
+	be_real_DrawElements(mode, count, type, indices);
+}
+static void APIENTRY BE_Hook_DrawArrays(GLenum mode, GLint first, GLsizei count)
+{
+	BE_TILECHECK();
+	be_real_DrawArrays(mode, first, count);
+}
+static void APIENTRY BE_Hook_DrawElementsInstanced(GLenum mode, GLsizei count, GLenum type, const GLvoid *indices, GLsizei instancecount)
+{
+	BE_TILECHECK();
+	be_real_DrawElementsInstanced(mode, count, type, indices, instancecount);
+}
+static void APIENTRY BE_Hook_MultiDrawElements(GLenum mode, const GLsizei * count, GLenum type, const GLvoid * const * indices, GLsizei drawcount)
+{
+	BE_TILECHECK();
+	be_real_MultiDrawElements(mode, count, type, indices, drawcount);
+}
+static void APIENTRY BE_Hook_CopyTexImage2D(GLenum target, GLint level, GLenum internalFormat, GLint x, GLint y, GLsizei width, GLsizei height, GLint border)
+{
+	GLBE_MSAA_NoteRead();	//before the check below marks the framebuffer drawn
+	BE_TILECHECK();
+	be_pass.copies++;
+	be_real_CopyTexImage2D(target, level, internalFormat, x, y, width, height, border);
+}
+static void APIENTRY BE_Hook_CopyTexSubImage2D(GLenum target, GLint level, GLint xoffset, GLint yoffset, GLint x, GLint y, GLsizei width, GLsizei height)
+{
+	GLBE_MSAA_NoteRead();	//before the check below marks the framebuffer drawn
+	BE_TILECHECK();
+	be_pass.copies++;
+	be_real_CopyTexSubImage2D(target, level, xoffset, yoffset, x, y, width, height);
+}
+static void APIENTRY BE_Hook_ReadPixels(GLint x, GLint y, GLsizei width, GLsizei height, GLenum format, GLenum type, GLvoid *pixels)
+{
+	GLBE_MSAA_NoteRead();	//before the check below marks the framebuffer drawn
+	BE_TILECHECK();
+	be_pass.reads++;
+	be_real_ReadPixels(x, y, width, height, format, type, pixels);
+}
+static void APIENTRY BE_Hook_Clear(GLbitfield mask)
+{
+	if (be_pendingclear.pending && be_pendingclear.fbo == shaderstate.fbo_current)
+		GLBE_FlushPendingClear();
+	be_pass.clears++;
+	be_real_Clear(mask);
+}
+static void APIENTRY BE_Hook_BlitFramebuffer(GLint sx0, GLint sy0, GLint sx1, GLint sy1, GLint dx0, GLint dy0, GLint dx1, GLint dy1, GLbitfield mask, GLenum filter)
+{	//the draw framebuffer of a blit is the one shaderstate.fbo_current names in every caller
+	BE_TILECHECK();
+	be_pass.blits++;
+	be_real_BlitFramebuffer(sx0, sy0, sx1, sy1, dx0, dy0, dx1, dy1, mask, filter);
+}
+#endif
+void GLBE_InstallTileHooks(void)
+{
+#ifndef GL_STATIC
+	be_tilehooks = false;
+	if (!qglDrawElements || !qglDrawArrays || !qglClear || !qglCopyTexSubImage2D || !qglCopyTexImage2D || !qglReadPixels)
+		return;
+	if (qglDrawElements != BE_Hook_DrawElements)
+	{
+		be_real_DrawElements = qglDrawElements;
+		qglDrawElements = BE_Hook_DrawElements;
+	}
+	if (qglDrawArrays != BE_Hook_DrawArrays)
+	{
+		be_real_DrawArrays = qglDrawArrays;
+		qglDrawArrays = BE_Hook_DrawArrays;
+	}
+	if (qglDrawElementsInstanced && qglDrawElementsInstanced != BE_Hook_DrawElementsInstanced)
+	{
+		be_real_DrawElementsInstanced = qglDrawElementsInstanced;
+		qglDrawElementsInstanced = BE_Hook_DrawElementsInstanced;
+	}
+	if (qglMultiDrawElements && qglMultiDrawElements != BE_Hook_MultiDrawElements)
+	{
+		be_real_MultiDrawElements = qglMultiDrawElements;
+		qglMultiDrawElements = BE_Hook_MultiDrawElements;
+	}
+	if (qglCopyTexImage2D != BE_Hook_CopyTexImage2D)
+	{
+		be_real_CopyTexImage2D = qglCopyTexImage2D;
+		qglCopyTexImage2D = BE_Hook_CopyTexImage2D;
+	}
+	if (qglCopyTexSubImage2D != BE_Hook_CopyTexSubImage2D)
+	{
+		be_real_CopyTexSubImage2D = qglCopyTexSubImage2D;
+		qglCopyTexSubImage2D = BE_Hook_CopyTexSubImage2D;
+	}
+	if (qglReadPixels != BE_Hook_ReadPixels)
+	{
+		be_real_ReadPixels = qglReadPixels;
+		qglReadPixels = BE_Hook_ReadPixels;
+	}
+	if (qglClear != BE_Hook_Clear)
+	{
+		be_real_Clear = qglClear;
+		qglClear = BE_Hook_Clear;
+	}
+	if (qglBlitFramebufferEXT && qglBlitFramebufferEXT != BE_Hook_BlitFramebuffer)
+	{
+		be_real_BlitFramebuffer = qglBlitFramebufferEXT;
+		qglBlitFramebufferEXT = BE_Hook_BlitFramebuffer;
+	}
+	be_tilehooks = true;
+#endif
+}
+
+void GLBE_PassStats_FrameEnd(void)
+{
+	if (be_pendingclear.pending)
+	{	//nothing drew into it this frame: nothing to clear either
+		be_pendingclear.pending = false;
+		be_pass.deferreddropped++;
+	}
+	be_passlast = be_pass;
+	be_passtotal.binds += be_pass.binds;
+	be_passtotal.clears += be_pass.clears;
+	be_passtotal.deferred += be_pass.deferred;
+	be_passtotal.deferreddropped += be_pass.deferreddropped;
+	be_passtotal.invalidates += be_pass.invalidates;
+	be_passtotal.resolves += be_pass.resolves;
+	be_passtotal.blits += be_pass.blits;
+	be_passtotal.copies += be_pass.copies;
+	be_passtotal.reads += be_pass.reads;
+	be_passframes++;
+	memset(&be_pass, 0, sizeof(be_pass));
+}
+void GLBE_PassStats_Print(void)
+{
+	float f = be_passframes?1.0f/be_passframes:0;
+	Con_Printf("render passes (%s): last frame / average per frame\n", GLBE_TileRenderer()?"tile-based mode":"immediate mode");
+	Con_Printf("  framebuffer switches %u / %.1f, clears %u / %.1f, deferred clears %u / %.1f (dropped %u)\n",
+		be_passlast.binds, be_passtotal.binds*f, be_passlast.clears, be_passtotal.clears*f, be_passlast.deferred, be_passtotal.deferred*f, be_passtotal.deferreddropped);
+	Con_Printf("  invalidates %u / %.1f, msaa resolves %u / %.1f, blits %u / %.1f, copies %u / %.1f, readbacks %u / %.1f\n",
+		be_passlast.invalidates, be_passtotal.invalidates*f, be_passlast.resolves, be_passtotal.resolves*f,
+		be_passlast.blits, be_passtotal.blits*f, be_passlast.copies, be_passtotal.copies*f, be_passlast.reads, be_passtotal.reads*f);
+}
+
+//colour/depth render target images in formats gles3 accepts (internal format, format and type must agree there)
+//returns what was allocated, so the image can say it (gles3.0 cannot be asked: no glGetTexLevelParameteriv)
+static uploadfmt_t GLBE_TexImageRenderTarget(int w, int h, qboolean fp16, qboolean srgb)
+{
+	if (fp16 && (!gl_config.gles || gl_config.ext_color_buffer_half_float))
+	{
+		qglTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA16F, w, h, 0, GL_RGBA, gl_config.gles?GL_HALF_FLOAT:GL_FLOAT, NULL);
+		return PTI_RGBA16F;
+	}
+	else if (srgb)
+	{
+		qglTexImage2D(GL_TEXTURE_2D, 0, GL_SRGB8_ALPHA8_EXT, w, h, 0, GL_RGBA, GL_UNSIGNED_BYTE, NULL);
+		return PTI_RGBA8_SRGB;
+	}
+	qglTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, w, h, 0, GL_RGBA, GL_UNSIGNED_BYTE, NULL);
+	return PTI_RGBA8;
+}
+static void GLBE_TexImageDepth(int w, int h)
+{
+	if (gl_config.gles && gl_config.glversion < 3)	//OES_depth_texture: unsized only
+		qglTexImage2D(GL_TEXTURE_2D, 0, GL_DEPTH_COMPONENT, w, h, 0, GL_DEPTH_COMPONENT, GL_UNSIGNED_INT, NULL);
+	else	//gles3: DEPTH_COMPONENT24 must come with UNSIGNED_INT (UNSIGNED_BYTE is INVALID_OPERATION)
+		qglTexImage2D(GL_TEXTURE_2D, 0, GL_DEPTH_COMPONENT24_ARB, w, h, 0, GL_DEPTH_COMPONENT, GL_UNSIGNED_INT, NULL);
+}
+//the depth(+stencil) format a renderbuffer gets: stencil only where something uses it (stencil shadows)
+static cvar_t gl_fbo_depth16 = CVARD("gl_fbo_depth16", "0", "Use 16-bit depth renderbuffers for render targets that need no stencil (half the memory of 24-bit, less depth precision: z-fighting on big maps). Takes effect when the targets are next rebuilt.");
+static GLenum GLBE_DepthRenderbufferFormat(qboolean stencil)
+{
+	if (stencil && gl_config.ext_packed_depth_stencil)
+		return GL_DEPTH24_STENCIL8_EXT;
+	if (gl_config.ext_depth24 && !gl_fbo_depth16.ival)
+		return GL_DEPTH_COMPONENT24_ARB;
+	return GL_DEPTH_COMPONENT16_ARB;
+}
+
 //FTESurf Patch 1260: the view's scene drawn into a vid_multisample target and resolved into
 //rt/$lastgameview (and its depth) when the view ends, and before a mid-scene copy of the screen, which
 //cannot read samples. A resolve needs identical formats, so the samples copy the targets' own.
 //Patch 1276: a second target, for the main view's reflection captures (r_reflectmultisample).
-static qboolean be_scissoron;	//GL_SCISSOR_TEST as BE_Scissor last set it: blits are scissored
+//
+//GLES (tile-based) backends, chosen per activation:
+//  MSAAB_RTT   EXT/IMG_multisampled_render_to_texture: the samples only ever exist in tile memory and are
+//              resolved into the texture as each tile is written out. No multisample allocation, no resolve
+//              pass. Its depth/stencil become UNDEFINED at any implicit resolve (a framebuffer switch or a copy
+//              in the middle of the pass), so a pass that gets interrupted after drawing is noted and the next
+//              ones use an explicit resolve for a while (r_msaa_backend rtt forces it regardless).
+//  MSAAB_BLIT  gles3 multisample renderbuffers + glBlitFramebuffer: real storage, survives interruptions,
+//              resolve only when the result is needed. Memory-checked against the render target budget.
+//  desktop GL keeps its renderbuffer + blit path (MSAAB_DESKTOP).
 #ifndef GL_STATIC
 extern cvar_t vid_multisample, r_reflectmultisample;
+extern cvar_t r_rtpool_budget_mb;
+enum {MSAAB_NONE, MSAAB_DESKTOP, MSAAB_BLIT, MSAAB_RTT};
+static const char *msaab_names[] = {"off", "multisample renderbuffers + glBlitFramebuffer", "multisample renderbuffers + glBlitFramebuffer (explicit resolve)", "multisampled render-to-texture (on-chip resolve)"};
 typedef struct
 {
 	GLuint fbo, rbcolour, rbdepth;
@@ -1652,22 +2005,40 @@ typedef struct
 	unsigned int checked;	//the buffer bits whose resolve was error-checked since the build
 	qboolean active;		//bound for the current view
 	qboolean broken;		//refused: no MSAA until vid_restart
+	int backend;			//MSAAB_* of the current build
+	int reported;			//backend/reason last printed (+1000 for refusals)
+	qboolean hazard;		//this rtt pass was interrupted after drawing: its depth was lost
+	unsigned int holdblit;	//activations left using the explicit resolve after a hazard
+	qboolean stencil;		//depth renderbuffer carries stencil
 } bemsaa_t;
 static bemsaa_t be_msaa, be_reflmsaa;
 static bemsaa_t *be_msaa_read;	//the target the last ReadBegin resolved
 #define MSAA_CVAR(t) ((t) == &be_reflmsaa ? "r_reflectmultisample" : "vid_multisample")
 #define MSAA_WHAT(t) ((t) == &be_reflmsaa ? "a reflection's" : "the scene's")
+static void MSAA_Report(bemsaa_t *t, int what, const char *reason)
+{
+	if (t->reported == what+1)
+		return;
+	t->reported = what+1;
+	if (what >= 1000)
+		Con_Printf("%s: %s MSAA is off: %s\n", MSAA_CVAR(t), MSAA_WHAT(t), reason);
+	else
+		Con_Printf("%s: %s MSAA uses %s%s%s\n", MSAA_CVAR(t), MSAA_WHAT(t), msaab_names[what], reason?": ":"", reason?reason:"");
+}
 static void MSAA_Free(bemsaa_t *t)
 {
 	if (t->fbo)
+	{
+		if (shaderstate.fbo_current == t->fbo)
+			BE_BindFBO(0);
 		qglDeleteFramebuffersEXT(1, &t->fbo);
-	if (t->rbcolour)
-		qglDeleteRenderbuffersEXT(1, &t->rbcolour);
-	if (t->rbdepth)
-		qglDeleteRenderbuffersEXT(1, &t->rbdepth);
+	}
+	GLRT_ReleaseRenderbuffer(t->rbcolour);
+	GLRT_ReleaseRenderbuffer(t->rbdepth);
 	t->fbo = t->rbcolour = t->rbdepth = 0;
 	t->w = t->h = 0;
 	t->active = false;
+	t->backend = MSAAB_NONE;
 }
 static void GLBE_SceneMSAA_Free(void)
 {
@@ -1676,8 +2047,13 @@ static void GLBE_SceneMSAA_Free(void)
 static GLint GLBE_TexInternalFormat(texid_t t)
 {
 	GLint f = 0;
-	GL_MTBind(0, GL_TEXTURE_2D, t);
-	qglGetTexLevelParameteriv(GL_TEXTURE_2D, 0, GL_TEXTURE_INTERNAL_FORMAT, &f);
+	if (qglGetTexLevelParameteriv)
+	{	//desktop: ask the driver
+		GL_MTBind(0, GL_TEXTURE_2D, t);
+		qglGetTexLevelParameteriv(GL_TEXTURE_2D, 0, GL_TEXTURE_INTERNAL_FORMAT, &f);
+	}
+	else if (t->format > PTI_INVALID && t->format < PTI_MAX)	//gles3.0 has no such query: what it was uploaded as
+		f = gl_config.formatinfo[t->format].sizedformat;
 	if (f == GL_RGBA)	//unsized: what drivers allocate for it
 		f = GL_RGBA8;
 	else if (f == GL_RGB)
@@ -1686,6 +2062,8 @@ static GLint GLBE_TexInternalFormat(texid_t t)
 		f = GL_DEPTH_COMPONENT24_ARB;
 	else if (f == GL_DEPTH_STENCIL_EXT)
 		f = GL_DEPTH24_STENCIL8_EXT;
+	else if (!f && gl_config_gles)
+		f = GL_RGBA8;	//allocated outside Image_Upload without saying what: what an unsized RGBA upload gives
 	return f;
 }
 static void MSAA_Blit(bemsaa_t *t, int x, int y, int w, int h, unsigned int bits)
@@ -1695,6 +2073,7 @@ static void MSAA_Blit(bemsaa_t *t, int x, int y, int w, int h, unsigned int bits
 	h = min(h, t->uh - y);
 	if (w <= 0 || h <= 0)
 		return;
+	GLBE_FlushPendingClear();	//a pass that drew nothing still resolves its clear
 	if (check)
 		while (qglGetError() != GL_NO_ERROR)
 			;
@@ -1703,6 +2082,7 @@ static void MSAA_Blit(bemsaa_t *t, int x, int y, int w, int h, unsigned int bits
 	qglBindFramebufferEXT(GL_READ_FRAMEBUFFER, t->fbo);
 	qglBindFramebufferEXT(GL_DRAW_FRAMEBUFFER, t->ssfbo);
 	qglBlitFramebufferEXT(x, y, x+w, y+h, x, y, x+w, y+h, bits, GL_NEAREST);
+	be_pass.resolves++;
 	if (be_scissoron)
 		qglEnable(GL_SCISSOR_TEST);
 	if (check)
@@ -1727,6 +2107,8 @@ qboolean GLBE_SceneMSAA_ReadBegin(int x, int y, int w, int h, qboolean depth)
 		t = &be_reflmsaa;
 	else
 		return false;
+	if (t->backend == MSAAB_RTT)
+		return false;	//reading a render-to-texture target resolves it implicitly (the copy hook notes the hazard)
 	MSAA_Blit(t, x, y, w, h, depth ? GL_DEPTH_BUFFER_BIT : GL_COLOR_BUFFER_BIT);
 	qglBindFramebufferEXT(GL_READ_FRAMEBUFFER, t->ssfbo);
 	qglBindFramebufferEXT(GL_DRAW_FRAMEBUFFER, t->fbo);
@@ -1737,21 +2119,75 @@ void GLBE_SceneMSAA_ReadEnd(void)
 {
 	qglBindFramebufferEXT(GL_FRAMEBUFFER_EXT, be_msaa_read->fbo);
 }
+//an active render-to-texture pass that drew something is being interrupted: its depth/stencil become undefined
+static void MSAA_Hazard(bemsaa_t *t)
+{
+	if (t->active && t->backend == MSAAB_RTT && be_fbodrawn && shaderstate.fbo_current == t->fbo)
+		t->hazard = true;
+}
+static void GLBE_MSAA_NoteSwitch(int newfbo)
+{
+	MSAA_Hazard(&be_msaa);
+	MSAA_Hazard(&be_reflmsaa);
+}
+static void GLBE_MSAA_NoteRead(void)
+{
+	MSAA_Hazard(&be_msaa);
+	MSAA_Hazard(&be_reflmsaa);
+}
+static qboolean MSAA_Mali3809560(void)
+{	//Arm GPU erratum 3809560: on Mali r44p0..r45p0 (and OEM builds of them) a read of an implicitly resolved
+	//MSAA surface may miss its dependency on the multisampled writes before it.
+	if (gl_workaround_mali3809560.ival >= 0)
+		return gl_workaround_mali3809560.ival > 0;
+	return gl_config.mali_driver[0] >= 44 && gl_config.mali_driver[0] <= 45;
+}
+//which backend this context could use at all (no target knowledge); 0 when none
+static int MSAA_Possible(bemsaa_t *t, int *maxsamples)
+{
+	*maxsamples = 0;
+	if (t->broken || !gl_config.ext_framebuffer_objects)
+		return MSAAB_NONE;
+	if (!gl_config_gles)
+	{
+		if (!qglRenderbufferStorageMultisampleEXT || !qglBlitFramebufferEXT || !qglGetTexLevelParameteriv)
+			return MSAAB_NONE;
+		if (!t->maxsamples)
+		{
+			qglGetIntegerv(GL_MAX_SAMPLES, &t->maxsamples);
+			t->maxsamples = max(1, t->maxsamples);
+		}
+		*maxsamples = t->maxsamples;
+		return MSAAB_DESKTOP;
+	}
+	if (gl_config.defaultfb_samples > 1)
+		return MSAAB_NONE;	//the EGL surface is multisampled already: the scene draws straight into it
+	if (!Q_strcasecmp(r_msaa_backend.string, "off"))
+		return MSAAB_NONE;
+	if (gl_config.msrtt && Q_strcasecmp(r_msaa_backend.string, "blit") && !(MSAA_Mali3809560() && gl_config.es3_maxsamples > 1))
+	{
+		*maxsamples = gl_config.msrtt_maxsamples;
+		return MSAAB_RTT;
+	}
+	if (gl_config.es3_maxsamples > 1 && Q_strcasecmp(r_msaa_backend.string, "rtt"))
+	{
+		*maxsamples = gl_config.es3_maxsamples;
+		return MSAAB_BLIT;
+	}
+	return MSAAB_NONE;
+}
 static int MSAA_Samples(bemsaa_t *t, int s)
 {
-	if (s <= 1 || t->broken || gl_config_gles || !gl_config.ext_framebuffer_objects ||
-		!qglRenderbufferStorageMultisampleEXT || !qglBlitFramebufferEXT || !qglGetTexLevelParameteriv)
+	int maxs, b;
+	if (s <= 1 || !(b = MSAA_Possible(t, &maxs)))
 	{
 		if (t->fbo && !t->active)
 			MSAA_Free(t);	//off at render scale 1 with no post-process: Begin would not run to free it
 		return 0;
 	}
-	if (!t->maxsamples)
-	{
-		qglGetIntegerv(GL_MAX_SAMPLES, &t->maxsamples);
-		t->maxsamples = max(1, t->maxsamples);
-	}
-	s = min(s, t->maxsamples);
+	if (gl_config_gles)
+		s = min(s, 4);	//more than 4x costs tile memory/bandwidth on every mobile gpu for little gain
+	s = min(s, maxs);
 	return (s > 1) ? s : 0;
 }
 #endif
@@ -1766,10 +2202,70 @@ int GLBE_SceneMSAA_Samples(void)
 #endif
 }
 #ifndef GL_STATIC
+//picks the gles backend for this activation, given what the pass needs
+static int MSAA_ChooseBackend(bemsaa_t *t, int *samples, int depnum, int w, int h, GLint cfmt, const char **why)
+{
+	int maxs;
+	int b = MSAA_Possible(t, &maxs);
+	*why = NULL;
+	if (b == MSAAB_DESKTOP || b == MSAAB_NONE)
+		return b;
+	if (t->hazard)
+	{	//the last render-to-texture pass was interrupted after drawing (a capture or a copy of the screen
+		//mid-scene): its depth would have been lost. Explicit resolves for a while.
+		t->hazard = false;
+		t->holdblit = 600;
+		Con_DPrintf("%s: %s pass was interrupted mid-scene; using an explicit resolve\n", MSAA_CVAR(t), MSAA_WHAT(t));
+	}
+	if (b == MSAAB_RTT)
+	{
+		if (depnum && !gl_config.msrtt2)
+		{
+			*why = "the depth is read afterwards and EXT_multisampled_render_to_texture2 is missing";
+			b = MSAAB_NONE;
+		}
+		else if (t->holdblit && Q_strcasecmp(r_msaa_backend.string, "rtt"))
+		{
+			*why = "the scene reads itself mid-pass (refraction/water/captures)";
+			b = MSAAB_NONE;
+		}
+		if (b == MSAAB_NONE && gl_config.es3_maxsamples > 1 && Q_strcasecmp(r_msaa_backend.string, "rtt"))
+			b = MSAAB_BLIT;
+		else if (b == MSAAB_RTT)
+			return b;
+	}
+	else if (MSAA_Mali3809560() && gl_config.msrtt)
+		*why = "Mali driver erratum 3809560 (implicit resolve)";
+	if (b == MSAAB_BLIT)
+	{
+		size_t budget = (size_t)max(0, r_rtpool_budget_mb.ival) * 1024*1024;
+		size_t perpx = GLRT_FormatBytes(cfmt) + 4;
+		if (gl_config.gles && ((cfmt == GL_RGBA16F && !gl_config.ext_color_buffer_half_float) || cfmt == GL_RGBA32F))
+		{
+			*why = "the scene's float format is not colour-renderable";
+			return MSAAB_NONE;
+		}
+		*samples = min(*samples, gl_config.es3_maxsamples);
+		//real multisample storage: keep it inside the render target budget (armv7's is small)
+		while (*samples > 2 && (size_t)w*h*perpx*(*samples) > budget)
+			*samples /= 2;
+		if ((size_t)w*h*perpx*(*samples) > budget)
+		{
+			*why = "multisample storage would exceed r_rtpool_budget_mb";
+			return MSAAB_NONE;
+		}
+	}
+	return b;
+}
+
 //called with the single-sample target bound (col and depth attached); binds the multisampled one in its place
 static qboolean MSAA_Begin(bemsaa_t *t, int samples, texid_t col, texid_t depth, int key, int w, int h, qboolean grow)
 {
 	int depnum = TEXVALID(depth) ? depth->num : 0;
+	int backend;
+	const char *why;
+	GLint cfmt;
+	qboolean stencil;
 	t->active = false;
 	if (!samples || !TEXVALID(col))
 	{
@@ -1777,57 +2273,90 @@ static qboolean MSAA_Begin(bemsaa_t *t, int samples, texid_t col, texid_t depth,
 			MSAA_Free(t);	//off or refused: give the storage back
 		return false;
 	}
-	int uw = w, uh = h;
-	if (grow && t->fbo)
-		w = max(w, t->w), h = max(h, t->h);
-	if (!t->fbo || t->w != w || t->h != h || t->samples != samples || t->key != key ||
-		t->colnum != col->num || t->depnum != depnum)
+	if (t->holdblit)
+		t->holdblit--;
+	cfmt = GLBE_TexInternalFormat(col);
+	backend = MSAA_ChooseBackend(t, &samples, depnum, w, h, cfmt, &why);
+	if (backend == MSAAB_NONE)
 	{
-		//no depth texture: GLBE_FBO_Update's depth renderbuffer
-		GLint cfmt = GLBE_TexInternalFormat(col);
-		GLint dfmt = depnum ? GLBE_TexInternalFormat(depth) : (gl_config.ext_packed_depth_stencil ? GL_DEPTH24_STENCIL8_EXT : GL_DEPTH_COMPONENT16_ARB);
-		GLenum db = GL_COLOR_ATTACHMENT0_EXT, status;
-		MSAA_Free(t);
-		qglGenRenderbuffersEXT(1, &t->rbcolour);
-		qglBindRenderbufferEXT(GL_RENDERBUFFER_EXT, t->rbcolour);
-		qglRenderbufferStorageMultisampleEXT(GL_RENDERBUFFER_EXT, samples, cfmt, w, h);
-		qglGenRenderbuffersEXT(1, &t->rbdepth);
-		qglBindRenderbufferEXT(GL_RENDERBUFFER_EXT, t->rbdepth);
-		qglRenderbufferStorageMultisampleEXT(GL_RENDERBUFFER_EXT, samples, dfmt, w, h);
-		qglGenFramebuffersEXT(1, &t->fbo);
-		qglBindFramebufferEXT(GL_FRAMEBUFFER_EXT, t->fbo);
-		qglFramebufferRenderbufferEXT(GL_FRAMEBUFFER_EXT, GL_COLOR_ATTACHMENT0_EXT, GL_RENDERBUFFER_EXT, t->rbcolour);
-		qglFramebufferRenderbufferEXT(GL_FRAMEBUFFER_EXT, GL_DEPTH_ATTACHMENT_EXT, GL_RENDERBUFFER_EXT, t->rbdepth);
-		if (dfmt == GL_DEPTH24_STENCIL8_EXT)
-			qglFramebufferRenderbufferEXT(GL_FRAMEBUFFER_EXT, GL_STENCIL_ATTACHMENT_EXT, GL_RENDERBUFFER_EXT, t->rbdepth);
-		if (qglDrawBuffers)
-			qglDrawBuffers(1, (GLsizei*)&db);
-		else if (qglDrawBuffer)
-			qglDrawBuffer(db);
-		if (qglReadBuffer)
-			qglReadBuffer(db);
-		status = qglCheckFramebufferStatusEXT(GL_FRAMEBUFFER_EXT);
-		qglBindFramebufferEXT(GL_FRAMEBUFFER_EXT, shaderstate.fbo_current);
-		if (status != GL_FRAMEBUFFER_COMPLETE_EXT)
-		{
-			Con_Printf(CON_WARNING "%s %i: %s multisampled target is incomplete (0x%x); drawing without MSAA\n", MSAA_CVAR(t), samples, MSAA_WHAT(t), status);
+		MSAA_Report(t, 1000, why?why:"no multisample path on this device");
+		if (t->fbo)
 			MSAA_Free(t);
-			t->broken = true;
-			return false;
-		}
-		t->w = w;
-		t->h = h;
-		t->samples = samples;
-		t->key = key;
-		t->colnum = col->num;
-		t->depnum = depnum;
-		t->checked = 0;
+		return false;
 	}
-	t->uw = uw;
-	t->uh = uh;
+	MSAA_Report(t, backend, why);
+	stencil = Sh_StencilShadowsActive();
+	if (backend == MSAAB_RTT)
+		grow = false;	//the texture itself is attached: the target is exactly its size
+	{
+		int uw = w, uh = h;
+		if (grow && t->fbo && t->backend == backend)
+			w = max(w, t->w), h = max(h, t->h);
+		if (!t->fbo || t->backend != backend || t->w != w || t->h != h || t->samples != samples || t->key != key ||
+			t->colnum != col->num || t->depnum != depnum || t->stencil != stencil)
+		{
+			//no depth texture: GLBE_FBO_Update's depth renderbuffer
+			GLint dfmt = depnum ? GLBE_TexInternalFormat(depth) : GLBE_DepthRenderbufferFormat(stencil);
+			GLenum db = GL_COLOR_ATTACHMENT0_EXT, status;
+			MSAA_Free(t);
+			while (qglGetError())
+				;
+			qglGenFramebuffersEXT(1, &t->fbo);
+			qglBindFramebufferEXT(GL_FRAMEBUFFER_EXT, t->fbo);
+			if (backend == MSAAB_RTT)
+			{	//the colour texture is the resolve target; the samples never leave tile memory
+				qglFramebufferTexture2DMultisample(GL_FRAMEBUFFER_EXT, GL_COLOR_ATTACHMENT0_EXT, GL_TEXTURE_2D, col->num, 0, samples);
+				if (depnum)	//msrtt2: a multisampled depth texture resolves into the depth texture the same way
+					qglFramebufferTexture2DMultisample(GL_FRAMEBUFFER_EXT, GL_DEPTH_ATTACHMENT_EXT, GL_TEXTURE_2D, depnum, 0, samples);
+				else
+				{
+					t->rbdepth = GLRT_AcquireRenderbuffer(RTP_MSAA, dfmt, w, h, samples, 1);
+					qglFramebufferRenderbufferEXT(GL_FRAMEBUFFER_EXT, GL_DEPTH_ATTACHMENT_EXT, GL_RENDERBUFFER_EXT, t->rbdepth);
+					if (dfmt == GL_DEPTH24_STENCIL8_EXT)
+						qglFramebufferRenderbufferEXT(GL_FRAMEBUFFER_EXT, GL_STENCIL_ATTACHMENT_EXT, GL_RENDERBUFFER_EXT, t->rbdepth);
+				}
+			}
+			else
+			{
+				t->rbcolour = GLRT_AcquireRenderbuffer(RTP_MSAA, cfmt, w, h, samples, 0);
+				t->rbdepth = GLRT_AcquireRenderbuffer(RTP_MSAA, dfmt, w, h, samples, 0);
+				qglBindFramebufferEXT(GL_FRAMEBUFFER_EXT, t->fbo);	//the pool binds renderbuffers, not framebuffers; be explicit
+				qglFramebufferRenderbufferEXT(GL_FRAMEBUFFER_EXT, GL_COLOR_ATTACHMENT0_EXT, GL_RENDERBUFFER_EXT, t->rbcolour);
+				qglFramebufferRenderbufferEXT(GL_FRAMEBUFFER_EXT, GL_DEPTH_ATTACHMENT_EXT, GL_RENDERBUFFER_EXT, t->rbdepth);
+				if (dfmt == GL_DEPTH24_STENCIL8_EXT)
+					qglFramebufferRenderbufferEXT(GL_FRAMEBUFFER_EXT, GL_STENCIL_ATTACHMENT_EXT, GL_RENDERBUFFER_EXT, t->rbdepth);
+			}
+			if (qglDrawBuffers)
+				qglDrawBuffers(1, (GLsizei*)&db);
+			else if (qglDrawBuffer)
+				qglDrawBuffer(db);
+			if (qglReadBuffer)
+				qglReadBuffer(db);
+			status = qglCheckFramebufferStatusEXT(GL_FRAMEBUFFER_EXT);
+			qglBindFramebufferEXT(GL_FRAMEBUFFER_EXT, shaderstate.fbo_current);
+			if (status != GL_FRAMEBUFFER_COMPLETE_EXT || (backend != MSAAB_RTT && (!t->rbcolour || !t->rbdepth)))
+			{
+				Con_Printf(CON_WARNING "%s %i: %s multisampled target (%s) is incomplete (0x%x); drawing without MSAA\n", MSAA_CVAR(t), samples, MSAA_WHAT(t), msaab_names[backend], status);
+				MSAA_Free(t);
+				t->broken = true;
+				return false;
+			}
+			t->w = w;
+			t->h = h;
+			t->samples = samples;
+			t->key = key;
+			t->colnum = col->num;
+			t->depnum = depnum;
+			t->checked = 0;
+			t->backend = backend;
+			t->stencil = stencil;
+		}
+		t->uw = uw;
+		t->uh = uh;
+	}
 	t->ssfbo = shaderstate.fbo_current;
-	qglBindFramebufferEXT(GL_FRAMEBUFFER_EXT, t->fbo);
-	shaderstate.fbo_current = t->fbo;
+	t->hazard = false;
+	BE_BindFBO(t->fbo);
 	t->active = true;
 	return true;
 }
@@ -1837,12 +2366,22 @@ static void MSAA_End(bemsaa_t *t)
 	unsigned int bits;
 	if (!t->active)
 		return;
-	t->active = false;
 	if (be_a2con)
 	{	//FTESurf Patch 1262
 		qglDisable(GL_SAMPLE_ALPHA_TO_COVERAGE);
 		be_a2con = false;
 	}
+	if (t->backend == MSAAB_RTT)
+	{	//the colour resolves as the pass ends (never invalidate it: that would discard the resolve). The
+		//multisample depth/stencil are never needed again: no store.
+		GLBE_FlushPendingClear();
+		if (shaderstate.fbo_current == t->fbo)
+			GLBE_InvalidateAttachments(t->depnum ? 0 : (BEPASS_DEPTH|BEPASS_STENCIL));
+		t->active = false;
+		BE_BindFBO(t->ssfbo);
+		return;
+	}
+	t->active = false;
 	bits = GL_COLOR_BUFFER_BIT | (t->depnum ? GL_DEPTH_BUFFER_BIT : 0);
 	if ((t->checked & bits) == bits)
 		MSAA_Blit(t, 0, 0, t->uw, t->uh, bits);
@@ -1852,8 +2391,13 @@ static void MSAA_End(bemsaa_t *t)
 		if (bits & GL_DEPTH_BUFFER_BIT)
 			MSAA_Blit(t, 0, 0, t->uw, t->uh, GL_DEPTH_BUFFER_BIT);
 	}
+	//resolved: the samples themselves are garbage from here on
+	if (GLBE_TileRenderer())
+		GLBE_DoInvalidate(GL_READ_FRAMEBUFFER, false, BEPASS_ALL);
 	qglBindFramebufferEXT(GL_FRAMEBUFFER_EXT, t->ssfbo);
 	shaderstate.fbo_current = t->ssfbo;
+	be_fbodrawn = false;
+	be_pass.binds++;
 }
 #endif
 //called with fbo_gameview bound (col and depth attached); binds the multisampled target in its place
@@ -2022,7 +2566,15 @@ static void T_Gen_ScreenWater(int tmu, qboolean depth)
 		(*tex)->width = w;
 		(*tex)->height = h;
 		if (depth)
-			qglTexImage2D(GL_TEXTURE_2D, 0, GL_DEPTH_COMPONENT24_ARB, w, h, 0, GL_DEPTH_COMPONENT, GL_UNSIGNED_INT, NULL);
+			GLBE_TexImageDepth(w, h);
+		else if (gl_config.gles)
+		{	//gles: an unsized internal format must equal the format (GL_RGB with GL_RGBA data is INVALID_OPERATION,
+			//which left screen water sampling an unallocated texture), and float wants a float type
+			if (vid.flags&VID_FP16)
+				(*tex)->format = GLBE_TexImageRenderTarget(w, h, true, false);
+			else
+				qglTexImage2D(GL_TEXTURE_2D, 0, GL_RGB, w, h, 0, GL_RGB, GL_UNSIGNED_BYTE, NULL);
+		}
 		else
 			qglTexImage2D(GL_TEXTURE_2D, 0, (vid.flags&VID_FP16) ? GL_RGBA16F : ((vid.flags&VID_SRGB_FB) ? GL_SRGB8_EXT : GL_RGB),
 				w, h, 0, GL_RGBA, GL_UNSIGNED_BYTE, NULL);
@@ -2480,11 +3032,22 @@ void GLBE_DestroyFBOs(void)
 	}
 }
 
+//programs were deleted behind the backend's back (gl_shadercache.c residency): a new program may reuse a name
+void GLBE_ForgetProgramCache(void)
+{
+	if (shaderstate.currentprogram)
+		qglUseProgramObjectARB(0);
+	shaderstate.currentprogram = 0;
+	shaderstate.lastuniform = 0;
+}
+
 void GLBE_Shutdown(void)
 {
 	size_t u;
 	GLBE_FBO_Destroy(&shaderstate.fbo_2dfbo);
 	GLBE_DestroyFBOs();
+	GLRT_Shutdown(true);	//the context is still current here (GLDraw_DeInit, GLBE_Init)
+	be_pendingclear.pending = false;
 
 	for (u = 0; u < countof(shaderstate.programfixedemu); u++)
 	{
@@ -2513,6 +3076,23 @@ void GLBE_Init(void)
 	double t;
 
 	GLBE_Shutdown();
+
+	{
+		static qboolean registered;
+		if (!registered)
+		{
+			registered = true;
+			Cvar_Register(&gl_tilerenderer, "GL Renderer Options");
+			Cvar_Register(&r_msaa_backend, "GL Renderer Options");
+			Cvar_Register(&gl_workaround_mali3809560, "GL Renderer Options");
+			Cvar_Register(&gl_fbo_depth16, "GL Renderer Options");
+		}
+	}
+	GLRT_Init();
+	GLSC_Init();
+	memset(&be_pass, 0, sizeof(be_pass));
+	memset(&be_pendingclear, 0, sizeof(be_pendingclear));
+	be_fbodrawn = false;
 
 	memset(&shaderstate, 0, sizeof(shaderstate));
 	GLBE_InstanceReset();	//FTESurf Patch 831
@@ -5464,6 +6044,7 @@ static void BE_RenderMeshProgram(const shader_t *shader, const shaderpass_t *pas
 		perm &= ~PERMUTATION_INSTANCED;	//FTESurf Patch 831: no INSTANCED variant compiled, so this prop alone, as usual
 	}
 	be_instdraw = !!(perm & PERMUTATION_INSTANCED);
+	GLSC_ProgramTouch(permu);	//in use this frame: not a candidate for residency eviction
 
 	GL_SelectProgram(permu->h.glsl.handle);
 	if (be_instdraw)
@@ -8048,7 +8629,7 @@ static texid_t GLBE_ReflectionDepthTarget(int w, int h)
 		(*t)->width = w;
 		(*t)->height = h;
 		GL_MTBind(0, GL_TEXTURE_2D, *t);
-		qglTexImage2D(GL_TEXTURE_2D, 0, GL_DEPTH_COMPONENT24_ARB, w, h, 0, GL_DEPTH_COMPONENT, GL_UNSIGNED_BYTE, NULL);
+		GLBE_TexImageDepth(w, h);	//was GL_UNSIGNED_BYTE: not a legal type for a 24-bit depth format (INVALID_OPERATION on gles3)
 		qglTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
 		qglTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
 		qglTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
@@ -8237,12 +8818,10 @@ static qboolean GLBE_GenerateBatchTextures(batch_t *batch, shader_t *bs)
 			shaderstate.tex_reflection[r_refdef.recurse]->height = r_refdef.pxrect.height;
 			GL_MTBind(0, GL_TEXTURE_2D, shaderstate.tex_reflection[r_refdef.recurse]);
 
-			if ((vid.flags&VID_FP16) && sh_config.texfmt[PTI_RGBA16F])
-				qglTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA16F, shaderstate.tex_reflection[r_refdef.recurse]->width, shaderstate.tex_reflection[r_refdef.recurse]->height, 0, GL_RGBA, GL_UNSIGNED_BYTE, NULL);
-			else if ((vid.flags&(VID_SRGBAWARE|VID_FP16)) && sh_config.texfmt[PTI_RGBA8_SRGB])
-				qglTexImage2D(GL_TEXTURE_2D, 0, GL_SRGB8_ALPHA8_EXT, shaderstate.tex_reflection[r_refdef.recurse]->width, shaderstate.tex_reflection[r_refdef.recurse]->height, 0, GL_RGBA, GL_UNSIGNED_BYTE, NULL);
-			else
-				qglTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, shaderstate.tex_reflection[r_refdef.recurse]->width, shaderstate.tex_reflection[r_refdef.recurse]->height, 0, GL_RGBA, GL_UNSIGNED_BYTE, NULL);
+			//gles3 rejects RGBA16F with UNSIGNED_BYTE (the type must be HALF_FLOAT/FLOAT), and only renders to it
+			//with EXT_color_buffer_half_float: GLBE_TexImageRenderTarget picks a legal combination
+			shaderstate.tex_reflection[r_refdef.recurse]->format = GLBE_TexImageRenderTarget(shaderstate.tex_reflection[r_refdef.recurse]->width, shaderstate.tex_reflection[r_refdef.recurse]->height,
+				(vid.flags&VID_FP16) && sh_config.texfmt[PTI_RGBA16F], (vid.flags&(VID_SRGBAWARE|VID_FP16)) && sh_config.texfmt[PTI_RGBA8_SRGB]);
 			qglTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
 			qglTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
 			qglTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
@@ -8278,6 +8857,8 @@ static qboolean GLBE_GenerateBatchTextures(batch_t *batch, shader_t *bs)
 			GLBE_ReflectMSAA_End();	//resolved into tex_reflection, its FBO bound for the pop
 		if (reflmsaa && GLBE_ReflectMSAA_Broken())
 			refldepth = r_nulltex;	//P1475: a refused depth resolve left it unwritten
+		if (!TEXVALID(refldepth))
+			GLBE_InvalidateAttachments(BEPASS_DEPTH|BEPASS_STENCIL);	//only the colour is sampled: no depth store
 		GLBE_FBO_Pop(oldfbo);
 		r_refdef.vrect = orect;
 		r_refdef.pxrect = oprect;
@@ -8305,12 +8886,8 @@ static qboolean GLBE_GenerateBatchTextures(batch_t *batch, shader_t *bs)
 				shaderstate.tex_refraction[r_refdef.recurse]->width = r_refdef.pxrect.width;
 				shaderstate.tex_refraction[r_refdef.recurse]->height = r_refdef.pxrect.height;
 				GL_MTBind(0, GL_TEXTURE_2D, shaderstate.tex_refraction[r_refdef.recurse]);
-				if ((vid.flags&VID_FP16) && sh_config.texfmt[PTI_RGBA16F])
-					qglTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA16F, r_refdef.pxrect.width, r_refdef.pxrect.height, 0, GL_RGBA, GL_UNSIGNED_BYTE, NULL);
-				else if ((vid.flags&(VID_SRGBAWARE|VID_FP16)) && sh_config.texfmt[PTI_RGBA8_SRGB])
-					qglTexImage2D(GL_TEXTURE_2D, 0, GL_SRGB8_ALPHA8_EXT, r_refdef.pxrect.width, r_refdef.pxrect.height, 0, GL_RGBA, GL_UNSIGNED_BYTE, NULL);
-				else
-					qglTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, r_refdef.pxrect.width, r_refdef.pxrect.height, 0, GL_RGBA, GL_UNSIGNED_BYTE, NULL);
+				shaderstate.tex_refraction[r_refdef.recurse]->format = GLBE_TexImageRenderTarget(r_refdef.pxrect.width, r_refdef.pxrect.height,
+					(vid.flags&VID_FP16) && sh_config.texfmt[PTI_RGBA16F], (vid.flags&(VID_SRGBAWARE|VID_FP16)) && sh_config.texfmt[PTI_RGBA8_SRGB]);
 				qglTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
 				qglTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
 				qglTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
@@ -8329,7 +8906,7 @@ static qboolean GLBE_GenerateBatchTextures(batch_t *batch, shader_t *bs)
 					shaderstate.tex_refractiondepth[r_refdef.recurse]->width = r_refdef.pxrect.width;
 					shaderstate.tex_refractiondepth[r_refdef.recurse]->height = r_refdef.pxrect.height;
 					GL_MTBind(0, GL_TEXTURE_2D, shaderstate.tex_refractiondepth[r_refdef.recurse]);
-					qglTexImage2D(GL_TEXTURE_2D, 0, GL_DEPTH_COMPONENT24_ARB, r_refdef.pxrect.width, r_refdef.pxrect.height, 0, GL_DEPTH_COMPONENT, GL_UNSIGNED_INT, NULL);
+					GLBE_TexImageDepth(r_refdef.pxrect.width, r_refdef.pxrect.height);	//gles2 (OES_depth_texture) has no sized depth formats
 					qglTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
 					qglTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
 					qglTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
@@ -8413,6 +8990,8 @@ static qboolean GLBE_GenerateBatchTextures(batch_t *batch, shader_t *bs)
 				GLR_DrawPortal(cb, cl.worldmodel->batches, NULL, ((cf & SHADER_HASREFRACTDEPTH)?3:2));	//fixme
 				be_watercapture--;
 			}
+			if (refractfbo == &shaderstate.fbo_refract[r_refdef.recurse][1])
+				GLBE_InvalidateAttachments(BEPASS_DEPTH|BEPASS_STENCIL);	//renderbuffer depth: nobody reads it, no store
 			GLBE_FBO_Pop(oldfbo);
 
 			r_refdef.vrect = ovrect;
@@ -8453,7 +9032,12 @@ static qboolean GLBE_GenerateBatchTextures(batch_t *batch, shader_t *bs)
 			shaderstate.tex_ripplemap[r_refdef.recurse]->width = r_refdef.pxrect.width;
 			shaderstate.tex_ripplemap[r_refdef.recurse]->height = r_refdef.pxrect.height;
 			GL_MTBind(0, GL_TEXTURE_2D, shaderstate.tex_ripplemap[r_refdef.recurse]);
-			qglTexImage2D(GL_TEXTURE_2D, 0, /*(gl_config.glversion>3.1)?GL_RGBA8_SNORM:*/GL_RGBA16F, r_refdef.pxrect.width, r_refdef.pxrect.height, 0, GL_RGBA, GL_HALF_FLOAT, NULL);
+			//RGBA16F is only colour-renderable on gles3 with EXT_color_buffer_half_float, and does not exist on gles2:
+			//an incomplete fbo there dropped every ripple. 8-bit unorm keeps the waves (clamped) instead.
+			if (!gl_config.gles || gl_config.ext_color_buffer_half_float)
+				qglTexImage2D(GL_TEXTURE_2D, 0, /*(gl_config.glversion>3.1)?GL_RGBA8_SNORM:*/GL_RGBA16F, r_refdef.pxrect.width, r_refdef.pxrect.height, 0, GL_RGBA, GL_HALF_FLOAT, NULL);
+			else
+				qglTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, r_refdef.pxrect.width, r_refdef.pxrect.height, 0, GL_RGBA, GL_UNSIGNED_BYTE, NULL);
 			qglTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
 			qglTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
 			qglTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
@@ -11374,13 +11958,12 @@ int GLBE_FBO_Push(fbostate_t *state)
 		newfbo = 0;
 	if (shaderstate.fbo_current == newfbo)	//don't bother if its not changed (also avoids crashes when fbos are not supported)
 		return oldfbo;
-	qglBindFramebufferEXT(GL_FRAMEBUFFER_EXT, shaderstate.fbo_current=newfbo);
+	BE_BindFBO(newfbo);
 	return oldfbo;
 }
 void GLBE_FBO_Pop(int oldfbo)
 {
-	qglBindFramebufferEXT(GL_FRAMEBUFFER_EXT, oldfbo);
-	shaderstate.fbo_current = oldfbo;
+	BE_BindFBO(oldfbo);
 }
 
 void GLBE_FBO_Destroy(fbostate_t *state)
@@ -11396,8 +11979,12 @@ void GLBE_FBO_Destroy(fbostate_t *state)
 	state->fbo = 0;
 
 	if (state->rb_depth)
+	{
 		qglDeleteRenderbuffersEXT(1, &state->rb_depth);
+		GLRT_TrackAllocation(RTP_DEPTH, (size_t)state->rb_size[0]*state->rb_size[1]*GLRT_FormatBytes(state->rb_depthfmt), -1);
+	}
 	state->rb_depth = 0;
+	state->rb_depthfmt = 0;
 	if (state->rb_stencil)
 		qglDeleteRenderbuffersEXT(1, &state->rb_stencil);
 	state->rb_stencil = 0;
@@ -11447,7 +12034,7 @@ int GLBE_BeginRenderBuffer_DepthOnly(texid_t depthtexture)
 		if (!shadow_fbo_id)
 		{
 			qglGenFramebuffersEXT(1, &shadow_fbo_id);
-			qglBindFramebufferEXT(GL_FRAMEBUFFER_EXT, shadow_fbo_id);
+			BE_BindFBO(shadow_fbo_id);
 			if (qglDrawBuffers)
 				qglDrawBuffers(0, NULL);
 			else if (qglDrawBuffer)
@@ -11456,8 +12043,7 @@ int GLBE_BeginRenderBuffer_DepthOnly(texid_t depthtexture)
 				qglReadBuffer(GL_NONE);
 		}
 		else
-			qglBindFramebufferEXT(GL_FRAMEBUFFER_EXT, shadow_fbo_id);
-		shaderstate.fbo_current = shadow_fbo_id;
+			BE_BindFBO(shadow_fbo_id);
 
 		if (shadow_fbo_depth_num != depthtexture->num)
 		{
@@ -11478,12 +12064,15 @@ int GLBE_FBO_Update(fbostate_t *state, unsigned int enables, texid_t *destcol, i
 									GL_COLOR_ATTACHMENT4_EXT,GL_COLOR_ATTACHMENT5_EXT,GL_COLOR_ATTACHMENT6_EXT,GL_COLOR_ATTACHMENT7_EXT};
 	int i;
 	int old;
+	int oldw = state->rb_size[0], oldh = state->rb_size[1];
 
 	if (TEXVALID(destdepth))
 	{
 		enables |= FBO_TEX_DEPTH;
 		enables &= ~FBO_RB_DEPTH;
 	}
+	else if ((enables & FBO_RB_DEPTH) && Sh_StencilShadowsActive())
+		enables |= FBO_RB_STENCIL;	//stencil shadows draw into whatever target the view has
 
 	enables |= (mrt<<16);
 
@@ -11504,10 +12093,13 @@ int GLBE_FBO_Update(fbostate_t *state, unsigned int enables, texid_t *destcol, i
 		old = GLBE_FBO_Push(state);
 	if (state->rb_size[0] != width || state->rb_size[1] != height || (enables & FBO_RESET))
 	{
+		GLRT_NoteFBORecreate();
 		if (state->rb_depth && !(enables & FBO_RB_DEPTH))
 		{
 			qglDeleteRenderbuffersEXT(1, &state->rb_depth);
+			GLRT_TrackAllocation(RTP_DEPTH, (size_t)oldw*oldh*GLRT_FormatBytes(state->rb_depthfmt), -1);
 			state->rb_depth = 0;
+			state->rb_depthfmt = 0;
 		}
 		if (state->rb_stencil && !(enables & FBO_RB_STENCIL))
 		{
@@ -11555,20 +12147,21 @@ int GLBE_FBO_Update(fbostate_t *state, unsigned int enables, texid_t *destcol, i
 
 		if (enables & FBO_RESET)
 		{
+			//packed depth+stencil only where stencil is used (FBO_RB_STENCIL: stencil shadows); depth-only otherwise.
+			//24-bit where the context has it (gles2 needs OES_depth24), else 16. gles3 has DEPTH24_STENCIL8 as
+			//core, which the old extension-only check missed, leaving gles3 scenes with a 16-bit depth buffer.
+			GLenum dfmt = GLBE_DepthRenderbufferFormat(!!(enables & FBO_RB_STENCIL));
+			if (state->rb_depthfmt)
+				GLRT_TrackAllocation(RTP_DEPTH, (size_t)oldw*oldh*GLRT_FormatBytes(state->rb_depthfmt), -1);
 			qglBindRenderbufferEXT(GL_RENDERBUFFER_EXT, state->rb_depth);
-			if (gl_config.ext_packed_depth_stencil)
-				qglRenderbufferStorageEXT(GL_RENDERBUFFER_EXT, GL_DEPTH24_STENCIL8_EXT, state->rb_size[0], state->rb_size[1]);
-			else
-			{
-				qglRenderbufferStorageEXT(GL_RENDERBUFFER_EXT, GL_DEPTH_COMPONENT16_ARB, state->rb_size[0], state->rb_size[1]);
-//				qglBindRenderbufferEXT(GL_RENDERBUFFER_EXT, state->rb_stencil);
-//				qglRenderbufferStorageEXT(GL_RENDERBUFFER_EXT, GL_STENCIL_INDEX8_EXT, state->rb_size[0], state->rb_size[1]);
-			}
+			qglRenderbufferStorageEXT(GL_RENDERBUFFER_EXT, dfmt, state->rb_size[0], state->rb_size[1]);
+			state->rb_depthfmt = dfmt;
+			GLRT_TrackAllocation(RTP_DEPTH, (size_t)state->rb_size[0]*state->rb_size[1]*GLRT_FormatBytes(dfmt), 1);
 			qglFramebufferRenderbufferEXT(GL_FRAMEBUFFER_EXT, GL_DEPTH_ATTACHMENT_EXT, GL_RENDERBUFFER_EXT, state->rb_depth);
-			if (gl_config.ext_packed_depth_stencil)
+			if (dfmt == GL_DEPTH24_STENCIL8_EXT)
 				qglFramebufferRenderbufferEXT(GL_FRAMEBUFFER_EXT, GL_STENCIL_ATTACHMENT_EXT, GL_RENDERBUFFER_EXT, state->rb_depth);
 			else
-				qglFramebufferRenderbufferEXT(GL_FRAMEBUFFER_EXT, GL_STENCIL_ATTACHMENT_EXT, GL_RENDERBUFFER_EXT, state->rb_stencil);
+				qglFramebufferRenderbufferEXT(GL_FRAMEBUFFER_EXT, GL_STENCIL_ATTACHMENT_EXT, GL_RENDERBUFFER_EXT, 0);
 		}
 	}
 
@@ -12056,6 +12649,7 @@ static qboolean GLBE_DrawSkyroomScaled(shader_t *skyshader)
 
 	drawn = R_DrawSkyroom(skyshader);
 
+	GLBE_InvalidateAttachments(BEPASS_DEPTH|BEPASS_STENCIL);	//the blit below reads the colour only
 	GLBE_FBO_Pop(oldfbo);
 	r_refdef.vrect = orect;
 	r_refdef.pxrect = oprect;

@@ -24,7 +24,7 @@ void main ()
 {
 	//figure out which frame to use.
     ivec3 sz = textureSize(s_anim, 0);
-    float layer = mod(e_time*10, sz.z-1);
+    float layer = mod(e_time*10.0, float(sz.z-1));
 
 	vec4 f = vc;
 #ifdef PREMUL

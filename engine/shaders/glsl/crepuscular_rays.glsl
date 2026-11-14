@@ -34,9 +34,9 @@ void main()
 	for(int i=0; i < NUM_SAMPLES ; i++)
 	{
 		textCoo -= deltaTextCoord;
-		vec4 sample = texture2D(s_t0, textCoo);
-		sample *= illuminationDecay * crep_weight;
-		gl_FragColor += sample;
+		vec4 raysample = texture2D(s_t0, textCoo);
+		raysample *= illuminationDecay * crep_weight;
+		gl_FragColor += raysample;
 		illuminationDecay *= crep_decay;
 	}
 	gl_FragColor *= vec4(l_lightcolour, 1.0);
