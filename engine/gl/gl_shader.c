@@ -3046,6 +3046,22 @@ qboolean Shader_IsRegistered(const shader_t *s)
 			return true;
 	return false;
 }
+//Shader_IsRegistered for per-batch use: pointers already found are remembered (a shader's memory is only
+//freed by Shader_Shutdown, which forgets them all)
+static const shader_t *shader_regcache[256];
+qboolean Shader_IsRegisteredCached(const shader_t *s)
+{
+	size_t h;
+	if (!s)
+		return false;
+	h = ((size_t)(quintptr_t)s >> 4) & (countof(shader_regcache)-1);
+	if (shader_regcache[h] == s)
+		return true;
+	if (!Shader_IsRegistered(s))
+		return false;
+	shader_regcache[h] = s;
+	return true;
+}
 qboolean Shader_ProgramIsLive(const program_t *prog)
 {
 	sgeneric_t *g;
@@ -6032,6 +6048,8 @@ void Shader_Shutdown (void)
 {
 	int i;
 	shader_t *shader;
+
+	memset(shader_regcache, 0, sizeof(shader_regcache));	//the shaders below are freed
 
 	GLSLWarm_Save();	//FTESurf Patch 1277
 	if (!r_shaders)

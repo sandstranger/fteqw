@@ -3699,7 +3699,7 @@ void R_DB_Poly(batch_t *batch)	//nettest: non-static so gl_backend.c can tag CSQ
 	//nettest r_decal_lightmap: per-pixel lightmap st for decal batches whose shader has a
 	//$lightmap stage.  Set EVERY call (the mesh is static) so a prior decal's pointer never
 	//leaks into a later non-lightmap batch.
-	if ((cl_stris[i].lightmap >= 0) && cl_stris[i].shader && (cl_stris[i].shader->flags & SHADER_HASLIGHTMAP))
+	if ((cl_stris[i].lightmap >= 0) && cl_stris[i].lightmap < numlightmaps && cl_stris[i].shader && (cl_stris[i].shader->flags & SHADER_HASLIGHTMAP))
 		mesh.lmst_array[0] = cl_strisvertlm + cl_stris[i].firstvert;
 	else
 		mesh.lmst_array[0] = NULL;
@@ -3716,13 +3716,27 @@ static void BE_GenPolyBatches(batch_t **batches)
 		if (!cl_stris[i].numidx)
 			continue;
 
-		b = BE_GetTempBatch();
-		if (!b)
-			return;
-
 		shader = cl_stris[i].shader;
 		if (!shader)
 			continue;
+		/*
+		A scene polygon whose shader is no shader: on start.bsp one arrived as 0x...481c (not 16-byte aligned
+		like every R_RegisterShader allocation, a pointer into float vertex data) with flags 0x3f666666 (0.9f).
+		As a batch it was drawn through the sky sphere (SIGSEGV in BE_RenderMeshProgram) and through the
+		reflection capture code (SIGSEGV in GLBE_CaptureStaggers). Such an entry is skipped and reported.
+		*/
+		if (!Shader_IsRegisteredCached(shader))
+		{
+			static int reported;
+			if (reported++ < 4)
+				Con_Printf(CON_ERROR "scene polygon %u of %u: shader %p is no registered shader (flags 0x%x, verts %i+%i, indexes %i+%i, lightmap %i); skipped\n",
+					i, cl_numstris, (void*)shader, cl_stris[i].flags, cl_stris[i].firstvert, cl_stris[i].numvert, cl_stris[i].firstidx, cl_stris[i].numidx, cl_stris[i].lightmap);
+			continue;
+		}
+
+		b = BE_GetTempBatch();	//after the checks: a skipped polygon no longer uses up a temp batch
+		if (!b)
+			return;
 
 		b->buildmeshes = R_DB_Poly;
 		b->ent = &r_worldentity;
@@ -3738,7 +3752,8 @@ static void BE_GenPolyBatches(batch_t **batches)
 		//surface's lightmap atlas page so the stage samples the matching lightmap.  Gated on
 		//the shader flag so the ~20 other scenetris producers (which don't set .lightmap) are
 		//unaffected.
-		if (shader->flags & SHADER_HASLIGHTMAP)
+		//most of the ~25 scene polygon producers never set .lightmap: an index outside the atlas is none
+		if ((shader->flags & SHADER_HASLIGHTMAP) && cl_stris[i].lightmap >= 0 && cl_stris[i].lightmap < numlightmaps)
 			b->lightmap[0] = cl_stris[i].lightmap;
 		b->user.poly.surface = i;
 		b->flags = cl_stris[i].flags;

@@ -844,7 +844,8 @@ program_t *Shader_FindGeneric(char *name, int qrtype);
 struct programpermu_s *Shader_LoadPermutation(program_t *prog, unsigned int p);
 void Shader_ReleaseGeneric(program_t *prog);
 qboolean Shader_ProgramIsLive(const program_t *prog);
-qboolean Shader_IsRegistered(const shader_t *s);	//one R_RegisterShader returned and that is not freed	//prog is a generic or inline program that has not been freed
+qboolean Shader_IsRegistered(const shader_t *s);	//one R_RegisterShader returned and that is not freed
+qboolean Shader_IsRegisteredCached(const shader_t *s);	//the same, remembering what it found (per-batch checks)	//prog is a generic or inline program that has not been freed
 
 image_t *Mod_CubemapForOrigin(model_t *wmodel, vec3_t org);
 mfog_t *Mod_FogForOrigin(model_t *wmodel, vec3_t org);
