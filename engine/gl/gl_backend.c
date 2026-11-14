@@ -2022,9 +2022,9 @@ static void MSAA_Report(bemsaa_t *t, int what, const char *reason)
 		return;
 	t->reported = what+1;
 	if (what >= 1000)
-		Con_Printf("%s: %s MSAA is off: %s\n", MSAA_CVAR(t), MSAA_WHAT(t), reason);
+		Con_DPrintf("%s: %s MSAA is off: %s\n", MSAA_CVAR(t), MSAA_WHAT(t), reason);
 	else
-		Con_Printf("%s: %s MSAA uses %s%s%s\n", MSAA_CVAR(t), MSAA_WHAT(t), msaab_names[what], reason?": ":"", reason?reason:"");
+		Con_DPrintf("%s: %s MSAA uses %s%s%s\n", MSAA_CVAR(t), MSAA_WHAT(t), msaab_names[what], reason?": ":"", reason?reason:"");
 }
 static void MSAA_Free(bemsaa_t *t)
 {
@@ -2092,7 +2092,7 @@ static void MSAA_Blit(bemsaa_t *t, int x, int y, int w, int h, unsigned int bits
 		t->checked |= bits;
 		if (e != GL_NO_ERROR)
 		{
-			Con_Printf(CON_WARNING "%s: resolving %s %s failed (0x%x); drawing without MSAA\n",
+			Con_DPrintf(CON_WARNING "%s: resolving %s %s failed (0x%x); drawing without MSAA\n",
 				MSAA_CVAR(t), MSAA_WHAT(t), (bits & GL_DEPTH_BUFFER_BIT) ? "depth" : "colour", e);
 			t->broken = true;
 		}
@@ -2236,7 +2236,7 @@ static int MSAA_Samples(bemsaa_t *t, int s)
 		if (s != req && t->clamped != req*1024+s)
 		{
 			t->clamped = req*1024+s;
-			Con_Printf("%s %i: %s MSAA uses %ix (this device supports up to %ix)\n", MSAA_CVAR(t), req, MSAA_WHAT(t), s, maxs);
+			Con_DPrintf("%s %i: %s MSAA uses %ix (this device supports up to %ix)\n", MSAA_CVAR(t), req, MSAA_WHAT(t), s, maxs);
 		}
 	}
 	return (s > 1) ? s : 0;
@@ -2405,7 +2405,7 @@ static qboolean MSAA_Begin(bemsaa_t *t, int samples, texid_t col, texid_t depth,
 			qglBindFramebufferEXT(GL_FRAMEBUFFER_EXT, shaderstate.fbo_current);
 			if (status != GL_FRAMEBUFFER_COMPLETE_EXT || (backend != MSAAB_RTT && (!t->rbcolour || !t->rbdepth)))
 			{
-				Con_Printf(CON_WARNING "%s %i: %s multisampled target (%s) is incomplete (0x%x); drawing without MSAA\n", MSAA_CVAR(t), samples, MSAA_WHAT(t), msaab_names[backend], status);
+				Con_DPrintf(CON_WARNING "%s %i: %s multisampled target (%s) is incomplete (0x%x); drawing without MSAA\n", MSAA_CVAR(t), samples, MSAA_WHAT(t), msaab_names[backend], status);
 				MSAA_Free(t);
 				t->broken = true;
 				return false;
@@ -3195,7 +3195,7 @@ void GLBE_Init(void)
 		r_msaa_maxsamples = maxs;
 		if (maxs > 0 && vid_multisample.ival > maxs)
 		{
-			Con_Printf("vid_multisample %i: this device's MSAA limit is %ix\n", vid_multisample.ival, maxs);
+			Con_DPrintf("vid_multisample %i: this device's MSAA limit is %ix\n", vid_multisample.ival, maxs);
 			Cvar_ForceSet(&vid_multisample, va("%i", maxs));
 		}
 		if (maxs > 0 && r_reflectmultisample.ival > maxs)

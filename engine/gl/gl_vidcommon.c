@@ -1543,7 +1543,7 @@ static qboolean GL_CheckExtensions (void *(*getglfunction) (char *name))
 		{
 			Cvar_ForceSet(eglmsaa, va("%i", want));
 			if (want && gl_config.defaultfb_samples < 2)
-				Con_Printf("vid_multisample: this OpenGL ES 2.0 driver has no multisampled render-to-texture; %ix MSAA through the window from the next start\n", want);
+				Con_DPrintf("vid_multisample: this OpenGL ES 2.0 driver has no multisampled render-to-texture; %ix MSAA through the window from the next start\n", want);
 		}
 	}
 #endif
@@ -4336,7 +4336,7 @@ qboolean GL_Init(rendererstate_t *info, void *(*getglfunction) (char *name))
 
 	if (gl_config.gles)
 	{
-		Con_Printf("GLES %.1f (glsl es %i baseline): invalidate %s, msaa-rtt %s (%i), es3 msaa %i, window msaa %i, packed d/s %i, d24 %i, f16 rt %i, program binary formats %i%s\n",
+		Con_DPrintf("GLES %.1f (glsl es %i baseline): invalidate %s, msaa-rtt %s (%i), es3 msaa %i, window msaa %i, packed d/s %i, d24 %i, f16 rt %i, program binary formats %i%s\n",
 			gl_config.glversion, sh_config.maxver,
 			gl_config.fbo_invalidate==1?"glInvalidateFramebuffer":gl_config.fbo_invalidate==2?"EXT_discard_framebuffer":"none",
 			gl_config.msrtt==1?(gl_config.msrtt2?"EXT+EXT2":"EXT"):gl_config.msrtt==2?"IMG":"none", gl_config.msrtt_maxsamples,

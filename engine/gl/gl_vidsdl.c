@@ -574,7 +574,7 @@ static qboolean SDLVID_Init (rendererstate_t *info, unsigned char *palette, r_qr
 		SDL_GL_GetAttribute(SDL_GL_MULTISAMPLESAMPLES, &samples);
 		if (samples > 1)
 		{
-			Con_Printf("No %ix multisampled EGL surface (%s): creating the window without MSAA\n", samples, SDL_GetError());
+			Con_DPrintf("No %ix multisampled EGL surface (%s): creating the window without MSAA\n", samples, SDL_GetError());
 			SDL_GL_SetAttribute(SDL_GL_MULTISAMPLESAMPLES, 0);
 			SDL_GL_SetAttribute(SDL_GL_MULTISAMPLEBUFFERS, 0);
 			Cvar_ForceSet(Cvar_Get("gl_gles2_eglmsaa", "0", CVAR_ARCHIVE, "GL"), "0");
