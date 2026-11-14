@@ -574,6 +574,8 @@ SET(FTE_COMMON_FILES
 	engine/common/pmove.c
 	engine/common/pmovetst.c
 	engine/common/pm_source.c
+	engine/common/pm_ag.c
+	engine/common/pm_ag_world.c
 	engine/common/pr_bgcmd.c
 	engine/common/q1bsp.c
 	engine/common/q2pmove.c
