@@ -1,9 +1,607 @@
 # Engine patches (fteqw `fteqw64.exe`)
 
+## Patch 1550 — a game ended inside a menu call no longer stops menu.dat collecting (14 Nov 2026)
+
+**Problem.** Crash records of 8-10 Nov (Akatosh x3 on patch-1476, MetalGio on 8 Nov "every story-mode map
+switch while downloading"): "BZ_Malloc: Failed on allocation of 18446744071578836992 bytes". That is not a file
+length (P1417's reading): 131072 temp-string slots grown by doubled+1024 eleven times is 0x80FFE000 bytes, passed
+to memalloc(int) and sign-extended. A VM collects only when PR_ExecuteProgram returns at depth 0, and a
+Host_EndGame inside a menu builtin longjmped to host_abort with menu.dat's pr_depth, exitdepth and inmenuprogs
+up; CL_Disconnect frees CSQC and SV_UnspawnServer the server, but menu.dat survives and never collected again.
+downloadmap was such a builtin: during a signon CL_RequestNextDownload runs CL_LoadModels and its Host_EndGame
+failures inside the call.
+
+**Change.** Host_Frame's host_abort landing calls MP_HostAbort: inmenuprogs cleared and the menu VM unwound to
+depth 0 (qclib PR_ResetExecution, which zeroes a stack that does not add up rather than raise a QC error into a
+dead frame); Host_Frame is never re-entered, so no menu call is live there. downloadmap no longer pumps the
+queue during a signon (Host_Frame does each frame). PR_AllocTempStringLen grows the table in size_t, prints one
+line a step from 4.2M slots and stops with a Sys_Error naming the VM, its depths and collector state at the step
+past 2^25 (from 16.9M live) instead of the overflow or P1481's truncated memalloc fallback.
+
+**Verified.** Test-only builds (never shipped) make downloadmap("p1550abort") Host_EndGame inside the builtin,
+driven by the real menu.dat's `ui_dlmap` over stdin (-plugin): without the reset the menu's table grew 261k ->
+523k -> 1.05M -> 2.10M slots in 90 s with exit depth stuck at 2; with it, "menu.dat: the game ended inside one
+of its calls (depth 2); its call stack is reset" and no growth in 90 s; the menu answered in both. One independent
+review (control flow, memory safety): no high finding; its A1-A4 fixed in the second commit. Server VMs share the
+qclib cap at their next engine build. Details: `tools/p1550-reports.md` in the mod repository.
+
+## Patch 1549 - JARGON platform footprint and event-aligned steering seeds
+
+Problem: A guide endpoint or permission volume alone does not describe a physical
+landing area. A halfway split of the initial two-band steering trials can couple
+late-ramp corrections to air correction, despite nonuniform ride knots. A safe
+final-platform landing can also be discarded because the finish handoff tests
+only passive drift, not steering toward its door.
+
+Change: QC-only. Bind an endsafe goal to one eligible endpoint-local rectangular
+BHOP region and one course-owned end portal, after five static full-hull support
+probes and compatible feet-origin hull checks. Rank supported post-air platform
+arrival separately; steer toward the nearest inset footprint. Initial ambiguity
+keeps the legacy objective. Capture a local nonserialized zone-table generation
+and portal/goal geometry; a changed active binding cancels before play, never
+mixes legacy scores into the same population. Initial native-follow demo trials
+partition at the available launch/catch event or existing ride-knot boundary,
+with the exact old midpoint fallback if either side is empty. Grid, amplitudes,
+RNG, population and evaluation caps stay unchanged. Actual supported standing
+hands off to four-tick literal manual native input toward the captured portal,
+rechecking support/ownership each step. Keep the inset arrival predicate separate
+from supported walking in the raw region/doorway. A framed portal can require a
+clear face approach rather than walking into its side post; full-hull traces
+choose that waypoint and actual-current visibility gates its consumption.
+A latched-run-tick progress watchdog pauses rather than rewinds if blocked;
+only the existing real game-finish observation succeeds. This is a bounded
+one-waypoint visibility route, not general navigation or a persistent checkpoint.
+No movement, game-finish rule, recorder, verifier, engine pin/tag or qcbuild change.
+
+Verified: Three scoped source reviews; corrected the handoff clock note and the
+latest review's waypoint-distance shortcut defect before compilation. CEM
+suite4381checks passes;17direct standalone-QC synthetic rectangle/cache/landing
+checks pass (not physics/trace/ownership proof). Reader949/0. On the exact accepted
+P1543 native trio, pre-handoff midpoint13.110 versus ride12.285seconds, both four
+backtracks and complete6board REC14strict0faults. The original old-native snapshot
+is retained separately. Both latest control/production3VMbuilds have0warnings.
+Earlier acting ground tails pause without ramp backtracking, not a finish;
+actual terminal body/BSP data identifies a concrete doorway side post. The corrected
+clear-face acting arm actually finishes14.280seconds/0backtracks,952inputs,
+4boards/strict0faults; production stays12.285/4backs,819inputs,6boards/strict0.
+The first pair uses the accepted P1543 trio; both reproduce with the current
+installed P1548 renderer/plugin. Clean isolated source3a1351b5 has3VM0warnings
+and all6DAT/LNObytes identical to qualified production.14Nov06:38:45UTC QW DAT/LNO
+only promoted to both Windows installs;4destination/prev matches,81protected
+native/config/CS/menu and18,528player-data files unchanged.06:46:17UTC actual
+installed-cohort run again12.285/4backs,819inputs/6boards/strict0faults; all own
+actors exit0. Local practice refuses Lobby_Active: no Pi/backend/release/Build
+swap or native/CS/menu replacement. Owner feel remains pending.
+Shared-rig admission refusals are preserved without process/lease interference.
+Five probes do not certify no holes;
+other maps, moving support, optimal boarding loss and human feel remain
+unverified. tools/p1549-jargon-platform.md.
+
+## Patch 1548 — a missing texture draws its colour, not the checker; the default sky survives a map change (14 Nov 2026)
+
+**Problem.** Without the game a map borrows from (CS:S, TF2...), P1191 coloured only world materials
+with no VMT from the map's dtexdata reflectivity. A VMT whose image was missing, a model material
+(no dtexdata), a 0x0 texdata entry and water still drew the magenta/black checker. Separately, after a
+map change a map whose own sky was missing drew the checker across the whole sky: the default-sky
+shader kept from the earlier map had its box faces freed by Image_Purge, because
+Shader_TouchTextures marks a shader's pass and default images but not `skydome` faces.
+
+**Change.** hl2 plugin (mat_vmt.c, mod_vbsp.c): mod_vbsp.c hands each world texture's reflectivity to
+the material loader before shaders load. A VMT whose `$basetexture` is not installed draws that colour
+(map first, then `data/matcolours.txt`, the mod's index of 24,919 material/texture colours) through its
+own class times its `$color`: linear for LightmappedGeneric/WorldVertexTransition (P1288's
+`pow(COLOR,1/2.2)`), gamma for the others; decals, sprites and additive draw nothing; alphatest and
+translucent half see-through; `$selfillum`/`$basealphaenvmapmask` dropped (their mask was the missing
+alpha); Water/Refract/Sky untouched. A material with no VMT that the index lists draws vertex-lit,
+unlit or (0x0 world texdata) lightmapped -- world textures and `models/` only, since particle scripts
+register textures by name expecting no material. World water with no VMT is an unlit see-through plane
+of its fog colour. `hl2_missingtint 0` turns all of it off. Engine (gl_warp.c `R_TouchForcedSky`,
+called from Shader_TouchTextures): the sky in use's far/near faces are touched each map -- only that
+one, so every sky visited in a session is not kept.
+
+**Verified.** Rig: the exe and plugin under test beside the install's DLLs, a private home, spawn-view
+screenshots. Every game mounted, five maps: 0 colour actions, so nothing changes for a player who has
+the assets. Momentum only (no CS:S): surf_aqua's water a purple/black checker floor before, a
+see-through teal plane after; surf_utopia then bhop_eazy drew 269,837 / 208,969 / 269,682 magenta sky
+pixels in three runs before, 0 after (bhop_eazy alone: 0 either way); a 16-map sample coloured 40
+VMTs whose image is missing (map-packed props textured from CS:S: huts, doors, ramps) and drew 12
+water planes, no crash; surf_2012_beta12's distant checker block now draws in the wall colour. One
+independent review: no crash or memory finding; its three real ones (gamma in the lightmapped classes,
+particle textures taken by the no-VMT path, every visited sky kept) fixed, and the build re-measured.
+The particle case did not occur on the maps tried (Momentum ships HL2's particles): read, not measured.
+
+Details: `tools/p1548-matcolour.md` in the mod repository.
+
+## Patch 1546 — native verifier retains its explicit lifetime (14 Nov 2026)
+
+**Problem.** The ordinary native-verifier launch used subprocess.run's default
+close_fds=True. Unlike the similarity worker, it discarded an explicitly
+inheritable lifetime descriptor. A real controlled native-command child remained
+active after the launcher's reference closed, but an independent exclusive drain
+already succeeded. This is a subprocess-lifetime defect, not a player finding.
+
+**Change.** Preserve explicit inheritable descriptors through that existing
+launch, matching the similarity child. Ordinary descriptors remain CLOEXEC.
+Command construction, source challenge, output handling, timeout, scheduling,
+recording format, ranks and numerical budgets are unchanged. Share the existing
+acting lease test between the two launch paths with test-local witnesses.
+Backend-only: native commit/tag and qcbuild89 stay unchanged.
+
+**Verified.** On real Linux launches, the old native arm ACTS then prematurely
+drains; the old similarity arm stays held. Fixed process suite18/0 proves both
+exact descriptor identities/inheritability, private-descriptor exclusion, normal
+response, held drain while working and eventual drain after exit. Windows18
+passes with7Linux-only skips. Existing sweep checks0fail, source15/0 and
+per-attempt counts7/0. The first combined test exposed reused ready/release names;
+test-local names fix that fixture, original failure retained. Two independent
+narrow source/proof reviews CLEAR; live admission remains separate, not claimed.
+No universal whole-pass
+resource bound, calibration or native vulnerability-audit credit. Details:
+`tools/p1546-native-verifier-lease.md` in the mod repository.
+
+## Patch 1543 — TAS restore rebases the board-event observer (13 Nov 2026)
+
+**Problem.** A TAS native checkpoint restores the carried movement board counter,
+but the public QC counter was not republished until a later move. A warm REC cut
+retained the writer's change latch from the abandoned future. The first resumed
+non-arrival could therefore write the already-retained board counter a second
+time. Cold/streamed cuts also initialized their latch before native restoration.
+This is a writer/restore synchronization defect, not permission for a reader to
+accept duplicate board events.
+
+**Change.** Publish the restored native `run_boardcount` beside `run_movecarry`.
+After a successful native restore, `SV_TASGo` rebases the recorder's existing
+change latch before freeze settlement, TAS-head capture or resumed simulation.
+Failed placement/native restore does not rebase the latch. The reader, file
+format, movement equations, connection tick/epoch, scoring and search remain
+unchanged. Native and QC halves are required together; old recordings are not
+rewritten or regraded. No Build change.
+
+**Verified.** Source-bound production carry-restore block: 24 count/optional-field
+arms, preserved carried state, plan rebind and connection tick/epoch. Actual QC
+go/board functions: 29 assertions, including non-arrival suppression, first new
+arrival emission, counter skips and failed-restore controls. Original native and
+QC sources fail independently at their respective stale-counter/latch assertions.
+These synthetic API/world/arrival fixtures are not a mover, real-socket, full
+restore-admission, cold-session or complete-REC verification. Three-VM NoDeploy
+QC build has zero warnings; unchanged strict reader passes949/0. A stable570REC/
+173VIEW corpus retains352/6 existing faulty files; those are not clean recordings.
+The subsequent full Windows client/server/five-plugin build has74 known and0new
+warnings; all three VMs build with0warnings. Two independent clean-source reviews
+found no blocker. A fresh source-built same-image real-socket tensor2 stage2 run
+finishes12.450 with830inputs and6board arrivals; the unchanged strict reader has
+0faults. All21 captured native prediction endpoints are bit-equal when actually
+played, not a claim of hidden/per-tick parity, first-contact precision, VIEW or
+nativePM_verify acceptance. At13Nov20:03:27UTC the exact prepared images were
+promoted to both Windows installs:22 role-target hashes match, rollback retained.
+The original2500MiB resource refusal and invalid nonzero-Z smoke predicate are
+retained. A genuinely fresh4207MiB boundary allowed the corrected installed-image
+three-role startup: native source/tag versions, loaded HL2 hashes, dedicated map,
+client CSQC and finite SSQC body replies PASS in isolated thin fixtures. All3actors
+exit0;22destinations and a fresh18526protected-file epoch match at13Nov20:43:08UTC.
+This is not owner-config/visual/cold-session/movement acceptance; no fleet/Build
+change. Source, corpus, negative launch experiments and earlier changed-log audit
+remain distinct observations. Details and delivery limits are in
+FTESurf `tools/p1543-tas-board-restore.md`.
+
+## Patch 1542 — Experimental GoldSrc-style practice profiles (13 Nov 2026)
+
+**Problem.** Optional legacy movement needs a closed simulation identity shared
+by prediction and the server, without changing default Source movement or
+mixing practice saves, replay state and times with ordinary runs. A tick-rate
+cvar alone does not implement GoldSrc movement or establish reference parity.
+
+**Change.** Add explicit map-spawn selections `ag-100` and `ag-250`, advertised
+as experimental `ag-100-v1` / `ag-250-v1` contexts. Shared movement handles
+bounded command timing, crouch, stairs, water/ladder transitions and carried
+waterjump state. Unknown and unqualified selectors, including `ag-1000`, are
+refused. Default/empty selection retains the existing Source path. Practice
+runs remain unranked in separate closed data namespaces; save/replay/resume
+checks reject mismatched identities before mutation. Unsupported historical AG
+disk rewind export refuses without replacing an existing save. New QC string
+checks use content comparisons. The published landing-observation correction
+and QC peer changes are retained by the current-main integration.
+
+**Packaging follow-up.** The clean 92d candidate Full exposed inherited plugin
+metadata containing literal backslash-n separators: shell `echo` did not expand
+the controlled payload. Use portable `printf '%b\n'` in the existing EMBEDMETA
+recipe, preserving all values and ZIP flow. The subsequent clean 1bfa Full
+rebuilt all five payloads with real LF separators, exact field/token contracts
+and valid ZIP CRCs. Original negative products remain retained. This is static
+byte acceptance, not an executed package parser or redistribution clearance.
+
+**Signon follow-up.** Include `pm_physicsmode`, `pm_agversion` and `pm_ticrate`
+in the existing first-snapshot priority set alongside `*movementprofile`.
+Otherwise a late plain version key can miss the bounded initial snapshot and
+the strict client correctly refuses the new map's incomplete AG context.
+Preserve the snapshot size, wildcard, deferred infosync, previous-map reset and
+closed-context guards; never infer a missing version. Priority is membership,
+not emission order or a guarantee for arbitrarily oversized priority payloads.
+
+**Verified — P1542 source/image scope, not full retail fidelity.** Independent
+movement/evidence merge review cleared the integrated scope. The clean 1bfa
+Windows Full compiled client, dedicated server and all five plugins; QC emitted
+zero warnings and all 74 native warnings matched the retained baseline. Reader
+regression was949/0 plus seven profile controls; the568 stable recordings and
+173 associated views retained their baseline fault sets. Headless100/250
+save/load and carried-waterjump controls passed. With the final-client witness,
+original signon fails at version0 after the100/default/250 cycle; the priority
+candidate stays connected with advancing ticks, directional input and body
+movement at.004. Bad/missing versions and1000 still refuse; Source default passes.
+A prior build's automatic dependency fetch remains an operational deviation;
+the later cached Full observed no bootstrap/download, not a network sandbox.
+
+The final exact479/9cb P1542 cohort completed a clean commit/tag-bound Full and
+was delivered to both Windows installs. Second's actual installed headless
+signon, SSQC replies and short body displacement were checked; Main had delivery
+hash/actor/dual-root closure, not its own completed P1542 loader check. P1543 later
+superseded the native/QW Windows roles and P1544 the client program. Their later
+startup/delivery checks do not backdate a P1542 pass; do not restore this older
+cohort over those published fixes.
+
+For exact P1542 source47998d6e3, the AArch64 dedicated server and matching HL2
+plugin now have qualified source/build/finite-dependency bindings. All16 selected
+Native DEFAULT cases acted: six full maps per image yielded90 exact normalized
+named-row pairs, and both historical Pin2/Pin7 cases passed on both images. A
+separate mapless built-in smoke produced1831 `ok` checks and its positive AG-state
+controls, exit0/reaped/group gone. This is current479 evidence, not a422/P1543
+image pass or whole-platform/AG-retail/HL2-before-or-after acceptance.
+
+An isolated479/9cb cold world loaded the actual P1542 QW, real Source BSP and
+matching HL2, acted all15 named collision rows/2048 tick control and owned its
+loopback UDP socket. Its bounded status reply was not captured: the whole smoke
+remains HOLD, with narrower VM/world positives retained separately. No actual
+Native client/CS spawn/body, recorder-resume promotion or lobby deployment is
+claimed. The old four-role stage is retained, not promoted over P1543/P1544; a
+peer-preserving roll-forward still needs its own binding and client leaf.
+No full HL1/AG,1000-rate,HL2,ranked-evidence,rendered/feel or gameplay-parity claim.
+See FTESurf `tools/p1542-legacy-movement.md` for exact limits and delivery state.
+
+## Patch 1541 — JARGON search-local fallback and valid elites (13 Nov 2026)
+
+**Problem.** An all-invalid initial CEM grid could center a new search on a
+previous search's best steering vector. Invalid (-1) samples also became elite
+training data when there were fewer than five useful samples.
+
+**Change.** QC-only: initialize active best/mean/spread dimensions after the full
+aim/lead count is known; exclude only the established invalid -1 sentinel from
+elite fitting, preserving legitimate negative penalized fitness. Explicit seeds,
+priors, archives, scoring, RNG and movement remain unchanged. All coordinated,
+joint-finish and boarding-window experiments were removed. No new option ships;
+no native code/pin/tag, evidence-format, finish-authority or Build change by this task.
+
+**Verified.** Clean QC6baeb6b4 three-VM NoDeploy build: zero warnings. Retained
+production helpers execute4185 assertions in standalone qclib, with acting pristine stale-best
+and invalid-elite controls, negative-fitness falsifiers and all20 sampler/RNG
+comparisons. Synthetic scores/stubbed side effects are not movement or performance
+proof. Fixed OpenGL stage2 controls finished12.450; no speedup is established.
+A valid joint candidate did not finish within600s. A native-anchored window actually
+played3 alternatives but finished12.720/298wall seconds versus12.450/217control,
+one seed only; it was rejected, not promoted. Earlier coordinated-sampler timing
+was renderer-confounded. Existing completed controls retain a duplicate-board-counter
+REC fault; in-game finish is not structural/native recording verification. Final
+scoped review found no blockers. Actual installed Windows-native copies completed
+one clean-source stage2 compatibility control12.450/5backs at10:21Z; source,
+inputs and canonical data stayed exact, original actors stopped and lock released.
+No cross-native timing claim. Exact qualified QW DAT/LNO installed in BOTH Windows
+installs10:36UTC;38protected native/config/CSQC/menu files unchanged, differing menus
+preserved, owner games not hot-reloaded. Full existing Pi transaction with frozen
+QW79e18f47/unchanged CS3a52a7c9, normal10s warning/no force, restarted all12 lobbies
+11:59UTC. Fresh preservation checks before upload and after countdown/before swap;
+independent12:00postflight verified new12process births, unchanged native/config/
+backend and all216selected recorder/resume payloads plus checked metadata. Previous
+program pair and private onbox/offbox preimages retained. Earlier occupied pre-upload
+refusal was not bypassed: independent followup required a new actual closed epoch;
+no occupied-stream/general-writer qualification claimed. No release/Build/native bump.
+Full provenance and remaining physical-goal limits: tools/p1541-jargon-search.md.
+
+## Patch 1540 — Prefix timing survives unsupported closure shape (13 Nov 2026)
+
+**Problem.** Newly recognized malformed closing widths set global clock-quality
+loss and erased otherwise finite accepted-prefix timing. Unsupported boundary
+shape proves neither a whole duration nor corruption of the earlier prefix.
+
+**Change.** A boundary-only availability flag withholds whole time/cap endpoint
+without discarding independent prefix rates. Keep recognized closure/order,
+partial lower bounds, body exclusion and all existing unusable-clock gates.
+Reader/tests only; native pin/tag1538, schema/policy/threshold/ranking and Build89
+unchanged. No data write or historical regrade.
+
+**Verified.** Actual unchanged P1539 product with expanded fixture1623/2fail;
+same fixture with correction1623/0,20addedassertions. Healthy/absent-end controls
+and earlier unusable-clock refusals act; ordinary CLI/captured receipt checks.
+REC949/0, receipt800/0, structured32/0, snapshots12/0, stored receipts0fail;
+134HID/751REC-VIEW reports+hashes unchanged, existing faults3/356unchanged.
+Native1538 clean Windows/ARM1814/0 qualification is unchanged, not a new native
+build by this reader fix. Independent review/deployment remain separate gates;
+no human/HFR/calibration/security-audit acceptance. FTESurf tools/p1540-journal-prefix-timing.md.
+
+## Patch 1539 — Rejected journal observations remain unavailable (13 Nov 2026)
+
+**Problem.** Rejected touchpad quantities could cancel into measured zero;
+kind-only source rows skipped availability guards. Unusable keyboard data still
+supported cause prose, and touchpad mode differed from native integer semantics.
+Malformed recognized cap/end records could lose lifecycle meaning. Existing
+snapshot expectations omitted the retained partial-coverage boolean.
+
+**Change.** Reuse independent quantity/pointer availability, native integer
+parsing and usable-coverage cause gates. Separate recognized boundaries from
+usable clocks, preserving order, duplicates, partial lower bounds and present
+unusable closure. Reconcile stale snapshot expectations without revealing
+withheld totals. Reader/tests only: native pin remains P1538, no recording field,
+profile, threshold, ranking, historical regrade or QC Build change.
+
+**Verified.** Actual matched original1603/50fail and same-fixture subject1603/0;
+77new assertions. REC949/0, receipt800/0, structured32/0, snapshot12/0. Two stale
+stored-receipt expectations reproduce on original, then pass with only expected
+partial boolean corrected. Ordinary CLI/captured metrics act;134HID/751REC-VIEW
+reports and hashes identical, existing faults3/356unchanged. Original failures
+retained privately. Independent re-review/ARM/final rollout are separate gates;
+no human/device/calibration/security acceptance. FTESurf tools/p1539-journal-availability.md.
+
+## Patch 1538 — Unsupported landing context cannot claim observed use (13 Nov 2026)
+
+**Problem.** The newly admitted ordinary-landing observation could remain
+positive after unsupported numeric context was sanitized by normal movement.
+The existing original-input gate was intact; older airborne behavior is not
+part of this defect and must remain unchanged.
+
+**Change.** Capture finite entity/world gravity and velocity-cap eligibility
+before movement, requiring it only for the new ordinary-landing arm. Retain
+existing airborne/water-jump admission, endpoint and ground proofs, observation
+lifetime and all movement state. No new traces, fields, thresholds or QC Build.
+
+**Verified.** Actual native Windows FullWalkMove control with the final expanded
+fixture:1814checks/exactly3unsupported-positive failures; same fixture with repair:
+1814/0. Complete playermove/movevars bytes and finite landing/older airborne
+controls preserved. Dedicated build has zero new warnings against same-target
+baseline. Earlier failed infrastructure/fixture assumptions retained, not passed.
+This is bounded Windows source qualification, not ARM/full-world/HFR/human,
+independent review, security-audit completion or deployment. Final qualification
+and rollout remain separate; FTESurf tools/p1538-native-landing-finite.md.
+
 QC P1492–P1495 combined development delivery (11 Nov): both Windows installs and
 all12lobbies verified,217recorder/resume payload+captured metadata rows unchanged;
 full public provenance/limits in FTESurf tools/playerfix-20261111-delivery.md.
 No new native build by that QC delivery; P1498 native/compiler delivery is separate.
+
+## Patch 1537 — Bad backend fields cannot erase a present closing record (13 Nov 2026)
+
+**Problem.** A malformed backend count discarded the entire otherwise valid
+closing record, lost finite time/other counters, and falsely reported no end.
+Native-out-of-domain counts could also remain complete quantities in a partial file.
+
+**Change.** Parse all five signed backend totals independently with native-1
+sentinel support. Present-but-unusable is unavailable, not0/absent/pre-patch
+format. Preserve finite end/core metadata and valid sibling counters, including
+partial rejected-input/touchpad pairs; numerical notes require usable quantity.
+Old missing/unsupported backend, XI2, sentinel and clock-abstention branches stay.
+No native/writer/capture/field/signature/rank/threshold/Build change.
+
+**Verified.** Same1526assertions parent53failures, subject0;128new. Ordinary CLI
+keeps valid0/bad1 but no longer falsely calls the bad-counter file unclosed.
+Five fields/full+partial/bad/fractional/overflow/-2 isolate, four known sibling2
+and finite19angle/19join/rates act; MAX/ahead/all2/all-1 controls survive.
+REC949/0, receipts800/0, structured32/0, normal finalmetadataNoDeploy3VM0warnings;
+134HID/all hashes-fault-info-notes3oldfaulty and751REC-VIEW/all hashes-reports/
+356oldfaults identical. Two fixture API mistakes retained; bounded read of actual
+Journal/_padjournal corrected BEFORE product edit, no new wrapper. Source is NOT
+independent review/deployment or physical truth; tools/p1537-journal-backend-fields.md.
+Native2274050a9/tag1529/Build89 held; original38acceptance inputs and audit deferral held.
+
+## Patch 1536 — Backend count observations cannot cancel into measured zero (13 Nov 2026)
+
+**Problem.** Rejected-input and legacy-click body deltas could cancel positive
+counts into a clean0; malformed observations or contradictory closing totals
+also retained unsupported quantities and numerical cause notes.
+
+**Change.** Validate signed-native non-negative i/b deltas, keep unavailable whole
+quantities per counter, and omit contradictory totals rather than0/subtotals.
+Malformed/unread observations cannot manufacture complete0. Preserve independently
+known other counters, finite prefix clocks/rates and angle/count comparisons;
+suppress numerical cause notes for unavailable quantity. Positive valid counts
+remain review-only, never a new cheat fault. Signed trailer-1 remains legitimate.
+No native/writer/capture/recording-field/rank/signature/threshold/Build change.
+
+**Verified.** Same1398assertions parent44failures, subject0;104new. Actual ordinary
+CLI still accepts valid0 and now refuses formerly accepted cancellation. NativeMAX,
+known0/positive2/independent-counter2/backend-1 controls act; finite19angle/19join
+prefix retained, existing bad-clock abstention unchanged. REC949/0, receipts800/0,
+structured32/0; normal final-metadata NoDeploy3VM0warnings.134HID hashes/fault/info/
+notes (3oldfaulty) and751REC/VIEW bytes/reports/356oldfaults identical. One transient
+Git fetch failure retained; ordinary bounded retry recovered, no gate changed.
+Source qualification is not independent review/deployment or physical provenance;
+FTESurf tools/p1536-journal-backend-counts.md. Native2274050a9/tag1529/Build89 held.
+
+## Patch 1535 — Byte-cap boundaries exclude unsupported body observations (13 Nov 2026)
+
+**Problem.** The reader accepted/processed body records after a cap marker, even
+though only closing tables/end can follow. An extra coherent frame was judged as
+captured input; a contradictory tail could pollute otherwise valid prefix rules.
+
+**Change.** Fault/ignore known body records after a cap before any clock/count/
+view/model mutation. Preserve the supported prefix, known cap and legitimate
+whole closing totals, allowing the existing device tables/end footer. No native/
+writer/capture/recording field, detector threshold, signature, rank or Build change.
+
+**Verified.** Same1294assertions, parent6failures, subject0;9new checks. Actual CLI
+valid0, formerly accepted tail now1. Coherent and contradictory tails cannot
+change prefix19angle/19join/rates; the same21frame body without cap acts20/20;
+permitted closing tables/end remain accepted. Reader949/0, receipts800/0,
+structured32/0; supported normal NoDeploy3VM0warnings.134HID hashes/fault/info/
+notes (3oldfaulty) and751REC/VIEW hashes/per-file reports/356oldfaults identical.
+Publication/qualification is not independent review/deployment or physical truth;
+FTESurf tools/p1535-journal-cap-boundary.md. Native code/pins/tag/Build held;
+original38acceptance inputs and deferred audit remain untouched.
+
+## Patch 1534 — Closing clocks must cover the recorded prefix (13 Nov 2026)
+
+**Problem.** A marked partial journal could claim an earlier whole duration than
+its recorded prefix and still pass. Finite full-file end mismatches faulted yet
+retained unsupported durations. Cap timestamps were not checked against their
+relative clock, and the special cap branch bypassed post-close/duplicate guards.
+
+**Change.** Reuse existing TIME_EPS to validate cap absolute/relative agreement and
+closing-prefix chronology. Omit unsupported duration/cap timestamps, preserving
+known cap existence, valid ahead totals and independent finite prefix rates and
+angle/count observations. Guard a second cap or one after end. No new capture or
+recording field, clock/detector threshold, native/writer/rank/signature/Build change.
+
+**Verified.** Matched parent1285assertions15failures, subject1285/0;41new checks.
+Actual ordinary CLI valid0, previously accepted backwards close now1. Zero origin,
+existing print budget and legitimate partial ahead controls act. Reader949/0,
+receipts800/0, structured32/0; normal NoDeploy3VM0warnings.134HID hashes/faults/
+info/notes (3oldfaulty) and751REC/VIEW hashes/per-file reports/356oldfaults stable.
+An incorrect zero-clock fixture index retained/corrected before product edit;
+zero controls not removed. Source qualification is not independent review, live
+verification or physical input truth. FTESurf tools/p1534-journal-closing-clocks.md;
+native code/pins/tag/Build held. No deferred native/compiler/filewriter audit.
+
+## Patch 1533 — Closing counters cannot contradict the recorded prefix (13 Nov 2026)
+
+**Problem.** Truncation disabled the hidden-event equality check without retaining
+the required lower bound: a closing0 could be accepted despite an observed hidden
+event. Other closing counters could retain impossible unsigned values or publish
+contradictory totals. Nonnumeric counts also wrongly tainted finite clocks.
+
+**Change.** Reuse the native unsigned-counter domain for closing events, frames,
+loss and hidden totals, preserving the different signed backend sentinels. Enforce
+hidden-prefix direction on truncated files, retain exact full-file equality, and
+withhold unsupported/contradictory totals rather than report0 or a subtotal.
+Preserve independently measured prefix rates, clocks and angle/count comparisons.
+No native/writer/capture/recording field, signature, rank, threshold or Build change.
+
+**Verified.** Same1244assertions: untouched36failures, subject0;94new assertions.
+Actual CLI still accepts valid hidden1 and now refuses the previously accepted
+truncated hidden0/body1. Equal/ahead/nativeMAX controls and loss sentinels act.
+Reader949/0, receipts800/0, structured32/0; normal isolated NoDeploy3VM0warnings.
+All134HID hashes/faults/info/notes (3oldfaulty) and751REC/VIEW hashes/reports/
+356oldfaults unchanged. Incorrect initial prefix-rate fixture premise retained and
+corrected from source before product edits; rates are not whole closing totals.
+Source qualification is NOT independent review/deployment or physical input truth;
+FTESurf tools/p1533-journal-closing-counters.md. Native code/pins/tag/Build held.
+
+## Patch 1532 — Invalid loss declarations cannot become measured zero (13 Nov 2026)
+
+**Problem.** The journal reader accepted signed or out-of-native-range loss
+counts. A negative marker could cancel a positive one and leave a format-success
+report with dropped0 and no loss warning. Rejected loss records could likewise
+leave a zero/subtotal presented as a complete measurement.
+
+**Change.** Validate loss markers and the closing loss total against their native
+unsigned32-bit producer contract. Reject invalid declarations and withhold the
+unsupported drop measurement. Keep independently finite clocks/angle/count
+comparisons, valid0/positive/nativeMAX values, closing totals ahead of emitted
+markers and signed backend-unknown sentinels distinct. No recording/native/writer,
+new measurement field, ranking/threshold or QC Build change.
+
+**Verified.** Same1150assertions: untouched24failures, subject0failures,60new
+assertions. Actual normal CLI accepts the valid control and now refuses the
+previously accepted cancellation. Reader949/0, receipts800/0, structured32/0;
+normal isolated NoDeploy3VM0warnings. All134retained journal reports/byte hashes
+(3existingfaulty) and751REC/VIEW hashes/reports/356oldfaults unchanged. Native
+producer%u/type inspected; actual supported Windows compiler unsigned-int ABI32.
+Source-qualified/published is not independent review/deployment or authenticity;
+FTESurf tools/p1532-journal-loss-declarations.md. Native code/pins/tag/Build held.
+
+## Patch 1530 — Lost journal state cannot inherit old certainty (12 Nov 2026)
+
+**Problem.** Early rejection of malformed input-setting changes left the previous
+angle setting active, so later valid angles could receive a stale-scale finding.
+Malformed keyboard-observation changes/counts could likewise leave a whole-run
+measured zero despite an unknown observation gap. A format fault alone did not
+invalidate these unsupported measurements.
+
+**Change.** Reuse immutable per-view setting snapshots: reject a lost named change
+as unknown until restored; an unrecoverable name invalidates the identity settings,
+not independent counts. Retain known earlier comparisons and valid later recovery.
+Latch unusable keyboard state/count records as partial/unavailable and withhold
+whole-journal key/nohandle totals. Valid zero, positive counts and known observation
+stops keep their distinct answers. Format/clock faults remain faults. No capture,
+writer, native movement, recording field, ranking, threshold or QC Build change.
+
+**Verified.** Matched untouched reader fails40of1090assertions; subject1090/0,
+including89newassertions and acting independent-count contradiction controls.
+The cvar-only subject independently reproduces13keyboard-coverage failures before
+that correction. Reader949/0, receipt/structured-diagnostic consumers pass. All134
+retained journal hashes and faults/info/notes agree with the parent (3existing
+faulty files); all751REC/VIEW hashes/per-file reports/356existingfaults unchanged.
+Supported isolated NoDeploy3VM0warnings. Original fixture errors retained/corrected,
+not product changes to fit them. Source verification, not independent review or
+live deployment; FTESurf tools/p1530-journal-state-loss.md records exact limits.
+Native code, commit/tag pins and Build89 stay held.
+
+## Patch 1529 — Bounded landing gravity use remains observable (12 Nov 2026)
+
+**Problem.** The existing clear-air gravity observer discarded a use signal when
+only the foreign-gravity path reached a floor during final categorization. Four
+native landing controls changed the actual body but the old runtime reported no
+use. Admission or possession of gravity alone is still not evidence of use.
+
+**Change.** Retain the command-local signal for the bounded clear-air and
+water-jump paths only when the default-gravity endpoint independently clears its
+own ground probe and retains an acted vertical body difference. Ordinary shared
+landings, obstructed/ambiguous paths and unavailable counterfactuals do not become
+positive witnesses. Reuse the existing flag and probes; no movement, public API,
+recording format, reader, ranking rule, threshold or QC Build change.
+
+**Verified.** Actual native Windows and ARM64 pm_selftest:1773checks/0failures,
+including83additional assertions. The untouched runtime with the final fixture
+misses exactly4acted landing-use assertions. Observer on/off preserves complete
+playermove and movevars bytes; ordinary shared landing and command-reset controls
+act. ARM768canonical source files verified before compilation; zero new PM
+warnings. This is bounded native source qualification, NOT a complete bank,
+hardware/calibration or independent review/deployment. Full Windows build and
+corpus evidence/limits are recorded in FTESurf tools/p1529-landing-gravity.md.
+
+## Patch 1526 — Unusable journal clocks cannot be clean evidence (12 Nov 2026)
+
+**Problem.** Non-finite base/frame/end clocks and a NaN truncation marker retained
+content OK. NaN evaded difference checks; closing deltas were not held to the
+body's nonnegative rule, and an unrepresentable end delta raised an exception.
+Unusable values could also remain in duration/rate metadata. An unusable body
+delta could crash parsing, or drop a pointer row and falsely fault a counts join.
+
+**Change.** Validate finite absolute clocks before storing or comparing them.
+Validate closing/truncation deltas and elapsed arithmetic before committing
+clock/trailer state; body arithmetic refuses rather than crashes. An unusable
+timestamp cannot turn a skipped pointer into a complete counts comparison.
+Refuse source quality and withhold unusable timing metrics;
+never convert this into angle/count/player guilt. Finite input comparisons remain
+independent. Preserve the existing fixed clock tolerance and genuine finite
+clock-contradiction control. No native code, capture/codec/version, cutoff,
+policy/rank, regrading, engine pin/tag or QC Build change.
+
+**Verified.** Eighteen malformed-clock cases and finite/rate/rounding controls:
+untouched P1525 reader fails32of71executed checks (including two overflow cases),
+subject77/0. Windows HID1001/0, receipts800/0, recording reader949/0. Actual cached
+digest/no-reopen and signature/content separation controls ACT. Current corpus
+and supported NoDeploy build evidence/limits: tools/p1526-journal-clock-quality.md
+in FTESurf. This is a bounded parser correction, not complete clock provenance,
+hardware, calibration, independent review or deployment. Native audit deferred.
+
+## Patch 1525 — Native quoted bytes are not Unicode coefficients (12 Nov 2026)
+
+**Problem.** Q_atof reads one native char byte for a quoted character; the
+journal reader instead used a Unicode codepoint. A recorded numeric cvar change
+could therefore make a native-consistent turn look like an identity break.
+The journal does not identify char signedness or a byte encoding profile.
+
+**Change.** Refuse unavailable non-ASCII quoted numeric coefficients rather
+than guess their value. Preflight withholds the whole identity, including after
+a late change, not healthy partial measurements or angle/count accusations.
+Preserve known nonzero flip/filter/acceleration paths and ordinary ASCII,
+hexadecimal, numeric-prefix and finite-contradiction controls. No native code,
+wire/capture/codec, cutoff, ranking/policy, regrading, engine pin/tag or Build change.
+
+**Verified.** Literal current native Q_atof/Q_atoi, seven rows under both char
+modes on Windows, zero compiler warnings. Seven native-consistent journal cases,
+including a late change: untouched reader fails28of46new checks; subject46/0.
+Windows HID924/0, receipt667/0, recording949/0. Actual cached-digest/no-reopen,
+independent counts join and signature/content separation controls act. See
+FTESurf tools/p1525-native-byte-values.md for corpus/build evidence and limits.
+This is parser-source fidelity, NOT hardware, calibration, ARM or a native
+vulnerability audit. Independent review and deployment remain pending.
 
 ## Patch 1524 — Unusable input models neither accuse nor pass (12 Nov 2026)
 

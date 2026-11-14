@@ -1565,6 +1565,22 @@ static void PR_ExpandTempStrings(progfuncs_t *progfuncs, size_t newmax)
 	prinst.maxtempstrings = newmax;
 	prinst.tempstrings = ntable;
 }
+/*
+FTESurf Patch 1550: a VM that has stopped collecting grows this table until the allocation fails: 131072 slots
+doubled+1024 eleven times is 0x80FFE000 bytes, which memalloc's int sign-extended into the 8-10 Nov crash records'
+"BZ_Malloc: Failed on allocation of 18446744071578836992 bytes" (the P1417 file-length reading did not fit).
+The step past 2^25 slots (from 16.9M, ~16x a board replay's 1M peak, P1481) stops with a named error instead
+of the overflow (and of P1481's memalloc fallback, which took a truncated size); from 4.2M each step prints one
+line, so a crash record's console tail says which VM and in what state. PR_QCGC_Finish and the unthreaded
+collector still grow the table uncapped: a VM that collects but keeps half its temps live is not this case.
+*/
+#define PR_TEMPS_WARN	(1u<<22)
+#define PR_TEMPS_CAP	(1u<<25)
+#ifdef THREADEDGC
+#define PR_GCSTATE(p)	((p)->inst.gccontext ? "a collection running" : "no collection running")
+#else
+#define PR_GCSTATE(p)	"collections not threaded"
+#endif
 static string_t PDECL PR_AllocTempStringLen			(pubprogfuncs_t *ppf, char **str, unsigned int len)
 {
 	progfuncs_t *progfuncs = (progfuncs_t *)ppf;
@@ -1575,7 +1591,16 @@ static string_t PDECL PR_AllocTempStringLen			(pubprogfuncs_t *ppf, char **str, 
 
 	if (prinst.livetemps == prinst.maxtempstrings)
 	{	//FTESurf Patch 1292: no wait for a running collection -- its worker writes nothing of ours (PR_QCGC_Thread)
-		PR_ExpandTempStrings(progfuncs, prinst.maxtempstrings*2 + 1024);
+		size_t newmax = (size_t)prinst.maxtempstrings*2 + 1024;
+		if (newmax > PR_TEMPS_CAP)
+			externs->Sys_Error("%s: temp-string table full at %u slots, %u live (call depth %i, exit depth %i, %s)",
+				pr_progstate[0].filename, prinst.maxtempstrings, prinst.livetemps, prinst.pr_depth, prinst.exitdepth,
+				PR_GCSTATE(progfuncs));
+		if (newmax >= PR_TEMPS_WARN)
+			externs->Printf("%s: temp-string table grows to %u slots (%u live, call depth %i, exit depth %i, %s)\n",
+				pr_progstate[0].filename, (unsigned int)newmax, prinst.livetemps, prinst.pr_depth, prinst.exitdepth,
+				PR_GCSTATE(progfuncs));
+		PR_ExpandTempStrings(progfuncs, newmax);
 	}
 
 	for (i = prinst.nexttempstring; i < prinst.maxtempstrings && prinst.tempstrings[i]; i++)
