@@ -428,8 +428,9 @@ void GL_SetupFormats(void)
 	else if (GL_CheckExtension("GL_WEBGL_compressed_texture_astc"))
 		sh_config.hw_astc = 1;	//need to use js getSupportedProfiles() to find the profiles, which is outside of our scope
 #endif
-	if (sh_config.hw_astc || (gl_config_gles && gl_config.glversion >= 3.2) || GL_CheckExtension("GL_ARB_ES3_2_compatibility"))
-	{	//astc ldr profile is a core part of gles 3.2
+	if (sh_config.hw_astc || GL_CheckExtension("GL_ARB_ES3_2_compatibility"))
+	{	//astc ldr profile is a core part of gles 3.2 (not assumed from the version: the target is gles 3.0, and
+		//a driver with astc names GL_KHR_texture_compression_astc_ldr, which set hw_astc above)
 		//note that this does not necessarily mean the hardware itself supports it.
 		glfmtb(PTI_ASTC_4X4_LDR,		GL_COMPRESSED_RGBA_ASTC_4x4_KHR);
 		glfmtb(PTI_ASTC_5X4_LDR,		GL_COMPRESSED_RGBA_ASTC_5x4_KHR);

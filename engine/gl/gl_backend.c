@@ -2010,6 +2010,7 @@ typedef struct
 	qboolean hazard;		//this rtt pass was interrupted after drawing: its depth was lost
 	unsigned int holdblit;	//activations left using the explicit resolve after a hazard
 	qboolean stencil;		//depth renderbuffer carries stencil
+	int clamped;			//request*1024+samples last reported as limited by the hardware
 } bemsaa_t;
 static bemsaa_t be_msaa, be_reflmsaa;
 static bemsaa_t *be_msaa_read;	//the target the last ReadBegin resolved
@@ -2185,9 +2186,19 @@ static int MSAA_Samples(bemsaa_t *t, int s)
 			MSAA_Free(t);	//off at render scale 1 with no post-process: Begin would not run to free it
 		return 0;
 	}
-	if (gl_config_gles)
-		s = min(s, 4);	//more than 4x costs tile memory/bandwidth on every mobile gpu for little gain
-	s = min(s, maxs);
+	{	//no more than this device has for the chosen path (GL_MAX_SAMPLES, or _EXT/_IMG for render-to-texture),
+		//and a power of two: a count like the menu's 6x is not one any driver offers
+		int req = s, p2 = 1;
+		s = min(s, maxs);
+		while (p2*2 <= s)
+			p2 *= 2;
+		s = p2;
+		if (s != req && t->clamped != req*1024+s)
+		{
+			t->clamped = req*1024+s;
+			Con_Printf("%s %i: %s MSAA uses %ix (this device supports up to %ix)\n", MSAA_CVAR(t), req, MSAA_WHAT(t), s, maxs);
+		}
+	}
 	return (s > 1) ? s : 0;
 }
 #endif
@@ -6950,6 +6961,23 @@ static void BE_ProglessFogEnd(qboolean fogging)
 }
 #endif
 
+//a shader whose own memory no longer holds a shader: report it once instead of following its pointers
+static void BE_ReportCorruptShader(const shader_t *s, int passno, const void *prog)
+{
+	static const shader_t *reported;
+	char name[64];
+	size_t i;
+	if (reported == s)
+		return;
+	reported = s;
+	for (i = 0; i < sizeof(name)-1 && i < sizeof(s->name) && s->name[i]; i++)
+		name[i] = (s->name[i] >= 32 && s->name[i] < 127) ? s->name[i] : '?';
+	name[i] = 0;
+	Con_Printf(CON_ERROR "shader \"%s\" (%p) pass %i: program %p is not a live program (%i passes); not drawn. "
+		"Something overwrote this shader's memory: the console lines before this one say what was loaded last.\n",
+		name, (const void*)s, passno, prog, s->numpasses);
+}
+
 static void DrawMeshes(void)
 {
 	const shader_t *altshader;
@@ -7253,14 +7281,35 @@ static void DrawMeshes(void)
 			}
 #endif
 
+			if (shaderstate.curshader->numpasses > SHADER_PASS_MAX)
+			{
+				BE_ReportCorruptShader(shaderstate.curshader, -1, NULL);
+				break;
+			}
 			while (passno < shaderstate.curshader->numpasses)
 			{
 				int emumode;
 				p = &shaderstate.curshader->passes[passno];
+				if (p->numMergedPasses < 1 || passno + p->numMergedPasses > shaderstate.curshader->numpasses)
+				{
+					BE_ReportCorruptShader(shaderstate.curshader, passno, p->prog);
+					break;
+				}
 				passno += p->numMergedPasses;
 
 				if (p->prog)
 				{
+					/*
+					Only shaders without a program of their own get here (skies drawn through the sky
+					sphere, legacy q3 scripts), so this walk of the program lists is rare. It is what stood
+					between a sky shader whose pass held 0x3fb1185900000000 (pixel or float data, not a
+					pointer) and a SIGSEGV in BE_RenderMeshProgram.
+					*/
+					if (!Shader_ProgramIsLive(p->prog))
+					{
+						BE_ReportCorruptShader(shaderstate.curshader, passno - p->numMergedPasses, p->prog);
+						break;
+					}
 					shaderstate.pendingcolourvbo = shaderstate.sourcevbo->colours[0].gl.vbo;
 					shaderstate.pendingcolourpointer = shaderstate.sourcevbo->colours[0].gl.addr;
 					shaderstate.colourarraytype = shaderstate.sourcevbo->colours_bytes?GL_UNSIGNED_BYTE:GL_FLOAT;

@@ -483,12 +483,13 @@ static qboolean SDLVID_Init (rendererstate_t *info, unsigned char *palette, r_qr
 #else
             extern bool useGLes2_0Version();
             const bool useLegacyOpenGLES2_0 = useGLes2_0Version();
-            //a 3.2 context is requested (drivers hand out their newest compatible one anyway), but the renderer
-            //itself is held to the OpenGL ES 3.0 API and GLSL ES 3.00 (gl_vidcommon.c, GLES_GLSL_BASELINE)
+            //the targets are OpenGL ES 3.0 (GLSL ES 3.00, gl_vidcommon.c GLES_GLSL_BASELINE) and OpenGL ES 2.0
+            //(GLSL ES 1.00): exactly that version is asked for. A 3.1/3.2 driver still hands out its newest
+            //compatible context, but nothing here depends on more than 3.0.
             SDL_Log(useLegacyOpenGLES2_0 ? "Legacy OpenGL ES 2.0 is using for rendering" :
-                    "OpenGL ES 3.x context, OpenGL ES 3.0 / GLSL ES 3.00 renderer baseline");
+                    "OpenGL ES 3.0 context, OpenGL ES 3.0 / GLSL ES 3.00 renderer");
             SDL_GL_SetAttribute(SDL_GL_CONTEXT_MAJOR_VERSION, useLegacyOpenGLES2_0 ? 2 : 3);
-            SDL_GL_SetAttribute(SDL_GL_CONTEXT_MINOR_VERSION, useLegacyOpenGLES2_0 ? 0 : 2);
+            SDL_GL_SetAttribute(SDL_GL_CONTEXT_MINOR_VERSION, 0);
             vid_isfullscreen = true;
             info->fullscreen = true;
 #endif
@@ -508,19 +509,19 @@ static qboolean SDLVID_Init (rendererstate_t *info, unsigned char *palette, r_qr
             SDL_GL_SetAttribute(SDL_GL_CONTEXT_PROFILE_MASK, SDL_GL_CONTEXT_PROFILE_ES);
 #endif
 #ifdef ANDROID
-		//gles3: vid_multisample is done on the scene's own target (on-chip resolved render-to-texture where the
-		//driver has it, gl_backend.c MSAA_*), so the window itself stays single-sampled: the hud does not need
-		//samples, and a multisampled window would make the scene path refuse its own msaa. Legacy gles2 keeps the
-		//multisampled EGL surface, its only msaa where render-to-texture msaa is missing.
-		if (info->multisample && useLegacyOpenGLES2_0)
+		//gles3 and gles2: vid_multisample is done on the scene's own target (EXT/IMG_multisampled_render_to_texture:
+		//the samples stay in tile memory and are resolved as the tile is written; gles3 without it: multisample
+		//renderbuffers + blit; gl_backend.c MSAA_*), so the window itself stays single-sampled: the hud needs no
+		//samples, and a multisampled window would make the scene path refuse its own msaa.
+		//A gles2 driver without render-to-texture msaa has no msaa but a multisampled EGL surface. Which one this
+		//device is only shows once a context exists: GL_Init stores the sample count to ask the window for in
+		//gl_gles2_eglmsaa (0 where render-to-texture msaa exists), used from the next start.
 		{
-			SDL_GL_SetAttribute(SDL_GL_MULTISAMPLESAMPLES, info->multisample);
-			SDL_GL_SetAttribute(SDL_GL_MULTISAMPLEBUFFERS, 1);
-		}
-		else
-		{
-			SDL_GL_SetAttribute(SDL_GL_MULTISAMPLESAMPLES, 0);
-			SDL_GL_SetAttribute(SDL_GL_MULTISAMPLEBUFFERS, 0);
+			int eglsamples = 0;
+			if (info->multisample > 1 && useLegacyOpenGLES2_0)
+				eglsamples = min(info->multisample, Cvar_Get("gl_gles2_eglmsaa", "0", CVAR_ARCHIVE, "GL")->ival);
+			SDL_GL_SetAttribute(SDL_GL_MULTISAMPLESAMPLES, (eglsamples > 1) ? eglsamples : 0);
+			SDL_GL_SetAttribute(SDL_GL_MULTISAMPLEBUFFERS, (eglsamples > 1) ? 1 : 0);
 		}
 #else
 		if (info->multisample)
@@ -565,6 +566,25 @@ static qboolean SDLVID_Init (rendererstate_t *info, unsigned char *palette, r_qr
 	sdlwindow = SDL_CreateWindow(FULLENGINENAME, info->width, info->height, flags);
 #else
 	sdlwindow = SDL_CreateWindow(FULLENGINENAME, SDL_WINDOWPOS_CENTERED_DISPLAY(display), SDL_WINDOWPOS_CENTERED_DISPLAY(display), info->width, info->height, flags | SDL_WINDOW_FULLSCREEN_DESKTOP);
+#endif
+#ifdef ANDROID
+	if (!sdlwindow)
+	{	//the EGL config is chosen with the window: no config with that many samples is no reason to fail
+		int samples = 0;
+		SDL_GL_GetAttribute(SDL_GL_MULTISAMPLESAMPLES, &samples);
+		if (samples > 1)
+		{
+			Con_Printf("No %ix multisampled EGL surface (%s): creating the window without MSAA\n", samples, SDL_GetError());
+			SDL_GL_SetAttribute(SDL_GL_MULTISAMPLESAMPLES, 0);
+			SDL_GL_SetAttribute(SDL_GL_MULTISAMPLEBUFFERS, 0);
+			Cvar_ForceSet(Cvar_Get("gl_gles2_eglmsaa", "0", CVAR_ARCHIVE, "GL"), "0");
+#if SDL_VERSION_ATLEAST(3,0,0)
+			sdlwindow = SDL_CreateWindow(FULLENGINENAME, info->width, info->height, flags);
+#else
+			sdlwindow = SDL_CreateWindow(FULLENGINENAME, SDL_WINDOWPOS_CENTERED_DISPLAY(display), SDL_WINDOWPOS_CENTERED_DISPLAY(display), info->width, info->height, flags | SDL_WINDOW_FULLSCREEN_DESKTOP);
+#endif
+		}
+	}
 #endif
 	if (!sdlwindow)
 	{
@@ -704,17 +724,6 @@ static qboolean SDLVID_Init (rendererstate_t *info, unsigned char *palette, r_qr
 
 		sdlcontext = SDL_GL_CreateContext(sdlwindow);
 #if ANDROID
-		if (!sdlcontext)
-		{	//gles3.2 is missing on older gpus and some angle backends. drivers hand out their newest compatible version
-			//for a 3.0 request, and GL_Init reads the real version back to pick the glsl it can use.
-			extern bool useGLes2_0Version();
-			if (!useGLes2_0Version())
-			{
-				Con_Printf("Couldn't create an OpenGL ES 3.2 context (%s), trying OpenGL ES 3.0\n", SDL_GetError());
-				SDL_GL_SetAttribute(SDL_GL_CONTEXT_MINOR_VERSION, 0);
-				sdlcontext = SDL_GL_CreateContext(sdlwindow);
-			}
-		}
 #endif
 		if (!sdlcontext)
 		{

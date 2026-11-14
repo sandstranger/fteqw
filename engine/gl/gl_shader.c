@@ -2409,6 +2409,7 @@ static qboolean Shader_LoadPermutations(char *name, program_t *prog, char *scrip
 	qboolean cantess = false;	//not forced.
 	char prescript[8192];
 	size_t offset = 0;
+	const char *unsupported = NULL;	//a sampler type this renderer has no textures of: the program is refused
 #endif
 
 	if (qrenderer != qrtype)
@@ -2516,7 +2517,13 @@ static qboolean Shader_LoadPermutations(char *name, program_t *prog, char *scrip
 						i = prog->numsamplers;
 					if (prog->numsamplers < i+1)
 						prog->numsamplers = i+1;
-
+					//gles2 (and gl without them) has no 3d or array textures here (no OES_texture_3D path):
+					//sampler3D is not even a type in glsl es 1.00, so compiling would only fail, loudly, and
+					//nothing could ever be bound to it. Refused like a program whose !!ver is out of reach.
+					if (qrtype == QR_OPENGL && !Q_strcasecmp(type, "3D") && !sh_config.texture3d_maxsize)
+						unsupported = "3D";
+					else if (qrtype == QR_OPENGL && !Q_strcasecmp(type, "2DArray") && !sh_config.texture2darray_maxlayers)
+						unsupported = "2DArray";
 					/*for (j = 0; sh_defaultsamplers[j].name; j++)
 					{
 						if (!strcmp(token, sh_defaultsamplers[j].name+2))
@@ -2943,6 +2950,12 @@ static qboolean Shader_LoadPermutations(char *name, program_t *prog, char *scrip
 	while(cvarcount)
 		Z_Free((char*)cvarnames[--cvarcount]);
 
+	if (unsupported)
+	{
+		Con_DPrintf("glsl program %s needs %s textures, which this renderer does not have: not used\n", name, unsupported);
+		return false;
+	}
+
 	//ensure that permutation 0 works correctly as a fallback.
 	//FIXME: add debug mode to compile all.
 	prog->permu[0] = Shader_LoadPermutation(prog, 0);
@@ -2976,6 +2989,67 @@ typedef struct sgeneric_s
 	qboolean failed;
 } sgeneric_t;
 static sgeneric_t *sgenerics;
+
+//Every live program_t a shader or pass may point at is either a generic (sgenerics) or an inline
+//"program { ... }" body, kept here. Shader_ProgramIsLive checks a pointer against both without
+//dereferencing it: DrawMeshes uses it before drawing a pass through its own program.
+static program_t **shader_inlineprogs;
+static unsigned int shader_numinlineprogs, shader_maxinlineprogs;
+static qboolean shader_inlineprogs_incomplete;	//an allocation failed: unknown programs are not proof of anything
+static void Shader_RegisterInlineProg(program_t *prog)
+{
+	if (shader_numinlineprogs == shader_maxinlineprogs)
+	{
+		unsigned int nmax = shader_maxinlineprogs ? shader_maxinlineprogs*2 : 64;
+		program_t **n = BZF_Realloc(shader_inlineprogs, sizeof(*n)*nmax);
+		if (!n)
+		{
+			shader_inlineprogs_incomplete = true;
+			return;
+		}
+		shader_inlineprogs = n;
+		shader_maxinlineprogs = nmax;
+	}
+	shader_inlineprogs[shader_numinlineprogs++] = prog;
+}
+static void Shader_UnregisterProg(program_t *prog)
+{
+	unsigned int i;
+	sgeneric_t **link;
+	for (i = 0; i < shader_numinlineprogs; i++)
+	{
+		if (shader_inlineprogs[i] == prog)
+		{
+			shader_inlineprogs[i] = shader_inlineprogs[--shader_numinlineprogs];
+			return;
+		}
+	}
+	//a generic released by its last user while still listed: unlist it, or the next Shader_FindGeneric
+	//of that name would hand out the freed memory
+	for (link = &sgenerics; *link; link = &(*link)->next)
+	{
+		if (&(*link)->prog == prog)
+		{
+			*link = (*link)->next;
+			return;
+		}
+	}
+}
+qboolean Shader_ProgramIsLive(const program_t *prog)
+{
+	sgeneric_t *g;
+	unsigned int i;
+	if (!prog)
+		return false;
+	for (g = sgenerics; g; g = g->next)
+		if (&g->prog == prog)
+			return true;
+	for (i = 0; i < shader_numinlineprogs; i++)
+		if (shader_inlineprogs[i] == prog)
+			return true;
+	return shader_inlineprogs_incomplete;
+}
+
 static struct sbuiltin_s sbuiltins[] =
 {
 #include "r_bishaders.h"
@@ -2983,6 +3057,7 @@ static struct sbuiltin_s sbuiltins[] =
 };
 void Shader_UnloadProg(program_t *prog)
 {
+	Shader_UnregisterProg(prog);
 	if (sh_config.pDeleteProg)
 		sh_config.pDeleteProg(prog);
 
@@ -3391,10 +3466,13 @@ static void Shader_SLProgramName (shader_t *shader, shaderpass_t *pass, const ch
 		memset(newprog, 0, sizeof(*newprog));
 		newprog->refs = 1;
 		if (!Shader_LoadPermutations(shader->name, newprog, programbody, qrtype, 0, NULL))
-		{
-			BZ_Free(newprog);
+		{	//whatever permutations it did build are deleted with it (and leave the gpu residency list:
+			//a plain free left them there with a dangling owner that eviction later wrote through)
+			Shader_UnloadProg(newprog);
 			newprog = NULL;
 		}
+		else
+			Shader_RegisterInlineProg(newprog);
 
 		BZ_Free(programbody);
 	}

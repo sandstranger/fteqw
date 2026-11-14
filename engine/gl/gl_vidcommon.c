@@ -1501,6 +1501,23 @@ static qboolean GL_CheckExtensions (void *(*getglfunction) (char *name))
 		if (qglGetError())
 			gl_config.defaultfb_samples = 0;
 	}
+#ifdef ANDROID
+	if (gl_config.gles && gl_config.glversion < 3)
+	{	//gles2 msaa: render-to-texture where the driver has it (the window stays single-sampled), otherwise a
+		//multisampled EGL surface, which can only be chosen with the window: remembered for the next start.
+		extern cvar_t vid_multisample;
+		cvar_t *eglmsaa = Cvar_Get("gl_gles2_eglmsaa", "0", CVAR_ARCHIVE, "GL");
+		int want = 0;
+		if (!gl_config.msrtt && vid_multisample.ival > 1)
+			want = (vid_multisample.ival >= 4) ? 4 : 2;	//what gles2 gpus with msaa offer as EGL configs
+		if (eglmsaa->ival != want)
+		{
+			Cvar_ForceSet(eglmsaa, va("%i", want));
+			if (want && gl_config.defaultfb_samples < 2)
+				Con_Printf("vid_multisample: this OpenGL ES 2.0 driver has no multisampled render-to-texture; %ix MSAA through the window from the next start\n", want);
+		}
+	}
+#endif
 #ifdef DEBUG
 	if (GL_CheckExtension("GL_ARB_debug_output"))
 	{
