@@ -5465,6 +5465,7 @@ void R_AddItemTimer(vec3_t shadoworg, float yaw, float radius, float percent, ve
 	TEXASSIGN(s->defaulttextures->base, balltexture);
 
 
+	memset(&ctx, 0, sizeof(ctx));
 	eang[0] = 0;
 	eang[1] = yaw;
 	eang[2] = 0;
@@ -5482,7 +5483,7 @@ void R_AddItemTimer(vec3_t shadoworg, float yaw, float radius, float percent, ve
 		R2D_Flush();
 
 	/*reuse the previous trigroup if its the same shader*/
-	if (cl_numstris && cl_stris[cl_numstris-1].shader == s && cl_stris[cl_numstris-1].flags == (BEF_NODLIGHT|BEF_NOSHADOWS))
+	if (cl_numstris && cl_stris[cl_numstris-1].shader == s && cl_stris[cl_numstris-1].flags == (BEF_NODLIGHT|BEF_NOSHADOWS) && cl_stris[cl_numstris-1].lightmap == -1)
 		t = &cl_stris[cl_numstris-1];
 	else
 	{
@@ -5494,13 +5495,27 @@ void R_AddItemTimer(vec3_t shadoworg, float yaw, float radius, float percent, ve
 		t = &cl_stris[cl_numstris++];
 		t->shader = s;
 		t->flags = BEF_NODLIGHT|BEF_NOSHADOWS;
+		t->lightmap = -1;	//unlit
 		t->numidx = 0;
 		t->numvert = 0;
 		t->firstidx = cl_numstrisidx;
 		t->firstvert = cl_numstrisvert;
 	}
 
+	/*
+	The rest of the context CL_AddDecal_Callback reads, which this hand-built one never set: since the
+	lightmap page split the callback opens a strip of its own (CL_Decal_GetStrip) from ctx.shader/ctx.flags
+	whenever ctx.curpage differs from the fragment's page, and both were stack garbage. That made scene
+	polygons with a "shader" pointing into vertex data and flags like 0x3f666666 (0.9f): the SIGSEGVs in
+	BE_RenderMeshProgram (sky sphere) and GLBE_CaptureStaggers. Unlit, the whole texture across the footprint.
+	*/
 	ctx.t = t;
+	ctx.shader = s;
+	ctx.flags = BEF_NODLIGHT|BEF_NOSHADOWS;
+	ctx.curpage = -1;
+	ctx.dolm = false;
+	ctx.srange[0] = ctx.trange[0] = 0;
+	ctx.srange[1] = ctx.trange[1] = 1;
 	Vector4Set(ctx.rgbavalue, rgb[0], rgb[1], rgb[2], percent);
 	Mod_ClipDecal(cl.worldmodel, shadoworg, ctx.axis[0], ctx.axis[1], ctx.axis[2], radius, 0,0, CL_AddDecal_Callback, &ctx);
 	if (!t->numidx)
@@ -5544,6 +5559,7 @@ void CLQ1_AddShadow(entity_t *ent)
 	shadoworg[1] = ent->origin[1];
 	shadoworg[2] = ent->origin[2] + ent->model->mins[2];
 
+	memset(&ctx, 0, sizeof(ctx));
 	eang[0] = 0;
 	eang[1] = ent->angles[1];
 	eang[2] = 0;
@@ -5561,7 +5577,7 @@ void CLQ1_AddShadow(entity_t *ent)
 		R2D_Flush();
 
 	/*reuse the previous trigroup if its the same shader*/
-	if (cl_numstris && cl_stris[cl_numstris-1].shader == s && cl_stris[cl_numstris-1].flags == (BEF_NODLIGHT|BEF_NOSHADOWS))
+	if (cl_numstris && cl_stris[cl_numstris-1].shader == s && cl_stris[cl_numstris-1].flags == (BEF_NODLIGHT|BEF_NOSHADOWS) && cl_stris[cl_numstris-1].lightmap == -1)
 		t = &cl_stris[cl_numstris-1];
 	else
 	{
@@ -5573,13 +5589,27 @@ void CLQ1_AddShadow(entity_t *ent)
 		t = &cl_stris[cl_numstris++];
 		t->shader = s;
 		t->flags = BEF_NODLIGHT|BEF_NOSHADOWS;
+		t->lightmap = -1;	//unlit
 		t->numidx = 0;
 		t->numvert = 0;
 		t->firstidx = cl_numstrisidx;
 		t->firstvert = cl_numstrisvert;
 	}
 
+	/*
+	The rest of the context CL_AddDecal_Callback reads, which this hand-built one never set: since the
+	lightmap page split the callback opens a strip of its own (CL_Decal_GetStrip) from ctx.shader/ctx.flags
+	whenever ctx.curpage differs from the fragment's page, and both were stack garbage. That made scene
+	polygons with a "shader" pointing into vertex data and flags like 0x3f666666 (0.9f): the SIGSEGVs in
+	BE_RenderMeshProgram (sky sphere) and GLBE_CaptureStaggers. Unlit, the whole texture across the footprint.
+	*/
 	ctx.t = t;
+	ctx.shader = s;
+	ctx.flags = BEF_NODLIGHT|BEF_NOSHADOWS;
+	ctx.curpage = -1;
+	ctx.dolm = false;
+	ctx.srange[0] = ctx.trange[0] = 0;
+	ctx.srange[1] = ctx.trange[1] = 1;
 	Vector4Set(ctx.rgbavalue, 0, 0, 0, r_blobshadows*((ent->flags & RF_TRANSLUCENT)?ent->shaderRGBAf[3]:1));
 	Mod_ClipDecal(cl.worldmodel, shadoworg, ctx.axis[0], ctx.axis[1], ctx.axis[2], radius, 0,0, CL_AddDecal_Callback, &ctx);
 	if (!t->numidx)
