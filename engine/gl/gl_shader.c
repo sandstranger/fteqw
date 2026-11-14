@@ -3035,6 +3035,17 @@ static void Shader_UnregisterProg(program_t *prog)
 		}
 	}
 }
+//s is one of the shaders R_RegisterShader handed out (not freed since): a pointer check, s is not read
+qboolean Shader_IsRegistered(const shader_t *s)
+{
+	unsigned int i;
+	if (!s || !r_shaders)
+		return false;
+	for (i = 0; i < r_numshaders; i++)
+		if (r_shaders[i] == s)
+			return true;
+	return false;
+}
 qboolean Shader_ProgramIsLive(const program_t *prog)
 {
 	sgeneric_t *g;

@@ -745,11 +745,62 @@ static qboolean R_SkyMaskWantedForGame(void)
 GL_DrawSkyChain
 =================
 */
+/*
+A sky batch whose shader (or the forced sky) is no shader R_RegisterShader handed out: twice a SIGSEGV in
+BE_RenderMeshProgram through the sky sphere, then DrawMeshes' check caught "shader" 0x...481c, not even
+16-byte aligned like every real one (Z_Malloc), so a pointer into some other heap object with float data.
+The sky is not drawn from it, and where the pointer came from is printed once: that names the culprit.
+*/
+static qboolean R_SkyShaderSane(batch_t *batch)
+{
+	static int reported;
+	int GLBE_TempBatchIndex(const batch_t *b);
+	const char *what;
+	const shader_t *bad;
+	char tex[64];
+	model_t *mod;
+	int i;
+	if (forcedsky && !Shader_IsRegistered(forcedsky))
+		what = "the forced sky (worldspawn skyname / r_skybox)", bad = forcedsky;
+	else if (!Shader_IsRegistered(batch->shader))
+		what = "the batch's shader", bad = batch->shader;
+	else
+		return true;
+	if (reported++ < 4)
+	{
+		mod = batch->ent ? batch->ent->model : NULL;
+		strcpy(tex, "?");
+		if (batch->texture && mod && mod->textures)
+		{
+			for (i = 0; i < mod->numtextures; i++)
+				if (mod->textures[i] == batch->texture)
+				{
+					Q_strncpyz(tex, batch->texture->name, sizeof(tex));
+					break;
+				}
+			if (i == mod->numtextures)
+				strcpy(tex, "(not one of the model's textures)");
+		}
+		Con_Printf(CON_ERROR "sky: %s is no registered shader (%p); not drawn. batch %p (%s %i) texture %p \"%s\" "
+			"entity %p%s model \"%s\" flags 0x%x meshes %u/%u vbo %p\n",
+			what, (const void*)bad, (void*)batch,
+			(GLBE_TempBatchIndex(batch) >= 0) ? "temp batch" : "model batch", GLBE_TempBatchIndex(batch),
+			(void*)batch->texture, tex, (void*)batch->ent, (batch->ent == &r_worldentity) ? " (world)" : "",
+			mod ? mod->name : "", batch->flags, batch->firstmesh, batch->meshes, (void*)batch->vbo);
+	}
+	if (bad == forcedsky)
+		forcedsky = NULL;	//back to the map's own sky shaders
+	return false;
+}
+
 qboolean R_DrawSkyChain (batch_t *batch)
 {
 	shader_t *skyshader;
 	texid_t *skyboxtex;
 	const float *skyboxscale = NULL;	//ftesurf (P181): per-face T scale from $basetexturetransform
+
+	if (!R_SkyShaderSane(batch))
+		return true;	//"drawn": nothing else is to touch this batch's shader either
 
 	if (r_fastsky.value)
 	{

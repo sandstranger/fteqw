@@ -12016,6 +12016,13 @@ void GLBE_UpdateLightmaps(void)
 	r_loaderstalltime += Sys_DoubleTime()-starttime;
 }
 
+//which slot of this frame's temp batch pool b is, or -1 for a batch from anywhere else (a model's own)
+int GLBE_TempBatchIndex(const batch_t *b)
+{
+	if (shaderstate.wbatches && b >= shaderstate.wbatches && b < shaderstate.wbatches + shaderstate.maxwbatches)
+		return b - shaderstate.wbatches;
+	return -1;
+}
 batch_t *GLBE_GetTempBatch(void)
 {
 	batch_t *b;
