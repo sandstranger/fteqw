@@ -9,7 +9,7 @@
 attribute vec2 v_texcoord;
 attribute vec4 v_colour;
 varying vec2 tc;
-varying vec4 vc;
+varying mediump vec4 vc;
 void main ()
 {
 	tc = v_texcoord;
@@ -19,7 +19,7 @@ void main ()
 #endif
 #ifdef FRAGMENT_SHADER
 varying vec2 tc;
-varying vec4 vc;
+varying mediump vec4 vc;
 uniform vec4 e_colourident;
 void main ()
 {

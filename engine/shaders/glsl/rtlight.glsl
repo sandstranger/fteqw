@@ -50,7 +50,7 @@
 	varying vec2 tcbase;
 	varying vec3 lightvector;
 	#if defined(VERTEXCOLOURS)
-		varying vec4 vc;
+		varying mediump vec4 vc;
 	#endif
 	#if defined(SPECULAR) || defined(OFFSETMAPPING) || defined(REFLECTCUBEMASK) || defined(PBR)
 		varying vec3 eyevector;
@@ -248,10 +248,12 @@ void main ()
 	colorscale *= ShadowmapFilter(s_shadowmap, vtexprojcoord);
 #endif
 #if defined(SPOT)
-	/*filter the colour by the spotlight. discard anything behind the light so we don't get a mirror image*/
-	if (vtexprojcoord.w < 0.0) discard;
-	vec2 spot = ((vtexprojcoord.st)/vtexprojcoord.w);
-	colorscale*=1.0-(dot(spot,spot));
+	//filter the colour by the spotlight. nothing behind the light, so we don't get a mirror image: zeroed, not
+	//discarded (a discard keeps tile-based gpus from resolving depth/stencil early for the whole draw).
+	//clamped outside the cone: a negative light subtracted from float scene targets.
+	float spotfront = step(0.0, vtexprojcoord.w);
+	vec2 spot = ((vtexprojcoord.st)/max(abs(vtexprojcoord.w), 0.000001));
+	colorscale *= spotfront * max(1.0-(dot(spot,spot)), 0.0);
 #endif
 
 //read raw texture samples (offsetmapping munges the tex coords first)
@@ -358,7 +360,11 @@ void main ()
 #endif
 
 	diff *= colorscale*l_lightcolour;
+#if defined(SPOT)
+	gl_FragColor = vec4(fog3additive(diff), spotfront);	//behind the light: adds nothing, as the discard did
+#else
 	gl_FragColor = vec4(fog3additive(diff), 1.0);
+#endif
 }
 #endif
 

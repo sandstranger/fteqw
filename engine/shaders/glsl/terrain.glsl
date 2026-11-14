@@ -11,7 +11,7 @@
 #include "sys/fog.h"
 varying vec2 tc;
 varying vec2 lm;
-varying vec4 vc;
+varying mediump vec4 vc;
 
 #ifdef RTLIGHT
 	varying vec3 lightvector;
@@ -128,9 +128,10 @@ void main (void)
 
 
 	#if defined(SPOT)
-		if (vtexprojcoord.w < 0.0) discard;
-		vec2 spot = ((vtexprojcoord.st)/vtexprojcoord.w);
-		colorscale *= 1.0-(dot(spot,spot));
+		//nothing behind the light: zeroed, not discarded (see rtlight.glsl)
+		float spotfront = step(0.0, vtexprojcoord.w);
+		vec2 spot = ((vtexprojcoord.st)/max(abs(vtexprojcoord.w), 0.000001));
+		colorscale *= spotfront * max(1.0-(dot(spot,spot)), 0.0);
 	#endif
 	#ifdef PCF
 		colorscale *= ShadowmapFilter(s_shadowmap, vtexprojcoord);
@@ -142,6 +143,9 @@ void main (void)
 		r.rgb *= textureCube(s_projectionmap, vtexprojcoord.xyz).rgb;
 	#endif
 
+	#if defined(SPOT)
+		r.a *= spotfront;	//behind the light: adds nothing, as the discard did
+	#endif
 	gl_FragColor = fog4additive(r);
 #else
 	//lightmap is greyscale in m.a. probably we should just scale the texture mix, but precision errors when editing make me paranoid.

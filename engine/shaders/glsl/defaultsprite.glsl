@@ -6,7 +6,7 @@
 #include "sys/defs.h"
 #include "sys/fog.h"
 varying vec2 tc;
-varying vec4 vc;
+varying mediump vec4 vc;
 #ifdef VERTEX_SHADER
 void main ()
 {

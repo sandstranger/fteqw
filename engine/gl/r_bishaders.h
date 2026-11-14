@@ -18,7 +18,7 @@ YOU SHOULD NOT EDIT THIS FILE BY HAND
 "varying vec2 tc;\n"
 "#ifndef UC\n"
 "attribute vec4 v_colour;\n"
-"varying vec4 vc;\n"
+"varying mediump vec4 vc;\n"
 "#endif\n"
 "void main ()\n"
 "{\n"
@@ -32,7 +32,7 @@ YOU SHOULD NOT EDIT THIS FILE BY HAND
 "#ifdef FRAGMENT_SHADER\n"
 "varying vec2 tc;\n"
 "#ifndef UC\n"
-"varying vec4 vc;\n"
+"varying mediump vec4 vc;\n"
 "#else\n"
 "uniform vec4 s_colour;\n"
 "#define vc s_colour\n"
@@ -2044,7 +2044,7 @@ YOU SHOULD NOT EDIT THIS FILE BY HAND
 //its really not meant to do anything special.
 
 "varying vec2 tc;\n"
-"varying vec4 vc;\n"
+"varying mediump vec4 vc;\n"
 
 "#ifdef VERTEX_SHADER\n"
 "attribute vec2 v_texcoord;\n"
@@ -2288,7 +2288,7 @@ YOU SHOULD NOT EDIT THIS FILE BY HAND
 //its really not meant to do anything special.
 
 "varying vec2 tc;\n"
-"varying vec4 vc;\n"
+"varying mediump vec4 vc;\n"
 
 "#ifdef VERTEX_SHADER\n"
 "void main ()\n"
@@ -2328,7 +2328,7 @@ YOU SHOULD NOT EDIT THIS FILE BY HAND
 "attribute vec2 v_texcoord;\n"
 "attribute vec4 v_colour;\n"
 "varying vec2 tc;\n"
-"varying vec4 vc;\n"
+"varying mediump vec4 vc;\n"
 "void main ()\n"
 "{\n"
 "tc = v_texcoord;\n"
@@ -2338,7 +2338,7 @@ YOU SHOULD NOT EDIT THIS FILE BY HAND
 "#endif\n"
 "#ifdef FRAGMENT_SHADER\n"
 "varying vec2 tc;\n"
-"varying vec4 vc;\n"
+"varying mediump vec4 vc;\n"
 "uniform vec4 e_colourident;\n"
 "void main ()\n"
 "{\n"
@@ -4447,7 +4447,7 @@ YOU SHOULD NOT EDIT THIS FILE BY HAND
 
 "#ifdef VERTEX_SHADER\n"
 "attribute vec4 v_colour;\n"
-"varying vec4 vc;\n"
+"varying mediump vec4 vc;\n"
 
 "void main ()\n"
 "{\n"
@@ -4457,7 +4457,7 @@ YOU SHOULD NOT EDIT THIS FILE BY HAND
 "#endif\n"
 
 "#ifdef FRAGMENT_SHADER\n"
-"varying vec4 vc;\n"
+"varying mediump vec4 vc;\n"
 "void main ()\n"
 "{\n"
 "gl_FragColor = vc;\n"
@@ -4642,7 +4642,7 @@ YOU SHOULD NOT EDIT THIS FILE BY HAND
 "#include \"sys/defs.h\"\n"
 "#include \"sys/fog.h\"\n"
 "varying vec2 tc;\n"
-"varying vec4 vc;\n"
+"varying mediump vec4 vc;\n"
 "#ifdef VERTEX_SHADER\n"
 "void main ()\n"
 "{\n"
@@ -4990,7 +4990,7 @@ YOU SHOULD NOT EDIT THIS FILE BY HAND
 
 "varying vec2 tc;\n"
 "#ifdef VERTEXLIT\n"
-"varying vec4 vc;\n"
+"varying mediump vec4 vc;\n"
 "#else\n"
 "#ifdef LIGHTSTYLED\n"
 //we could use an offset, but that would still need to be per-surface which would break batches
@@ -7393,7 +7393,7 @@ YOU SHOULD NOT EDIT THIS FILE BY HAND
 "#include \"sys/fog.h\"\n"
 
 "varying vec2 tc;\n"
-"varying vec4 vc;\n"
+"varying mediump vec4 vc;\n"
 
 "#ifdef VERTEX_SHADER\n"
 "void main ()\n"
@@ -9304,7 +9304,7 @@ YOU SHOULD NOT EDIT THIS FILE BY HAND
 "#include \"sys/fog.h\"\n"
 "varying vec2 tc;\n"
 "varying vec2 lm;\n"
-"varying vec4 vc;\n"
+"varying mediump vec4 vc;\n"
 
 "#ifdef RTLIGHT\n"
 "varying vec3 lightvector;\n"
@@ -9421,9 +9421,10 @@ YOU SHOULD NOT EDIT THIS FILE BY HAND
 
 
 "#if defined(SPOT)\n"
-"if (vtexprojcoord.w < 0.0) discard;\n"
-"vec2 spot = ((vtexprojcoord.st)/vtexprojcoord.w);\n"
-"colorscale *= 1.0-(dot(spot,spot));\n"
+//nothing behind the light: zeroed, not discarded (see rtlight.glsl)
+"float spotfront = step(0.0, vtexprojcoord.w);\n"
+"vec2 spot = ((vtexprojcoord.st)/max(abs(vtexprojcoord.w), 0.000001));\n"
+"colorscale *= spotfront * max(1.0-(dot(spot,spot)), 0.0);\n"
 "#endif\n"
 "#ifdef PCF\n"
 "colorscale *= ShadowmapFilter(s_shadowmap, vtexprojcoord);\n"
@@ -9435,6 +9436,9 @@ YOU SHOULD NOT EDIT THIS FILE BY HAND
 "r.rgb *= textureCube(s_projectionmap, vtexprojcoord.xyz).rgb;\n"
 "#endif\n"
 
+"#if defined(SPOT)\n"
+"r.a *= spotfront;\n"
+"#endif\n"
 "gl_FragColor = fog4additive(r);\n"
 "#else\n"
 //lightmap is greyscale in m.a. probably we should just scale the texture mix, but precision errors when editing make me paranoid.
@@ -9794,7 +9798,7 @@ YOU SHOULD NOT EDIT THIS FILE BY HAND
 "varying vec2 tcbase;\n"
 "varying vec3 lightvector;\n"
 "#if defined(VERTEXCOLOURS)\n"
-"varying vec4 vc;\n"
+"varying mediump vec4 vc;\n"
 "#endif\n"
 "#if defined(SPECULAR) || defined(OFFSETMAPPING) || defined(REFLECTCUBEMASK) || defined(PBR)\n"
 "varying vec3 eyevector;\n"
@@ -9992,10 +9996,12 @@ YOU SHOULD NOT EDIT THIS FILE BY HAND
 "colorscale *= ShadowmapFilter(s_shadowmap, vtexprojcoord);\n"
 "#endif\n"
 "#if defined(SPOT)\n"
-/*filter the colour by the spotlight. discard anything behind the light so we don't get a mirror image*/
-"if (vtexprojcoord.w < 0.0) discard;\n"
-"vec2 spot = ((vtexprojcoord.st)/vtexprojcoord.w);\n"
-"colorscale*=1.0-(dot(spot,spot));\n"
+//filter the colour by the spotlight. nothing behind the light, so we don't get a mirror image: zeroed, not
+//discarded (a discard keeps tile-based gpus from resolving depth/stencil early for the whole draw).
+//clamped outside the cone: a negative light subtracted from float scene targets.
+"float spotfront = step(0.0, vtexprojcoord.w);\n"
+"vec2 spot = ((vtexprojcoord.st)/max(abs(vtexprojcoord.w), 0.000001));\n"
+"colorscale *= spotfront * max(1.0-(dot(spot,spot)), 0.0);\n"
 "#endif\n"
 
 //read raw texture samples (offsetmapping munges the tex coords first)
@@ -10102,7 +10108,11 @@ YOU SHOULD NOT EDIT THIS FILE BY HAND
 "#endif\n"
 
 "diff *= colorscale*l_lightcolour;\n"
+"#if defined(SPOT)\n"
+"gl_FragColor = vec4(fog3additive(diff), spotfront);\n"
+"#else\n"
 "gl_FragColor = vec4(fog3additive(diff), 1.0);\n"
+"#endif\n"
 "}\n"
 "#endif\n"
 

@@ -2,7 +2,7 @@
 
 #ifdef VERTEX_SHADER
 attribute vec4 v_colour;
-varying vec4 vc;
+varying mediump vec4 vc;
 
 void main ()
 {
@@ -12,7 +12,7 @@ void main ()
 #endif
 
 #ifdef FRAGMENT_SHADER
-varying vec4 vc;
+varying mediump vec4 vc;
 void main ()
 {
 	gl_FragColor = vc;

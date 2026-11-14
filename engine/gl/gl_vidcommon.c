@@ -2615,6 +2615,8 @@ static qboolean GLSlang_BuildShaderSource (program_t *prog, const char *name, in
 
 	if (*verline)
 		GLSlang_GenerateInternal(&glsl, verline);
+	if (!gl_config_gles && ver < 130)	//shaders name precisions for tile-based gpus (varying mediump vec4 vc)
+		GLSlang_GenerateInternal(&glsl, "#define lowp\n#define mediump\n#define highp\n");
 	if (gl_config_gles && ver >= 300)
 	{	//GLSL ES 3.00 gives these sampler types no default precision in ANY stage, and they can be declared by the
 		//program's own preamble (!!samps 2DArray/3D) or used as function parameters in shared headers (sys/pcf.h's

@@ -11,7 +11,7 @@ attribute vec2 v_texcoord;
 varying vec2 tc;
 #ifndef UC
 attribute vec4 v_colour;
-varying vec4 vc;
+varying mediump vec4 vc;
 #endif
 void main ()
 {
@@ -25,7 +25,7 @@ void main ()
 #ifdef FRAGMENT_SHADER
 varying vec2 tc;
 #ifndef UC
-varying vec4 vc;
+varying mediump vec4 vc;
 #else
 uniform vec4 s_colour;
 #define vc s_colour

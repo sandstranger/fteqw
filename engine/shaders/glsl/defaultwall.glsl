@@ -47,7 +47,7 @@
 
 	varying vec2 tc;
 	#ifdef VERTEXLIT
-		varying vec4 vc;
+		varying mediump vec4 vc;
 	#else
 		#ifdef LIGHTSTYLED
 			//we could use an offset, but that would still need to be per-surface which would break batches
