@@ -257,7 +257,23 @@ cvar_t r_waterwalls						= CVARD ("r_waterwalls", "1", "FTESurf Patch 1386: wate
 cvar_t r_capturelog						= CVARD ("r_capturelog", "0", "FTESurf Patch 879: for this many top-level views (a frame's, or each eye/face/renderscene), print each view's water choice (and any plane rejected as hidden) and every water reflection/refraction capture and share (level, kind, shader, plane, the plane that placed it, meshes).");
 cvar_t r_nearestsort						= CVARD ("r_nearestsort", "1", "FTESurf Patch 878: how panes that refract the screen (Refract at hl2_refract 1) are ordered.\n1: the world's first, sharing the view's most recent copy of the screen (Patch 895; Source's brushes never copy), then models' back to front, each over a fresh copy, as Source draws its models.\n0: in the order they were submitted, world first, each over its own copy (the engine's order and copies before Patches 878 and 895; not a pre-878 picture, since the plugin's depth rule stays). Either way a model pane that Source draws opaque writes depth, and a world or brush pane does not. GL only.");
 cvar_t r_alphacoverage					= CVARFD ("r_alphacoverage", "1", CVAR_ARCHIVE, "FTESurf Patch 1262: under vid_multisample, surfaces cut out by an alpha test (leaves, fences, grates) spread the cut edge over the samples instead of cutting it (alpha-to-coverage), as MSAA smooths a polygon's edge. 0: cut, as without MSAA. Source maps' materials (the hl2 plugin's vmt shaders).");
-cvar_t r_reflectmultisample			= CVARFD ("r_reflectmultisample", "-1", CVAR_ARCHIVE, "FTESurf Patch 1276: MSAA samples for the main view's water and glass reflection captures (drawn at r_refractreflect_scale of the view). -1: as vid_multisample. 0: none.");
+//the most MSAA samples the renderer's path takes, a power of two: set when a context starts (gl_backend.c GLBE_Init:
+//the device's maximum for its path, 4 at most on tile-based gpus), -1 while unknown. vid_multisample and
+//r_reflectmultisample are held to it whenever they change (menu, console, config), and the video menu offers no more.
+int r_msaa_maxsamples = -1;
+static void QDECL R_MultisampleLimit_Changed(cvar_t *var, char *oldvalue)
+{
+	int v = var->ival, p2 = 1;
+	if (v <= 1)
+		return;	//off, explicitly off, or r_reflectmultisample's -1 (as vid_multisample)
+	if (r_msaa_maxsamples >= 0 && v > r_msaa_maxsamples)
+		v = r_msaa_maxsamples;
+	while (p2*2 <= v)
+		p2 *= 2;
+	if (p2 != var->ival)
+		Cvar_ForceSet(var, va("%i", (p2 > 1) ? p2 : 0));
+}
+cvar_t r_reflectmultisample			= CVARFCD ("r_reflectmultisample", "-1", CVAR_ARCHIVE, R_MultisampleLimit_Changed, "FTESurf Patch 1276: MSAA samples for the main view's water and glass reflection captures (drawn at r_refractreflect_scale of the view). -1: as vid_multisample. 0: none.");
 cvar_t r_capturehalfrate				= CVARD ("r_capturehalfrate", "0", "FTESurf Patch 1245: the main view's water and glass reflection/refraction captures are reused for this many frames after each one rendered, turned with the camera in between (what they show is taken as distant: a turn lines up, a slide shows the frame-old view of nearby things). 0: every frame. 1: every second frame (surf_eternity's glass 201 -> 294 fps). Ignored while r_capturerate is set: both at 0 renders every capture.");
 cvar_t r_capturestagger			= CVARD ("r_capturestagger", "1", "FTESurf Patch 1474: when a water or glass plane's reflection and refraction captures are both due on one frame (r_capturerate), the one rendered more recently is reused once more if the camera is still within 128 units and 30 degrees of it, so each frame renders one of them rather than both and the frame that captures costs about half. Needs a shader that reads the reflection through m_capturefixrefl (the hl2 plugin's water and glass since 1474). 0: both together, as before.");
 cvar_t r_captureparallax			= CVARD ("r_captureparallax", "1", "FTESurf Patch 1475: a reused water capture (r_capturerate) is moved by how far the eye has travelled since it rendered, each pixel by its own depth (one parallax step), so near things in a reflection or under the surface stay put while you move instead of sliding with the old view. Turns are corrected either way. Costs a depth copy of the reflection and a texture read. 0: turned only, as before.");
@@ -691,8 +707,8 @@ cvar_t vid_borderless_capture				= CVARFD ("vid_borderless_capture", "1", CVAR_A
 cvar_t vid_exclusive_desktopres				= CVARFD ("vid_exclusive_desktopres", "1", CVAR_ARCHIVE|CVAR_VIDEOLATCH, "What resolution exclusive fullscreen uses.\n0: Whatever vid_width/vid_height say, which will mode-switch the monitor if that is not what it is already running.\n1: Detect the display's current resolution and refresh rate and use that, so going exclusive does not change your mode. vid_width/vid_height still apply to the other modes.");
 cvar_t vid_height							= CVARFD ("vid_height", "0",
 												CVAR_ARCHIVE | CVAR_VIDEOLATCH, "The screen height to attempt to use, in physical pixels. 0 means use desktop resolution.");
-cvar_t vid_multisample						= CVARAFD ("vid_multisample", "0", "vid_samples",
-													CVAR_ARCHIVE, "The number of samples to use for Multisample AntiAliasing (aka: msaa). A value of 1 explicitly disables it.");
+cvar_t vid_multisample						= CVARAFCD ("vid_multisample", "0", "vid_samples",
+													CVAR_ARCHIVE, R_MultisampleLimit_Changed, "The number of samples to use for Multisample AntiAliasing (aka: msaa). A value of 1 explicitly disables it.");
 cvar_t vid_refreshrate						= CVARF ("vid_displayfrequency", "0",
 												CVAR_ARCHIVE | CVAR_VIDEOLATCH);
 cvar_t vid_srgb								= CVARFD ("vid_srgb", "0",

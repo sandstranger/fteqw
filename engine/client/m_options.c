@@ -3109,15 +3109,22 @@ void M_Menu_Video_f (void)
 		NULL
 	};
 
-	static const char *aaopts[] = {
-		"1x",
-		"2x",
-		"4x",
-		"6x",
-		"8x",
-		NULL
-	};
-	static const char *aavalues[] = {"0", "2", "4", "6", "8", NULL};
+	//only sample counts the renderer can use: powers of two up to r_msaa_maxsamples (the device's limit for its
+	//msaa path, 4 at most on tile-based gpus); 1x-4x while that is unknown. "6x" was never a count any driver has.
+	static const char *aaall[] = {"1x", "2x", "4x", "8x", "16x"};
+	static const char *aaallvalues[] = {"0", "2", "4", "8", "16"};
+	static const char *aaopts[countof(aaall)+1];
+	static const char *aavalues[countof(aaall)+1];
+	extern int r_msaa_maxsamples;
+	int aan, aak;
+	for (aan = aak = 0; aak < countof(aaall); aak++)
+	{
+		if (aak && (r_msaa_maxsamples < 0 ? aak > 2 : atoi(aaallvalues[aak]) > r_msaa_maxsamples))
+			continue;
+		aaopts[aan] = aaall[aak];
+		aavalues[aan++] = aaallvalues[aak];
+	}
+	aaopts[aan] = aavalues[aan] = NULL;
 
 	static const char *resmodeopts[] = {
 		ASPECT_LIST
