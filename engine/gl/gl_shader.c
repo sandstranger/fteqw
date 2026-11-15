@@ -156,6 +156,23 @@ static void *glslwarm_mem;
 static glslwarm_t *glslwarm_list;
 static int glslwarm_count;
 static qboolean glslwarm_loaded, glslwarm_dirty;
+//FTESurf Patch 831: an INSTANCED permutation exists only where the GL backend draws instanced runs - with texture
+//buffers, or the gles3 fte_instances uniform block. Anywhere else (GLES 2.0, the legacy mode, has neither: its GLSL ES
+//1.00 does not even know samplerBuffer) its text cannot compile, so it is never tried: not lazily, not by the warm
+//list a gles3 session wrote and a gles2 one replays.
+static qboolean Shader_PermutationUsable(unsigned int p)
+{
+#ifdef GLQUAKE
+	if ((p & PERMUTATION_INSTANCED) && qrenderer == QR_OPENGL)
+	{
+		extern int gl_instubo_max;
+		if (!qglDrawElementsInstanced || !(qglTexBuffer || gl_instubo_max))
+			return false;
+	}
+#endif
+	return true;
+}
+
 static void GLSLWarm_Header(char *out, size_t outsize)
 {	//the version and every permutation bit: another build's layout is ignored, not misread
 	Q_snprintfz(out, outsize, "glslwarm 1 %x %x %x %x %x %x %x %x %x %x %x", PERMUTATIONS, PERMUTATION_BUMPMAP,
@@ -2182,6 +2199,8 @@ struct programpermu_s *Shader_LoadPermutation(program_t *prog, unsigned int p)
 
 	if (~prog->supportedpermutations & p)
 		return NULL;	//o.O
+	if (!Shader_PermutationUsable(p))
+		return NULL;	//the caller draws with the permutation without INSTANCED
 	pp = Z_Malloc(sizeof(*pp));
 	pp->permutation = p;
 	*defines = 0;
@@ -6008,6 +6027,8 @@ void GLSLWarm_MapActive(void)
 					p = perm & prog->supportedpermutations;
 					if (!p || (seen[p >> 5] & (1u << (p & 31))))
 						continue;
+					if (!Shader_PermutationUsable(p))
+						continue;	//never drawn here (an INSTANCED one from a gles3 session's list): not a failure
 					seen[p >> 5] |= 1u << (p & 31);
 					mapready.eligible++;
 					if (prog->permu[p])
