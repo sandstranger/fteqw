@@ -778,6 +778,31 @@ extern void (APIENTRY *qglBufferSubDataARB)(GLenum target, GLint offset, GLsizei
 extern void *(APIENTRY *qglMapBufferARB)(GLenum target, GLenum access);
 extern GLboolean (APIENTRY *qglUnmapBufferARB)(GLenum target);
 extern void *(APIENTRY *qglMapBufferRange)(GLenum target, GLintptr offset, GLsizeiptr length, GLbitfield access);	//gl3.0
+//FTESurf Patch 831 on gles3.0 (no texture buffers there): the instanced models' values in a uniform block
+#ifndef GL_MAP_INVALIDATE_RANGE_BIT
+#define GL_MAP_INVALIDATE_RANGE_BIT 0x0004
+#endif
+#ifndef GL_MAP_UNSYNCHRONIZED_BIT
+#define GL_MAP_UNSYNCHRONIZED_BIT 0x0020
+#endif
+#ifndef GL_UNIFORM_BUFFER
+#define GL_UNIFORM_BUFFER 0x8A11
+#endif
+#ifndef GL_MAX_UNIFORM_BLOCK_SIZE
+#define GL_MAX_UNIFORM_BLOCK_SIZE 0x8A30
+#endif
+#ifndef GL_UNIFORM_BUFFER_OFFSET_ALIGNMENT
+#define GL_UNIFORM_BUFFER_OFFSET_ALIGNMENT 0x8A34
+#endif
+#ifndef GL_INVALID_INDEX
+#define GL_INVALID_INDEX 0xFFFFFFFFu
+#endif
+#define GL_INSTUBO_BINDING 0	//the fte_instances block's binding point (nothing else uses uniform blocks)
+extern void (APIENTRY *qglBindBufferRange)(GLenum target, GLuint index, GLuint buffer, GLintptr offset, GLsizeiptr size);	//gl3.1, gles3.0
+extern GLuint (APIENTRY *qglGetUniformBlockIndex)(GLuint program, const GLchar *name);
+extern void (APIENTRY *qglUniformBlockBinding)(GLuint program, GLuint index, GLuint binding);
+extern int gl_instubo_max;		//models one instanced draw takes from the fte_instances block; 0: no such path (texture buffers, or none)
+extern int gl_instubo_align;	//GL_UNIFORM_BUFFER_OFFSET_ALIGNMENT
 extern void (APIENTRY *qglBufferStorage)(GLenum target, GLsizeiptr size, const GLvoid *data, GLbitfield flags);		//gl4.4
 
 extern void (APIENTRY *qglGenQueriesARB)(GLsizei n, GLuint *ids);

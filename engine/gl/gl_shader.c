@@ -2188,6 +2188,13 @@ struct programpermu_s *Shader_LoadPermutation(program_t *prog, unsigned int p)
 	offset = 0;
 	if (p & PERMUTATION_SKELETAL)
 		Q_strlcatfz(defines, &offset, sizeof(defines), "#define MAX_GPU_BONES %i\n", sh_config.max_gpu_bones);
+#ifdef GLQUAKE
+	{	//FTESurf Patch 831 on gles3: an instanced permutation reads its models from a uniform block of this many
+		extern int gl_instubo_max;
+		if ((p & PERMUTATION_INSTANCED) && qrenderer == QR_OPENGL && gl_instubo_max)
+			Q_strlcatfz(defines, &offset, sizeof(defines), "#define INST_UBO_MAX %i\n", gl_instubo_max);
+	}
+#endif
 	if (gl_specular.value)
 		Q_strlcatfz(defines, &offset, sizeof(defines), "#define SPECULAR\n#define SPECULAR_BASE_MUL %f\n#define SPECULAR_BASE_POW %f\n", 1.0*gl_specular.value, max(1,gl_specular_power.value));
 	if (r_glsl_pbr.ival)

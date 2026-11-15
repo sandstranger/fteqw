@@ -255,6 +255,11 @@ void (APIENTRY *qglBufferSubDataARB)(GLenum target, GLint offset, GLsizei size, 
 void *(APIENTRY *qglMapBufferARB)(GLenum target, GLenum access);
 GLboolean (APIENTRY *qglUnmapBufferARB)(GLenum target);
 void *(APIENTRY *qglMapBufferRange)(GLenum target, GLintptr offset, GLsizeiptr length, GLbitfield access);
+void (APIENTRY *qglBindBufferRange)(GLenum target, GLuint index, GLuint buffer, GLintptr offset, GLsizeiptr size);	//FTESurf Patch 831 on gles3
+GLuint (APIENTRY *qglGetUniformBlockIndex)(GLuint program, const GLchar *name);
+void (APIENTRY *qglUniformBlockBinding)(GLuint program, GLuint index, GLuint binding);
+int gl_instubo_max;
+int gl_instubo_align;
 void (APIENTRY *qglBufferStorage)(GLenum target, GLsizeiptr size, const GLvoid *data, GLbitfield flags);
 
 void (APIENTRY *qglTexStorage2D)(GLenum target, GLsizei levels, GLenum internalformat, GLsizei width, GLsizei height);		//gl4.2
@@ -3518,6 +3523,14 @@ static void GLSlang_ProgAutoFields(program_t *prog, struct programpermu_s *pp, c
 	pp->instuniform[0] = qglGetUniformLocationARB(pp->h.glsl.handle, "s_instdata");	//FTESurf Patch 831
 	pp->instuniform[1] = qglGetUniformLocationARB(pp->h.glsl.handle, "s_instvc");
 	pp->instuniform[2] = qglGetUniformLocationARB(pp->h.glsl.handle, "e_instbase");
+	//FTESurf Patch 831 on gles3: an INSTANCED permutation's fte_instances block, always on GL_INSTUBO_BINDING
+	//(program state, so set again for every program, whether compiled or loaded from a binary)
+	if (gl_instubo_max && (pp->permutation & PERMUTATION_INSTANCED))
+	{
+		GLuint block = qglGetUniformBlockIndex(pp->h.glsl.handle, "fte_instances");
+		if (block != GL_INVALID_INDEX)
+			qglUniformBlockBinding(pp->h.glsl.handle, block, GL_INSTUBO_BINDING);
+	}
 	//FTESurf Patch 1262: only a program whose arguments ask for the alpha test (vmt/detail always does) turns its
 	//output alpha into coverage; a driver may report an unused uniform as active
 	pp->a2cuniform = (prog && prog->name && (strstr(prog->name, "#MASKLT") || !strncmp(prog->name, "vmt/detail", 10))) ?
@@ -3845,6 +3858,11 @@ void GL_ForgetPointers(void)
 	qglMapBufferARB		= NULL;
 	qglUnmapBufferARB	= NULL;
 	qglMapBufferRange	= NULL;
+	qglBindBufferRange	= NULL;
+	qglGetUniformBlockIndex	= NULL;
+	qglUniformBlockBinding	= NULL;
+	gl_instubo_max = 0;
+	gl_instubo_align = 0;
 
 	qglCreateProgramObjectARB	= NULL;
 	qglDeleteProgramObject_		= NULL;
@@ -4023,6 +4041,12 @@ qboolean GL_Init(rendererstate_t *info, void *(*getglfunction) (char *name))
 	qglTexBuffer = (void *)getglext("glTexBuffer");
 	if (!qglTexBuffer)
 		qglTexBuffer = (void *)getglext("glTexBufferARB");
+	//...and on gles3.0, where there are no texture buffers, a uniform block (gl3.1 / gles3.0)
+	qglBindBufferRange = (void *)getglext("glBindBufferRange");
+	qglGetUniformBlockIndex = (void *)getglext("glGetUniformBlockIndex");
+	qglUniformBlockBinding = (void *)getglext("glUniformBlockBinding");
+	gl_instubo_max = 0;
+	gl_instubo_align = 0;
 
 
 	qglGetTexEnviv		= (void *)getglext("glGetTexEnviv");
@@ -4102,6 +4126,27 @@ qboolean GL_Init(rendererstate_t *info, void *(*getglfunction) (char *name))
 			qglDrawElementsInstanced = (void *)getglext("glDrawElementsInstanced");
 		//texture buffers: gles3.2 core, EXT/OES_texture_buffer require gles3.1. Not part of the baseline.
 		qglTexBuffer = NULL;
+		//FTESurf Patch 831 there: the instanced models' values go through the fte_instances uniform block
+		//(gles3.0 core, as gl_InstanceID and flat varyings are). How many models one draw takes is what the
+		//block can hold, 18 vec4s each, at most 256.
+		if (gl_config.glversion < 3)
+		{
+			qglBindBufferRange = NULL;
+			qglGetUniformBlockIndex = NULL;
+			qglUniformBlockBinding = NULL;
+		}
+		else if (qglDrawElementsInstanced && qglBindBufferRange && qglGetUniformBlockIndex && qglUniformBlockBinding && qglMapBufferRange)
+		{
+			GLint blocksize = 0, align = 0;
+			qglGetIntegerv(GL_MAX_UNIFORM_BLOCK_SIZE, &blocksize);
+			qglGetIntegerv(GL_UNIFORM_BUFFER_OFFSET_ALIGNMENT, &align);
+			gl_instubo_max = bound(0, blocksize / (18*16), 256);
+			gl_instubo_align = bound(1, align, 4096);
+			if (gl_instubo_max < 2 || (gl_instubo_align & (gl_instubo_align-1)))
+				gl_instubo_max = 0;	//(the alignment is a power of two on everything that exists)
+			Con_DPrintf("instancing: %i models a draw from a uniform block (%i bytes, offsets aligned to %i)\n",
+				gl_instubo_max, blocksize, gl_instubo_align);
+		}
 #ifndef FTE_TARGET_WEB
 		//glGetTexLevelParameteriv is gles3.1.
 		qglGetTexLevelParameteriv = NULL;

@@ -17,6 +17,7 @@
 !!samps =USE_TRANSMISSION transmission	//only .r valid, multiplier for factor_transmission
 !!samps =USE_VOLUME thickness			//only .g valid, multiplier for factor_volume_thickness, combined with factor_volume_rgb+factor_volume_distance(average distance travelled in metres)
 !!permu VC			// adds rgba vertex colour multipliers (nettest: baked static-prop per-vertex lighting)
+!!permu INSTANCED	// one draw for a run of identical models in one pose, each model's values from fte_instances / s_instdata
 //!!permu SPECULAR		// auto-added when gl_specular>0
 //!!permu OFFSETMAPPING	// auto-added when r_glsl_offsetmapping is set
 //!!permu NONORMALS		// states that there's no normals available, which affects lighting.
@@ -29,6 +30,45 @@
 //!!permu ALPHATEST		// if defined, this is the required alpha level (more versatile than doing it at the q3shader level)
 
 #include "sys/defs.h"
+
+//FTESurf Patch 831 for models: a run of identical models in one pose (same model, surface, skin,
+//material, glow and player colours) drawn as one instanced draw. gl_backend.c packs each model's
+//per-entity values, 18 vec4s a model (layout at GLBE_SubmitInstancedRun): in the fte_instances
+//uniform block on GLES 3.0 (INST_UBO_MAX models, from the block's bound range), in the s_instdata
+//texture buffer from e_instbase elsewhere. These names stand in for the uniforms the single-model
+//draw sets; e_colourident reaches the fragment shader as a flat varying.
+#ifdef INSTANCED
+	#ifdef INST_UBO_MAX
+		layout(std140) uniform fte_instances
+		{
+			vec4 inst_data[INST_UBO_MAX*18];
+		};
+		#define instfetch_raw(i) inst_data[i]
+	#else
+		uniform samplerBuffer s_instdata;
+		uniform int e_instbase;
+		#define instfetch_raw(i) texelFetch(s_instdata, e_instbase + (i))
+	#endif
+	flat varying int inst_id;
+	flat varying vec4 inst_colourident;
+	#ifdef VERTEX_SHADER
+		#define INST_ID gl_InstanceID
+	#else
+		#define INST_ID inst_id
+	#endif
+	vec4 instfetch(int k)
+	{
+		return instfetch_raw(INST_ID*18 + k);
+	}
+	#define e_eyepos (instfetch(7).xyz)
+	#define e_light_ambient (instfetch(8).rgb)
+	#define e_light_dir (instfetch(9).xyz)
+	#define e_light_mul (instfetch(10).rgb)
+	#ifdef FRAGMENT_SHADER
+		#define e_colourident inst_colourident
+	#endif
+	#define m_model mat4(vec4(instfetch(4).xyz,0.0), vec4(instfetch(5).xyz,0.0), vec4(instfetch(6).xyz,0.0), vec4(0.0,0.0,0.0,1.0))
+#endif
 
 //standard shader used for models.
 //must support skeletal and 2-way vertex blending or Bad Things Will Happen.
@@ -98,6 +138,12 @@ void main ()
 	#else
 		light.rgb = vec3(1.0);
 	#endif
+#endif
+#ifdef INSTANCED
+	//the product ftetransform() makes, with this model's model-view-projection
+	inst_id = gl_InstanceID;
+	inst_colourident = instfetch(11);
+	gl_Position = mat4(instfetch(0), instfetch(1), instfetch(2), instfetch(3)) * vec4(w, 1.0);
 #endif
 
 #if defined(SPECULAR)||defined(OFFSETMAPPING) || defined(REFLECTCUBEMASK) || defined(PBR)

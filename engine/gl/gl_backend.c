@@ -9295,9 +9295,19 @@ multiplied as SP_M_MODELVIEWPROJECTION does, so a prop lands on the same pixels 
 Texels: 0-3 the model-view-projection's columns, 4-6 the model matrix's first three columns,
 7 eye position in model space + the colours' first texel, 8 ambient, 9 light direction,
 10 light multiplier, 11 colourident, 12-17 the ambient cube.
+
+Models (defaultskin.glsl has the INSTANCED permutation too): a vertex animated model's pose is its
+frame pair's vertex ranges and blend, uniforms of the run - so a run takes the members in the
+first's pose (GLBE_InstancePose), and moves the others behind it for runs of their own. The glow
+and player colours are uniforms as well (GLBE_InstanceSame).
+
+GLES 3.0 has no texture buffers: there the values go into the fte_instances uniform block instead
+(gl_instubo_max models a draw, what GL_MAX_UNIFORM_BLOCK_SIZE holds, at most 256), each run a fresh
+range of inst_buf written unsynchronised, the block's whole declared size bound at its start.
 */
 static GLuint inst_buf, inst_tex;
 static size_t inst_bufsize, inst_bufused;	//bytes
+static size_t inst_ubooffset;			//GLES (gl_instubo_max): where the run's fte_instances range starts in inst_buf
 static float *inst_data;
 static size_t inst_cap;					//floats
 static qboolean inst_broken;			//a program had no INSTANCED permutation: off until a restart
@@ -9308,6 +9318,7 @@ static void GLBE_InstanceReset(void)
 {	//the context, and so its objects, are new (GLBE_Init)
 	inst_buf = inst_tex = 0;
 	inst_bufsize = inst_bufused = 0;
+	inst_ubooffset = 0;
 	inst_broken = false;
 	inst_broken_skel = false;
 }
@@ -9325,12 +9336,14 @@ static qboolean GLBE_InstanceShader(const shader_t *s)
 	//the walker's own special cases (skipped, or captures made before the submit) stay with it
 	if (s->flags & (SHADER_NODRAW|SHADER_SKY|SHADER_HASREFLECT|SHADER_HASREFRACT|SHADER_HASRIPPLEMAP|SHADER_HASPORTAL))
 		return false;
+	//a tessellated program (defaultskin#TESS) projects in its evaluation stage, with the uniform matrix
 	if (s->prog)
-		return !!(s->prog->supportedpermutations & PERMUTATION_INSTANCED);
+		return !!(s->prog->supportedpermutations & PERMUTATION_INSTANCED) && !s->prog->tess;
 	if (!s->numpasses)
 		return false;
 	for (passno = 0; passno < s->numpasses; passno += max(1, s->passes[passno].numMergedPasses))
-		if (!s->passes[passno].prog || !(s->passes[passno].prog->supportedpermutations & PERMUTATION_INSTANCED))
+		if (!s->passes[passno].prog || !(s->passes[passno].prog->supportedpermutations & PERMUTATION_INSTANCED) ||
+			s->passes[passno].prog->tess)
 			return false;
 	return true;
 }
@@ -9373,11 +9386,19 @@ static qboolean GLBE_InstanceSame(const batch_t *a, const batch_t *b)
 	return b->buildmeshes == a->buildmeshes && b->shader == a->shader && b->ent->model == a->ent->model &&
 		b->user.alias.surfrefs[0] == a->user.alias.surfrefs[0] && b->skin == a->skin &&
 		b->envmap == a->envmap && b->fog == a->fog && b->flags == a->flags &&
-		b->ent->shaderTime == a->ent->shaderTime && !(b->ent->flags & (RF_DEPTHHACK|RF_XFLIP));
+		b->ent->shaderTime == a->ent->shaderTime && !(b->ent->flags & (RF_DEPTHHACK|RF_XFLIP)) &&
+		//uniforms the run takes from its first member (defaultskin's FULLBRIGHT and UPPERLOWER)
+		VectorCompare(b->ent->glowmod, a->ent->glowmod) &&
+		b->ent->topcolour == a->ent->topcolour && b->ent->bottomcolour == a->ent->bottomcolour;
 }
 //the program has just been selected for a run's batch: hand it the two buffers and its base
 static void GLBE_BindInstanceData(const struct programpermu_s *permu)
 {
+	if (gl_instubo_max)
+	{	//GLES: the whole range the block declares (INST_UBO_MAX models); the run's are at its start
+		qglBindBufferRange(GL_UNIFORM_BUFFER, GL_INSTUBO_BINDING, inst_buf, inst_ubooffset, (size_t)gl_instubo_max*INST_TEXELS*16);
+		return;
+	}
 	GL_SelectTexture(INST_TMU_DATA);
 	qglBindTexture(GL_TEXTURE_BUFFER_FTE, inst_tex);
 	GL_SelectTexture(INST_TMU_VC);
@@ -9388,27 +9409,69 @@ static void GLBE_BindInstanceData(const struct programpermu_s *permu)
 }
 //how many of the count batches from first it drew as one: 2 or more, or 1 (first alone: the caller draws
 //the rest), or 0 (none). *alone: batches from first the caller draws as usual without trying again.
+//FTESurf Patch 831 for models: what decides a vertex animated model's pose once its mesh is built - the vertex
+//ranges of its frame pair in the model's buffer (Alias_GAliasBuildMesh) and their blend (e_vblend). A run draws
+//every member with the first's mesh, so only the members in that same pose may join it.
+typedef struct
+{
+	int coordvbo, coord2vbo, normalsvbo;
+	void *coord, *coord2, *normals;
+	float blend;
+} instpose_t;
+static qboolean GLBE_InstancePose(const batch_t *b, instpose_t *pose)
+{
+	const vbo_t *v = b->vbo;
+	if (!v || b->meshes != 1 || !b->mesh || !b->mesh[0])
+		return false;
+	pose->coordvbo = v->coord.gl.vbo;		pose->coord = v->coord.gl.addr;
+	pose->coord2vbo = v->coord2.gl.vbo;		pose->coord2 = v->coord2.gl.addr;
+	pose->normalsvbo = v->normals.gl.vbo;	pose->normals = v->normals.gl.addr;
+	pose->blend = (pose->coord2vbo || pose->coord2) ? b->mesh[0]->xyz_blendw[1] : 0;
+	return true;
+}
+static qboolean GLBE_InstancePoseSame(const instpose_t *a, const instpose_t *b)
+{
+	return a->coordvbo == b->coordvbo && a->coord == b->coord && a->coord2vbo == b->coord2vbo && a->coord2 == b->coord2 &&
+		a->normalsvbo == b->normalsvbo && a->normals == b->normals && a->blend == b->blend;
+}
+
+//count batches from first share model, surface, skin and material (GLBE_InstanceSame). The ones with the first's
+//pose (and bake, and bones) are drawn as one run - at most gl_instubo_max on GLES - and are moved to follow it
+//directly, in their order; the others follow them, in theirs, and get runs of their own. Returns how many it drew
+//as one (they now follow first), or 0 with *alone the batches from first the caller draws as usual.
 static int GLBE_SubmitInstancedRun(batch_t *first, int count, int *alone)
 {
-	batch_t *b;
+	static batch_t **joinedlist, **otherlist;
+	static int listsize;
+	batch_t *b, *runend;
 	entity_t *e;
-	int i, vc;
+	int i, vc, joined, others, cap;
 	float *d, m[16], mv[16], inv[16];
 	const float *proj, *cube;
 	vec3_t eye;
-	size_t bytes = (size_t)count*INST_TEXELS*16;
+	size_t bytes;
 	qboolean baked = false;
 	static float firstbones[256*12];	//the first member's pose: a run draws every member with it
 	int firstnb = 0;
+	instpose_t firstpose, pose;
 
-	if (inst_cap < (size_t)count*INST_TEXELS*4)
+	*alone = 1;	//unless a run forms: first is drawn as usual, the ones after it try again
+	if (count > listsize)
 	{
-		inst_cap = (size_t)count*INST_TEXELS*4*2;
+		listsize = count;
+		joinedlist = BZ_Realloc(joinedlist, sizeof(*joinedlist)*listsize);
+		otherlist = BZ_Realloc(otherlist, sizeof(*otherlist)*listsize);
+	}
+	cap = gl_instubo_max ? min(count, gl_instubo_max) : count;	//GLES: what the fte_instances block holds
+	if (inst_cap < (size_t)cap*INST_TEXELS*4)
+	{
+		inst_cap = (size_t)cap*INST_TEXELS*4*2;
 		inst_data = BZ_Realloc(inst_data, inst_cap*sizeof(float));
 	}
 	//GLBE_SelectEntity's projection for an entity with neither flag
 	proj = shaderstate.usingweaponviewmatrix ? r_refdef.m_projection_std : shaderstate.projectionmatrix;
-	*alone = 0;
+
+	joined = others = 0;
 	for (i = 0, b = first; i < count; i++, b = b->next)
 	{
 		b->buildmeshes(b);
@@ -9417,33 +9480,35 @@ static int GLBE_SubmitInstancedRun(batch_t *first, int count, int *alone)
 		//the other bake state cannot share it (vertlightbytes means something only after buildmeshes)
 		if (i == 0)
 		{
+			if (vc < 0 || !GLBE_InstancePose(b, &firstpose))
+				return 0;	//a cpu posed one (no vbo) or more than one mesh: it cannot lead a run
 			baked = !!b->ent->vertlightbytes;
 			firstnb = (b->vbo && b->vbo->bones) ? b->vbo->numbones : 0;
 			if (firstnb > 256 || (firstnb && inst_broken_skel))
-				vc = -1;
-			else if (firstnb)
+				return 0;
+			if (firstnb)
 				memcpy(firstbones, b->vbo->bones, sizeof(float)*12*firstnb);
 		}
-		else if (vc >= 0 && !!b->ent->vertlightbytes != baked)
+		else if (vc < 0 || joined >= cap)
 			vc = -1;
-		else if (vc >= 0 && ((b->vbo && b->vbo->bones) ? b->vbo->numbones : 0) != firstnb)
+		else if (!!b->ent->vertlightbytes != baked)
 			vc = -1;
-		else if (vc >= 0 && firstnb && memcmp(b->vbo->bones, firstbones, sizeof(float)*12*firstnb))
+		else if (((b->vbo && b->vbo->bones) ? b->vbo->numbones : 0) != firstnb)
+			vc = -1;
+		else if (firstnb && memcmp(b->vbo->bones, firstbones, sizeof(float)*12*firstnb))
 			vc = -1;	//posed otherwise (an animating prop_dynamic): the bones are one set of uniforms
+		else if (!GLBE_InstancePose(b, &pose) || !GLBE_InstancePoseSame(&pose, &firstpose))
+			vc = -1;	//another frame of a vertex animated model: the vertex ranges and e_vblend are the first's
 		if (vc < 0)
 		{
-			if (inst_report == host_framecount)
-				Con_Printf("r_instancing: %s: member %i of %i cannot join (meshes %u, bones %i, colours %p)\n", first->shader->name, i, count, b->meshes, b->vbo?b->vbo->numbones:-1, (void*)b->ent->vertlightbytes);
-			if (i < 2)
-			{
-				*alone = i+1;
-				return 0;
-			}
-			count = i;	//the members before it are a run of their own
-			break;
+			if (inst_report == host_framecount && joined < cap)
+				Con_Printf("r_instancing: %s: member %i of %i draws apart (meshes %u, bones %i, colours %p, pose)\n", first->shader->name, i, count, b->meshes, b->vbo?b->vbo->numbones:-1, (void*)b->ent->vertlightbytes);
+			otherlist[others++] = b;
+			continue;
 		}
+
 		e = b->ent;
-		d = inst_data + (size_t)i*INST_TEXELS*4;
+		d = inst_data + (size_t)joined*INST_TEXELS*4;
 		R_RotateForEntity(m, mv, e, e->model);
 		Matrix4_Multiply(proj, mv, d);
 		d[16] = m[0]; d[17] = m[1]; d[18] = m[2]; d[19] = 0;
@@ -9465,32 +9530,79 @@ static int GLBE_SubmitInstancedRun(batch_t *first, int count, int *alone)
 			VectorCopy(cube+vc*3, d+48+vc*4);
 			d[48+vc*4+3] = 0;
 		}
+		joinedlist[joined++] = b;
 	}
-	bytes = (size_t)count*INST_TEXELS*16;
+	runend = b;
+	if (joined < 2)
+		return 0;	//no other member has the first's pose: first alone, the rest try again
+
+	//relink: first and the members of its run, then the others, then what followed (first stays where it is,
+	//the caller walks the run through ->next)
+	for (i = 0; i < joined-1; i++)
+		joinedlist[i]->next = joinedlist[i+1];
+	joinedlist[joined-1]->next = others ? otherlist[0] : runend;
+	for (i = 0; i < others-1; i++)
+		otherlist[i]->next = otherlist[i+1];
+	if (others)
+		otherlist[others-1]->next = runend;
+	count = joined;
+
 	//the shared alias mesh and colour slice now describe the last; make them the first's again
 	first->buildmeshes(first);
 	if (first->meshes != 1)
 		return 0;
 
+	bytes = (size_t)count*INST_TEXELS*16;
 	if (!inst_buf)
 	{
 		qglGenBuffersARB(1, &inst_buf);
-		qglGenTextures(1, &inst_tex);
+		if (!gl_instubo_max)
+			qglGenTextures(1, &inst_tex);
 	}
-	qglBindBufferARB(GL_TEXTURE_BUFFER_FTE, inst_buf);
-	if (inst_bufused + bytes > inst_bufsize)
-	{	//a fresh store; the driver keeps the old one for draws still reading it
-		inst_bufsize = max(inst_bufsize, max(bytes, (size_t)1<<20));
-		qglBufferDataARB(GL_TEXTURE_BUFFER_FTE, inst_bufsize, NULL, GL_STREAM_DRAW_ARB);
-		inst_bufused = 0;
-		GL_SelectTexture(INST_TMU_DATA);
-		qglBindTexture(GL_TEXTURE_BUFFER_FTE, inst_tex);
-		qglTexBuffer(GL_TEXTURE_BUFFER_FTE, GL_RGBA32F, inst_buf);
+	if (gl_instubo_max)
+	{	//GLES: the fte_instances uniform block. Each run takes a fresh range, written without waiting: no
+		//draw reads it yet, and the ranges before it are only read where their own runs' models are. The
+		//whole declared block is bound, so the store keeps room for it after the last run's start.
+		size_t range = (size_t)gl_instubo_max*INST_TEXELS*16;
+		size_t ofs = (inst_bufused + gl_instubo_align-1) & ~(size_t)(gl_instubo_align-1);
+		void *map;
+		qglBindBufferARB(GL_UNIFORM_BUFFER, inst_buf);
+		if (!inst_bufsize || ofs + range > inst_bufsize)
+		{	//a fresh store; the driver keeps the old one for draws still reading it
+			inst_bufsize = max(inst_bufsize, max(range*16, (size_t)1<<20));
+			qglBufferDataARB(GL_UNIFORM_BUFFER, inst_bufsize, NULL, GL_STREAM_DRAW_ARB);
+			ofs = 0;
+		}
+		map = qglMapBufferRange(GL_UNIFORM_BUFFER, ofs, bytes, GL_MAP_WRITE_BIT|GL_MAP_INVALIDATE_RANGE_BIT|GL_MAP_UNSYNCHRONIZED_BIT);
+		if (map)
+		{
+			memcpy(map, inst_data, bytes);
+			qglUnmapBufferARB(GL_UNIFORM_BUFFER);
+		}
+		else
+			qglBufferSubDataARB(GL_UNIFORM_BUFFER, ofs, bytes, inst_data);
+		qglBindBufferARB(GL_UNIFORM_BUFFER, 0);
+		inst_ubooffset = ofs;
+		inst_bufused = ofs + bytes;
+		be_instancebase = 0;
 	}
-	qglBufferSubDataARB(GL_TEXTURE_BUFFER_FTE, inst_bufused, bytes, inst_data);
-	qglBindBufferARB(GL_TEXTURE_BUFFER_FTE, 0);
-	be_instancebase = (int)(inst_bufused / 16);
-	inst_bufused += bytes;
+	else
+	{
+		qglBindBufferARB(GL_TEXTURE_BUFFER_FTE, inst_buf);
+		if (inst_bufused + bytes > inst_bufsize)
+		{	//a fresh store; the driver keeps the old one for draws still reading it
+			inst_bufsize = max(inst_bufsize, max(bytes, (size_t)1<<20));
+			qglBufferDataARB(GL_TEXTURE_BUFFER_FTE, inst_bufsize, NULL, GL_STREAM_DRAW_ARB);
+			inst_bufused = 0;
+			GL_SelectTexture(INST_TMU_DATA);
+			qglBindTexture(GL_TEXTURE_BUFFER_FTE, inst_tex);
+			qglTexBuffer(GL_TEXTURE_BUFFER_FTE, GL_RGBA32F, inst_buf);
+		}
+		qglBufferSubDataARB(GL_TEXTURE_BUFFER_FTE, inst_bufused, bytes, inst_data);
+		qglBindBufferARB(GL_TEXTURE_BUFFER_FTE, 0);
+		be_instancebase = (int)(inst_bufused / 16);
+		inst_bufused += bytes;
+	}
 
 	be_instancecount = count;
 	be_instancefailed = false;
@@ -9516,7 +9628,7 @@ static void GLBE_SubmitMeshesSortRange(batch_t *sortlist, batch_t *end)
 	shader_t *bs;
 	int run, used, alone, noinst = 0;
 	qboolean instancing = r_instancing.ival && !inst_broken && shaderstate.mode == BEM_STANDARD &&
-		qglDrawElementsInstanced && qglTexBuffer && !r_fakeshadows && !Sh_AnyLightToDraw();
+		qglDrawElementsInstanced && (qglTexBuffer || gl_instubo_max) && !r_fakeshadows && !Sh_AnyLightToDraw();
 	int ncand = 0, nalias = 0, nruns = 0;
 	if (r_instancing.ival == 2)
 	{	//one frame's report, every view of it
