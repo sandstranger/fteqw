@@ -1,45 +1,276 @@
 # Engine patches (fteqw `fteqw64.exe`)
 
-## Patch 1551 — Android GLES renderer: GLES 3.0 baseline, tile-based render passes, GLES MSAA, render target pool, program binary cache, bounded texture decode (14 Nov 2026)
+## Patch 1568 - Bounded large owner-history acquisition
 
-**Problem.** The GLES path compiled GLSL ES 3.10/3.20 on 3.1/3.2 contexts (`maxglslversion`, `sh_config.maxver`,
-`GLSlang_CreateShader`) and enabled geometry/tessellation/texture buffers there, so a 3.0 device ran untested code.
-Several embedded shaders never compiled on any GLES driver (no default precision for `sampler2DShadow`/`sampler3D`/
-`sampler2DArray` — every fake-shadow permutation of rtlight/lpp_light; `texture3D` and a 2D-declared LUT in colourtint;
-int→float in default2danim; the reserved word `sample` in crepuscular_rays). `MSAA_Samples` refused GLES outright.
-No attachment was ever invalidated; the scene target was cleared depth-only (a tile GPU loaded last frame's colour) and
-its clear-only pass was split off by the shadow maps/sky room. Post-process kept one full-screen target per stage
-name. `GLSlang_LoadBlob` returned false; nothing loaded a program binary. `glGenerateMipmap` was resolved before
-`gl_config.glversion` existed (always NULL). GLES3: packed depth-stencil never detected (16-bit scene depth),
-DEPTH_COMPONENT24 with UNSIGNED_BYTE, RGBA16F with UNSIGNED_BYTE, GL_RGB-with-GL_RGBA water copies, half-float
-targets chosen without EXT_color_buffer_half_float (black view with scene gamma). Gles-only entry points (sync,
-instancing, map buffer, texture buffer, GetTexLevelParameteriv) were trusted from a name lookup. A decoded image kept
-its compressed file alive through mip generation; the decoded-upload queue was unbounded (4 workers).
+**Problem.** Owner history refused bodies over8MiB. Raising that constant alone
+would still materialize whole recordings and round odd byte counts above16MiB.
 
-**Change.** `gl_vidcommon.c`: GLSL ES 3.00 ceiling (`GLES_GLSL_BASELINE`), source built without GL calls
-(`GLSlang_BuildShaderSource`) and keyed by sha256 (`GLSlang_HashProgram`); sampler precisions/aliases in the GLES
-preamble; extension/version-gated pointers; invalidate/discard, EXT/IMG multisampled-render-to-texture, ES3 MSAA,
-program-binary format probing; `GLSlang_LoadBlob` restored with bounds checks. New `gl_shadercache.c`: per-driver
-`<dir>/<driverhash>/<key>.bin` (versioned header, CRC32, tmp+fsync+rename, refused/corrupt entries deleted and
-recompiled), bounded RAM LRU (bytes+entries, per ABI), bounded GPU program residency (LRU, min age, only persisted
-non-fallback permutations), low-memory trim, `FTE_SetShaderCacheDirectory` (JNA), `r_shadercache_stats/_trim`. New
-`gl_rtpool.c`: lazy, pooled render targets/renderbuffers with per-ABI budget, age/LRU eviction, `r_rtpool_stats`.
-`gl_backend.c`: render-pass model (deferred full clear via wrapped draw/copy/read/blit entry points, invalidation,
-pass counters), MSAA backends RTT/explicit-resolve/desktop with interruption detection (RTT depth is undefined after
-an implicit resolve), memory check, Arm erratum 3809560 (Mali r44–r45: explicit resolve), depth format by stencil use.
-`gl_rmain.c`/`gl_bloom.c`/`gl_screen.c`: deferred scene clear, depth invalidation, pooled ping-pong post-process,
-renderable-format checks, window depth/stencil invalidated before swap. `image.c`: file freed after decode, bounded
-decode/upload queue (`r_image_uploadqueue_kb`), overflow-safe LMP/WAL sizes; `common.c`: 2 loader threads on armv7.
-`gl_vidsdl.c`: GLES3 keeps the window single-sampled (MSAA on the scene target).
+**Change.** Opt-in loose-disk read-stream10, int64 size and VM-owned incremental
+SHA256 keep I/O/work bounded. Existing sandbox/legacy modes remain intact; the
+Win32 stream is explicitly unmapped/full-width. Account-bound v2 uses private
+snapshots, integer decimal totals (at most1073741823bytes), write-through parts
+and independent full client hashing. Uncached write-path guards preserve known
+occupants/errors; they require one writer, not external-race atomicity. Long
+healthy listings retain their query. Pending completion ownership is private;
+no historical orphan adoption or REC/native-cert/rank/movement policy change.
 
-**Verified.** NDK r30 clang `-fsyntax-only` with `-Werror=implicit-function-declaration,incompatible-pointer-types,
-int-conversion,return-type` for armeabi-v7a and arm64-v8a: every changed file clean (image.c's one error is identical
-in the unmodified file under the same flags). glslangValidator on the embedded programs as the engine builds them
-(directives, permutation defines, preambles, sys/*.h): GLSL ES 3.00 133/133 variants (9 failed before the shader and
-preamble fixes); GLSL ES 1.00 129/131 (colourtint needs 3D textures). Host unit tests of verbatim copies of gl_shadercache.c
-(2215 checks: LRU and budgets, oversized entries, disk reload after eviction, corrupt/truncated/refused entries,
-driver change, residency protection, low memory, 2000-frame session) and gl_rtpool.c (419 checks) under ASan/UBSan.
-Not run on a device: no frame, FPS, bandwidth or memory figures exist for this patch.
+**Verified.** Production-source hash/VM controls match Python at1/4093/65536-byte
+budgets; quota/error/seek/close and sparse Windows4GiB+3 controls act. Both
+independent review P1s were corrected; fresh frozen integration review is clear.
+Three VMs compile0warnings; full Windows client/server/five-plugin diagnostics
+exactly match the inspected pre-change baseline (74existing warnings). Current
+CSQC metadata binding also links with0new warnings. A real154-tick TAS finish
+used authenticated list2/get2/ack2 and saved all31822bytes identically, without
+auto replay. Reader952/0; actual paired CLI retains366faulty reports and368
+diagnostics on the same578REC/184VIEW bytes under both readers (0new). Published
+HL2 maintenance was integrated without changing any of the9 IO/API source files.
+Final clean restamp, genuine large-body runtime and destination delivery remain
+pending; source/unit/small checks are not arbitrary-size or installed proof.
+
+## Patch 1565 - Preserve exact server angle-operation context
+
+**Problem.** A whole-view change does not identify its source. Historical body
+events cannot uniquely identify the client operation; future context must not
+exempt unrelated input or rewrite old results.
+
+**Change.** Optional versioned REC/HID context binds an ordinary seat-zero QW ABS
+operation's nonce/ID/basis/wire bytes to its actual application and sparse input
+interval. Only fresh live unfrozen SSQC custody can publish authority. Exact
+verified joins may substitute the starting pose, never the remaining input;
+unsupported, ambiguous or unavailable observations stay inconclusive. Strict
+native/Python readers and isolated immediate/delayed receipt joins preserve old
+faults and identity. ABI5 reserved-register roots protect callback state from GC;
+Full rebuilds retire PCH. No movement/capture/retention/enforcement/threshold or
+historical-result change; qcbuild89 unchanged.
+
+**Verified.** Three QC VMs: zero warnings; Full Windows client/server/five plugins
+pass. Configured clean-baseline/current TU controls match warning payload
+multiplicity; other existing dependency warnings remain. Seventeen reader
+methods, signed arrival controls, legacy corpus/HID invariance and scoped reviews
+pass. Actual bounded collector controls preserve words/strings/argc. A real
+headless synthetic component produces a complete fault-free REC and DIRECT ABS
+HID closure: exact custody accounts it, removed/wrong custody leaves it unbound.
+An old staged DAT failed first; current rebuilt bytes correct that fixture, not
+the failed history. Manual journal lifecycle is NOT automatic CSQC/receipt or
+hardware attestation. Clean-commit/deployment provenance: tools/p1565-angle-context.md.
+
+## Patch 1564 - TAS community boards and completed-run history
+
+**Problem.** Assisted submissions lacked a separate TAS leaderboard. Completed
+ordinary/segmented attempts and TAS runs could be overwritten or unavailable in
+local replay history; TAS playback could follow the live mouse-camera track
+rather than the recorded mover angles.
+
+**Change.** Keep TAS on separate community boards with flags retained and no
+ordinary ranked points, completion credit or certification. Add the TAS
+scoreboard tab and local filters. Retain uniquely named completed recordings,
+including slower finishes, while preserving compatibility PB/last pointers;
+authenticated background acquisition never opens playback. Frame-budget local
+indexing, attachment/run/nonce-bound renderer metadata and resolved-final-path
+signing preserve ownership and sidecar semantics. Known REC4-15 archive reads
+copy raw bytes, including overlong native headers. TAS presentation selects REC
+angles. No native implementation/pin/tag, evidence format, consent, detector,
+release or qcbuild change; published peer engine metadata is preserved. See
+mod tools/p1564-tas-history.md; original unshipped P1559 test labels remain history.
+
+**Verified.** Three integrated VMs compile with zero warnings. A real dedicated
+socket fixture retained two ordinary, one save-resumed segmented and two actual
+TAS completions; all five owner downloads match server bytes and the prior three
+bodies remain unchanged. Real account proof acted. Separate TAS replay controls
+show REC policy with no VIEW rows. The initial test matched a TAS mode announcement
+prematurely: only the later finish-specific two-case evidence is credited for TAS.
+Reader suite952/0; same-byte578REC/184VIEW sweep365faults on both published base
+and candidate, no new faults. Independent final source/acceptance review passes.
+Four backend class/isolation/access tests, existing web/board suites and JS syntax
+pass; the unrelated pre-existing ranked-template failure stays explicit.
+
+**Limits.** Runtime completion samples are REC14; REC15 eligibility is source
+checked here, not native certification. The existing8MiB remote Archive safety
+limit remains: larger server originals are retained but not automatically copied
+to a remote client. Missing run IDs do not gain guessed VIEW pairs or retroactive
+signatures. Human visual/menu checks remain pending. QC dual-Windows delivery
+verified14Nov22:13:30UTC and all12lobbies22:44:22UTC; postflight preserves213payloads
+353434424bytes/fullmetadata, native/configs and85backenddependencies. All12live
+servers advertise CSQC0x952cce39/5477026bytes and32hex history epochs. Normal10s
+warning/noForce and.prev retained; original preupload worker-recycle refusal and
+explicit reviewed continuation remain separate history. See mod tools/p1564-delivery.md.
+Guarded TAS-board backend activation still awaits the owner's privileged-policy
+authorization; QC delivery does not claim that backend is serving.
+
+## Patch 1563 - name-filtered boosters predicted (surf_tendies at high ping)
+
+**Problem.** surf_tendies' start pad is a trigger_multiple behind a negated name filter whose OnStartTouch
+renames the player and OnEndTouch writes basevelocity 1337. A name filter is UNKNOWN at load and P1405's
+per-touch judging excluded event triggers, so the client left it to the server: at 500 ms ping the push
+arrived a round trip late as a ~670 u snap.
+
+**Change.** QC-only (cl_triggers.qc). An event whose own rows are delay-0 unlimited renames of the
+activator and payable basevelocity writes (at least one of each), and whose filter no other rename on the
+map can turn to a refusal, is judged per touch: on *tn, except that its own predicted rename stands from the
+command after it until *tn shows it acked (a third name, three round trips, or a replay that passed its
+command without re-firing it clear it), and at or before that command its entry is judged on the name it
+had there (*tn can carry the rename one command before the ack). A toucher already inside stays inside when
+the filter fails, as SV_TouchFilter keeps it. Every other name filter, P1405's teleports included, keeps
+*tn. Prediction only.
+
+**Verified.** Rig at sv_minping 500 (kill, walk over the pad): the control csprogs logged prederr 20.05 u at
+the exit on 4/4 passes; P1563 printed the predicted rename and "OnEndTouch -> basevelocity 1337 0 0" on 6/6
+passes with no prederr. Walking back over the pad still renamed: no boost on either side. Two latch defects
+were found and fixed by that arm before commit (a chain starting at the rename's command; a rename back to
+the original name holding a stale latch). Review 1 narrowed a global predicted name to the slot's own judging
+(chained renamers on ~92 maps would have judged P1405 teleports on an intermediate name); review 2 required
+a slot's own rename and excluded slots another rename can refuse (surf_carbon_css's touching pads); re-run
+4/4 after each.
+
+## Patch 1562 - map entity fixes: surf_1day, surf_forbidden_tomb, surf_network2008_final
+
+**Problem.** KSF's surf_1day demos ride stage 6's *125 at 2100 u/s (out +2115.75 = 1.0075 x 2100) and pass
+stage 8's *82 with no carrier; the lump has 1000 and an active push. surf_forbidden_tomb's round logic
+switches its level-wide jail teleports on (a 420 s timer, the finish, the secret counter) and nothing turns
+them off without rounds. P890's network2008 start destination faced 135, into a corner.
+
+**Change.** cfg/maps entfix files (Patch 890 applier): *125 speed 2100, *82 startdisabled 1; the three jail
+Enable outputs deleted; the destination at 0 270 0. Keys and outputs only, nothing removed or renumbered.
+Each edit changes its map's entfile identity, so earlier runs there no longer verify.
+
+**Verified.** The applier compiled from gl_model.c (tools/test_entfix.py's build) over each map's real lump
+modified exactly the intended entities; rig zone_goto 0 on network2008 faces -90 (control 135).
+
+## Patch 1561 - !r on the platform, the own track's covered END, map spawn yaws
+
+**Problem.** SV_ZoneDestRead traced its floor snap from teleDestPos itself; editors write it flush on the
+floor and a box resting on a face is inside the brush (com_bih.c d1 == 0), so !r fell to the next floor
+(surf_mesa 800 u, mesa_revo 992, ahop_coast 563; 17 regions). SV_ZoneScan kept the first END hit, so
+surf_reytx's bonus-2 END (the main END's box) never finished. Spawn yaws needed a spawn within 1 u of the
+zone centre and exactly one destination (surf_beyond2 s1/s3/s5, surf_beyond s5 kept the zoner's view).
+
+**Change.** QC-only. The snap traces from a unit up. SV_ZoneScan takes the runner's track; an END lying wholly
+inside another track's END (zone_ecov, Zone_EndCover in Zone_Hash) outranks it, mirrored in the replay; partial
+overlaps keep the first-END rule so pre-1561 recordings verify the same; a cover must come earlier in the
+table (where the old rule always took the tick), within 0.01 u. The event latch is re-taken after a jump-start re-arm that
+changed the track. Spawn yaws take a spawn within 16 u and the destinations whose floor
+is the zone's when they share a yaw, else the old one-destination rule; the zone editor mirrors it.
+
+**Verified.** Rig, worktree progs against the installed qwprogs: zone_goto 0 lands surf_mesa at 10144 (control
+9490, falling), mesa_revo 8928, ahop_coast -14221; beyond2 zones 0/2/4 face 0/0/-90 (control 148/158/38),
+beyond stage 5 faces 0; surf_reytx's bonus-2 END is covered by main's. Three review rounds (control flow,
+evidence, cheater); the last census: 28 covered ENDs over 1164 zone files, and the board database holds no
+lobby or uploaded run on any covered (map, track) -- only Momentum/KSF imports. The bonus-2 finish itself is
+an owner check.
+
+## Patch 1560 — no map-load warning for materials a map never shipped (15 Nov 2026)
+
+**Problem.** surf_ferros printed "2 material(s) did not resolve": its luna_tag_0 prop wears two Elden Ring textures
+neither build packed and no game supplies. 1104 of the 2303 library maps reference such content, so the block (and
+cl_gfx.qc's red banner, which reads hl2_unresolved_visible) fired on about half of them, saying "never shipped" on
+fs_automount_state 0 -- which is any map that wants no pack, censused or not, and the state an engine lookup fault
+would show in.
+
+**Change.** mat_vmt.c loads data/unshipped.txt (the mod's tools/mapdeps.py --unshipped: "<map>\t<key>" byte-sorted,
+what no pack, mount or pakfile supplies) and answers Mat_VMT_Unshipped for the map Mat_VMT_SetMap named at the top of
+the VBSP load. mod_vbsp.c's block goes to developer only when every load-time miss is listed, the state is 0 or 1 and
+fs_addons_missing is empty; then hl2_unresolved_visible publishes 0 (no banner, no lobby report). Unlisted misses stay
+loud and say how many are unlisted; with no list installed the old wording prints unchanged. Material paths are
+untouched: a neutral fallback for listed prop skins was built and removed for want of a visible case (mod BACKLOG).
+
+**Verified.** Windowed rigs on surf_ferros and surf_beyond with the installed exe: with the list, no block at
+developer 0 and the banner absent (9.4k / 7.6k px at fixed cameras against the no-list run); without it, the
+installed plugin's console and cvars. Four review rounds; the fourth found nothing above low. Details:
+`tools/p1560-missing.md` in the mod repository.
+
+## Patch 1559 - Source map visuals (surf_beyond/beyond2/ace/null/legends) and the replay roof eye
+
+**Problem.** Scaled props were culled with the unscaled radius (the plugin's pre-cull, gl_alias's LOD/near
+reject, cl_ents' leaf box); base-less model emissives took the brush-only 32-unit UV correction (ramp_glass
+tiled 32x); Momentum's LDR cubemaps are black beside good .hdr.vtf ones; the emissive branch forced every
+material additive, so an opaque black base added nothing (see-through ramps); faces were fanned from vertex 0
+past vbsp's crack-free LUMP_PRIMITIVES lists (surf_ace: 456 faces, pixel cracks); TEXTUREFLAGS_NOMIP was
+ignored (surf_null's grate faded). Client: replay/rewind/save-lead eyes ignored ceilings; dust motes spawned
+anywhere in the brush's box; child particle systems were off (custom_particle_003 alone is a black disc);
+surf_legends' fog was opaque at 2700 u.
+
+**Change.** Radius x scale in the three culls; the 32-unit correction skipped under models/; black LDR
+(endpoints <= one 565 step) -> an RGBA16161616F .hdr.vtf; #OPAQUEBASE draws a model material's opaque base
+under the emissive (not cutouts, faded or brush bases); one-TRILIST faces keep vbsp's indices (numprims
+& 0x7fff); NOMIP keeps level 0 (DXT/BC only); the cube census counts files. QC: Line_ClipEye (P916's rule at
+the drawn feet, a crown slab, start-solid = no clip); a non-box dust brush keeps up to 128 points inside it
+and scales its rate by Source's ten tries; children on by default; legends joins sidistic's thin fog.
+
+**Verified.** Rig at Lex's saves, worktree build: beyond's ramp at CS:S's scale, the logo drawn half off the
+edge, info_particle_system 0 -> 60 created with the M portal's swirl rings, dust "105 points inside" (surf_shade
+22 of 339 brushes pooled); beyond2's floor reflects ("15 black LDR read from .hdr.vtf"), ramps opaque black. A
+replay trace of an imported bhop_tranquility run draws eyes of 33-63 under its ceilings (installed csprogs:
+never below 47); surf_ace's PB trace holds 64 on ramps. surf_ace cracks and surf_null's grate are owner checks.
+
+## Patch 1558 - JARGON ramp-first openings and purple TAS presentation
+
+**Problem.** A copied opening could circle back to the start floor, and native
+search held jump even for an ordinary first-ramp approach. Slow practice had no
+full purple TAS presentation. Sharing display ancestry with native controls on
+restore would incorrectly turn slow-only saves into native-TAS ancestry.
+
+**Change.** QC-only. Prefer one ordinary opening jump toward the first known
+ramp; reject ordinary extra takeoffs/floor returns before handover, suppress
+forced native jump on that opening, and re-place a failed opening through the
+existing legal-placement path only after pending/tape work drains. Refuse if
+legal placement fails. Retain guide-authored permitted floor hops, including
+pre-clock rows and joined floor-hop waypoints, scoped to the selected course's
+start-entry prefix. Keep the exact old bounded jump-count fallback if no first
+ramp is known. Add full Tool Assisted Speedrun status and purple assisted timer,
+finish/banner/chat/results colours; ordinary completions green, segments blue.
+Retain per-player slow assistance as unranked display ancestry, separately from
+native controls; cold/warm save application and both identity readers preserve
+that distinction and fail conservatively on incomplete observations. No native
+implementation, movement rule, REC grammar/version, ranking admission, engine
+pin/tag, release or qcbuild change. tools/p1558-jargon-start-tas.md in the mod repo.
+
+**Verified.** Three-VM builds have zero warnings; scoped independent source
+reviews closed opening-course bounds, legacy fallback and ancestry/reader
+issues. An ordinary tensor2 stage2 native arm reached ramp1 with opening jump
+release; it is not a complete-course/speedup claim. Actual Prosurf B4 native
+playback retains its authored-hop branch, but reached0of9 within63seconds.
+Final integrated stock-Spec zero-gravity real-socket smoke passes12slow-only/
+status/cold/warm/finish checks, native controls/ancestry remain0, final4records
+strict0faults (original5also0); both actor exits0 and protected bytes unchanged.
+Reader suites949/0 and1627/0; canonical571recordings retain identical360historical
+diagnostics, recording/view hashes and fault lists. That fixture proves UI/
+lifecycle, NOT surf movement. The B4 observer timed out after
+gameplay/cleanup; read-only recovery proves actors absent, lease released and
+18611player files/input/canonical hashes unchanged, not unretained exit codes.
+Clean product commit b51f98cf builds3VM0warnings with all6DAT/LNO identical to
+acting images. Dual-Windows QW/CS DAT/LNO delivered14Nov12:09:59UTC; actual current
+native cohort passes12checks/4strict records0faults,20188protected files unchanged
+at12:38:22UTC. Pi completed45/45statements/all12restarts with10second warnings,
+noForce; independent12:34:38UTC postflight preserves217payloads/fullmetadata,
+85backend dependencies, native/config and ordinary.prev. Earlier worker-recycle
+refusal was retained and exact stages withdrawn before genuine fresh-actor epoch
+qualification; no old evidence re-dated. Native/backend/menu/release unchanged.
+Full states/limits are in the mod verification note; human opening/visual
+acceptance remains pending.
+Original unshipped P1553 evidence labels are preserved after P1557 made the
+current single feature number P1558.
+
+## Patch 1557 — journal whole-angle diagnostic states the attribution limit
+
+**Problem.** The standalone input checker correctly left whole-angle changes
+unresolved, but claimed REC warp records could distinguish their source and
+implied every teleport changes angles. A body-warp row does not uniquely bind
+a client view mutation, and some teleport branches preserve orientation.
+
+**Change.** Correct only the explanatory note and its existing fixture text.
+Four assertions require body-event corroboration and the client-angle
+attribution limit, rejecting the obsolete resolution/universal-teleport claims.
+No calculation, tolerance, counter, verdict, schema, capture or policy change.
+Native commit/tag and qcbuild unchanged; source tool diagnostic, not a runtime
+lobby/backend ship-set or release change. See tools/p1557-hid-angle-cause.md.
+
+**Verified.** Acting whole-angle fixture retains5unresolved/both-axis counters
+and0faults; only4new wording assertions fail against the old message (8/4),
+then8/0. Full input-reader1627/0 and recorder949/0; existing corpus output and
+fault count identical before/after. Protected existing input retains all metrics
+and faults, one note changed only, unresolved still unresolved. Independent
+review and publication are recorded separately; no new detection coverage or
+historical causal proof claimed. No engine/VM build needed for Python text.
 
 ## Patch 1550 — a game ended inside a menu call no longer stops menu.dat collecting (14 Nov 2026)
 
