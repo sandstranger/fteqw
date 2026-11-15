@@ -878,6 +878,90 @@ static int VMT_FallbackColour(const char *name, const char *tex, float *rgb, cha
 	return VMTC_EMPTY;
 }
 
+/*
+FTESurf Patch 1560: data/unshipped.txt (tools/mapdeps.py --unshipped), "<map>\t<key>" byte-sorted: every material
+and texture of a library map that no pack, mount or the map's own pakfile supplies -- proven never shipped with it,
+which fs_automount_state 0 is not (that is any map wanting no pack, censused or not). mod_vbsp.c keeps the map-load
+warning and the banner quiet when every miss is listed. A map or name missing from the list (a new map, an engine
+lookup fault) stays loud. Drawing a listed prop skin neutral instead of the checker waits in BACKLOG: every listed
+skin measured (surf_ferros, surf_beyond, surf_fairy) sat where no camera could show it.
+*/
+static char *vmt_unship;
+static const char **vmt_unshipline;
+static size_t vmt_unshipn;
+static qboolean vmt_unshiptried;
+static char vmt_curmap[MAX_QPATH];
+
+//mod_vbsp.c, at the top of each map load: "maps/surf_ferros.bsp" -> "surf_ferros", the list's map key.
+void Mat_VMT_SetMap(const char *modname)
+{
+	const char *sl = strrchr(modname, '/');
+	char *dot, *c;
+	Q_strlcpy(vmt_curmap, sl ? sl+1 : modname, sizeof(vmt_curmap));
+	dot = strrchr(vmt_curmap, '.');
+	if (dot)
+		*dot = 0;
+	for (c = vmt_curmap; *c; c++)
+		if (*c >= 'A' && *c <= 'Z')
+			*c += 'a'-'A';
+}
+
+static void VMT_UnshippedLoad(void)
+{
+	size_t sz = 0, n = 1;
+	char *p, *e, *nl;
+	vmt_unshiptried = true;
+	vmt_unship = (char*)fsfuncs->LoadFile("data/unshipped.txt", &sz);
+	if (!vmt_unship)
+		return;
+	for (p = vmt_unship, e = vmt_unship + sz; p < e; p++)
+		n += (*p == '\n');
+	vmt_unshipline = plugfuncs->Malloc(sizeof(*vmt_unshipline) * n);
+	for (p = vmt_unship; p < e && (nl = memchr(p, '\n', e - p)); p = nl + 1)
+	{
+		*nl = 0;
+		if (nl > p && nl[-1] == '\r')
+			nl[-1] = 0;
+		if (*p && *p != '#' && strchr(p, '\t'))		//not the "FTESURF-UNSHIPPED 1" header or a comment
+			vmt_unshipline[vmt_unshipn++] = p;
+	}
+}
+
+//TRUE once data/unshipped.txt has loaded with entries; without it every caller behaves as before P1560.
+qboolean Mat_VMT_UnshippedLoaded(void)
+{
+	if (!vmt_unshiptried)
+		VMT_UnshippedLoad();
+	return vmt_unshipn > 0;
+}
+
+//TRUE if the loading map's list names this material (the list keys textures with ".vtf", so a missing image never
+//vouches for a missing material of the same name -- review 2).
+qboolean Mat_VMT_Unshipped(const char *name)
+{
+	char key[MAX_QPATH], q[MAX_QPATH*2];
+	size_t lo = 0, hi, mid;
+	int c;
+	if (!*vmt_curmap || !Mat_VMT_UnshippedLoaded())
+		return false;
+	VMT_ColourKey(name, key, sizeof(key));
+	if (!*key || Q_snprintfz(q, sizeof(q), "%s\t%s", vmt_curmap, key))
+		return false;
+	hi = vmt_unshipn;
+	while (lo < hi)
+	{
+		mid = (lo + hi) / 2;
+		c = strcmp(q, vmt_unshipline[mid]);
+		if (!c)
+			return true;
+		if (c < 0)
+			hi = mid;
+		else
+			lo = mid + 1;
+	}
+	return false;
+}
+
 static void VMT_FogColorString(const char *in, char *out, size_t outsize)
 {
 	float c[3];
@@ -2957,7 +3041,13 @@ static void Shader_GenerateFromVMT(parsestate_t *ps, vmtstate_t *st, const char 
 	nothing.
 	*/
 	char progargs[1024];
-	qboolean emisdefaultmapping = st->emisenabled && !st->modelmaterial && !*st->tex[0].name;
+	char matkey[MAX_QPATH];
+	qboolean emisdefaultmapping;
+
+	//Patch 1559: $modelmaterial is rarely written; a model's material lives under materials/models/.
+	//surf_beyond's ramp_glass took the brush-only 32-unit correction and tiled 32x.
+	VMT_ColourKey(shortname, matkey, sizeof(matkey));
+	emisdefaultmapping = st->emisenabled && !st->modelmaterial && !*st->tex[0].name && Q_strncasecmp(matkey, "models/", 7);
 
 	*progargs = 0;
 	Q_strlcpy(st->vmtclass, st->type, sizeof(st->vmtclass));	//FTESurf Patch 783, for VMT_AdditiveBlend
@@ -3630,8 +3720,15 @@ static void Shader_GenerateFromVMT(parsestate_t *ps, vmtstate_t *st, const char 
 		float tg = st->emistint_set ? st->emistint[1] : 1.0f;
 		float tb = st->emistint_set ? st->emistint[2] : 1.0f;
 
+		//Patch 1559: an opaque $basetexture under the pass is drawn by it -- model materials only (the
+		//lambert reads e_light_*, which a brush face does not light), and never a cutout or faded base.
+		qboolean opaquebase = *st->tex[0].name && !st->nobasetex && !st->additive && !st->translucent &&
+			!st->alphatest && !(st->alpha_set && st->alphaval < 1) && !st->vertexalpha_on &&
+			!Q_strncasecmp(matkey, "models/", 7);
 		Q_snprintfz(t, sizeof(t), "#SCROLL=%f,%f#TINT=%f,%f,%f#STRENGTH=%f", sx, sy, tr, tg, tb, str);
 		Q_strlcat(progargs, t, sizeof(progargs));
+		if (opaquebase)
+			Q_strlcat(progargs, "#OPAQUEBASE", sizeof(progargs));
 		Q_strlcpy(st->type, "vmt/emissive", sizeof(st->type));
 		if (emisdefaultmapping)
 			VMT_EmissiveMappingScale(st->emisbase, progargs, sizeof(progargs));
@@ -3639,6 +3736,8 @@ static void Shader_GenerateFromVMT(parsestate_t *ps, vmtstate_t *st, const char 
 		Q_strlcatfz(script, &offset, sizeof(script),	"\tprogram \"%s%s\"\n", st->type, progargs);
 		Q_strlcatfz(script, &offset, sizeof(script),	"\tdiffusemap \"%s%s.vtf\"\n", strcmp(st->emisbase, "materials/")?"materials/":"", st->emisbase);
 		Q_strlcatfz(script, &offset, sizeof(script),	"\tlowermap \"%s%s.vtf\"\n", strcmp(st->emisflow, "materials/")?"materials/":"", st->emisflow);
+		if (opaquebase)
+			Q_strlcatfz(script, &offset, sizeof(script),	"\tuppermap \"%s\"\n", VMT_BaseImage(st));
 		//The scrolling texture rides the fullbright slot, which is the self-illum
 		//one and semantically exactly right.  Emitted by the shared tail below, so
 		//it is set rather than written here -- these materials never set
@@ -3646,8 +3745,11 @@ static void Shader_GenerateFromVMT(parsestate_t *ps, vmtstate_t *st, const char 
 		Q_strlcpy(st->fullbrightmap, st->emistex, sizeof(st->fullbrightmap));
 		//Source's pass is unconditionally ONE ONE. These materials all say
 		//$additive anyway, but the shader is additive whatever the material said.
-		st->additive = 1;
-		st->additive_oneone = 1;	//FTESurf Patch 783: emissive.glsl writes alpha 0, so never src_alpha one
+		if (!opaquebase)
+		{
+			st->additive = 1;
+			st->additive_oneone = 1;	//FTESurf Patch 783: emissive.glsl writes alpha 0, so never src_alpha one
+		}
 		vmt_stat_emissive++;
 	}
 	/*
