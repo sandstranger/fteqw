@@ -2815,6 +2815,15 @@ static qboolean R_RTFormatRenderable(uploadfmt_t fmt)
 	}
 }
 
+//FTESurf: the gamma pass (RDF_SCENEGAMMA) is why a scene with no value above 1 goes into a texture at all, and it
+//needs more than 8 bits only so the gamma ramp does not band. A tile-based GPU writes every byte of a full screen
+//target out and reads it back in each pass after it: RGB10_A2 has those 10 bits in 4 bytes a pixel, RGBA16F takes 8.
+//(The alpha is never read: the gamma pass writes 1, the window is opaque.)
+static qboolean R_SceneGammaTenBits(void)
+{
+	return GLBE_TileRenderer() && R_RTFormatRenderable(PTI_A2BGR10);
+}
+
 texid_t R_RenderPostProcess (texid_t sourcetex, texid_t sourcedepth, int type, shader_t *shader, char *restexname)
 {
 	if (r_refdef.flags & type)
@@ -2832,7 +2841,14 @@ texid_t R_RenderPostProcess (texid_t sourcetex, texid_t sourcedepth, int type, s
 				R2D_Flush();
 			GLBE_FBO_Sources(sourcetex, sourcedepth);
 			// Keep the graded scene precise through exposure; never expand an 8-bit grade.
-			fmt = (R_RTFormatRenderable(PTI_RGBA16F) && ((r_refdef.flags & RDF_SCENEGAMMA) || shader == scenepp_gamma || sourcetex->format == PTI_RGBA16F || sourcetex->format == PTI_RGBA32F)) ? PTI_RGBA16F : TF_RGBA32;
+			if (R_RTFormatRenderable(PTI_RGBA16F) && (sourcetex->format == PTI_RGBA16F || sourcetex->format == PTI_RGBA32F))
+				fmt = PTI_RGBA16F;	//a float scene stays float
+			else if (((r_refdef.flags & RDF_SCENEGAMMA) || shader == scenepp_gamma) && R_SceneGammaTenBits())
+				fmt = PTI_A2BGR10;	//tile-based gpu: the gamma's 10 bits in half the bytes
+			else if (R_RTFormatRenderable(PTI_RGBA16F) && ((r_refdef.flags & RDF_SCENEGAMMA) || shader == scenepp_gamma))
+				fmt = PTI_RGBA16F;
+			else
+				fmt = TF_RGBA32;
 			//stages only ever read the previous stage's output: two pooled targets ping-pong through the whole
 			//chain instead of one persistent full-screen texture per stage name
 			out = GLRT_AcquireTexture(RTP_POSTPROC, restexname, w, h, fmt, RT_IMAGEFLAGS);
@@ -3233,7 +3249,9 @@ void GLR_RenderView (void)
 		else if ((r_refdef.flags&RDF_SCENEGAMMA)||(vid.flags&(VID_SRGBAWARE|VID_FP16))||r_hdr_framebuffer.ival)
 		{	//gamma ramps really need higher colour precision, otherwise the entire thing looks terrible.
 			//(renderable, not merely sampleable: see R_RTFormatRenderable)
-			if ((r_refdef.flags & RDF_SCENEGAMMA) && R_RTFormatRenderable(PTI_RGBA16F))
+			if ((r_refdef.flags & RDF_SCENEGAMMA) && !(vid.flags&(VID_SRGBAWARE|VID_FP16)) && !r_hdr_framebuffer.ival && R_SceneGammaTenBits())
+				fmt = PTI_A2BGR10;	//only for the gamma: see R_SceneGammaTenBits
+			else if ((r_refdef.flags & RDF_SCENEGAMMA) && R_RTFormatRenderable(PTI_RGBA16F))
 				fmt = PTI_RGBA16F;
 			else if (R_RTFormatRenderable(PTI_B10G11R11F))
 				fmt = PTI_B10G11R11F;
