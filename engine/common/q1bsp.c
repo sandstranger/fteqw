@@ -2950,6 +2950,11 @@ static qbyte *Q1BSP_DecompressVis(qbyte *in, model_t *model,
         in++;
     }
 
+    // A row that ends early (a zero run of length 0) lists nothing more as visible: for a REPLACE
+    // the rest must not keep the bits of whatever PVS the buffer held before.
+    if (!merge && out - decompressed < row)
+        memset(out, 0, row - (out - decompressed));
+
     return decompressed;
 }
 
@@ -3017,16 +3022,24 @@ static qbyte *Q1BSP_ClusterPVS(model_t *model, int cluster,
 
     if (buffer->buffersize < row)
     {
+        unsigned int oldsize = buffer->buffersize;
         void *tmp = BZ_Realloc(buffer->buffer, row);
         if (!tmp)
             Sys_Error("PVS realloc failed");
+
+        // merging into a buffer too small for a whole PVS: what it did not hold is nothing visible
+        if (merge == PVM_MERGE)
+            memset((qbyte *)tmp + oldsize, 0, row - oldsize);
 
         buffer->buffer = tmp;
         buffer->buffersize = row;
     }
 
-    if (merge == PVM_MERGE)
-        memset(buffer->buffer, 0, row);
+    // PVM_MERGE ORs this cluster's PVS into what the buffer already holds (DecompressVis with merge),
+    // so it must NOT be cleared here. Clearing it made every merge a replace: the camera near a water
+    // surface (Q1BSP_MarkLeaves merges the clusters above and below it), the scene cache's two
+    // clusters and the r_wateralpha_extendpvs fluid merge all ended up with the last cluster's PVS
+    // alone - the world on one side of the water was not drawn, holes showing the clear colour.
 
     cluster++;
 
