@@ -3267,6 +3267,9 @@ void GLR_RenderView (void)
 		{
 			if (sh_config.texfmt[PTI_DEPTH24_8] && !r_shadow_shadowmapping.ival)
 				fmt = PTI_DEPTH24_8;
+			else if (GLBE_TileRenderer() && sh_config.texfmt[PTI_DEPTH24])
+				fmt = PTI_DEPTH24;	//FTESurf: not DEPTH32 (32 bit float on gles3): a depth texture is stored and read back, and
+								//24 bit unorm is as precise for this (not reversed) depth range, and compressible (AFBC on Mali)
 			else if (sh_config.texfmt[PTI_DEPTH32])
 				fmt = PTI_DEPTH32;
 			else

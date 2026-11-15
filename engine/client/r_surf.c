@@ -4413,6 +4413,14 @@ uploadfmt_t Surf_LightmapMode(model_t *model)
 
 	}
 
+#ifdef GLQUAKE
+	//FTESurf: no 32 bit float lightmaps on gles. Without OES_texture_float_linear (most mobile drivers) gles3 does not
+	//filter them at all, and 16 bytes a texel is twice the memory every lightmap fetch of the frame reads: half floats
+	//hold any lightmap value (r_lightmap_format rgba32f, the "Float (HDR)" menu choice).
+	if (fmt == PTI_RGBA32F && qrenderer == QR_OPENGL && gl_config_gles && sh_config.texfmt[PTI_RGBA16F])
+		fmt = PTI_RGBA16F;
+#endif
+
 	if (!model->submodelof)
 		Con_DPrintf("%s: Using lightmap format %s\n", model->name, Image_FormatName(fmt));
 
