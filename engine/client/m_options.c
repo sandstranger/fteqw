@@ -3110,7 +3110,7 @@ void M_Menu_Video_f (void)
 	};
 
 	//only sample counts the renderer can use: powers of two up to r_msaa_maxsamples (the device's limit for its
-	//msaa path, 4 at most on tile-based gpus); 1x-4x while that is unknown. "6x" was never a count any driver has.
+	//msaa path, 4 at most whatever the driver reports); 1x-4x while that is unknown. "6x" was never a count any driver has.
 	static const char *aaall[] = {"1x", "2x", "4x", "8x", "16x"};
 	static const char *aaallvalues[] = {"0", "2", "4", "8", "16"};
 	static const char *aaopts[countof(aaall)+1];

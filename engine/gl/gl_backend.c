@@ -2240,8 +2240,9 @@ static int MSAA_Samples(bemsaa_t *t, int s)
 			MSAA_Free(t);	//off at render scale 1 with no post-process: Begin would not run to free it
 		return 0;
 	}
-	if (gl_config_gles)	//tile-based: 4 samples per pixel fit the tile memory at full tile size (Mali's tile
-		maxs = min(maxs, 4);	//buffer; Adreno's GMEM bins, PowerVR alike); 8x/16x shrink the tiles and multiply them
+	maxs = min(maxs, 4);	//4 at most, whatever the driver reports (gl and gles): on a tile-based gpu 4 samples per pixel
+				//fit the tile memory at full tile size (Mali's tile buffer; Adreno's GMEM bins, PowerVR alike),
+				//8x/16x shrink the tiles and multiply them
 	{	//no more than this device has for the chosen path (GL_MAX_SAMPLES, or _EXT/_IMG for render-to-texture),
 		//and a power of two: a count like the menu's 6x is not one any driver offers
 		int req = s, p2 = 1;
@@ -3189,9 +3190,10 @@ void GLBE_Init(void)
 	memset(&be_reflmsaa, 0, sizeof(be_reflmsaa));	//Patch 1276
 	msaa_fmtcached = 0;	//a new context answers the format queries again
 	{	//the most samples MSAA may use on this context (renderer.c r_msaa_maxsamples, which holds vid_multisample,
-		//r_reflectmultisample and the video menu to it): this device's maximum for its msaa path, on a tile-based
-		//gpu (gles) 4 at most -- 4 samples per pixel fit the tile memory at full tile size (Mali's tile buffer;
-		//Adreno's GMEM bins, PowerVR alike), 8x/16x shrink the tiles and multiply them -- as a power of two.
+		//r_reflectmultisample and the video menu to it): this device's maximum for its msaa path, 4 at most
+		//whatever the driver reports (gl and gles) -- on a tile-based gpu 4 samples per pixel fit the tile memory
+		//at full tile size (Mali's tile buffer; Adreno's GMEM bins, PowerVR alike), 8x/16x shrink the tiles and
+		//multiply them -- as a power of two.
 		extern int r_msaa_maxsamples;
 		int maxs = 0, p2 = 1;
 		if (MSAA_Possible(&be_msaa, &maxs) == MSAAB_NONE || maxs < 2)
@@ -3203,7 +3205,7 @@ void GLBE_Init(void)
 			else
 				maxs = -1;	//off by r_msaa_backend: not limited from here
 		}
-		if (maxs > 0 && gl_config_gles)
+		if (maxs > 0)
 			maxs = min(maxs, 4);
 		if (maxs > 0)
 		{

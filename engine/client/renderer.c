@@ -258,7 +258,7 @@ cvar_t r_capturelog						= CVARD ("r_capturelog", "0", "FTESurf Patch 879: for t
 cvar_t r_nearestsort						= CVARD ("r_nearestsort", "1", "FTESurf Patch 878: how panes that refract the screen (Refract at hl2_refract 1) are ordered.\n1: the world's first, sharing the view's most recent copy of the screen (Patch 895; Source's brushes never copy), then models' back to front, each over a fresh copy, as Source draws its models.\n0: in the order they were submitted, world first, each over its own copy (the engine's order and copies before Patches 878 and 895; not a pre-878 picture, since the plugin's depth rule stays). Either way a model pane that Source draws opaque writes depth, and a world or brush pane does not. GL only.");
 cvar_t r_alphacoverage					= CVARFD ("r_alphacoverage", "1", CVAR_ARCHIVE, "FTESurf Patch 1262: under vid_multisample, surfaces cut out by an alpha test (leaves, fences, grates) spread the cut edge over the samples instead of cutting it (alpha-to-coverage), as MSAA smooths a polygon's edge. 0: cut, as without MSAA. Source maps' materials (the hl2 plugin's vmt shaders).");
 //the most MSAA samples the renderer's path takes, a power of two: set when a context starts (gl_backend.c GLBE_Init:
-//the device's maximum for its path, 4 at most on tile-based gpus), -1 while unknown. vid_multisample and
+//the device's maximum for its path, 4 at most whatever the driver reports), -1 while unknown. vid_multisample and
 //r_reflectmultisample are held to it whenever they change (menu, console, config), and the video menu offers no more.
 int r_msaa_maxsamples = -1;
 static void QDECL R_MultisampleLimit_Changed(cvar_t *var, char *oldvalue)
