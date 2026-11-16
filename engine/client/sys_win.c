@@ -1098,26 +1098,30 @@ LRESULT CALLBACK LowLevelKeyboardProc (INT nCode, WPARAM wParam, LPARAM lParam)
 		//Trap the Left Windowskey
 			if (pkbhs->vkCode == VK_SNAPSHOT)
 			{
-				IN_KeyEvent (0, !(pkbhs->flags & LLKHF_UP), K_PRINTSCREEN, 0);
+				if (!INS_HookKeyBlocks(pkbhs->flags, !(pkbhs->flags & LLKHF_UP), K_PRINTSCREEN))	//FTESurf Patch 1576
+					IN_KeyEvent (0, !(pkbhs->flags & LLKHF_UP), K_PRINTSCREEN, 0);
 				return 1;
 			}
 			if (sys_disableWinKeys.ival)
 			{
 				if (pkbhs->vkCode == VK_LWIN)
 				{
-					IN_KeyEvent (0, !(pkbhs->flags & LLKHF_UP), K_LWIN, 0);
+					if (!INS_HookKeyBlocks(pkbhs->flags, !(pkbhs->flags & LLKHF_UP), K_LWIN))
+						IN_KeyEvent (0, !(pkbhs->flags & LLKHF_UP), K_LWIN, 0);
 					return 1;
 				}
 			//Trap the Right Windowskey
 				if (pkbhs->vkCode == VK_RWIN)
 				{
-					IN_KeyEvent(0, !(pkbhs->flags & LLKHF_UP), K_RWIN, 0);
+					if (!INS_HookKeyBlocks(pkbhs->flags, !(pkbhs->flags & LLKHF_UP), K_RWIN))
+						IN_KeyEvent(0, !(pkbhs->flags & LLKHF_UP), K_RWIN, 0);
 					return 1;
 				}
 			//Trap the Application Key (what a pointless key)
 				if (pkbhs->vkCode == VK_APPS)
 				{
-					IN_KeyEvent (0, !(pkbhs->flags & LLKHF_UP), K_APP, 0);
+					if (!INS_HookKeyBlocks(pkbhs->flags, !(pkbhs->flags & LLKHF_UP), K_APP))
+						IN_KeyEvent (0, !(pkbhs->flags & LLKHF_UP), K_APP, 0);
 					return 1;
 				}
 			}
@@ -3243,6 +3247,7 @@ void Sys_SendKeyEvents (void)
 			if (nl)
 			{
 				*nl++ = 0;
+				in_extcommands++;	//FTESurf Patch 1576: every line another program sends is a guard lapse
 				if (qrenderer <= QR_NONE && !strncmp(text, "vid_recenter ", 13))
 				{
 					Cmd_TokenizeString(text, false, false);
@@ -3254,7 +3259,10 @@ void Sys_SendKeyEvents (void)
 				}
 #if !defined(CLIENTONLY) || defined(CSQC_DAT) || defined(MENU_DAT)
 				else if (QCExternalDebuggerCommand(text))
-					/*handled elsewhere*/;
+				{	//FTESurf Patch 1576: the debugger can write QC globals, so the guards cannot vouch for this session
+					if (strncmp(text, "debuggerwnd ", 12))
+						in_qcdebugged = 1;
+				}
 #endif
 				else
 				{

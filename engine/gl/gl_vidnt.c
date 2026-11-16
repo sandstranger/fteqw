@@ -2980,7 +2980,13 @@ static void Win_Touch_Event(int points, HTOUCHINPUT ti)
 {
 	float sz;
 	int i;
-	TOUCHINPUT *inputs = malloc(points * sizeof(*inputs)), *input;
+	TOUCHINPUT *inputs, *input;
+	if (!INS_TouchAllowed())
+	{	//FTESurf Patch 1576: touch is off with the touchpad
+		pCloseTouchInputHandle(ti);
+		return;
+	}
+	inputs = malloc(points * sizeof(*inputs));
 	if (inputs)
 	{
 		if (pGetTouchInputInfo(ti, points, inputs, sizeof(*inputs)))
@@ -3018,6 +3024,7 @@ void MainThreadWndProc(void *ctx, void *data, size_t msg, size_t ex)
 	switch(msg)
 	{
 	case WM_COPYDATA:
+		in_extcommands++;	//FTESurf Patch 1576: another program's request is a guard lapse
 		Host_RunFile(data, ex, NULL);
 		Z_Free(data);
 		break;
@@ -3277,7 +3284,7 @@ static LONG WINAPI GLMainWndProc (
 		// Its delta is either positive or neg, and we generate the proper
 		// Event.
 		case WM_MOUSEWHEEL:
-			if (!vid_initializing)
+			if (!vid_initializing && !INS_PointerGuardBlocks(1))	//FTESurf Patch 1576
 			{
 				if ((short) HIWORD(wParam&0xffffffff) > 0)
 				{

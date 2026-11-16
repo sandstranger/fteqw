@@ -33,6 +33,11 @@ cvar_t pr_debugger = CVARAFD("pr_debugger", debugger_default, "debugger", CVAR_S
 extern cvar_t pr_sourcedir;
 
 static pubprogfuncs_t *editprogfuncs;
+#ifdef CSQC_DAT
+extern qboolean CSQC_DebugAllowed(void);	//FTESurf Patch 1576 (pr_csqc.c)
+#else
+#define CSQC_DebugAllowed() true
+#endif
 
 qboolean editoractive;			//(export)
 console_t *editormodal;			//doesn't return. (export)
@@ -120,6 +125,14 @@ int Con_Editor_Evaluate(console_t *con, const char *evalstring)
 	Con_Footerf(con, false, "%s", evalstring);
 	if (eq)
 	{
+		extern qboolean CSQC_DebugAllowed(void);
+		if (!CSQC_DebugAllowed())
+		{	//FTESurf Patch 1576: no writes to game code while connected without cheats
+			*eq = '=';
+			Con_Footerf(con, true, " (refused while connected without cheats)");
+			con->linebuffered = NULL;
+			return true;
+		}
 		*eq = '=';
 		Con_Footerf(con, true, " = %s", editprogfuncs->EvaluateDebugString(editprogfuncs, evalstring));
 	}
@@ -799,7 +812,7 @@ qboolean Con_Editor_Key(console_t *con, unsigned int unicode, int key)
 
 #ifndef SERVERONLY
 #ifdef CSQC_DAT
-			if (csqc_world.progs && csqc_world.progs->ToggleBreak)
+			if (csqc_world.progs && csqc_world.progs->ToggleBreak && CSQC_DebugAllowed())	//FTESurf Patch 1576
 				csqc_world.progs->ToggleBreak(csqc_world.progs, fname, line, mode);
 #endif
 #ifdef MENU_DAT

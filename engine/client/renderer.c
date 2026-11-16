@@ -274,6 +274,7 @@ static void QDECL R_MultisampleLimit_Changed(cvar_t *var, char *oldvalue)
 		Cvar_ForceSet(var, va("%i", (p2 > 1) ? p2 : 0));
 }
 cvar_t r_reflectmultisample			= CVARFCD ("r_reflectmultisample", "-1", CVAR_ARCHIVE, R_MultisampleLimit_Changed, "FTESurf Patch 1276: MSAA samples for the main view's water and glass reflection captures (drawn at r_refractreflect_scale of the view). -1: as vid_multisample. 0: none.");
+cvar_t r_capturewarm					= CVARFD ("r_capturewarm", "1", CVAR_ARCHIVE, "FTESurf Patch 1575: while a map loads, make the main view's water reflection and refraction targets (and the reflection's MSAA pair) at the size the first capture will use, so their memory is not allocated in the frame the water first comes into view. 0: made on first sight, as before. See r_mapready_info.");
 cvar_t r_capturehalfrate				= CVARD ("r_capturehalfrate", "0", "FTESurf Patch 1245: the main view's water and glass reflection/refraction captures are reused for this many frames after each one rendered, turned with the camera in between (what they show is taken as distant: a turn lines up, a slide shows the frame-old view of nearby things). 0: every frame. 1: every second frame (surf_eternity's glass 201 -> 294 fps). Ignored while r_capturerate is set: both at 0 renders every capture.");
 cvar_t r_capturestagger			= CVARD ("r_capturestagger", "1", "FTESurf Patch 1474: when a water or glass plane's reflection and refraction captures are both due on one frame (r_capturerate), the one rendered more recently is reused once more if the camera is still within 128 units and 30 degrees of it, so each frame renders one of them rather than both and the frame that captures costs about half. Needs a shader that reads the reflection through m_capturefixrefl (the hl2 plugin's water and glass since 1474). 0: both together, as before.");
 cvar_t r_captureparallax			= CVARD ("r_captureparallax", "1", "FTESurf Patch 1475: a reused water capture (r_capturerate) is moved by how far the eye has travelled since it rendered, each pixel by its own depth (one parallax step), so near things in a reflection or under the surface stay put while you move instead of sliding with the old view. Turns are corrected either way. Costs a depth copy of the reflection and a texture read. 0: turned only, as before.");
@@ -974,9 +975,11 @@ cvar_t r_glsl_emissive						= CVARFD  ("r_glsl_emissive", "1", CVAR_SHADERSYSTEM
 cvar_t r_fastturbcolour						= CVARFD ("r_fastturbcolour", "0.1 0.2 0.3", CVAR_ARCHIVE, "The colour to use for water surfaces draw with r_waterstyle 0.");
 // Renderer-owned opt-in: the plugin API deliberately masks CVAR_SHADERSYSTEM,
 // and Cvar_Get2 does not add it to an existing variable. Keep the policy narrow.
-static cvar_t hl2_water_shaderpolicy = CVARFD("hl2_water", "3", CVAR_SHADERSYSTEM,
-	"Source water mode. 0: flat translucent, no captures. 1: live refraction with baked reflection. "
-	"2: live refraction/reflection. 3: depth-writing dither (default). "
+//FTESurf Patch 1587 (Lex, 16 Nov): water and glass default to the transparent plane and translucent glass. These
+//registrations are the defaults players get (the plugin's GetNVFDG returns them); the csprogs moves old configs once.
+static cvar_t hl2_water_shaderpolicy = CVARFD("hl2_water", "0", CVAR_SHADERSYSTEM,
+	"Source water mode. 0: flat translucent, no captures (default, Patch 1587). 1: live refraction with baked reflection. "
+	"2: live refraction/reflection. 3: depth-writing dither. "
 	"4: budget animated, translucent fog colour/normals/approximate baked reflection, no captures or screen copy. "
 	"5: screen-space (Patch 1020): refraction from a copy of the view, reflection marched through its depth; no extra scene render, reflects only what is on screen. "
 	"Budget water is not depth-correct or Source-exact. Changes rebuild materials without restarting the map.");
@@ -986,8 +989,8 @@ static cvar_t hl2_dither_force_shaderpolicy = CVARFD("hl2_dither_force", "0", CV
 	"Explicit coverage for dithered Source surfaces; 0 uses each material's derived coverage.");
 // Patch 894: the rest of the hud_gfx material rows, read only while a .vmt is turned into a shader,
 // so a change rebuilds materials without restarting the map. Default, help and group as the plugin's.
-static cvar_t hl2_refract_shaderpolicy = CVARFD("hl2_refract", "2", CVAR_SHADERSYSTEM,
-	"How Source's Refract materials (glass, windows) are drawn.\n0: no framebuffer copy -- what is behind the pane tinted by $refracttint (and its tint texture), plus its $envmap reflection: Source's look without the warp.\n1: Source's refraction, which copies the framebuffer once per batch.\n2: dithered flat (default) -- the pane keeps its own texture, $alpha sets the coverage, and it becomes opaque geometry that writes depth. A pane with no texture of its own draws as 0.");
+static cvar_t hl2_refract_shaderpolicy = CVARFD("hl2_refract", "0", CVAR_SHADERSYSTEM,
+	"How Source's Refract materials (glass, windows) are drawn.\n0: translucent (default, Patch 1587), no framebuffer copy -- what is behind the pane tinted by $refracttint (and its tint texture), plus its $envmap reflection: Source's look without the warp.\n1: Source's refraction, which copies the framebuffer once per batch.\n2: dithered flat -- the pane keeps its own texture, $alpha sets the coverage, and it becomes opaque geometry that writes depth. A pane with no texture of its own draws as 0.");
 static cvar_t hl2_translucent_shaderpolicy = CVARFD("hl2_translucent", "1", CVAR_SHADERSYSTEM,
 	"$translucent world materials (windows, grates, railings).\n0: draw them OPAQUE -- they keep their texture and lightmap but stop being sorted, which is what they actually cost on a map with a lot of glazing.\n1: as the material author wrote them (default).");
 static cvar_t hl2_animated_shaderpolicy = CVARFD("hl2_animated", "0", CVAR_SHADERSYSTEM,
@@ -1634,6 +1637,7 @@ void Renderer_Init(void)
 	Cvar_Register (&r_capturestagger, GRAPHICALNICETIES);	//FTESurf Patch 1474
 	Cvar_Register (&r_captureparallax, GRAPHICALNICETIES);	//FTESurf Patch 1475
 	Cvar_Register (&r_reflectmultisample, GRAPHICALNICETIES);	//FTESurf Patch 1276
+	Cvar_Register (&r_capturewarm, GRAPHICALNICETIES);	//FTESurf Patch 1575
 	Cvar_Register (&r_alphacoverage, GRAPHICALNICETIES);	//FTESurf Patch 1262
 	Cvar_Register (&r_capturelog, GRAPHICALNICETIES);	//FTESurf Patch 879
 	Cvar_Register (&r_waterviews, GRAPHICALNICETIES);

@@ -97,7 +97,7 @@ HRESULT (WINAPI *pDirectInputCreate)(HINSTANCE hinst, DWORD dwVersion,
 #define DINPUT_VERSION_DX7 0x0700
 
 // mouse variables
-static cvar_t	in_dinput = CVARFD("in_dinput","0", CVAR_ARCHIVE, "Enables the use of dinput for mouse movements");
+static cvar_t	in_dinput = CVARFD("in_dinput","0", CVAR_ARCHIVE|CVAR_NOTFROMSERVER, "Enables the use of dinput for mouse movements. Runs with it on do not rank (Patch 1576).");
 static cvar_t	in_xinput = CVARFD("in_xinput","1", CVAR_ARCHIVE, "Enables the use of xinput for controllers.\nNote that if you have a headset plugged in, that headset will be used for audio playback if no specific audio device is configured.");
 static cvar_t	in_builtinkeymap = CVARF("in_builtinkeymap", "0", CVAR_ARCHIVE);
 static cvar_t in_simulatemultitouch = CVAR("in_simulatemultitouch", "0");
@@ -348,6 +348,7 @@ static const unsigned short padbtn_up[5] = {RI_MOUSE_BUTTON_1_UP, RI_MOUSE_BUTTO
   the L/R twins sharing a byte can vouch for each other, which costs less than a quirk
   counting an honest key.*/
 #define RAWKEY_WINDOW 0.1
+static qboolean rawrdp_bound;	//FTESurf Patch 1576: a Remote Desktop device was bound (sticks for the session)
 static qboolean rawkbd_observe;
 static qboolean rawkbd_nolegacy;
 // Owner-only gate: the caller may mutate the entire cohort only between QUIESCE/RESUME.
@@ -355,6 +356,12 @@ static qboolean rawinput_quiesced;
 static int rawinput_readdepth;
 static double rawkey_time[256];
 static double rawkey_pending[256];
+static double rawkey_nohandletime[256];	//FTESurf Patch 1576: last handle-less raw report per scancode
+static double rawkey_legup[256];	//FTESurf Patch 1576: last legacy release per scancode
+static qboolean rawkey_ready;	//the arrays have been reset once (zero is a real time)
+static void INS_RawKeyUncorroborated(int sc);
+static int MapKey (int vkey);
+int in_raw_injectedkey;	//FTESurf Patch 1576: uncorroborated presses SendInput's raw report sat beside (a lapse)
 static qboolean rawkey_rawheld[256], rawkey_legheld[256];
 static int rawkey_npending;
 
@@ -364,10 +371,27 @@ static void INS_RawKeyReset(void)
 
 	for (i = 0; i < (int)countof(rawkey_time); i++)
 	{
-		rawkey_time[i] = rawkey_pending[i] = -1;
+		if (rawkey_ready && rawkey_pending[i] >= 0)
+		{	//FTESurf Patch 1576: a re-registration decides a pending press, it does not swallow it
+			INS_RawKeyUncorroborated(i);
+			if (in_raw_legacykey >= 0)
+				in_raw_legacykey++;
+		}
+		rawkey_time[i] = rawkey_pending[i] = rawkey_nohandletime[i] = rawkey_legup[i] = -1;
 		rawkey_rawheld[i] = rawkey_legheld[i] = false;
 	}
 	rawkey_npending = 0;
+	rawkey_ready = true;
+}
+
+/*FTESurf Patch 1576: an uncorroborated legacy press reached the game.  Windows makes some from real
+  keyboards (AltGr's Ctrl, Shift around NumLock keypad keys) with no raw report at all; SendInput from a
+  UIAccess program, which Windows reports as hardware, leaves a handle-less raw report for its key.
+  Only the second is a guard lapse.*/
+static void INS_RawKeyUncorroborated(int sc)
+{
+	if (rawkey_nohandletime[sc] >= 0 && fabs(rawkey_pending[sc] - rawkey_nohandletime[sc]) <= 2*RAWKEY_WINDOW)
+		in_raw_injectedkey++;
 }
 
 static void INS_RawKeyExpire(double now)
@@ -380,6 +404,7 @@ static void INS_RawKeyExpire(double now)
 	{
 		if (rawkey_pending[i] >= 0 && now - rawkey_pending[i] > RAWKEY_WINDOW)
 		{
+			INS_RawKeyUncorroborated(i);
 			rawkey_pending[i] = -1;
 			rawkey_npending--;
 			in_raw_legacykey++;
@@ -429,14 +454,14 @@ static qboolean rawmouse_nolegacy;
   getting overwritten -- backwards.*/
 static cvar_t in_rawinput_mice = CVARAFD("in_rawinput", "1", "m_rawinput", CVAR_ARCHIVE, "Enables rawinput support for mice in XP onwards. Rawinput permits independant device identification (ie: splitscreen clients can each have their own mouse), and reports mouse motion as the device sends it rather than as an OS-summed and OS-accelerated cursor delta.");
 static cvar_t in_rawinput_keyboard = CVARD("in_rawinput_keyboard", "0", "Enables rawinput support for keyboards in XP onwards as well as just mice.");
-static cvar_t in_rawinput_rdp = CVARD("in_rawinput_rdp", "0", "Activate Remote Desktop Protocol devices too.");
-/*FTESurf Patch 307.  DEFAULT 0 DELIBERATELY: this closes the injected-mouse-button
-  hole, and it costs a Windows precision touchpad every mouse button it has, because
-  such a device is a HID digitizer with no RI_MOUSE_BUTTON_* flags and the legacy
-  message is its only press.  A ranked profile can set it; a default cannot.  Applied
-  only while the mouse is grabbed -- see INS_RawInput_MouseSetLegacy.*/
-static cvar_t in_rawinput_nolegacy = CVARFD("in_rawinput_nolegacy", "0", CVAR_ARCHIVE, "Suppresses legacy mouse messages while the mouse is grabbed, so a synthesized (injected) click cannot reach the game through the legacy path. Before Patch 468 this COST ALL MOUSE BUTTONS on a Windows precision touchpad (it has no raw button reports of its own); with it the pad's clicks arrive through raw input while a finger is on the pad. Off by default; the .hid journal counts uncorroborated legacy presses either way.");
-static cvar_t in_rawinput_touchpad = CVARFD("in_rawinput_touchpad", "1", CVAR_ARCHIVE, "Accept raw mouse reports that carry no device handle while a Windows precision touchpad has reported contact within the last half second. The OS synthesises a touchpad's cursor motion with no handle, which is otherwise rejected as injected input (Patch 306) and never turns the view. 0 restores the rejection.");	//FTESurf Patch 468
+static cvar_t in_rawinput_rdp = CVARFD("in_rawinput_rdp", "0", CVAR_NOTFROMSERVER, "Activate Remote Desktop Protocol devices too. Runs with it on do not rank (Patch 1576).");
+/*FTESurf Patch 307, defaults since Patch 1576: on, and touchpads off (the owner's 16 Nov
+  ranked rule; Patch 468 gave touchpad clicks a raw path).  NOTFROMSERVER: a map's
+  worldspawn `cvar_` key or a server stuffcmd must not hold these apart from what the
+  player set (Patch 1573's open case).  Applied only while the mouse is grabbed -- see
+  INS_RawInput_MouseSetLegacy.*/
+static cvar_t in_rawinput_nolegacy = CVARFD("in_rawinput_nolegacy", "1", CVAR_ARCHIVE|CVAR_NOTFROMSERVER, "Suppresses legacy mouse messages while the mouse is grabbed, so a synthesized (injected) click cannot reach the game through the legacy path. A precision touchpad's clicks arrive through raw input while a finger is on the pad (Patch 468). On by default; 0 lets injected clicks through and runs do not rank.");
+static cvar_t in_rawinput_touchpad = CVARFD("in_rawinput_touchpad", "0", CVAR_ARCHIVE|CVAR_NOTFROMSERVER, "Accept raw mouse reports that carry no device handle while a Windows precision touchpad has reported contact within the last half second. The OS synthesises a touchpad's cursor motion with no handle, which is otherwise rejected as injected input (Patch 306) and never turns the view. Off by default (Patch 1576); runs with it on do not rank.");	//FTESurf Patch 468
 
 void INS_RawInput_MouseDeRegister(void);
 int INS_RawInput_MouseRegister(void);
@@ -1459,6 +1484,13 @@ static void INS_RawInput_KeyObserve(void)
 	if (!raw->header.hDevice)
 	{	//SendInput's: its legacy copy is what reaches the game, and nothing vouches for it
 		in_raw_kbdnohandle++;
+		sc = raw->data.keyboard.MakeCode & 0xff;
+		now = Sys_DoubleTime();
+		if (!(raw->data.keyboard.Flags & RI_KEY_BREAK))
+			rawkey_nohandletime[sc] = now;
+		else if (keydown[MapKey((sc | ((raw->data.keyboard.Flags & RI_KEY_E0) ? 0x100 : 0)) << 16)] ||
+			(rawkey_legup[sc] >= 0 && now - rawkey_legup[sc] <= 2*RAWKEY_WINDOW))
+			in_raw_injectedkey++;	//FTESurf Patch 1576: SendInput released a key the game held (UIAccess or not)
 		return;
 	}
 	sc = raw->data.keyboard.MakeCode & 0xff;
@@ -1501,6 +1533,7 @@ static void INS_LegacyKeyObserve(LPARAM lParam, qboolean down)
 	rawkey_legheld[sc] = true;
 	if (rawkey_pending[sc] >= 0)
 	{	//pressed again before a raw down vouched for the last press
+		INS_RawKeyUncorroborated(sc);
 		rawkey_pending[sc] = -1;
 		rawkey_npending--;
 		in_raw_legacykey++;
@@ -1629,6 +1662,8 @@ static void INS_RawInput_InitQuiesced(void)
 
 		if (!(in_rawinput_rdp.value) && INS_RawInput_IsRDPDevice(dname)) // use rdp (cvar)
 			continue;
+		if (INS_RawInput_IsRDPDevice(dname))
+			rawrdp_bound = true;	//FTESurf Patch 1576: INS_GuardPublish
 
 		switch (pRawInputDeviceList[i].dwType)
 		{
@@ -1692,6 +1727,8 @@ static void INS_RawInput_InitQuiesced(void)
 
 		if (!(in_rawinput_rdp.value) && INS_RawInput_IsRDPDevice(dname)) // use rdp (cvar)
 			continue;
+		if (INS_RawInput_IsRDPDevice(dname))
+			rawrdp_bound = true;	//FTESurf Patch 1576: INS_GuardPublish
 
 		switch (pRawInputDeviceList[i].dwType)
 		{
@@ -1879,6 +1916,270 @@ void INS_ReInit (void)
 #endif
 }
 
+/*FTESurf Patch 1576: input other programs make is dropped.  Windows 8+ says where the input
+  message being dispatched came from (GetCurrentInputMessageSource); only IMO_HARDWARE passes, so
+  SendInput from ordinary programs (IMO_INJECTED), system-injected input (IMO_SYSTEM), posted
+  messages (IMO_UNAVAILABLE) and messages sent from another thread are dropped.  Windows reports
+  SendInput from a UIAccess program (signed and installed under Program Files, such as the
+  on-screen keyboard) as hardware; P1424's observer still counts those.  An in-process hook or a
+  device that presents itself as a keyboard or mouse is not seen here.  Each check runs on the
+  window thread inside the message's own dispatch, the only place the answer is current.
+
+  The window thread enforces guard_applied, which only INS_GuardPublish (main thread, once a
+  frame) changes: a guard switched on applies at once, one switched off keeps applying for
+  GUARD_WEAKEN_DELAY after in_guard_live has said so, so a setting turned off and back on between
+  two reports, or just before a finish, still reaches the server first.*/
+static cvar_t in_keyguard = CVARFD("in_keyguard", "1", CVAR_ARCHIVE|CVAR_NOTFROMSERVER, "Drop keyboard messages that Windows does not report as coming from a keyboard: keys sent by other programs, such as macro tools, remappers and remote-play software. 0 accepts them; runs then do not rank.");
+static cvar_t in_guard_live = CVARFD("in_guard_live", "0", CVAR_NOSET|CVAR_NOSAVE|CVAR_NOTFROMSERVER, "Set by the engine: which input guards apply. 1 clicks and wheel from other programs dropped, 2 touchpad and touch input off, 4 keys from other programs dropped, 8 the key guard cannot run here.");
+static cvar_t in_guard_rev = CVARFD("in_guard_rev", "0", CVAR_ARCHIVE|CVAR_NOTFROMSERVER, "Which one-time move of the input guard settings this config has had.");
+#define GUARD_CLICKS 1
+#define GUARD_TOUCH  2
+#define GUARD_KEYS   4
+#define GUARD_KEYSNA 8
+#define GUARD_WEAKEN_DELAY 1.0
+#define GUARD_TAINT_TIME 1.5	//an injected release let through keeps bit 4 off this long, so a run reads `changed`
+#define KEYGUARD_SUSPEND_AFTER 8	//drops with no hardware key yet: every key is coming from another program
+static cvar_t in_guard_lapses = CVARFD("in_guard_lapses", "0", CVAR_NOSET|CVAR_NOSAVE|CVAR_NOTFROMSERVER, "Set by the engine: counts every moment an input guard was not in force or other software reached the game anyway (a guard switched off, a key no keyboard vouched for, a held key's release let through, a console command from another program). The ranked check reads a change during a run as `changed`.");
+int in_extcommands;	//console commands from another program (stdin, WM_COPYDATA): each is a lapse
+int in_qcdebugged;	//the -plugin pipe drove the QC debugger (it can write game-code globals): cannot run
+typedef struct {int devicetype, originid;} fs_inputsource_t;	//INPUT_MESSAGE_SOURCE
+#define FS_IMO_HARDWARE 1
+static int guard_lastlive;	//main thread
+static BOOL (WINAPI *pGetCurrentInputMessageSource)(fs_inputsource_t *src);
+static volatile LONG guard_applied = GUARD_CLICKS|GUARD_TOUCH|GUARD_KEYS;
+//window thread writes, INS_GuardPublish reads
+static volatile LONG keyguard_blocked, keyguard_heldrelease, keyguard_hwseen, keyguard_apifail;
+static volatile LONG pointer_blocked, pad_rejected, keyguard_lastorigin = -1;
+static qboolean keyguard_dropheld[256];	//window thread: a press dropped and not yet released, so repeats count once
+extern int in_raw_keydropped;	//in_generic.c: the .hid's 'kd' record
+
+//0 a hardware device's, 1 another program's, -1 cannot tell (passed, and the guard reports itself off).
+static int INS_MessageSource(void)
+{
+	fs_inputsource_t src;
+	if (InSendMessage())
+		src.originid = -2;
+	else if (!pGetCurrentInputMessageSource(&src))
+	{
+		InterlockedExchange(&keyguard_apifail, 1);
+		return -1;
+	}
+	else if (src.originid == FS_IMO_HARDWARE)
+		return 0;
+	keyguard_lastorigin = src.originid;
+	return 1;
+}
+
+static qboolean INS_KeyGuardBlocks(qboolean down, int qcode, LPARAM lParam, qboolean journal)
+{
+	int from, sc = (lParam >> 16) & 0xff;
+	if (!(guard_applied & GUARD_KEYS) || !pGetCurrentInputMessageSource)
+		return false;
+	from = INS_MessageSource();
+	if (from == 0)
+		InterlockedExchange(&keyguard_hwseen, 1);
+	if (from != 1)
+		return false;
+	if (!down && qcode > 0 && qcode < K_MAX && keydown[qcode])
+	{	//never strand a held key: the release passes, and the run reads `changed`
+		InterlockedIncrement(&keyguard_heldrelease);
+		return false;
+	}
+	InterlockedIncrement(&keyguard_blocked);
+	if (!journal)
+		return true;
+#ifdef USINGRAWINPUT
+	if (down && rawkey_pending[sc] >= 0)
+	{	//P1424's observer counted it as reaching the game; it did not ('y' is what reached it)
+		rawkey_pending[sc] = -1;
+		rawkey_npending--;
+	}
+#endif
+	if (!down)
+		keyguard_dropheld[sc] = false;
+	else if (!keyguard_dropheld[sc])
+	{
+		keyguard_dropheld[sc] = true;
+		in_raw_keydropped++;
+	}
+	return true;
+}
+
+//The low-level hook's own keys (sys_win.c: Print Screen, and the Windows/menu keys under
+//sys_disableWinKeys) never become window messages; the hook's flags say who sent them.
+qboolean INS_HookKeyBlocks(unsigned int llflags, qboolean down, int qkey)
+{
+	if (!(guard_applied & GUARD_KEYS) || !(llflags & (LLKHF_INJECTED|LLKHF_LOWER_IL_INJECTED)))
+		return false;
+	if (!down && qkey > 0 && qkey < K_MAX && keydown[qkey])
+	{
+		InterlockedIncrement(&keyguard_heldrelease);
+		return false;
+	}
+	InterlockedIncrement(&keyguard_blocked);
+	return true;
+}
+
+//The window procedures' clicks, wheel and app commands.
+qboolean INS_PointerGuardBlocks(int changed)
+{
+	if (!(guard_applied & GUARD_CLICKS) || !pGetCurrentInputMessageSource || INS_MessageSource() != 1)
+		return false;
+	if (changed)	//a move Windows made itself (SetCursorPos, activation) is not a click
+		InterlockedIncrement(&pointer_blocked);
+	return true;
+}
+qboolean INS_TouchAllowed(void)
+{
+	return !(guard_applied & GUARD_TOUCH);
+}
+
+/*Once per config, after a server connection (the config has run by then): the P1573 move for
+  configs written before it, which pin the old values.  The game code's copy cannot set these
+  any more (NOTFROMSERVER refuses localcmd).  A value changed back after this stays.*/
+static void INS_GuardMigrate(void)
+{
+	if (in_guard_rev.ival >= 1573)
+		return;
+#ifdef USINGRAWINPUT
+	if (strcmp(in_rawinput_nolegacy.string, "1"))
+	{
+		Cvar_Set(&in_rawinput_nolegacy, "1");
+		Con_Printf("Input: clicks no mouse sent are blocked in game now (in_rawinput_nolegacy 1)\n");
+	}
+	if (strcmp(in_rawinput_touchpad.string, "0"))
+	{
+		Cvar_Set(&in_rawinput_touchpad, "0");
+		Con_Printf("Input: touchpads no longer move the view or click in game, and runs on one do not rank (in_rawinput_touchpad 1 brings it back, unranked)\n");
+	}
+#endif
+	Cvar_Set(&in_guard_rev, "1576");
+}
+
+//Main thread, once a frame: what the settings ask for, what applies, what in_guard_live says.
+static void INS_GuardPublish(void)
+{
+	static qboolean first = true, migrated, suspended, padsaid;
+	static LONG blockreported, heldreported, pointerreported, lapsereported;
+	static int extreported, legkeyreported, lapses;
+	static double offsince[3] = {-1, -1, -1}, taintuntil;
+	double now = Sys_DoubleTime();
+	int want = 0, cannot = 0, live, applied, b, n;
+	char livestr[16];
+
+	if (!migrated && cls.state >= ca_connected)
+	{
+		migrated = true;
+		INS_GuardMigrate();
+	}
+	if (!suspended && !keyguard_hwseen && keyguard_blocked >= KEYGUARD_SUSPEND_AFTER)
+	{
+		suspended = true;
+		Con_Printf("Input: every key so far came from another program (remote play?), so keys are no longer dropped this session. Runs do not rank until the game is restarted with a keyboard.\n");
+	}
+#ifdef USINGRAWINPUT
+	if (in_rawinput_nolegacy.ival)
+		want |= GUARD_CLICKS;
+	if (!in_rawinput_touchpad.ival)
+		want |= GUARD_TOUCH;
+	//the key guard is the source check plus P1424's observer (or the raw opt-in path's handle test)
+	if (in_keyguard.ival && (rawkbd_observe || rawkbd_nolegacy) && !suspended)
+		want |= GUARD_KEYS;	//suspended: stop dropping, or a remote-play player has no keyboard
+#endif
+	//what defeats them is read from what is running, not from settings that apply at in_restart
+	if (!pGetCurrentInputMessageSource || keyguard_apifail || suspended || in_qcdebugged || GetSystemMetrics(SM_REMOTESESSION))
+		cannot = GUARD_CLICKS|GUARD_KEYS;
+#ifdef AVAIL_DINPUT
+	if (dinput)
+		cannot |= GUARD_CLICKS;	//DirectInput reads the mouse with no source to check
+#endif
+#ifdef USINGRAWINPUT
+	if (rawrdp_bound)
+		cannot |= GUARD_CLICKS|GUARD_KEYS;	//a remote session's devices pass as hardware
+#endif
+
+	applied = first ? want : guard_applied;
+	for (b = 0; b < 3; b++)
+	{
+		if (want & (1<<b))
+		{
+			applied |= 1<<b;
+			offsince[b] = -1;
+		}
+		else if (applied & (1<<b))
+		{
+			if (offsince[b] < 0)
+				offsince[b] = now;
+			else if (now - offsince[b] >= GUARD_WEAKEN_DELAY)
+				applied &= ~(1<<b);
+		}
+	}
+	InterlockedExchange(&guard_applied, applied);
+	first = false;
+
+	//Lapses: a published bit leaving, a held release let through, a key no keyboard vouched for
+	//(Windows passes a UIAccess program's SendInput as hardware; P1424 still sees no device behind it),
+	//a console command from another program. CSQC steps `bad` on any change.
+	live = want & ~cannot;
+	if (in_keyguard.ival && ((cannot & GUARD_KEYS) || !(want & GUARD_KEYS)))
+		live |= GUARD_KEYSNA;	//asked for and not running: no setting the player can change helps
+	for (b = 0; b < 3; b++)
+		if ((guard_lastlive & (1<<b)) && !(live & (1<<b)))
+			lapses++;
+	guard_lastlive = live;
+	n = keyguard_heldrelease;	//once: two threads increment it
+	if (n != lapsereported)
+	{
+		lapses += n - lapsereported;
+		lapsereported = n;
+	}
+	n = in_raw_injectedkey;
+	if (n != legkeyreported)
+	{
+		if (n > legkeyreported)
+			lapses += n - legkeyreported;
+		legkeyreported = n;
+	}
+	n = in_extcommands;
+	if (n != extreported)
+	{
+		lapses += n - extreported;
+		extreported = n;
+	}
+	Q_snprintfz(livestr, sizeof(livestr), "%i", lapses);
+	if (strcmp(in_guard_lapses.string, livestr))
+		Cvar_ForceSet(&in_guard_lapses, livestr);
+	if (keyguard_heldrelease != heldreported)
+	{
+		heldreported = keyguard_heldrelease;
+		taintuntil = now + GUARD_TAINT_TIME;
+	}
+	if (now < taintuntil)
+		live &= ~GUARD_KEYS;
+	Q_snprintfz(livestr, sizeof(livestr), "%i", live);
+	if (strcmp(in_guard_live.string, livestr))	//by string: a launch +set can leave an odd one behind
+		Cvar_ForceSet(&in_guard_live, livestr);
+
+	if (keyguard_blocked != blockreported)
+	{
+		if (!blockreported)
+			Con_Printf("Input: dropped a key another program sent (in_keyguard 1). Remappers, macro tools and remote-play software send keys this way; in_keyguard 0 accepts them, and runs then do not rank.\n");
+		Con_DPrintf("in_keyguard: %ld dropped, last origin %ld\n", (long)keyguard_blocked, (long)keyguard_lastorigin);
+		blockreported = keyguard_blocked;
+	}
+	if (pointer_blocked != pointerreported)
+	{
+		if (!pointerreported)
+			Con_Printf("Input: dropped a click or wheel turn another program sent (in_rawinput_nolegacy 1).\n");
+		pointerreported = pointer_blocked;
+	}
+	if (pad_rejected && !padsaid)
+	{
+		padsaid = true;
+		Con_Printf("Input: the touchpad is off in game (in_rawinput_touchpad 0). in_rawinput_touchpad 1 turns it on; runs on it do not rank.\n");
+	}
+}
+
 void INS_Init (void)
 {
 	//keyboard variables
@@ -1931,6 +2232,15 @@ void INS_Init (void)
 	Cvar_Register (&in_rawinput_nolegacy, "Input Controls");	//FTESurf Patch 307
 	Cvar_Register (&in_rawinput_touchpad, "Input Controls");	//FTESurf Patch 468
 #endif
+	Cvar_Register (&in_keyguard, "Input Controls");	//FTESurf Patch 1576
+	Cvar_Register (&in_guard_live, "Input Controls");
+	Cvar_ForceSet(&in_guard_live, "0");	//a launch +set made before this is not the engine's word
+	Cvar_Register (&in_guard_rev, "Input Controls");
+	Cvar_Register (&in_guard_lapses, "Input Controls");
+	Cvar_ForceSet(&in_guard_lapses, "0");
+	pGetCurrentInputMessageSource = (void*)GetProcAddress(GetModuleHandleA("user32.dll"), "GetCurrentInputMessageSource");
+	if (pGetCurrentInputMessageSource && in_raw_keydropped < 0)
+		in_raw_keydropped = 0;	//before any message can be dropped
 
 	INS_ScreenSaver_Init();
 }
@@ -1979,6 +2289,12 @@ a mouse button was pressed/released, mstate is the current set of buttons presse
 void INS_MouseEvent (int mstate)
 {
 	int		i;
+
+	if (INS_PointerGuardBlocks(mstate != sysmouse.oldbuttons))
+	{	//FTESurf Patch 1576; and a button it pressed stays up until released (P1410's latch)
+		legacyactivateclick |= mstate & ~sysmouse.oldbuttons;
+		return;
+	}
 
 	legacyactivateclick &= mstate;	//FTESurf Patch 1410: held at its old state until released
 	mstate = (mstate & ~legacyactivateclick) | (sysmouse.oldbuttons & legacyactivateclick);
@@ -2170,8 +2486,9 @@ void INS_Move (void)
 	  effect until the next alt-tab and would read as the setting not working.  Driving
 	  it from the live state instead makes all three the same event.  The latch inside
 	  makes this two compares on a frame where nothing changed.*/
-	INS_RawInput_MouseSetLegacy(mouseactive && in_rawinput_nolegacy.ival);
+	INS_RawInput_MouseSetLegacy(mouseactive && (guard_applied & GUARD_CLICKS));	//Patch 1576: the applied guard, see INS_GuardPublish
 #endif
+	INS_GuardPublish();	//FTESurf Patch 1576
 
 	if (vid.activeapp && !Minimized)
 	{
@@ -2301,7 +2618,7 @@ void INS_RawInput_MouseRead(void)
 				  inside the window -- the OS synthesised this report from that contact.
 				  Accepted onto padmouse and counted apart from the rejections.*/
 				double now = Sys_DoubleTime();
-				qboolean inwindow = rawpadcount > 0 && in_rawinput_touchpad.ival && rawpad_lasttime >= 0
+				qboolean inwindow = rawpadcount > 0 && !(guard_applied & GUARD_TOUCH) && rawpad_lasttime >= 0
 					&& now - rawpad_lasttime <= RAWPAD_WINDOW;
 				qboolean release = !inwindow && rawpadcount > 0 && INS_RawInput_PadReleases();
 				if (inwindow || release)
@@ -2502,6 +2819,8 @@ static void INS_RawInput_PadRead(void)
 		if (rawpad[i] == raw->header.hDevice)
 		{
 			rawpad_lasttime = Sys_DoubleTime();
+			if (guard_applied & GUARD_TOUCH)
+				pad_rejected = 1;	//Patch 1576: INS_GuardPublish says so once
 			if (in_raw_padreports >= 0)
 				in_raw_padreports++;
 			return;
@@ -3233,6 +3552,12 @@ void INS_TranslateKeyEvent(WPARAM wParam, LPARAM lParam, qboolean down, int qdev
 		INS_LegacyKeyObserve(lParam, down);	//FTESurf Patch 1424: only the legacy callers pass false
 #endif
 	qcode = MapKey(lParam);
+	if (!genkeystate && INS_KeyGuardBlocks(down, qcode, lParam, true))
+		return;	//FTESurf Patch 1576; the raw opt-in path already drops handle-less reports
+#ifdef USINGRAWINPUT
+	if (!genkeystate && !down)
+		rawkey_legup[(lParam >> 16) & 0xff] = Sys_DoubleTime();	//a release the game took (INS_RawInput_KeyObserve)
+#endif
 
 	if (WinNT && !in_builtinkeymap.value)
 	{
@@ -3367,6 +3692,8 @@ int INS_AppCommand(LPARAM lParam)
 {
 	const char *b;
 	int qkey = 0;
+	if (INS_KeyGuardBlocks(true, 0, 0, false))
+		return true;	//FTESurf Patch 1576: posted or injected; swallowed
 	switch(HIWORD(lParam)&0xfff)
 	{
 	case APPCOMMAND_BROWSER_BACKWARD:	qkey = K_MM_BROWSER_BACK;			break;
@@ -3395,4 +3722,1181 @@ int INS_AppCommand(LPARAM lParam)
 	}
 	return false;
 }
+
+/*FTESurf Patch 1577: DLL tripwire.  Calls back once per module loaded from outside the game's
+  folders and the Windows folder, with its file name only (paths name the user) and where it came
+  from: "program" (Program Files, ProgramData), "user" (the profile) or "other".  Overlays, capture
+  tools and security software land here too; the journal records, the reader never judges.  Anyone
+  can rename or unlist a module, so this only catches tools that do neither.*/
+static qboolean INS_PathUnder(const wchar_t *path, const wchar_t *dir)
+{
+	size_t n;
+	if (!dir || !*dir)
+		return false;
+	n = wcslen(dir);
+	while (n && (dir[n-1] == L'\\' || dir[n-1] == L'/'))
+		n--;
+	return n && !_wcsnicmp(path, dir, n) && (path[n] == L'\\' || path[n] == L'/');
+}
+typedef struct
+{
+	wchar_t exe[MAX_PATH], base[MAX_PATH], sys[MAX_PATH], prog[3][MAX_PATH], user[MAX_PATH];
+} insdirs_t;
+static void INS_ModDirs(insdirs_t *d)
+{
+	HRESULT (WINAPI *pSHGetFolderPathW)(HWND, int, HANDLE, DWORD, LPWSTR);
+	static const int progcsidl[3] = {0x26, 0x2a, 0x23};	//CSIDL_PROGRAM_FILES, _PROGRAM_FILESX86, _COMMON_APPDATA
+	wchar_t *slash;
+	HMODULE shell;
+	int j;
+
+	if (!GetModuleFileNameW(NULL, d->exe, countof(d->exe)))
+		d->exe[0] = 0;
+	if ((slash = wcsrchr(d->exe, L'\\')))
+		*slash = 0;
+	if (!MultiByteToWideChar(CP_UTF8, 0, com_gamepath, -1, d->base, countof(d->base)))
+		d->base[0] = 0;
+	//From Windows, not the environment, which the player sets (SystemRoot=... hides a folder).
+	if (!GetSystemWindowsDirectoryW(d->sys, countof(d->sys)))
+		d->sys[0] = 0;
+	shell = LoadLibraryA("shell32.dll");
+	pSHGetFolderPathW = shell ? (void*)GetProcAddress(shell, "SHGetFolderPathW") : NULL;
+	for (j = 0; j < countof(d->prog); j++)
+		if (!pSHGetFolderPathW || pSHGetFolderPathW(NULL, progcsidl[j], NULL, 0, d->prog[j]) != S_OK)
+			d->prog[j][0] = 0;
+	if (!pSHGetFolderPathW || pSHGetFolderPathW(NULL, 0x28 /*CSIDL_PROFILE*/, NULL, 0, d->user) != S_OK)
+		d->user[0] = 0;
+	if (shell)
+		FreeLibrary(shell);
+}
+//"game", "windows", "program", "user" or "other"
+static const char *INS_ModClass(const insdirs_t *d, const wchar_t *path)
+{
+	int j;
+	if (INS_PathUnder(path, d->exe) || INS_PathUnder(path, d->base))
+		return "game";
+	if (INS_PathUnder(path, d->sys))
+		return "windows";
+	for (j = 0; j < countof(d->prog); j++)
+		if (INS_PathUnder(path, d->prog[j]))
+			return "program";
+	return INS_PathUnder(path, d->user) ? "user" : "other";
+}
+static void INS_ModToken(const wchar_t *path, char *name, size_t size)
+{	//the file name as one printable token
+	const wchar_t *slash = wcsrchr(path, L'\\');
+	size_t k;
+	slash = slash ? slash + 1 : path;
+	for (k = 0; slash[k] && k < size - 1; k++)
+		name[k] = (slash[k] < 128 && slash[k] > ' ' && slash[k] != '"') ? (char)slash[k] : '_';
+	name[k] = 0;
+}
+int INS_ForeignModules(void *ctx, void (*callback)(void *ctx, const char *cls, const char *name))
+{
+	BOOL (WINAPI *pEnum)(HANDLE, HMODULE *, DWORD, LPDWORD);
+	HMODULE mods[1024];
+	DWORD need = 0, n, i;
+	wchar_t path[MAX_PATH];
+	insdirs_t dirs;
+	char name[64];
+	int foreign = 0;
+	const char *cls;
+
+	pEnum = (void*)GetProcAddress(GetModuleHandleA("kernel32.dll"), "K32EnumProcessModules");
+	if (!pEnum || !pEnum(GetCurrentProcess(), mods, sizeof(mods), &need))
+		return -1;
+	n = need / sizeof(HMODULE);
+	if (n > countof(mods))
+		n = countof(mods);
+	INS_ModDirs(&dirs);
+	for (i = 0; i < n; i++)
+	{
+		if (!GetModuleFileNameW(mods[i], path, countof(path)))
+			continue;
+		cls = INS_ModClass(&dirs, path);
+		if (!strcmp(cls, "game") || !strcmp(cls, "windows"))
+			continue;
+		INS_ModToken(path, name, sizeof(name));
+		callback(ctx, cls, name);
+		foreign++;
+	}
+	return foreign;
+}
+
+/*FTESurf Patch 1586: hooks below the journal (ENGINE_PATCHES.md).  While a journal is open a worker
+  thread scans this process 0.5-2.5 s after it opens and every 10-20 s: the exe's executable sections
+  against its file; the first 32 bytes and export entries of the exports in ins_hookapis against their DLL
+  files (each DLL must load from the Windows folder); the import slots of the exe and of those DLLs, in_win.c's
+  API pointers and the window procedure against where they resolve; debug registers; executable memory no
+  image backs and executable images the loader does not list.  A written journal gets the distinct findings
+  of every scan it saw, most telling first, then `hookskip` lines and the `hooks` summary.  Anything inside
+  the process can undo a patch around the scans or stop the worker: a tripwire for tools that do neither.*/
+#if defined(_WIN64)
+#include <tlhelp32.h>
+#define INS_HOOKLINES 16
+#define INS_HOOKLINELEN 224
+#define INS_HOOKSKIPS 16
+typedef struct
+{
+	char lines[INS_HOOKLINES][INS_HOOKLINELEN];	//"hook ..." without the newline, by INS_HookPrio
+	int prio[INS_HOOKLINES], nlines;
+	char skips[INS_HOOKSKIPS][64];				//"<what> <why>"
+	int nskips;
+	int found, unread, codebytes, funcs, slots, regions, kib, unlisted, dbg, scans, coderuns;
+	double ms;	//the last scan's duration
+} inshookset_t;
+typedef struct
+{
+	inshookset_t r;
+	insdirs_t dirs;
+	struct {const char *dll, *name; const unsigned char *addr;} want[96];	//exports as the DLL files place them
+	int nwant;
+} inshook_t;
+typedef struct
+{
+	HANDLE f;
+	ULONGLONG imagebase;	//the file's preferred base
+	IMAGE_DATA_DIRECTORY dir[IMAGE_NUMBEROF_DIRECTORY_ENTRIES];
+	IMAGE_SECTION_HEADER sec[96];
+	int nsec;
+	unsigned char *reloc;
+	DWORD reloclen;
+} inspe_t;
+
+//Committed, readable and not a guard page (reading one would disarm it), all of [p, p+n).
+static qboolean INS_Readable(const void *p, size_t n)
+{
+	MEMORY_BASIC_INFORMATION mbi;
+	const unsigned char *q = p, *end = (const unsigned char*)p + n;
+	if (end < q)
+		return false;
+	while (q < end)
+	{
+		if (!VirtualQuery(q, &mbi, sizeof(mbi)) || mbi.State != MEM_COMMIT || !mbi.Protect || (mbi.Protect & (PAGE_GUARD|PAGE_NOACCESS)))
+			return false;
+		q = (const unsigned char*)mbi.BaseAddress + mbi.RegionSize;
+	}
+	return true;
+}
+static qboolean INS_ReadSelf(const void *p, void *out, size_t n)
+{	//never faults (a page changed between the test and the copy only fails the copy)
+	SIZE_T got = 0;
+	return INS_Readable(p, n) && ReadProcessMemory(GetCurrentProcess(), p, out, n, &got) && got == n;
+}
+//The kernel32 calls the worker makes, resolved on the main thread: GetProcAddress reads export tables
+//directly, which a tool may have guarded.
+static struct
+{
+	BOOL (WINAPI *GetModuleHandleExW)(DWORD, LPCWSTR, HMODULE *);
+	BOOL (WINAPI *IsWow64Process2)(HANDLE, USHORT *, USHORT *);
+	HANDLE (WINAPI *OpenThread)(DWORD, BOOL, DWORD);
+	BOOL (WINAPI *CheckRemoteDebuggerPresent)(HANDLE, PBOOL);
+} insapi;
+//GetProcAddress, only once mod's header and export directory are readable; *refused when they are not.
+//(A forwarded export's target DLL is read unchecked: a known limit.)
+static const void *INS_ProcAddress(HMODULE mod, const char *name, qboolean *refused)
+{
+	unsigned char hdr[4096];
+	const IMAGE_NT_HEADERS64 *nt;
+	const IMAGE_DATA_DIRECTORY *ed;
+	LONG at;
+	*refused = true;
+	if (!INS_ReadSelf(mod, hdr, sizeof(hdr)))
+		return NULL;
+	at = ((const IMAGE_DOS_HEADER*)hdr)->e_lfanew;
+	if (at < 0 || at > (LONG)(sizeof(hdr) - sizeof(*nt)))
+		return NULL;
+	nt = (const void*)(hdr + at);
+	ed = &nt->OptionalHeader.DataDirectory[IMAGE_DIRECTORY_ENTRY_EXPORT];
+	if (nt->OptionalHeader.NumberOfRvaAndSizes <= IMAGE_DIRECTORY_ENTRY_EXPORT || !ed->VirtualAddress || !ed->Size
+		|| !INS_Readable((const unsigned char*)mod + ed->VirtualAddress, ed->Size))
+		return NULL;
+	*refused = false;
+	return (const void*)GetProcAddress(mod, name);
+}
+
+//Where a jump idiom at p lands, and its length: jmp rel32/rel8, jmp [rip+x] (also REX.W), mov reg,imm64 +
+//jmp reg or push reg;ret, push lo + mov [rsp+4],hi + ret; with calls, call rel32 too.  NULL for anything else.
+static const unsigned char *INS_JumpTarget(const unsigned char *p, int *len, qboolean calls)
+{
+	unsigned char b[16];
+	ULONGLONG q;
+	DWORD lo, hi;
+	int rel, r, l;
+	const unsigned char *t = NULL;
+	MEMORY_BASIC_INFORMATION mbi;
+	size_t avail;
+	if (!len)
+		len = &l;
+	avail = sizeof(b);
+	if (!INS_ReadSelf(p, b, sizeof(b)))
+	{	//a trampoline at the end of a region, before an unreadable one
+		if (!VirtualQuery(p, &mbi, sizeof(mbi)) || (avail = (const unsigned char*)mbi.BaseAddress + mbi.RegionSize - p) < 2
+			|| avail >= sizeof(b) || !INS_ReadSelf(p, b, avail))
+			return NULL;
+		memset(b + avail, 0, sizeof(b) - avail);
+	}
+#define INS_HAVE(n) if ((size_t)(n) > avail) return NULL	//no jump decoded from bytes that were not there
+	if (b[0] == 0xe9 || (calls && b[0] == 0xe8))
+	{
+		INS_HAVE(5);
+		memcpy(&rel, b+1, 4);
+		*len = 5;
+		return p + 5 + rel;
+	}
+	if (b[0] == 0xeb)
+	{
+		*len = 2;
+		return p + 2 + (signed char)b[1];
+	}
+	if ((b[0] == 0xff && b[1] == 0x25) || (b[0] == 0x48 && b[1] == 0xff && b[2] == 0x25))
+	{
+		r = (b[0] == 0x48);
+		INS_HAVE(6+r);
+		memcpy(&rel, b+2+r, 4);
+		*len = rel ? 6+r : 14+r;	//rel 0: the address follows inline
+		return INS_ReadSelf(p + 6 + r + rel, &q, 8) ? (const unsigned char*)(uintptr_t)q : NULL;
+	}
+	if ((b[0] == 0x48 || b[0] == 0x49) && (b[1] & 0xf8) == 0xb8)
+	{
+		memcpy(&q, b+2, 8);
+		r = b[1] & 7;
+		if (b[0] == 0x48 && ((b[10] == 0xff && b[11] == 0xe0 + r) || (b[10] == 0x50 + r && b[11] == 0xc3)))
+			t = (const unsigned char*)(uintptr_t)q, *len = 12;
+		else if (b[0] == 0x49 && b[10] == 0x41 && ((b[11] == 0xff && b[12] == 0xe0 + r) || (b[11] == 0x50 + r && b[12] == 0xc3)))
+			t = (const unsigned char*)(uintptr_t)q, *len = 13;
+		if (t)
+			INS_HAVE(*len);
+		return t;
+	}
+	if (b[0] == 0x68 && b[5] == 0xc7 && b[6] == 0x44 && b[7] == 0x24 && b[8] == 0x04 && b[13] == 0xc3)
+	{
+		INS_HAVE(14);
+		memcpy(&lo, b+1, 4);
+		memcpy(&hi, b+9, 4);
+		*len = 14;
+		return (const unsigned char*)(uintptr_t)(((ULONGLONG)hi << 32) | lo);
+	}
+	return NULL;
+#undef INS_HAVE
+}
+//first if a jump starts there, else the nearest start up to back bytes earlier whose jump covers first
+//(a patch whose leading bytes match the original), else first.
+static const unsigned char *INS_PatchStart(const unsigned char *first, int back)
+{
+	int k, len;
+	if (INS_JumpTarget(first, &len, true))
+		return first;
+	for (k = 1; k <= back; k++)
+		if (INS_JumpTarget(first - k, &len, true) && len > k)
+			return first - k;
+	return first;
+}
+
+static HMODULE INS_ModuleAt(const void *addr)
+{
+	HMODULE mod;
+	//4|2: GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS|_UNCHANGED_REFCOUNT
+	return (insapi.GetModuleHandleExW && insapi.GetModuleHandleExW(4|2, (LPCWSTR)addr, &mod)) ? mod : NULL;
+}
+//A listed image's INS_ModClass, "image" for one the loader does not list, "unbacked" for private or
+//mapped memory, "bad" for none.
+static const char *INS_AddrOwner(inshook_t *h, const void *addr, char *name, size_t size)
+{
+	MEMORY_BASIC_INFORMATION mbi;
+	HMODULE mod;
+	wchar_t path[MAX_PATH];
+
+	Q_strncpyz(name, "-", size);
+	if (!VirtualQuery(addr, &mbi, sizeof(mbi)) || mbi.State != MEM_COMMIT)
+		return "bad";
+	if (mbi.Type != MEM_IMAGE)
+		return "unbacked";
+	if (!(mod = INS_ModuleAt(addr)) || !GetModuleFileNameW(mod, path, countof(path)))
+		return "image";
+	INS_ModToken(path, name, size);
+	return INS_ModClass(&h->dirs, path);
+}
+
+static int INS_HookPrio(const char *kind)
+{
+	static const char *order[] = {"wndproc", "ptr", "dll", "iat", "eat", "code", "api", "draw", "noread"};
+	int i;
+	for (i = 0; i < countof(order); i++)
+		if (!strcmp(kind, order[i]))
+			return i;
+	return countof(order);
+}
+//Into a set kept in priority order; one past the cap that ranks no higher is dropped (counted, not named).
+//False for a duplicate.
+static qboolean INS_HookInsert(inshookset_t *s, const char *text, int pr)
+{
+	int i, j;
+	for (i = 0; i < s->nlines; i++)
+		if (!strcmp(s->lines[i], text))
+			return false;
+	for (i = 0; i < s->nlines && s->prio[i] <= pr; i++)
+		;
+	if (i >= INS_HOOKLINES)
+		return true;
+	if (s->nlines < INS_HOOKLINES)
+		s->nlines++;
+	for (j = s->nlines - 1; j > i; j--)
+	{
+		memcpy(s->lines[j], s->lines[j-1], INS_HOOKLINELEN);
+		s->prio[j] = s->prio[j-1];
+	}
+	Q_strncpyz(s->lines[i], text, INS_HOOKLINELEN);
+	s->prio[i] = pr;
+	return true;
+}
+static void INS_HookLine(inshook_t *h, const char *kind, const char *site, const char *cls, const char *owner, int hops)
+{
+	char text[INS_HOOKLINELEN];
+	Q_snprintfz(text, sizeof(text), "hook %s %s %s %s %i", kind, site, cls, owner, hops);
+	if (!INS_HookInsert(&h->r, text, INS_HookPrio(kind)))
+		return;
+	if (!strcmp(kind, "noread"))
+		h->r.unread++;
+	else
+		h->r.found++;
+}
+static void INS_HookSkip(inshook_t *h, const char *what, const char *why)
+{
+	char text[64];
+	int i;
+	Q_snprintfz(text, sizeof(text), "%s %s", what, why);
+	for (i = 0; i < h->r.nskips; i++)
+		if (!strcmp(h->r.skips[i], text))
+			return;
+	if (h->r.nskips < INS_HOOKSKIPS)
+		Q_strncpyz(h->r.skips[h->r.nskips++], text, sizeof(h->r.skips[0]));
+}
+//One finding.  at is patched code (decoded from there) or, with isptr, the address a slot holds; then
+//through further jumps (trampolines, thunks) to the code that runs.
+static void INS_Hook(inshook_t *h, const char *kind, const char *site, const unsigned char *at, qboolean isptr)
+{
+	const unsigned char *t = isptr ? at : INS_JumpTarget(at, NULL, true), *next;
+	const char *cls = "-";
+	char owner[64];
+	unsigned char op;
+	int hops = 0;
+
+	Q_strncpyz(owner, "-", sizeof(owner));
+	if (!t && !isptr && INS_ReadSelf(at, &op, 1) && op == 0xcc)
+		cls = "int3";
+	while (t && hops < 4)
+	{
+		hops++;
+		cls = INS_AddrOwner(h, t, owner, sizeof(owner));
+		if (!(next = INS_JumpTarget(t, NULL, false)))
+			break;
+		t = next;
+	}
+	INS_HookLine(h, kind, site, cls, owner, hops);
+}
+
+static qboolean INS_PERead(inspe_t *pe, DWORD ofs, void *out, DWORD len)
+{
+	OVERLAPPED ov;
+	DWORD got = 0;
+	memset(&ov, 0, sizeof(ov));
+	ov.Offset = ofs;
+	return ReadFile(pe->f, out, len, &got, &ov) && got == len;
+}
+//The file offset of [rva, rva+len) when one section's raw data holds all of it, else 0.
+static DWORD INS_PEOffset(const inspe_t *pe, DWORD rva, DWORD len)
+{
+	int i;
+	for (i = 0; i < pe->nsec; i++)
+		if (rva >= pe->sec[i].VirtualAddress && (ULONGLONG)rva - pe->sec[i].VirtualAddress + len <= pe->sec[i].SizeOfRawData)
+			return pe->sec[i].PointerToRawData + rva - pe->sec[i].VirtualAddress;
+	return 0;
+}
+static void INS_PEClose(inspe_t *pe)
+{
+	if (pe->f && pe->f != INVALID_HANDLE_VALUE)
+		CloseHandle(pe->f);
+	free(pe->reloc);
+	memset(pe, 0, sizeof(*pe));
+}
+//NULL when the file opened and its headers are the loaded image's; else why not.  "stale": the file is not
+//the one mapped (an update waiting on a restart; Wine's placeholders).  "noheader": memory has no PE header.
+static const char *INS_PEOpen(inspe_t *pe, const wchar_t *path, const unsigned char *loaded)
+{
+	unsigned char hdr[4096], mhdr[4096];
+	const IMAGE_NT_HEADERS64 *nt, *mnt;
+	const IMAGE_SECTION_HEADER *sh;
+	LONG at, mat;
+	DWORD len, ofs, ndir;
+
+	memset(pe, 0, sizeof(*pe));
+	if (!INS_ReadSelf(loaded, mhdr, sizeof(mhdr)))
+		return "noheader";
+	mat = ((const IMAGE_DOS_HEADER*)mhdr)->e_lfanew;
+	mnt = (const void*)(mhdr + mat);
+	if (((const IMAGE_DOS_HEADER*)mhdr)->e_magic != IMAGE_DOS_SIGNATURE || mat < 0 || mat > (LONG)(sizeof(mhdr) - sizeof(*mnt))
+		|| mnt->Signature != IMAGE_NT_SIGNATURE)
+		return "noheader";
+	pe->f = CreateFileW(path, GENERIC_READ, FILE_SHARE_READ|FILE_SHARE_WRITE|FILE_SHARE_DELETE, NULL, OPEN_EXISTING, 0, NULL);
+	if (pe->f == INVALID_HANDLE_VALUE || !INS_PERead(pe, 0, hdr, sizeof(hdr)))
+		return "unreadable";
+	at = ((const IMAGE_DOS_HEADER*)hdr)->e_lfanew;
+	if (((const IMAGE_DOS_HEADER*)hdr)->e_magic != IMAGE_DOS_SIGNATURE || at < 0 || at > (LONG)(sizeof(hdr) - sizeof(*nt)))
+		return "malformed";
+	nt = (const void*)(hdr + at);
+	if (nt->Signature != IMAGE_NT_SIGNATURE || nt->OptionalHeader.Magic != IMAGE_NT_OPTIONAL_HDR64_MAGIC)
+		return "malformed";
+	pe->nsec = nt->FileHeader.NumberOfSections;
+	sh = (const void*)((const unsigned char*)&nt->OptionalHeader + nt->FileHeader.SizeOfOptionalHeader);
+	if (pe->nsec > (int)countof(pe->sec) || (const unsigned char*)(sh + pe->nsec) > hdr + sizeof(hdr))
+		return "malformed";
+	memcpy(pe->sec, sh, pe->nsec * sizeof(*sh));
+	ndir = min(nt->OptionalHeader.NumberOfRvaAndSizes, (DWORD)countof(pe->dir));
+	memcpy(pe->dir, nt->OptionalHeader.DataDirectory, ndir * sizeof(pe->dir[0]));
+	pe->imagebase = nt->OptionalHeader.ImageBase;
+	if (mnt->FileHeader.TimeDateStamp != nt->FileHeader.TimeDateStamp || mnt->OptionalHeader.SizeOfImage != nt->OptionalHeader.SizeOfImage
+		|| mnt->OptionalHeader.CheckSum != nt->OptionalHeader.CheckSum)
+		return "stale";
+	len = pe->dir[IMAGE_DIRECTORY_ENTRY_BASERELOC].Size;
+	if (pe->dir[IMAGE_DIRECTORY_ENTRY_BASERELOC].VirtualAddress && len)
+	{
+		ofs = INS_PEOffset(pe, pe->dir[IMAGE_DIRECTORY_ENTRY_BASERELOC].VirtualAddress, len);
+		if (!ofs || len > (8<<20) || !(pe->reloc = malloc(len)) || !INS_PERead(pe, ofs, pe->reloc, len))
+			return "malformed";
+		pe->reloclen = len;
+	}
+	return NULL;
+}
+//Adds the load delta to each base relocation lying wholly inside buf, which holds [rva, rva+len) as the file does.
+static void INS_PERelocate(const inspe_t *pe, unsigned char *buf, DWORD rva, DWORD len, ULONGLONG delta)
+{
+	const unsigned char *p = pe->reloc, *end = pe->reloc + pe->reloclen;
+	DWORD page, size, k, at, v4;
+	ULONGLONG v8;
+	WORD e;
+	while (end - p >= 8)
+	{
+		memcpy(&page, p, 4);
+		memcpy(&size, p+4, 4);
+		if (size < 8 || size > (size_t)(end - p))
+			break;
+		if ((ULONGLONG)page + 0x1008 > rva && page < (ULONGLONG)rva + len)
+			for (k = 8; k + 2 <= size; k += 2)
+			{
+				memcpy(&e, p+k, 2);
+				at = page + (e & 0xfff);
+				if ((e >> 12) == IMAGE_REL_BASED_DIR64 && at >= rva && (ULONGLONG)at + 8 <= (ULONGLONG)rva + len)
+				{
+					memcpy(&v8, buf + at - rva, 8);
+					v8 += delta;
+					memcpy(buf + at - rva, &v8, 8);
+				}
+				else if ((e >> 12) == IMAGE_REL_BASED_HIGHLOW && at >= rva && (ULONGLONG)at + 4 <= (ULONGLONG)rva + len)
+				{
+					memcpy(&v4, buf + at - rva, 4);
+					v4 += (DWORD)delta;
+					memcpy(buf + at - rva, &v4, 4);
+				}
+			}
+		p += size;
+	}
+}
+
+static void INS_HookRun(inshook_t *h, const unsigned char *self, DWORD va, DWORD s, DWORD e)
+{
+	char site[64];
+	if (h->r.coderuns++ >= 64)
+	{	//a debugger's breakpoints, or a rewritten exe: the count is the finding
+		h->r.found++;
+		return;
+	}
+	Q_snprintfz(site, sizeof(site), "exe+%x/%u", (unsigned)(va + s), (unsigned)(e - s + 1));
+	INS_Hook(h, "code", site, INS_PatchStart(self + va + s, min(s, 15)), false);
+}
+//The exe's executable sections, byte for byte against the file.  Returns the bytes compared, -1 if it could not.
+static int INS_HookExe(inshook_t *h, inspe_t *pe, const unsigned char *self)
+{
+	unsigned char *file = NULL, *mem = malloc(65536);
+	char site[64];
+	int i, bytes = 0;
+	qboolean run;
+	DWORD va, len, at, n, j, pg, pn, off, rs = 0, last = 0;
+
+	if (!mem)
+		return -1;
+	for (i = 0; i < pe->nsec; i++)
+	{
+		if (!(pe->sec[i].Characteristics & IMAGE_SCN_MEM_EXECUTE))
+			continue;
+		va = pe->sec[i].VirtualAddress;
+		len = min(pe->sec[i].Misc.VirtualSize, pe->sec[i].SizeOfRawData);
+		if (len > (64<<20) || !(file = malloc(len ? len : 1)) || !INS_PERead(pe, pe->sec[i].PointerToRawData, file, len))
+		{
+			free(file);
+			free(mem);
+			return -1;
+		}
+		INS_PERelocate(pe, file, va, len, (uintptr_t)self - pe->imagebase);
+		run = false;
+		for (at = 0; at < len; at += n)
+		{
+			n = min(len - at, 65536);
+			if (INS_ReadSelf(self + va + at, mem, n))
+				bytes += n;
+			else for (pg = 0; pg < n; pg += pn)
+			{	//page by page, so one unreadable page costs only itself
+				pn = min(n - pg, 4096);
+				if (INS_ReadSelf(self + va + at + pg, mem + pg, pn))
+					bytes += pn;
+				else
+				{
+					memcpy(mem + pg, file + at + pg, pn);
+					Q_snprintfz(site, sizeof(site), "exe+%x/%u", (unsigned)(va + at + pg), (unsigned)pn);
+					INS_HookLine(h, "noread", site, "-", "-", 0);
+				}
+			}
+			if (!memcmp(mem, file + at, n))
+				continue;
+			for (j = 0; j < n; j++)
+			{
+				off = at + j;
+				if (mem[j] == file[off])
+					continue;
+				if (run && off <= last + 8)
+				{	//one run: differences at most 8 apart, across chunks too
+					last = off;
+					continue;
+				}
+				if (run)
+					INS_HookRun(h, self, va, rs, last);
+				run = true;
+				rs = last = off;
+			}
+		}
+		if (run)
+			INS_HookRun(h, self, va, rs, last);
+		free(file);
+		file = NULL;
+	}
+	free(mem);
+	return bytes;
+}
+
+//rva of a named export as the file places it, and its index in AddressOfFunctions; 0 when absent or forwarded.
+static DWORD INS_PEExport(const unsigned char *exp, DWORD exprva, DWORD explen, const char *name, WORD *index)
+{
+	const IMAGE_EXPORT_DIRECTORY *ed = (const void*)exp;
+	size_t nl = strlen(name) + 1;
+	DWORD i, nr, rva;
+	WORD ord;
+#define INS_INEXP(r,l) ((r) >= exprva && (ULONGLONG)(r) - exprva + (ULONGLONG)(l) <= explen)
+	if (!INS_INEXP(ed->AddressOfNames, ed->NumberOfNames * 4ull) || !INS_INEXP(ed->AddressOfNameOrdinals, ed->NumberOfNames * 2ull)
+		|| !INS_INEXP(ed->AddressOfFunctions, ed->NumberOfFunctions * 4ull))
+		return 0;
+	for (i = 0; i < ed->NumberOfNames; i++)
+	{
+		memcpy(&nr, exp + ed->AddressOfNames - exprva + i*4, 4);
+		if (!INS_INEXP(nr, nl) || memcmp(exp + nr - exprva, name, nl))
+			continue;
+		memcpy(&ord, exp + ed->AddressOfNameOrdinals - exprva + i*2, 2);
+		if (ord >= ed->NumberOfFunctions)
+			return 0;
+		memcpy(&rva, exp + ed->AddressOfFunctions - exprva + ord*4, 4);
+		*index = ord;
+		return (rva >= exprva && rva < exprva + explen) ? 0 : rva;
+	}
+	return 0;
+#undef INS_INEXP
+}
+
+static const void *INS_Wanted(inshook_t *h, const char *dll, const char *name)
+{
+	int i;
+	for (i = 0; i < h->nwant; i++)
+		if (!strcmp(h->want[i].dll, dll) && !strcmp(h->want[i].name, name))
+			return h->want[i].addr;
+	return NULL;
+}
+//Each import slot of the image at base against where its export resolves.  Names come from base's file;
+//the address from the exporting DLL's file for the exports in ins_hookapis (scanned before their importers),
+//else from GetProcAddress.  importer: NULL for the exe.
+static void INS_HookImports(inshook_t *h, const unsigned char *base, inspe_t *pe, const char *importer)
+{
+	const IMAGE_DATA_DIRECTORY *dd = &pe->dir[IMAGE_DIRECTORY_ENTRY_IMPORT];
+	const IMAGE_SECTION_HEADER *s = NULL;
+	IMAGE_IMPORT_DESCRIPTOR imp;
+	unsigned char *buf;
+	char dll[64], fn[128], site[INS_HOOKLINELEN - 96], *dot;
+	const void *want;
+	ULONGLONG ent, held;
+	DWORD blen, d, j, k;
+	HMODULE mod;
+	qboolean refused;
+	int i;
+
+	for (i = 0; i < pe->nsec; i++)
+		if (dd->VirtualAddress >= pe->sec[i].VirtualAddress && dd->VirtualAddress - pe->sec[i].VirtualAddress < pe->sec[i].SizeOfRawData)
+			s = &pe->sec[i];
+	if (!dd->VirtualAddress)
+		return;
+	if (!s || (blen = s->SizeOfRawData) > (16<<20) || !(buf = malloc(blen)))
+	{
+		INS_HookSkip(h, importer ? importer : "exe", "imports");
+		return;
+	}
+	if (!INS_PERead(pe, s->PointerToRawData, buf, blen))
+	{
+		INS_HookSkip(h, importer ? importer : "exe", "imports");
+		free(buf);
+		return;
+	}
+#define INS_INSEC(r,l) ((r) >= s->VirtualAddress && (ULONGLONG)(r) - s->VirtualAddress + (l) <= blen)
+#define INS_STR(r,out) do {for (k = 0; k < sizeof(out) - 1 && INS_INSEC((r)+k, 1) && buf[(r)+k-s->VirtualAddress]; k++) \
+	{out[k] = (buf[(r)+k-s->VirtualAddress] > ' ' && buf[(r)+k-s->VirtualAddress] < 127 && buf[(r)+k-s->VirtualAddress] != '"') ? buf[(r)+k-s->VirtualAddress] : '_';} \
+	out[k] = 0;} while(0)	//one printable token, as INS_ModToken
+	for (d = 0; d < 1024 && INS_INSEC(dd->VirtualAddress + d*sizeof(imp), sizeof(imp)); d++)
+	{
+		memcpy(&imp, buf + dd->VirtualAddress + d*sizeof(imp) - s->VirtualAddress, sizeof(imp));
+		if (!imp.Name)
+			break;
+		INS_STR(imp.Name, dll);
+		if (!imp.OriginalFirstThunk || !imp.FirstThunk || !(mod = GetModuleHandleA(dll)))
+			continue;
+		for (k = 0; dll[k]; k++)
+			dll[k] = (dll[k] >= 'A' && dll[k] <= 'Z') ? dll[k] + 32 : dll[k];
+		if ((dot = strrchr(dll, '.')))
+			*dot = 0;
+		for (j = 0; j < 16384 && INS_INSEC(imp.OriginalFirstThunk + j*8, 8); j++)
+		{
+			memcpy(&ent, buf + imp.OriginalFirstThunk + j*8 - s->VirtualAddress, 8);
+			if (!ent)
+				break;
+			if (IMAGE_SNAP_BY_ORDINAL64(ent))
+			{
+				Q_snprintfz(fn, sizeof(fn), "#%u", (unsigned)IMAGE_ORDINAL64(ent));
+				want = INS_ProcAddress(mod, MAKEINTRESOURCEA(IMAGE_ORDINAL64(ent)), &refused);
+			}
+			else
+			{
+				INS_STR((DWORD)ent + 2, fn);
+				if (!*fn)
+					continue;
+				refused = false;
+				if (!(want = INS_Wanted(h, dll, fn)))
+					want = INS_ProcAddress(mod, fn, &refused);
+			}
+			if (refused)
+				INS_HookSkip(h, dll, "exports");	//its export directory is not readable
+			if (!want)
+				continue;
+			if (importer)
+				Q_snprintfz(site, sizeof(site), "%s/%s!%s", importer, dll, fn);
+			else
+				Q_snprintfz(site, sizeof(site), "%s!%s", dll, fn);
+			if (!INS_ReadSelf(base + imp.FirstThunk + j*8, &held, sizeof(held)))
+				INS_HookLine(h, "noread", site, "-", "-", 0);
+			else
+			{
+				h->r.slots++;
+				if ((const void*)(uintptr_t)held != want)	//SwapBuffers: the exe imports it, and overlays hook it
+					INS_Hook(h, (!strcmp(fn, "SwapBuffers") || !strcmp(fn, "wglSwapBuffers")) ? "draw" : "iat",
+						site, (const void*)(uintptr_t)held, true);
+			}
+		}
+	}
+#undef INS_STR
+#undef INS_INSEC
+	free(buf);
+}
+
+static const char *const ins_hookapis[] =
+{	//per DLL: its name, then exports (input below the journal; what this scan calls), NULL.  An exporter
+	//comes before the DLLs importing from it, so their slots are checked against its file.
+	"ntdll", "NtReadVirtualMemory", "NtQueryVirtualMemory", "NtGetContextThread", "NtReadFile", NULL,
+	"win32u", "NtUserGetRawInputData", "NtUserGetRawInputBuffer", "NtUserGetCurrentInputMessageSource",
+		"NtUserPeekMessage", "NtUserGetMessage", "NtUserGetAsyncKeyState", "NtUserGetKeyState",
+		"NtUserGetKeyboardState", "NtUserGetRawInputDeviceInfo", "NtUserSetWindowsHookEx", NULL,
+	"kernelbase", "ReadProcessMemory", "VirtualQuery", "GetThreadContext", "ReadFile", "GetModuleHandleExW", NULL,
+	"user32", "GetCurrentInputMessageSource", "InSendMessage", "InSendMessageEx", "GetRawInputData",
+		"GetRawInputBuffer", "GetRawInputDeviceInfoA", "GetRawInputDeviceInfoW", "GetRawInputDeviceList",
+		"RegisterRawInputDevices", "GetCursorPos", "GetPhysicalCursorPos", "SetCursorPos", "GetAsyncKeyState",
+		"GetKeyState", "GetKeyboardState", "PeekMessageA", "PeekMessageW", "GetMessageA", "GetMessageW",
+		"DispatchMessageA", "DispatchMessageW", "TranslateMessage", "CallWindowProcA", "CallWindowProcW",
+		"CallNextHookEx", "SetWindowsHookExA", "SetWindowsHookExW", "GetMessageExtraInfo",
+		"GetWindowLongPtrA", "GetWindowLongPtrW", NULL,
+	"xinput1_4", "XInputGetState", NULL,
+	"xinput1_3", "XInputGetState", NULL,
+	"xinput9_1_0", "XInputGetState", NULL,
+	"gdi32", "SwapBuffers", NULL,	//draw: overlays hook these two, which shows the check seeing a real hook
+	"opengl32", "wglSwapBuffers", NULL,
+	NULL
+};
+//One export's first 32 bytes, and its export entry in memory, against the file.  False when not compared
+//(no room in its section, unreadable, an alias of one already compared).
+static qboolean INS_HookAPI(inshook_t *h, inspe_t *pe, const IMAGE_EXPORT_DIRECTORY *ed, HMODULE mod,
+	const char *dll, const char *name, DWORD rva, WORD index, qboolean draw)
+{
+	const unsigned char *at = (const unsigned char*)mod + rva;
+	unsigned char file[48], mem[48];
+	DWORD held;
+	DWORD ofs = rva >= 8 ? INS_PEOffset(pe, rva - 8, sizeof(file)) : 0;
+	char site[96];
+	int i, k;
+	qboolean alias = false;
+
+	for (i = 0; i < h->nwant; i++)
+		if (h->want[i].addr == at)
+			alias = true;	//GetCursorPos and GetPhysicalCursorPos are one function on Windows 11
+	if (h->nwant < countof(h->want))
+	{
+		h->want[h->nwant].dll = dll;
+		h->want[h->nwant].name = name;
+		h->want[h->nwant++].addr = at;
+	}
+	Q_snprintfz(site, sizeof(site), "%s!%s", dll, name);
+	if (!INS_ReadSelf((const unsigned char*)mod + ed->AddressOfFunctions + index*4, &held, sizeof(held)))
+		INS_HookLine(h, "noread", site, "-", "-", 0);
+	else if (held != rva)	//GetProcAddress, and anything bound later, now resolves elsewhere
+		INS_Hook(h, "eat", site, (const unsigned char*)mod + held, true);
+	if (alias || !ofs || !INS_PERead(pe, ofs, file, sizeof(file)))
+		return false;
+	INS_PERelocate(pe, file, rva - 8, sizeof(file), (uintptr_t)mod - pe->imagebase);
+	if (!INS_ReadSelf(at - 8, mem, sizeof(mem)))
+	{
+		INS_HookLine(h, "noread", site, "-", "-", 0);
+		return false;
+	}
+	for (k = 8; k < 40 && mem[k] == file[k]; k++)
+		;
+	if (k < 40)
+	{
+		if (k > 8)
+			Q_snprintfz(site, sizeof(site), "%s!%s+%i", dll, name, k - 8);
+		INS_Hook(h, draw ? "draw" : "api", site, INS_PatchStart(at + k - 8, k - 8), false);
+	}
+	return true;
+}
+static void INS_HookAPIs(inshook_t *h)
+{
+	USHORT procm = 0, nativem = 0;
+	qboolean emulated, draw;
+	const char *const *a = ins_hookapis;
+	const char *dll, *why, *cls;
+	unsigned char *exp;
+	char text[96], owner[64];
+	wchar_t path[MAX_PATH];
+	HMODULE mod;
+	inspe_t pe;
+	DWORD exprva, explen, ofs, rva;
+	WORD index;
+
+	//x64 under ARM64 Windows: system DLLs are ARM64X, rewritten for x64 callers as they load, so no file speaks for them
+	emulated = insapi.IsWow64Process2 && insapi.IsWow64Process2(GetCurrentProcess(), &procm, &nativem) && nativem == 0xaa64;
+	while ((dll = *a++))
+	{
+		Q_snprintfz(text, sizeof(text), "%s.dll", dll);
+		draw = !strcmp(dll, "gdi32") || !strcmp(dll, "opengl32");
+		exp = NULL;
+		memset(&pe, 0, sizeof(pe));
+		if (!(mod = GetModuleHandleA(text)) || !GetModuleFileNameW(mod, path, countof(path)))
+			why = "-";	//not loaded, so not on the input path (no XInput yet, a D3D renderer)
+		else if (strcmp((cls = INS_ModClass(&h->dirs, path)), "windows"))
+		{	//loaded from elsewhere: a stand-in, which its own file would vouch for
+			INS_ModToken(path, owner, sizeof(owner));
+			INS_HookLine(h, "dll", dll, cls, owner, 0);
+			why = "-";
+		}
+		else
+			why = emulated ? "emulated" : INS_PEOpen(&pe, path, (const void*)mod);
+		exprva = pe.dir[IMAGE_DIRECTORY_ENTRY_EXPORT].VirtualAddress;
+		explen = pe.dir[IMAGE_DIRECTORY_ENTRY_EXPORT].Size;
+		if (!why)
+		{
+			ofs = INS_PEOffset(&pe, exprva, explen);
+			if (!ofs || explen < sizeof(IMAGE_EXPORT_DIRECTORY) || explen > (4<<20) || !(exp = malloc(explen)) || !INS_PERead(&pe, ofs, exp, explen))
+				why = "malformed";
+		}
+		if (!why)
+		{
+			unsigned char mh[4096];
+			IMAGE_EXPORT_DIRECTORY med;
+			const IMAGE_EXPORT_DIRECTORY *fed = (const void*)exp;
+			LONG at;
+			Q_snprintfz(text, sizeof(text), "%s!exports", dll);
+			if (!INS_ReadSelf(mod, mh, sizeof(mh)) || (at = ((const IMAGE_DOS_HEADER*)mh)->e_lfanew) < 0 || at > (LONG)(sizeof(mh) - sizeof(IMAGE_NT_HEADERS64))
+				|| !INS_ReadSelf((const unsigned char*)mod + exprva, &med, sizeof(med)))
+				INS_HookLine(h, "noread", text, "-", "-", 0);
+			else if (memcmp(&((const IMAGE_NT_HEADERS64*)(mh + at))->OptionalHeader.DataDirectory[IMAGE_DIRECTORY_ENTRY_EXPORT],
+					&pe.dir[IMAGE_DIRECTORY_ENTRY_EXPORT], sizeof(IMAGE_DATA_DIRECTORY))
+				|| med.AddressOfFunctions != fed->AddressOfFunctions || med.AddressOfNames != fed->AddressOfNames
+				|| med.AddressOfNameOrdinals != fed->AddressOfNameOrdinals || med.NumberOfFunctions != fed->NumberOfFunctions
+				|| med.NumberOfNames != fed->NumberOfNames)
+				INS_Hook(h, "eat", text, (const unsigned char*)mod + med.AddressOfFunctions, true);
+		}
+		if (why && *why != '-')
+			INS_HookSkip(h, dll, why);
+		for (; *a; a++)
+			if (!why && (rva = INS_PEExport(exp, exprva, explen, *a, &index))
+				&& INS_HookAPI(h, &pe, (const void*)exp, mod, dll, *a, rva, index, draw) && !draw)
+				h->r.funcs++;
+		a++;
+		if (!why)
+			INS_HookImports(h, (const void*)mod, &pe, dll);
+		free(exp);
+		INS_PEClose(&pe);
+	}
+}
+
+static void INS_HookPointer(inshook_t *h, const char *dll, const char *name, const void *p)
+{
+	const void *want = INS_Wanted(h, dll, name);
+	char site[96];
+	HMODULE mod;
+	qboolean refused = false;
+	if (!p)
+		return;
+	Q_snprintfz(site, sizeof(site), "%s.dll", dll);
+	if (!want && (mod = GetModuleHandleA(site)))
+		want = INS_ProcAddress(mod, name, &refused);
+	if (refused)
+		INS_HookSkip(h, dll, "exports");
+	if (!want)
+		return;
+	h->r.slots++;
+	if (p != want)
+	{
+		Q_snprintfz(site, sizeof(site), "%s!%s", dll, name);
+		INS_Hook(h, "ptr", site, p, true);
+	}
+}
+//Threads with a hardware breakpoint armed (a debugger, or a tool's exception handler, changes no bytes);
+//-1 if some thread's could not be read.
+static int INS_HookDebugRegs(void)
+{
+	THREADENTRY32 te;
+	CONTEXT ctx;
+	HANDLE snap, th;
+	DWORD pid = GetCurrentProcessId(), self = GetCurrentThreadId();
+	BOOL more;
+	int armed = 0, missed = 0;
+
+	if (!insapi.OpenThread || (snap = CreateToolhelp32Snapshot(TH32CS_SNAPTHREAD, 0)) == INVALID_HANDLE_VALUE)
+		return -1;
+	te.dwSize = sizeof(te);
+	for (more = Thread32First(snap, &te); more; more = Thread32Next(snap, &te))
+	{
+		if (te.th32OwnerProcessID != pid)
+			continue;
+		th = (te.th32ThreadID == self) ? GetCurrentThread() : insapi.OpenThread(THREAD_GET_CONTEXT, FALSE, te.th32ThreadID);
+		if (!th)
+		{	//one that exited since the snapshot is no loss; one we may not open is
+			missed += (GetLastError() == ERROR_ACCESS_DENIED);
+			te.dwSize = sizeof(te);
+			continue;
+		}
+		memset(&ctx, 0, sizeof(ctx));
+		ctx.ContextFlags = CONTEXT_DEBUG_REGISTERS;
+		if (!GetThreadContext(th, &ctx))
+		{	//access denied is also what a thread that is exiting answers
+			DWORD code = 0;
+			missed += (GetLastError() == ERROR_ACCESS_DENIED && GetExitCodeThread(th, &code) && code == STILL_ACTIVE);
+		}
+		else if ((ctx.Dr7 & 0xff) && (ctx.Dr0 || ctx.Dr1 || ctx.Dr2 || ctx.Dr3))
+			armed++;
+		if (te.th32ThreadID != self)
+			CloseHandle(th);
+		te.dwSize = sizeof(te);
+	}
+	CloseHandle(snap);
+	return armed ? armed : missed ? -1 : 0;
+}
+
+static void INS_HookScan(inshook_t *h)
+{
+	MEMORY_BASIC_INFORMATION mbi;
+	const unsigned char *self = (const void*)GetModuleHandleW(NULL), *p = NULL, *lastalloc = NULL;
+	const void *wp;
+	const char *cls, *why;
+	ULONGLONG execbytes = 0;
+	BOOL remote = FALSE;
+	char owner[64];
+	wchar_t path[MAX_PATH];
+	HMODULE mod;
+	HWND w = mainwindow;
+	inspe_t pe;
+	int dr;
+	double t0 = Sys_DoubleTime();
+
+	INS_HookAPIs(h);
+	memset(&pe, 0, sizeof(pe));
+	why = GetModuleFileNameW(NULL, path, countof(path)) ? INS_PEOpen(&pe, path, self) : "unreadable";
+	if (why)
+	{
+		INS_HookSkip(h, "exe", why);
+		h->r.codebytes = -1;
+	}
+	else
+	{
+		INS_HookImports(h, self, &pe, NULL);
+		h->r.codebytes = INS_HookExe(h, &pe, self);
+		if (h->r.codebytes < 0)
+			INS_HookSkip(h, "exe", "unreadable");
+	}
+	INS_PEClose(&pe);
+#ifdef USINGRAWINPUT
+	INS_HookPointer(h, "user32", "GetRawInputData", (const void*)_GRID);
+	INS_HookPointer(h, "user32", "GetRawInputDeviceList", (const void*)_GRIDL);
+	INS_HookPointer(h, "user32", "GetRawInputDeviceInfoA", (const void*)_GRIDIA);
+	INS_HookPointer(h, "user32", "RegisterRawInputDevices", (const void*)_RRID);
+#endif
+	INS_HookPointer(h, "user32", "GetCurrentInputMessageSource", (const void*)pGetCurrentInputMessageSource);
+#ifdef AVAIL_XINPUT
+	INS_HookPointer(h, GetModuleHandleA("xinput1_4.dll") ? "xinput1_4" : GetModuleHandleA("xinput1_3.dll") ? "xinput1_3" : "xinput9_1_0",
+		"XInputGetState", (const void*)pXInputGetState);
+#endif
+	if (w && IsWindow(w))
+	{	//a subclassed window sees every message first: only the exe itself or a Windows DLL may own the head
+		//of the chain (opengl32.dll subclasses it under GL, measured).  Read once: the renderer may destroy it.
+		wp = (const void*)(IsWindowUnicode(w) ? GetWindowLongPtrW(w, GWLP_WNDPROC) : GetWindowLongPtrA(w, GWLP_WNDPROC));
+		if (wp && !strcmp(INS_AddrOwner(h, wp, owner, sizeof(owner)), "bad"))	//a CallWindowProc handle: the subclass used the other charset
+			wp = (const void*)(IsWindowUnicode(w) ? GetWindowLongPtrA(w, GWLP_WNDPROC) : GetWindowLongPtrW(w, GWLP_WNDPROC));
+		if (wp && IsWindow(w))
+		{
+			cls = INS_AddrOwner(h, wp, owner, sizeof(owner));
+			mod = INS_ModuleAt(wp);
+			h->r.slots++;
+			if (!mod || (mod != (HMODULE)self && strcmp(cls, "windows")))
+				INS_Hook(h, "wndproc", "window", wp, true);
+		}
+	}
+	//Executable memory no image backs (JITs, overlay trampolines, manually mapped code), and executable
+	//images the loader does not list.
+	while (VirtualQuery(p, &mbi, sizeof(mbi)) == sizeof(mbi))
+	{
+		if (mbi.State == MEM_COMMIT && (mbi.Protect & 0xf0) && !(mbi.Protect & (PAGE_GUARD|PAGE_NOACCESS)))
+		{	//0xf0: PAGE_EXECUTE, _READ, _READWRITE, _WRITECOPY
+			if (mbi.Type != MEM_IMAGE)
+			{
+				h->r.regions++;
+				execbytes += mbi.RegionSize;
+			}
+			else if (mbi.AllocationBase != lastalloc)
+			{
+				lastalloc = mbi.AllocationBase;
+				if (!INS_ModuleAt(mbi.AllocationBase))
+					h->r.unlisted++;
+			}
+		}
+		if ((const unsigned char*)mbi.BaseAddress + mbi.RegionSize <= p)
+			break;
+		p = (const unsigned char*)mbi.BaseAddress + mbi.RegionSize;
+	}
+	h->r.kib = (int)(execbytes >> 10);
+	if (insapi.CheckRemoteDebuggerPresent && !insapi.CheckRemoteDebuggerPresent(GetCurrentProcess(), &remote))
+		remote = FALSE;
+	dr = INS_HookDebugRegs();
+	h->r.dbg = ((IsDebuggerPresent() || remote) ? 1 : 0) | (dr > 0 ? 2 : 0) | (dr < 0 ? 4 : 0);
+	h->r.scans = 1;
+	h->r.ms = (Sys_DoubleTime() - t0) * 1000;	//no console here: the worker can outlive it at quit
+}
+
+static struct
+{
+	void *mutex, *thread;
+	HANDLE wake;
+	int gen, open, busy;	//busy: the generation a scan is under way for, else 0
+	double next;
+	unsigned int seed;
+	insdirs_t dirs;		//INS_ModDirs, on the main thread
+	char dirsfor[MAX_OSPATH];
+	inshookset_t acc;
+} inshookst;
+static double INS_HookRand(double lo, double hi)
+{	//under the mutex: when the next scan comes is not known in advance
+	inshookst.seed = inshookst.seed * 1664525u + 1013904223u;
+	return lo + (hi - lo) * ((inshookst.seed >> 8) / 16777216.0);
+}
+static void INS_HookMerge(const inshookset_t *r)
+{
+	inshookset_t *a = &inshookst.acc;
+	int i, j, f = 0, u = 0;
+	for (i = 0; i < r->nlines; i++)
+		INS_HookInsert(a, r->lines[i], r->prio[i]);
+	for (i = 0; i < r->nskips; i++)
+	{
+		for (j = 0; j < a->nskips && strcmp(a->skips[j], r->skips[i]); j++)
+			;
+		if (j == a->nskips && a->nskips < INS_HOOKSKIPS)
+			memcpy(a->skips[a->nskips++], r->skips[i], sizeof(a->skips[0]));
+	}
+	for (i = 0; i < a->nlines; i++)
+	{
+		if (a->prio[i] == INS_HookPrio("noread"))
+			u++;
+		else
+			f++;
+	}
+	a->found = max(max(a->found, r->found), f);	//distinct findings over the journal's scans, at least
+	a->unread = max(max(a->unread, r->unread), u);
+	a->codebytes = r->codebytes;
+	a->funcs = r->funcs;
+	a->slots = r->slots;
+	a->regions = r->regions;
+	a->kib = r->kib;
+	a->unlisted = r->unlisted;
+	a->dbg |= r->dbg;
+	a->ms = r->ms;
+	a->scans++;
+}
+#ifdef MULTITHREAD
+static int INS_HookWorker(void *arg)
+{
+	inshook_t *h;
+	qboolean due, open;
+	int gen;
+	double wait;
+	//below the game's threads (Sys_CreateThread ignores its priority on Windows); not idle, which could
+	//starve it while it holds a heap lock the game needs
+	SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_BELOW_NORMAL);
+	for (;;)
+	{
+		if (!(h = calloc(1, sizeof(*h))))
+		{
+			Sys_Sleep(1);
+			continue;
+		}
+		Sys_LockMutex(inshookst.mutex);
+		wait = bound(0, inshookst.next - Sys_DoubleTime(), 60);
+		open = inshookst.open;
+		due = open && wait <= 0;
+		gen = inshookst.gen;
+		if (due)
+		{
+			inshookst.next = Sys_DoubleTime() + INS_HookRand(10, 20);
+			inshookst.busy = gen;
+			h->dirs = inshookst.dirs;
+		}
+		Sys_UnlockMutex(inshookst.mutex);
+		if (!due)
+		{	//asleep until the next scan, or until a journal opens
+			free(h);
+			WaitForSingleObject(inshookst.wake, open ? (DWORD)(wait * 1000) + 1 : INFINITE);
+			continue;
+		}
+		INS_HookScan(h);
+		Sys_LockMutex(inshookst.mutex);
+		inshookst.busy = 0;
+		if (gen == inshookst.gen && inshookst.open)
+			INS_HookMerge(&h->r);
+		Sys_UnlockMutex(inshookst.mutex);
+		free(h);
+	}
+	return 0;
+}
+#endif
+//On the main thread: what the worker must not resolve itself.
+static void INS_HookPrepare(void)
+{
+	HMODULE k32 = GetModuleHandleA("kernel32.dll");
+	LARGE_INTEGER now;
+	if (!insapi.GetModuleHandleExW && k32)
+	{
+		insapi.GetModuleHandleExW = (void*)GetProcAddress(k32, "GetModuleHandleExW");
+		insapi.IsWow64Process2 = (void*)GetProcAddress(k32, "IsWow64Process2");
+		insapi.OpenThread = (void*)GetProcAddress(k32, "OpenThread");
+		insapi.CheckRemoteDebuggerPresent = (void*)GetProcAddress(k32, "CheckRemoteDebuggerPresent");
+		QueryPerformanceCounter(&now);
+		inshookst.seed = (unsigned int)now.QuadPart ^ GetCurrentProcessId();
+	}
+	if (strcmp(inshookst.dirsfor, com_gamepath))
+	{	//once, and again if the game directory changes
+		INS_ModDirs(&inshookst.dirs);
+		Q_strncpyz(inshookst.dirsfor, com_gamepath, sizeof(inshookst.dirsfor));
+	}
+}
+//As a journal opens: forget the last journal's scans; the first comes 0.5-2.5 s in, off the run's first
+//frames, so a reset before then costs nothing.  True if a scan will be written.
+qboolean INS_HookJournalBegin(void)
+{
+#ifdef MULTITHREAD
+	if (!inshookst.mutex)
+		inshookst.mutex = Sys_CreateMutex();
+	if (!inshookst.wake)
+		inshookst.wake = CreateEventA(NULL, FALSE, FALSE, NULL);
+	if (inshookst.mutex && inshookst.wake)
+	{
+		Sys_LockMutex(inshookst.mutex);
+		INS_HookPrepare();
+		inshookst.gen++;
+		inshookst.open = true;
+		inshookst.next = Sys_DoubleTime() + INS_HookRand(0.5, 2.5);
+		memset(&inshookst.acc, 0, sizeof(inshookst.acc));
+		Sys_UnlockMutex(inshookst.mutex);
+		if (!inshookst.thread)
+			inshookst.thread = Sys_CreateThread("hookscan", INS_HookWorker, NULL, THREADP_IDLE, 0);
+		SetEvent(inshookst.wake);
+		return true;
+	}
+#endif
+	INS_HookPrepare();
+	memset(&inshookst.acc, 0, sizeof(inshookst.acc));
+	inshookst.open = true;
+	return true;
+}
+//As a journal closes: with line, the journal's scans as lines (a scan here if no worker ran one).
+void INS_HookJournalEnd(void *ctx, void (*line)(void *ctx, const char *text))
+{
+	inshookset_t a;
+	inshook_t *h;
+	char text[INS_HOOKLINELEN + 2];
+	int i, inflight;
+
+	if (inshookst.mutex)
+		Sys_LockMutex(inshookst.mutex);
+	a = inshookst.acc;
+	inflight = inshookst.busy && inshookst.busy == inshookst.gen;
+	inshookst.open = false;
+	if (inshookst.mutex)
+		Sys_UnlockMutex(inshookst.mutex);
+	if (!line)
+		return;
+	if ((!inshookst.mutex || !inshookst.thread) && !a.scans && (h = calloc(1, sizeof(*h))))
+	{	//no worker: scan now, on this thread
+		h->dirs = inshookst.dirs;
+		INS_HookScan(h);
+		inshookst.acc = a;
+		INS_HookMerge(&h->r);
+		a = inshookst.acc;
+		free(h);
+	}
+	for (i = 0; i < a.nlines; i++)
+	{
+		Q_snprintfz(text, sizeof(text), "%s\n", a.lines[i]);
+		line(ctx, text);
+	}
+	for (i = 0; i < a.nskips; i++)
+	{
+		Q_snprintfz(text, sizeof(text), "hookskip %s\n", a.skips[i]);
+		line(ctx, text);
+	}
+	if (a.scans)
+	{
+		Con_DPrintf("hook scans: %i, the last %.1f ms\n", a.scans, a.ms);
+		Q_snprintfz(text, sizeof(text), "hooks %i %i %i %i %i %i %i %i %i %i 0\n", a.found, a.codebytes, a.funcs, a.slots,
+			a.regions, a.kib, a.dbg, a.scans, a.unread, a.unlisted);
+	}
+	else	//no scan finished while the journal was open; the last field: one was under way
+		Q_snprintfz(text, sizeof(text), "hooks -1 -1 -1 -1 -1 -1 0 0 -1 -1 %i\n", inflight);
+	line(ctx, text);
+}
+#else
+qboolean INS_HookJournalBegin(void)
+{
+	return false;
+}
+void INS_HookJournalEnd(void *ctx, void (*line)(void *ctx, const char *text))
+{
+}
+#endif
 #endif

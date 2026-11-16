@@ -1,5 +1,494 @@
 # Engine patches (fteqw `fteqw64.exe`)
 
+## Patch 1588 - A game this PC hosts predicts save loads and holds, as a remote one does
+
+**Problem.** Lex (16 Nov, after 0.1.47): `map surf_colin_blaster_69000` from the console, then a load: "Loading save"
+flashed on every load, and with `sv_minping 300` the body froze before it could move. Patch 862 opened the trigger
+mirror on a listen server but kept the warp-op pre-move hook (CSQC_PredictPlayerPreMove) and the predicted hold
+(CSQC_PredictsHeld) gated on `sv.state`, so in a hosted game WarpOp_HookAlive was false and every load went as an
+sl_load stringcmd whose release waits for the server's answer (P1227).
+
+**Change.** pr_csqc.c CSQC_PredictListenOpsGated, cvar `cl_predict_listenops` (default 1): both open on a listen
+server when `cl_predict_listen` is also on (without the post-move hook WarpOp_PostMove never runs and a save would
+capture a stale posture). 0 restores the old gate. The hook writes only pmove fields that CL_PredictUsercmdPart and
+PM_PlayerMove already write on every listen piece and SV_RunCmd reloads per client (body, pm_type, duck state,
+cmd.msec, basevelocity, safeorigin_known, oldbuttons), and movevars.entgravity, which sv_user.c sets before each
+command. QC: "Loading save" shows only once a load has waited 0.3 s (cl_saveloc.qc).
+
+**Verified.** Local game on surf_dune (tmp/listen_arm.py: one client hosting, a real 0.2 s +sl_hold press, P1384
+probe rows), 0.1.47 exe against this one:
+- 0.1.47, sv_minping 0: 0/20 held rows on the op path, "Loading save" shown, 1 prederr.
+- 0.1.47, sv_minping 300: body moving at +0.61 s (0.41 s after key-up), "Loading save".
+- This exe, sv_minping 0 and 300: 20/20 rows predicted, the body at the save from the first frame (+0.01 s), moving
+  0.01 s after release at both, no text, 0 prederr.
+- `cl_predict_listenops 0`, and `cl_predict_listen 0`: 0 rows predicted, the old freeze (+0.61 s); at minping 0 the
+  text no longer flashes.
+Two reviews (in-process state; game behaviour and recorded runs), then a re-review of the fixes: the op path and the
+stringcmd path call the same server functions (SV_WarpOpCommand), the impulse is not recorded, TAS cancels the
+same way. Limit: with the server paused (`pausable 1` pause, or a 1-slot game's auto-pause), an op sent in the
+first ~0.5 s rides a command the paused server drops (stringcmds ran while paused); not reachable in the default
+setup (sv_playerslots 2, deathmatch refuses pause). Arms: C:\FTESurf-worktrees\localload-20261116-06.
+## Patch 1587 - Water and glass default to the transparent plane and translucent glass
+
+**Problem.** Lex (16 Nov): water should draw as the transparent plane by default and glass translucent without
+refraction; the dithered modes buy nothing he can see, and the refracting/reflecting ones stay for players who want
+them. The hl2 plugin registered `hl2_water 3` and `hl2_refract 2` (both dithered) as its defaults. default.cfg had
+set `hl2_water 0` for new installs since Patch 1402, but glass had no cfg line, so every install drew it dithered,
+and the cvar help still called the dithered modes the defaults.
+
+**Change.** The defaults players get are the engine's own registrations in renderer.c, made before any config or
+plugin (the plugin's GetNVFDG returns them): `hl2_water 0` and `hl2_refract 0`, and their help says so, naming this
+patch. The plugin's registrations say the same. The FTESurf side sets `hl2_refract 0` beside P1402's water line in
+default.cfg and defaultuser.cfg, and moves a config still on 3 / 2 to 0 once (r_video_rev 1587, gated on that help
+text, as P1402 did for surf_view). Every mode stays in the graphics panel.
+
+**Verified.** Engine, plugin and csprogs build clean (QC 0 warnings, the engine's warning set unchanged). A config on
+`hl2_water 3`, `hl2_refract 2`, `r_video_rev 1402` prints "water: a transparent plane now" and "glass: translucent now"
+and reads 0 / 0 / 1587 after load (artifacts/p1587_arm.py); the same arm on an engine without this patch moved nothing.
+## Patch 1586 - The input journal names patches below it: exe code, input APIs, import slots, window procedure
+
+**Problem.** A tool inside the game process that edits input before the journal records it was invisible: P1576
+asks Windows where each key came from and the journal records what arrives, so a patched
+GetCurrentInputMessageSource, a redirected import slot, or a jump written into the engine's own input code would
+pass both. P1577 lists DLLs from outside the game and Windows folders, which a stand-in DLL or code mapped
+without the loader skips.
+
+**Change.** in_win.c, Windows x64. While a journal is open a worker thread (below normal priority, asleep on an
+event between scans) scans the process 0.5-2.5 s after the journal opens and every 10-20 s, randomised: the exe's
+executable sections against its file with the file's relocations applied; the first 32 bytes and the in-memory
+export entries of 49 exports (user32's message, raw-input, key-state, cursor, hook and window-long functions,
+win32u's syscall stubs for them, XInputGetState, the kernelbase/ntdll functions the scan calls, plus
+gdi32!SwapBuffers and opengl32!wglSwapBuffers, which overlays hook) against their DLL files, and each such DLL's
+in-memory export directory against its file's; each listed DLL must load from the Windows folder (else `dll`: a
+stand-in its own file would vouch for); the import slots of the exe and of those DLLs (names from the files,
+slots from memory, the expected address from the exporting DLL's file where it is listed -- exporters are
+scanned before importers -- else a GetProcAddress made only after the export directory tested readable);
+in_win.c's raw-input, GetCurrentInputMessageSource and XInputGetState pointers; the window procedure (read once;
+only the exe itself or a Windows DLL may own it -- opengl32.dll subclasses it under GL, measured); debug
+registers on every thread; committed executable memory no image backs, and executable images the loader does not
+list. A finding is decoded from where its jump starts and followed through trampolines and jump stubs (4 hops)
+to the code that runs, classed as P1577 classes modules (game, windows = under the Windows folder, program,
+user, other) or image/unbacked/bad/int3. Memory is read through ReadProcessMemory after VirtualQuery, so an
+unreadable or guard page is a `noread` place, never a fault or a disarmed guard; kernel32 lookups and the folder
+list are resolved on the main thread; the worker makes no console call (it can outlive the console at quit).
+A journal begins with `hookscan 1`; a written one carries, beside module+ and before `end`, the distinct
+findings of every scan it saw, most telling first (`hook <kind> <site> <class> <owner> <hops>`, at most 16),
+`hookskip <what> <why>` (unreadable, malformed, noheader, stale -- the file is not the one mapped --, emulated --
+x64 on ARM64, whose system DLLs are rewritten as they load --, imports, exports), and `hooks <found> <codebytes>
+<funcs> <slots> <execregions> <execkib> <debugger> <scans> <unread> <unlisted> <inflight>` (scans 0: none
+finished; inflight 1: one was under way). The block is written whole only if it fits with 256 bytes to spare
+under in_jrn_max (the `end` line's); the main thread only resets and copies the accumulator. P1577's folder logic
+moved into INS_ModDirs/INS_ModClass/INS_ModToken, same results. hidcheck (FTESurf) lists the lines and notes
+them; an older reader notes unknown kinds. A note, never a verdict.
+
+**Measured first.** A clean process's system DLL code equals the file's after relocation (user32, win32u, gdi32,
+gdi32full, opengl32, kernel32, kernelbase, ntdll, xinput1_4: 0 bytes outside `fothk`, the loader's thunk section);
+a running client's 5.85 MB .text equals its file (no mingw pseudo-relocations in code). GetCursorPos and
+GetPhysicalCursorPos are one function on Windows 11 (compared once).
+
+**Verified.** tools/p1586hooks.py (FTESurf): a client holds journal A 4 s, the driver patches it from outside --
+a 14-byte jump and an int3 in code padding, a jump over user32!GetRawInputBuffer, the exe's GetClipboardData slot,
+user32's GetPhysicalCursorPos export entry, an executable region -- and it holds journal B 25 s. A: 0 findings,
+5,859,424 code bytes, 49 functions, 2,874 slots, 1 scan. B: each planted patch named with the module its jump
+ends in (KERNELBASE.dll through the region and kernel32's Sleep stub), the int3 as int3, the region counted,
+nothing else, 2 scans merged. Control (installed P1578 exe): no hook lines. hidcheck this tree and the previous
+one: no fault; test_hidcheck 1666/0, test_reccheck 979/0. Scans 70-96 ms on the worker. Frame-time A/B
+(tools/p1586perf.py, menu, 400 fps cap, scan/control/control/scan, 40 s each): 1% tail 2.73/2.74/2.80/2.72 ms,
+0.1% 3.04/3.08/3.46/2.92 ms, worst 3.72/4.27/4.43/3.34 ms, no stutters -- no measurable cost on this PC. Three
+review rounds. Round 1 (three lenses): a crash reading import names through memory, decoding from the first
+differing byte, game-folder DLLs trusted, the scan on the main thread at every lobby run end, the block eating
+the trailer's reserve, unreadable places counted as findings. Round 2: GetProcAddress on unguarded export tables,
+the window destroyed mid-scan, a console print after teardown, the priority argument ignored by Sys_CreateThread,
+the reserve. Round 3 (no crash or corruption left): a refused lookup silent, a moved export table unseen, partial
+reads decoded, exiting threads read as unreadable debug registers, a scan in flight at the end. All fixed.
+
+**Limits.** A tool that restores its bytes around the scans, works below user mode, edits data rather than code,
+or targets the scan itself (a forwarded export's target DLL is read unchecked by GetProcAddress) is not seen;
+plugins in the game folder are trusted. Findings name file names, as module lines do. Measured on one Windows 11
+24H2 PC only.
+
+## Patch 1579 - Jargon walks into a stage after a speed-zeroing teleport
+
+**Problem.** (Lex, 16 Nov, watching surf_rookie: Jargon finished stage 1 countless times before going on, then
+bunny-hopped the start of stage 2; unless horizontal speed carries between stages, walk to the first ramp and jump.)
+surf_rookie's stage teleports zero horizontal speed and put the body 1 u from the guide's landing every time. The first
+stretch after one was searched like any other, with `hop`, from a standstill the curve cannot steer (it steers off the
+velocity); it failed, and each backtrack replayed stage 1 into the identical state ("counted as failed again") until
+the chain stopped.
+
+**Change.** QuakeC only (sv_tasautosurf.qc). A stretch that starts after a portal leaving horizontal speed under 30 u/s
+-- at run time, or by the guide's own speed just past the teleport, which a Continue keeps -- is a floor: no backtrack
+rule and no escalation restart goes before it. On such a still start Jargon replays the guide's own walk (stage 34):
+the drop waited out with no keys, then a guide row a tick from the row after the guide's landing to its takeoff (read
+from the vertical speed: these guides carry no ksfbuttons jump rows), the jump on that row only; the stretch is then
+searched from the air with no hops and no guide jump rows. A drift over 48 u from the guide's track, or no takeoff
+before the board, falls back to the search (a walk and one jump, hops off). tas_jargon_off 8388608 turns it off.
+
+**Verified.** Three VMs 0 warnings (fteqcc 1f2efd06). surf_rookie main, headless bench on the PC: six stage starts each
+walked and jumped at the guide's own speed (262-276 u/s) 0-1 u from its takeoff, and boarded; stretch 16 of 64 in 420 s
+with one backtrack, none before a stage portal; 22/22 predicted landings bit-equal (rig g6; g5 before the review-2
+fixes: 20 of 64 in 480 s, takeoffs 4 u late, 26/26). Before (P1572 build, f1): stretch 9 in 1200 s, stage 1 re-finished
+each backtrack. Cuts measured and replaced: a walk-and-one-jump search from the standstill (g3: no backtrack through the
+portal, but 11 searches never boarded stretch 5) and a replay from the teleport itself (g4: the drop's timing put it
+50 u off within 12 rows, so the search from mid-drop with hops did the boarding). Two reviews (control flow and state):
+the first found no jump in rookie's rows (they have no ksfbuttons), a stale floor across a Continue, the rule bit and
+rule 8's baseline; the second found the floor lost after a later portal or a Continue, a landing row after a hop, the
+replay a tick late, ksfbuttons jumps kept after it, and a redo after a stop mid-replay -- all fixed. A replay ending in
+a state that cannot board stays stuck there (deterministic; BACKLOG).
+
+## Patch 1581 - pm_verify names the prop models a run's lobby lacked beside a state/physents HOLD
+
+**Problem.** A lobby that missed newly installed content collides with a placeholder where the content should be,
+so replays of its runs HOLD on `state`/`physents`, and nothing said that the lobby was missing models rather than
+the run being doctored.
+
+**Change.** The lobby's QC (FTESurf P1581) probes the model file of every prop the map asks to be solid and writes an
+additive `.rec` header `propmiss <n> [<model>...]`. pm_verify parses it and, when the reason it is about to print is
+`state:` or `physents:`, appends "; lobby lacked N prop model file(s): ... (may be content skew)". A hint from the file
+being judged, never an excuse: the verdict is unchanged. `why` widened to 320 for the tail.
+
+**Verified.** tools/p1581skew.py with a real lobby run (bhop_1n5an3, 5,817 ticks) and its lobby zone file: unchanged
+the run PASSes; one mid-run sample moved by 0.01 HOLDs at row 2781; with a `propmiss` header the HOLD carries the
+names and "may be content skew", the PASS does not; the installed engine (control) prints the same verdicts with no
+such text. The lobby's detector on a generated map: one solid prop with a missing model file counted once, a
+non-solid one not listed. Two review rounds (the first found that a missing model loads as a 32-unit placeholder,
+so an empty-bounds test never saw one, and that "not tampering" overclaimed; the second that the .phy rule turned
+contentless solid-6 props non-solid before the probe).
+
+**Limits.** Live on the lobbies only once the Pi's server engine carries this patch; static props built by the hl2
+plugin are not covered; a resumed run keeps its first session's line.
+
+## Patch 1578 - Warm the other fog variant of listed permutations at activation
+
+**Problem.** After Patch 1574, surf_null still compiled three GLSL permutations mid-run on its first play (first-play
+census, PC):
+- vmt/vertexlit 0x128 and 0x328, fog variants of the listed 0x108 and 0x308;
+- vmt/refract 0x20, the fog-only permutation of a 4-bit program no list knew.
+
+Each took 10-16 ms. The warm list is shared by every map, so a permutation seen only unfogged had no fog variant
+listed. Permutation 0 is never listed, so its fog variant is not either.
+
+**Change.** A third pass in `GLSLWarm_MapActive`, after the listed and whole passes.
+- It runs where the map can draw `PERMUTATION_FOG`: always on a Source world, otherwise when any `cl.fog` density is
+  non-zero. A Source world's fog controllers switch on later (SetFogController fires on 54 maps; 26 start on a
+  disabled master), and its water fogs the view without one (gl_rmain.c's fallback).
+- For each active program declaring the fog bit and more than the 3 bits Patch 1574 warms whole, it compiles the
+  fog-only permutation and each listed permutation with its fog bit toggled. So a permutation listed only fogged
+  warms its no-fog base too.
+- It is counted apart (`r_mapready_info`: `fog variants fogged ...`) and stays out of ready-closure, like the whole
+  pass.
+- tools/test_mapreadiness.py covers fogged and unfogged maps, a negative density, a Source world, the budget and a
+  missing list: 46 checks. Two mutants fail it (the bit set instead of toggled; the Source test removed).
+
+**Verified.** First-play census, same diag build plus and minus this patch: a cold driver cache per exe, seed-only
+warm list, board replays from a fresh launch.
+- surf_null's late compiles: 3 -> 0. The frame that compiled vmt/vertexlit mid-run: 18.6 -> 5.6 ms.
+- No map had a compile during play.
+- The pass compiled 14-46 permutations a map: 27-86 eligible, 13-40 already there.
+- Activation took 0.08-0.27 s longer on a cold cache (surf_boreas 0.93 -> 1.20 s), behind the loading screen.
+
+One review (predicate and flow): no must-fix. Its should-fixes are in: fog that starts after activation, Source
+water's fallback fog, and the renderer's non-zero test. Still open:
+- the Max Fog event's stuffcmd fog on a non-Source map;
+- wasted compiles for `$nofog` materials (bounded by the budget).
+
+## Patch 1575 - Make the water capture targets at activation
+
+**Problem.** After Patch 1574, the frame that first showed a map's water still cost 53.0 ms on surf_boreas and
+29.0 ms on surf_chateau (first-play census, PC). In that frame the driver reported allocating multisample renderbuffer
+storage. The reflection's MSAA pair (Patch 1276, `r_reflectmultisample`) and the capture textures were made by the
+first capture that needed them, in play. They live until a mode change, so this happened on the first map with water
+in each session, and again after any resize.
+
+**Change.**
+- `GLBE_CaptureTargets_MapActive` runs at activation, after the GLSL warm-up (`r_capturewarm`, default 1).
+- It finds the active shaders that reflect (the largest `portalfboscale`), that read reflection depth, and that
+  refract (a depth texture, or the renderbuffer variant under `r_refract_fbo`).
+- It sizes each target as the main view's first capture will: `vid.fbpwidth` from the window and `r_renderscale`,
+  then `BE_WaterCaptureRect`.
+- It binds each FBO once and clears it, the reflection through the MSAA begin/end path. GL's scissor is off for its
+  whole length.
+- First it runs GLBE_DrawWorld's mode-change housekeeping, now `BE_CheckModeChange`. `shaderstate.oldwidth` is 0
+  until the first world draw, so otherwise the session's first frame freed what the warm made.
+- Portal shaders, recursive captures, GLES and `r_portalrecursion 0` are left alone.
+- The per-frame path creates and resizes its textures through the same helper, `BE_CaptureTexture`, so the warm and
+  play cannot disagree about formats.
+- `r_mapready_info` prints the predicted sizes and how many of the main view's water textures and MSAA storages were
+  rebuilt since activation. Non-zero means the prediction missed.
+
+Trade-offs:
+- When a loaded reflecting shader reads reflection depth (#PARALLAX water), P1475's depth texture is made at
+  activation. From then on, glass captures keep it attached, as they already did after the first sight of such water.
+- About 16-19 MB at 1920x1080 is held from activation rather than from the first sight of water (a reviewer's
+  estimate from the formats).
+- A view that is not full screen, or a resize after activation, is rebuilt on first sight, as before.
+
+**Verified.** First-play census, the same diag build with `r_capturewarm 0` against 1: a cold driver cache per exe,
+seed-only warm list, board replays from a fresh launch.
+
+| | control (`r_capturewarm 0`) | warmed |
+|---|---|---|
+| surf_chateau first-water frame | 29.0 ms | 19.2 ms (18.6 with Patch 1578) |
+| surf_boreas first-water frame | 53.0 ms | 45.6 ms (twice) |
+| driver multisample allocations in play | 2 | 0 |
+| targets rebuilt in play (all four maps) | textures 4, AA 1 | 0 and 0 |
+| activation time | | within 0.06 s |
+
+surf_nova's and surf_null's first-water frames (17-19 ms) had no allocation in play and did not change. What is
+left in those frames is CPU in opaque draws (16-41 ms) in the first frame that renders the two water views.
+boreas' frame first-uses 68 vertex buffers: the driver's first draw of what the water views show, not render targets.
+
+Reviews (predicate and flow): round 1 found one must-fix, the first frame freeing the warm's targets, fixed as above.
+Its should-fixes are done too: the counter covers only level-0 non-portal targets, plus the scissor, GLES and
+recursion guards. Round 2: no must-fix. Its should-fix is in (the MSAA resolve trusted a stale scissor flag), and the
+counters restart at a mode change.
+
+## Patch 1572 - tas_rollout follows trigger_push
+
+**Problem.** (Lex, 16 Nov: Jargon completes little; does it know push triggers?) tas_rollout ran only the mover:
+any trigger volume QC acts on ended a prediction, and a held push carrier refused the rollout (-9), so a Jargon line
+through a booster scored as a miss and a body inside a push could not be searched at all. 16 of the 108 fastest
+guide lines in data/online cross a trigger_push or basevelocity booster volume (AABB census, 16 of 81 maps).
+
+**Change.** For a body whose QC field `run_tasrollpush` is 1 (QC sets it while its search runs on a live run),
+tas_rollout and tas_rollout_batch follow trigger_push as the live code does. QC describes each push (`tas_rpushk`
+kind, `tas_rpush` the touch's own vector, SV_TASPushPrep). Before each tick's move the rollout cashes out or hands
+over QC's held carrier as SV_BaseVelocityFrame does (SV_TASRollCarrier); after it, every push the hull touches acts
+in World_TouchAllLinks' order (the new World_TriggerTouches mirrors its tests) as trigger_push_touch does: the
+carrier, accumulation within one command, an upward push's ground strip and one-unit lift, one-time kicks (16 a line
+at most), and class-filtered pushes that never move a player. A push whose only outputs disable it on leaving and
+re-enable it later (surf_rookie's 24: "OnEndTouch !self Disable", "!self Enable" a second on) is followed once;
+touched again after leaving, it ends the line. Held in the body's touch slot at the start (kind 6), the start walk
+records whether the body stands in it, and it is followed only while the body stays in it. A push QC cannot describe
+(other outputs, a filter, an edge or delay still owed, named by another entity's output, parented) still ends the
+prediction, and a push refused on a tick outranks a solid met on it. Field lookups are uncached (a static evalc_t
+outlives the progs' field table at a map change, Patch 139). A progs without the fields: no change.
+
+**Verified.** Rigs on the PC's bench (headless client), surf_rookie main (rkm) and surf_tensor2 stage 2 (t2s2):
+- Exact: every played landing bit-equal to its prediction -- surf_rookie stage 1 4/4, t2s2 17/17, rkm with pushes
+  followed 121/121 (before kind 6) and 92/92 (final).
+- Discriminates (same build, tas_jargon_off 4194304 = pushes not followed): rkm with pushes reached stretch 9 of 64
+  in its 20 min, through the stage-1 push and portal; without, each search after the portal stopped before one
+  candidate ("a trigger edge ... is pending" 19 times, "a push ... carrier is armed" twice) and the chain ended stuck
+  at stretch 1. The run before kind 6 stopped 13 times at stretch 4 with "the body starts inside a trigger volume".
+- Control: surf_tensor2 stage 2 (no pushes) finished alike on three builds of this patch (WIP, review 1, final):
+  0:12.165, 4 backtracks, 17/17 bit-equal. The installed-build arm was stopped twice by Claude Code's low-memory
+  guard; it is recorded in tools/p1572-delivery.md when it runs.
+- Speed was the request's other half and is not in this patch. Two debug runs on t2s2 (counters at each early return)
+  showed the search busy 0.6-1.0 s of each second while it runs, each frame running at least one batch (~200 ms); the
+  time between its frames -- 58% of a stretch in the P1483 bench, read as idle -- is the found line's tape playing one
+  tick per client command (9 a second from the bench's headless client). A path running the search's work from QC's
+  StartFrame (rollouts resolving the client outside its command) was built, called the search ~33 times a second and
+  changed nothing (553 frames worked in both builds); it is removed.
+- Reviews: round 1 two reviewers (flow; exactness and evidence); round 2 one reviewer, six findings, all real and fixed
+  (the static field caches above; wildcard and template-spawned output targets missed by QC's push scan, and its
+  outputs x edicts cost; a slotted push waited for and then refused; the budget clock's float milliseconds; a refused
+  push hidden behind a solid). A census of 2204 maps: 264 pushes on 82 maps are named by another entity's output,
+  none only through a wildcard, none on the 84 guided maps (the bench cannot reach one).
+
+## Patch 1577 - DLL tripwire: the input journal names modules from outside the game and Windows folders
+
+**Problem.** A public cheat loaded into the game as a DLL left no trace in any record.
+
+**Change.** At `in_journal_begin` the `.hid` header gains `modules <n>` and one `module <program|user|other>
+<file>` line per module loaded from outside the exe's folder, the base directory and the Windows folder
+(`INS_ForeignModules`, K32EnumProcessModules; folders from GetSystemWindowsDirectoryW and SHGetFolderPathW, not
+the environment). File names only, since a path names the user. Beside `devmap` at the end, untimestamped
+`module+` lines name those loaded during the journal. hidcheck lists them as a note, never a fault; older readers
+note the lines as unknown.
+
+**Verified.** `tools/p1577journal.py`: a journal from this build lists one module on the PC
+(`program graphics-hook64.dll`, OBS's capture hook), and this tree's and origin/main's hidcheck read it with
+no fault; the installed engine (control) writes no module lines. `test_hidcheck.py` case_modules_tripwire
+covers count/name agreement, `-1`, malformed lines and `module+` after `end`.
+
+**Limits.** Anything can rename or unlist itself, and modules under the game's own folders are not listed
+(a proxy DLL there needs in-process code to catch). Overlays, recorders and security software land in the
+list too; it is never the headline claim.
+
+## Patch 1576 - Input other programs make does not reach the game; the guard settings refuse map and server sets
+
+**Problem.** The owner decided on 16 Nov to block all injected input. P1424 only counted injected keys; P307's
+click block missed posted messages and was grab-scoped; P1573's QC reads could be held apart from what the
+engine applied by a map-supplied setting.
+
+**Change.** Every Windows renderer's keyboard, click, wheel and app-command messages ask
+GetCurrentInputMessageSource during their own dispatch: only IMO_HARDWARE passes (SendInput, system-injected,
+posted and cross-thread-sent messages are dropped), under `in_keyguard` (keys, default 1) and
+`in_rawinput_nolegacy` (pointer; now default 1). The low-level hook's own keys are dropped when
+LLKHF_INJECTED. `in_rawinput_touchpad` defaults to 0 and also turns WM_TOUCH off. The guard cvars, `in_dinput`
+and `in_rawinput_rdp` are CVAR_NOTFROMSERVER. The window thread enforces a copy that INS_GuardPublish (main
+thread, once a frame) changes: a guard switched on applies at once, one switched off applies 1 s after the
+read-only `in_guard_live` (1 clicks, 2 touchpad off, 4 keys, 8 cannot run) has said so. A non-hardware release
+of a held key passes (no stuck key). With no hardware key seen, the 8th drop stops the key guard for the
+session; an API failure, DirectInput running, a bound Remote Desktop device or a remote session report the
+defeated guards off with 8. The read-only `in_guard_lapses` counts every lapse: a published guard leaving, a
+held release let through, a legacy key no keyboard device corroborated when SendInput's handle-less raw report
+sat beside it (Windows passes a UIAccess program's SendInput as hardware; AltGr's synthesized Ctrl has no such
+report), and each line another program sends (-plugin stdin, WM_COPYDATA). A session that drove the QC
+debugger over that pipe (it can write game-code globals) reports cannot-run. The P1573 defaults move runs in the engine once per config after a connection (`in_guard_rev`):
+FTE saves every archived cvar, so configs pinned the old defaults, and NOTFROMSERVER refuses the QC's
+localcmd. The `.hid` gains `kd` (dropped presses, dt 0; they leave the observer's pending set, so `y` is what
+reached the game) and `in_keyguard` in its input table. QuakeC (FTESurf P1576) reads `in_guard_live` only as
+the engine's own read-only digits, steps `bad` on any change of `in_guard_lapses`, reports keys on `inguard`
+(now `ffff`), demotes `keys`/`keyguard`, and writes an additive `.rec` header `inguard`.
+
+**Verified.** `tools/p1576keys.py` (posted WM_KEYDOWN to the rig client, origin 0): dropped with the guard on,
+delivered off; still dropped in the 1 s after switching off, delivered after; a held key's posted release
+passes and `in_guard_live` loses 4 for the taint time; the no-hardware fallback stops dropping (keys arrive,
+`in_guard_live` 10); a stdin command raises `in_guard_lapses` -- 13/13. `p1573guard.py --live`: defaults rank;
+`keys`, `clicks`, `touchpad` each demote with their word; `in_guard_live` cannot be set; an `in_keyguard` toggle
+inside a running clean run reads `changed` -- 8/8 (CSQC also reports from CSQC_Input_Frame once the view
+frame has sent, so a minimized window still reports). `--latch --live`: the P1573 map-lock fixture locks
+nolegacy on the installed engine ("Effective value is ' 1'") and not on this one, and the run ranks. P1576's QC
+on the installed engine passes P1573's 8 cases unchanged and reads `keyguard` with `sv_rank_keyguard 1`.
+Three review rounds (predicate/threading, completeness at the config level, honest players and evidence);
+each fix was re-reviewed.
+
+**Limits.** In-process code, a device presenting itself as a keyboard or mouse, and gamepads (owner: they
+rank) are outside it. A UIAccess program's keys reach the game but mark the run `changed`; an uncorroborated
+press is decided 100 ms after it, so one in the last ~100 ms plus a round trip before a finish is judged
+late. The 1 s delay and the lapse count reach the server on the reliable channel; a report
+delayed past the finish is judged late, as P840's are. Older engines rank until the lobbies set
+`sv_rank_keyguard 1` after a release carrying this one. `in_dinput 1` crashes the client at input init
+(0xC0000374) on this build and the installed one, so its case could not be driven. No real hardware key or
+UIAccess injector was driven on the rig; the owner's own play is the hardware-key check.
+
+## Patch 1574 - Warm small GLSL programs whole at activation (water on maps not played yet)
+
+**Problem.** The activation warm-up (Patches 1277, 1441, 1442) compiles the permutations a warm list remembers by
+full program name. A Source water material's defines are part of its program's name
+(`vmt/wateranim#DEPTH#FOGSTART=...`), so on a map not played before no list -- the PC's or the release's seed --
+knows its water, and each permutation compiled in the frame that first showed it. A program only ever drawn at
+permutation 0 is never listed either (GLSLWarm_Add). A first-play census on the PC (i9-9900K, RTX 2080 SUPER;
+seed-only list, a cold driver cache per exe, six maps' board replays from a fresh launch) found every late compile
+during play on surf_chateau, surf_nova, surf_boreas and surf_null to be water, 31-40 ms each, in frames of 41-78 ms.
+
+**Change.** `GLSLWarm_MapActive` runs two passes. The first is the old one (the listed permutations, moved into
+`MapReady_WarmPerm` unchanged). The second, with what is left of the budget, compiles every non-zero combination of
+the supported bits of each active program declaring at most 3 (water 2-3, sky and sprites 1-2; world and model
+programs declare up to 8 and stay with the list). Its counts are separate (`r_mapready_info`: `whole programs ...`),
+so `ready-closure` still describes the listed closure; a missing list still runs it.
+tools/test_mapreadiness.py (whose stubs had not compiled since Patches 1442/1501) covers both passes: 38 checks.
+
+**Verified.** Same diag build with and without the patch (a cold driver cache per exe each), seed-only warm list,
+six maps' board replays from a fresh launch: late compiles during play 7 -> 2, every water one gone; the two left
+(surf_null) are fog variants of listed 4+-bit vertexlit permutations (whole sessions 16 -> 6; the rest are CSQC shaders
+registered after activation). The first-water frame went 77.6 -> 53.4 ms (boreas) and 48.1 -> 29.2 ms (chateau), and surf_nova's
+41 ms one is gone; what is left in it is the reflection MSAA target allocated on first use. The second pass compiled
+13-96 permutations a map, none pending; activation took 0.08-1.05 s longer on a cold cache (bhop_ceaseless 0.10 ->
+1.15 s, 28 small programs), behind the loading screen.
+One review (predicate and flow): no blockers; its should-fix (speculative compiles sharing the budget with listed
+ones in pointer order) is the two-pass order above, and the empty-list and stale-comment notes are fixed.
+
+## Patch 1573 - No injected clicks and no touchpads on the ranked board
+
+**Problem.** The owner decided on 16 Nov that injected clicks must be blocked and touchpads may not
+rank. Patch 307's legacy-message block (`in_rawinput_nolegacy`) was opt-in and off because it cost
+touchpad buttons, and Patch 468 (`in_rawinput_touchpad 1`) let a precision touchpad turn the view.
+Neither was in the ranked input profile, so a run with injected clicks reaching the game, or played
+on a touchpad, ranked.
+
+**Change.** QuakeC only. CSQC reports both settings on a new `inguard` event (`inprof` is at
+sendevent's six floats) and steps the existing `bad` counter when either goes off-profile (only where
+both cvars exist), so a toggle inside a run reads `changed`. The click block is reported as on only
+for the exact string "1": the engine applies it from `.ival` (Q_atoi) while `cvar()` is Q_atof, so
+`" 1"` or `0.99999999` would otherwise read on with clicks open; and since a map-supplied cvar setting
+can hold the applied value apart from the one `cvar_string` returns, CSQC also reads off the block when
+worldspawn names an `in_rawinput` cvar (from CSQC_WorldLoaded; off until it has run). SV_ProfileWhy adds `clicks`
+(nolegacy not exactly 1) and `touchpad` (touchpad not exactly 0) after the reported profile; no
+`inguard` report is `silent`, and a missing cvar is a fault. Demotion is the existing quiet
+TF_NOPROFILE with the reason on the finish line and in the `.rec` `inprof`/`prof` words (format
+contract updated). A one-time defaults move (`in_guard_rev 1573`, only where both cvars exist) sets
+nolegacy 1 and touchpad 0; setting touchpad back to 1 is allowed and unranked. reccheck knows the two
+words (older readers note them, never fault). `cmd timer` prints an `inguard` line.
+
+**Verified.** Three QuakeC VMs build with 0 warnings (fteqcc 1f2efd06). `tools/p1573guard.py`
+(cfg/test/p1573guard.cfg), dedicated server and fresh-basedir client on surf_dune: the defaults move
+lands; nolegacy 0, `" 1"` and `0.99999999` each read `clicks`; touchpad 1 reads `touchpad`; a nolegacy
+toggle inside a running clean run reads `changed` with the start latch intact -- 8/8. `--latch` (a
+private-tree fixture): the engine's effective value is off while the round-1 and round-2 builds report the
+block on and would rank; this build reads `clicks`.
+The final build passes 8/8 on the installed client and on the 0.1.45 release client. The first cut
+passed 6/6 on the installed client exe 065f20d7 and on the 0.1.45 release client; on it the two
+review cases fail (it reported nolegacy 1). Control, installed pre-patch progs: no move, no `inguard`
+line, both settings still rank. `tools/test_reccheck.py` passes; with the two words removed the new
+checks fail. Two independent reviews (predicate/flow with a coverage table; evidence and honest
+players), then an integrity review of each fix: round 1 found the Q_atof/Q_atoi gap, round 2 the
+map-supplied setting, round 3 gaps in the first answer to it.
+
+**Limits.** The profile reads the settings, like the rest of it; a patched client can assert them
+(T4). The worldspawn check is a partial defence; the engine-side fix (CVAR_NOTFROMSERVER on both
+cvars, and the applied state as a read-only cvar) is BACKLOG and rides a release. It reports what was asked for, not whether the block applied: the block is grab-scoped, and the
+engine's applied state (`in_raw_nolegacy_live`) is in the journal, not in QC. A touchpad that
+presents itself as an ordinary mouse is not stopped by `in_rawinput_touchpad 0`. Each vertical wheel
+notch reached the game twice (raw and legacy); with the block on while grabbed it arrives once, so
+scroll-bound actions see one press per notch. Software remappers and accessibility tools that send
+clicks no longer click in game. No real touchpad or injected input was driven.
+
+## Patch 1571 - Keep appearance tables compatible with existing updaters
+
+**Problem.** The generated material-colour and never-shipped-material tables
+were declared as release inputs under `data/`, but released signed-update
+readers reject those names before installing anything. Adding exceptions to
+new readers would still strand existing clients on the old policy.
+
+**Change.** Relocate only these two authored asset tables to the existing
+managed `scripts/` namespace. Update the plugin's read-only load paths,
+diagnostic references, generator defaults/help, explicit required ship entries,
+exact generated-file ignores and current preparation instructions. Preserve
+old developer `data/` copies; change no table format, missing-table fallback,
+updater policy, signature check, path guard or player-data ownership rule.
+
+**Verified.** The publisher's 21 signed-object/manifest tests pass, including
+byte-identical round trips of both new paths and denial of their old DATA
+names. The actual native policy compiles with `-Wall -Wextra -Werror`, accepts
+the authored asset paths and refuses 26 neighboring/player paths; removing
+the existing scripts prefix acts separately for each table. That policy body
+is identical to released 0.1.45 engine 9aa225a8f. The actual Rust policy is also
+identical to released launcher 1538d9c; its exact repository test compiles with
+warnings denied, passes unchanged policy and fails both prefix-omission arms.
+The public-default Windows full build passes for the client, dedicated server
+and all five plugins, with no warning messages new to the prior default full
+build. All three release-version QuakeC VMs compile with zero warnings. These
+are build and source-bound policy controls, not complete old installer or
+plugin load acceptance. Actual staged table loads, Linux qualification and
+final prepared-candidate acceptance remain required before publication.
+
+## Patch 1570 - Admit owned similarity sources without unused prefetch
+
+**Problem.** A valid first comparison could become unavailable under a selected
+small SQL allowance because the owned collector materialized its entire source
+window before using one source. The existing remaining-peer allowance fix did
+not prevent this separate source-side waste.
+
+**Change.** The owned collector selects currently eligible sources on demand,
+with fixed-anchor rotation and proven recovery retirement. Source limits remain
+independent of pair allowance: unresolved sources do not suppress later usable
+ones. Admission is checked before the next SQL read and after selection; late
+read/time/lock stops retain real prior commits. Generic pending/direct callers,
+normal raw-byte capture, parser/model and default policies stay unchanged. No
+native implementation/pin/tag, qcbuild, ranking or enforcement change.
+
+**Verified.** Actual wrapper/reader regression fails old production with no
+comparison and passes the subject with the normal measured row/capture. Source,
+peer, wrap/recovery, zero-ID, late-stop, unresolved-later and contention controls
+act. Targeted Windows programs pass; Linux final197checks have zero skips or
+failures, including all six typed/POSIX arms. A new test's Windows-only capture
+constant first failed on Linux; the independently reviewed correction derives
+exact expected hashes/sizes from authored input bytes before collection. Both
+independent production and test-delta reviews found no P1/P2. These are scoped
+availability/correctness controls, not calibrated detection, global hard time/
+RSS/fairness guarantees or a whole research-leaf completion. Backend delivered
+15Nov2026 14:39:54UTC; independent14:48:17 readback verifies both85-file cohorts,
+actual accepted actor/namespace, canonical/cron/importer bindings and healthy
+ordinary service. Compatible fallback qualified FIRST against CURRENT data;
+both CLOSED roles preserve all46 table digests/counts, identity8, schema/objects/
+queues and sameinode. Post-OPEN checks are schema-only, not frozen writers. Six
+readers/native unchanged, temporary holds/leases released; no lobby/QC swap or
+new real recording/calibration. Exact limits and delivery are recorded in
+tools/p1570-similarity-source-budget.md (mod tree).
+
 ## Patch 1568 - Bounded large owner-history acquisition
 
 **Problem.** Owner history refused bodies over8MiB. Raising that constant alone
@@ -15,17 +504,31 @@ healthy listings retain their query. Pending completion ownership is private;
 no historical orphan adoption or REC/native-cert/rank/movement policy change.
 
 **Verified.** Production-source hash/VM controls match Python at1/4093/65536-byte
-budgets; quota/error/seek/close and sparse Windows4GiB+3 controls act. Both
-independent review P1s were corrected; fresh frozen integration review is clear.
-Three VMs compile0warnings; full Windows client/server/five-plugin diagnostics
-exactly match the inspected pre-change baseline (74existing warnings). Current
-CSQC metadata binding also links with0new warnings. A real154-tick TAS finish
-used authenticated list2/get2/ack2 and saved all31822bytes identically, without
-auto replay. Reader952/0; actual paired CLI retains366faulty reports and368
-diagnostics on the same578REC/184VIEW bytes under both readers (0new). Published
-HL2 maintenance was integrated without changing any of the9 IO/API source files.
-Final clean restamp, genuine large-body runtime and destination delivery remain
-pending; source/unit/small checks are not arbitrary-size or installed proof.
+budgets; quota/error/seek/close and sparse Windows4GiB+3 controls act. Frozen
+native/QC and final merged-integration reviews are clear. Clean published
+cc562/tag1568 Windows client/server/five-plugin and canonical Git-blob ARM64
+builds match all74/16 respective baseline warnings, zero new diagnostics. Both
+actual dedicated images passed1831map-free selfchecks, zero failures. Final
+clean5abe QC compiles three VMs with0warnings; later475858 product-source bytes
+are identical. Genuine final-build184-tick TAS completion, account proof and
+list2/get2 copied all32353bytes identically and passed strict reading; no auto
+replay. Actual paired CLI retains366faulty reports/368diagnostics on identical
+578REC/184VIEW bytes under both readers (0new). A clearly synthetic17MiB+3 body
+completed production recovery/sealing/transfer/ACK/client-hash/promotion from a
+modeled pending promise; not a genuine large completion or certification. Both
+Windows installs and all12Pi native actors are destination-verified; original
+postcopy receipt failure remains separate from read-only Windows acceptance.
+Qualified QW/CS then swapped across all12 with both real preservation boundaries,
+10-second warning and ordinary.prev. Original normal F.post UDP timeout remains
+FAILED/incomplete; separate read-only10:46–10:48UTC acceptance verified all12
+resident/checksum/history states and64842 cold protected entries/204 selected
+members by full bytes+metadata. Nonleased one-status-window scope, no second
+F observation or guessed timeout cause; no redeploy/retry to turn failure green.
+Owner specifically accepted3 missing old resume members before fresh capture,
+old207 archive retained/no restore; known published peer config/backend preserved.
+See mod tools/p1568-delivery.md for exact UTC/source/preservation and limits.
+Genuine >8MiB completion and healthy >30s query remain unmeasured; no unlimited-
+size, memory/performance, human UI/production-posting or release claim.
 
 ## Patch 1565 - Preserve exact server angle-operation context
 

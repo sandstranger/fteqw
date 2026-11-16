@@ -277,6 +277,7 @@ int in_raw_legacybtn = -1;
   at begin and as an 'o' record at every change.*/
 int in_raw_legacykey = -1;
 int in_raw_kbdnohandle = -1;
+int in_raw_keydropped = -1;	/*Patch 1576: key presses in_keyguard dropped; -1 = this backend has no guard*/
 int in_rawkbd_observe = -1;
 int in_rawkbd_observechanges;
 
@@ -370,6 +371,7 @@ static const char *in_jrn_inputcvars[] =
 	"m_accel_style", "m_accel_power", "m_accel_offset", "m_accel_senscap",
 	"m_forcewheel", "m_forcewheel_threshold",	/*turn wheel motion into keypresses*/
 	"in_rawinput_touchpad",		/*Patch 468: whether handle-less reports become counts on a touchpad laptop*/
+	"in_keyguard",				/*Patch 1576: whether keys other programs send are dropped ("kd" counts them)*/
 	/*Found by the red-team pass over this patch, all three invisible until now:*/
 	"leftisright",				/*r_xflip.  renderer.c declares it `cvar_t r_xflip =
 							  CVAR("leftisright", ...)`, so the C identifier and the
@@ -1058,6 +1060,7 @@ static unsigned int	in_jrn_dropreported, in_jrn_dropbase, in_jrn_events, in_jrn_
 static int			in_jrn_injbase, in_jrn_unenumbase;			/*Patch 306: taken at begin, so the journal reports only its own window*/
 static int			in_jrn_injreported, in_jrn_unenumreported;	/*...and how far the per-frame records have caught up*/
 static int			in_jrn_lgbbase, in_jrn_lgbreported;			/*Patch 307: the same pair for the uncorroborated legacy button*/
+static int			in_jrn_kdreported;		/*Patch 1576: key presses in_keyguard dropped, caught up*/
 static int			in_jrn_lgkreported, in_jrn_nhkreported;		/*Patch 1424: legacy keys and handle-less keyboard reports, caught up*/
 static int			in_jrn_obsreported;							/*Patch 1424: in_rawkbd_observechanges last written*/
 static int			in_jrn_padbase, in_jrn_padreported;			/*Patch 468: accepted touchpad reports, baseline and caught up*/
@@ -1364,6 +1367,9 @@ void IN_Journal_AbortClose(void)
 	}
 }
 
+#if defined(_WIN32) && !defined(WINRT) && !defined(FTE_SDL)
+void INS_HookJournalEnd(void *ctx, void (*line)(void *ctx, const char *text));	/*Patch 1586*/
+#endif
 void IN_Journal_Drop(void)
 {
 	/*Main-side lifecycle: the worker already owns indeplock while appending.
@@ -1388,6 +1394,9 @@ void IN_Journal_Drop(void)
 	in_jrn_full = in_jrn_synth = false;
 	in_jrn_events = in_jrn_frames = in_jrn_hidden = 0;
 	memset(in_jrn_haveabs, 0, sizeof(in_jrn_haveabs));
+#if defined(_WIN32) && !defined(WINRT) && !defined(FTE_SDL)
+	INS_HookJournalEnd(NULL, NULL);	/*Patch 1586: no journal open, so no scans*/
+#endif
 	CL_AllowIndependantSendCmd(allowed);
 }
 
@@ -1639,7 +1648,7 @@ static void IN_Journal_Bypassed(double when)
 static void IN_Journal_Keys(void)
 {
 	char tail[64];
-	int lk, nh;
+	int lk, nh, kd;
 
 	if (!in_jrn_buf || in_jrn_full)
 		return;
@@ -1648,6 +1657,16 @@ static void IN_Journal_Keys(void)
 		in_jrn_obsreported = in_rawkbd_observechanges;
 		Q_snprintfz(tail, sizeof(tail), "%i", in_rawkbd_observe);
 		IN_Journal_Line(in_jrn_last, "o", tail);
+	}
+	/*Patch 1576: 'kd <n>', dt 0, presses the key guard dropped since the last one (a held key's
+	  repeats count once).  The guard takes them out of the observer's pending set, so 'y' is only
+	  what reached the game.*/
+	kd = in_raw_keydropped;	//once: the window thread increments it
+	if (kd > in_jrn_kdreported)
+	{
+		Q_snprintfz(tail, sizeof(tail), "%i", kd - in_jrn_kdreported);
+		in_jrn_kdreported = kd;
+		IN_Journal_Line(in_jrn_last, "kd", tail);
 	}
 	lk = (in_raw_legacykey < 0) ? 0 : in_raw_legacykey;
 	nh = (in_raw_kbdnohandle < 0) ? 0 : in_raw_kbdnohandle;
@@ -2339,6 +2358,78 @@ void IN_Journal_ViewKeyboard(float dpitch, float dyaw)
   hardware is.  This raises the cost of the cheap end -- SendInput injection has no
   enumerated device at all, and a virtual driver has a name that says so -- and it
   leaves the hardware-replay ceiling exactly where it was.*/
+#if defined(_WIN32) && !defined(WINRT) && !defined(FTE_SDL)
+/*FTESurf Patch 1577: DLL tripwire (INS_ForeignModules, in_win.c).  Header `modules <n>` (-1: could not
+  list them) and one `module <program|user|other> <file>` each as the journal begins; untimestamped
+  `module+` lines beside devmap name those loaded since.  A note for the reader, never a verdict.*/
+int INS_ForeignModules(void *ctx, void (*callback)(void *ctx, const char *cls, const char *name));
+#define MAX_JRN_MODULES 256
+static unsigned int in_jrn_modhash[MAX_JRN_MODULES];
+static int in_jrn_modcount;
+static unsigned int IN_Journal_ModHash(const char *cls, const char *name)
+{
+	unsigned int h = 2166136261u;
+	while (*cls)
+		h = (h ^ (unsigned char)*cls++) * 16777619u;
+	h = (h ^ ' ') * 16777619u;
+	while (*name)
+		h = (h ^ (unsigned char)*name++) * 16777619u;
+	return h;
+}
+static void IN_Journal_Module(void *ctx, const char *cls, const char *name)
+{
+	char line[128];
+	unsigned int h = IN_Journal_ModHash(cls, name);
+	int i;
+	if (ctx)
+	{	//the end's pass: only what the beginning did not list
+		for (i = 0; i < in_jrn_modcount; i++)
+			if (in_jrn_modhash[i] == h)
+				return;
+	}
+	else if (in_jrn_modcount < MAX_JRN_MODULES)
+		in_jrn_modhash[in_jrn_modcount++] = h;
+	Q_snprintfz(line, sizeof(line), "%s %s %s\n", ctx ? "module+" : "module", cls, name);
+	IN_Journal_Raw(line);
+}
+static void IN_Journal_Modules(qboolean atend)
+{
+	char line[32];
+	if (atend)
+	{
+		INS_ForeignModules((void*)"end", IN_Journal_Module);
+		return;
+	}
+	in_jrn_modcount = 0;
+	Q_snprintfz(line, sizeof(line), "modules %i\n", INS_ForeignModules(NULL, IN_Journal_Module));
+	IN_Journal_Raw(line);
+}
+/*FTESurf Patch 1586: hooks below the journal (in_win.c).  A `hookscan 1` header line promises the
+  `hook`/`hookskip` lines and `hooks` summary beside module+ in a written journal, as one block and only
+  if it fits under the cap: the space past in_jrn_max is the `truncated` and `end` lines'.*/
+qboolean INS_HookJournalBegin(void);
+void INS_HookJournalEnd(void *ctx, void (*line)(void *ctx, const char *text));
+#define IN_JRN_HOOKBLOCK 8192
+static void IN_Journal_HookLine(void *ctx, const char *text)
+{
+	char *blk = ctx;
+	size_t l = strlen(blk), t = strlen(text);
+	if (l + t < IN_JRN_HOOKBLOCK)
+		memcpy(blk + l, text, t + 1);
+}
+static void IN_Journal_Hooks(qboolean discard)
+{
+	char blk[IN_JRN_HOOKBLOCK];
+	*blk = 0;
+	INS_HookJournalEnd(discard ? NULL : blk, discard ? NULL : IN_Journal_HookLine);
+	if (!discard && *blk && !in_jrn_full && in_jrn_len + strlen(blk) + 256 <= in_jrn_max)	//256: the `end` line, kept
+		IN_Journal_Raw(blk);
+}
+#else
+#define IN_Journal_Modules(atend)
+#define IN_Journal_Hooks(discard)
+#endif
+
 static void IN_Journal_DeviceLine(void *vctx, const char *type, const char *devicename, unsigned int *qdevid)
 {
 	const char *tag = vctx;
@@ -2400,6 +2491,7 @@ static void IN_JournalBegin_f(void)
 	in_jrn_unenumreported = in_jrn_unenumbase = (in_raw_unenum < 0) ? 0 : in_raw_unenum;
 	in_jrn_lgbreported = in_jrn_lgbbase = (in_raw_legacybtn < 0) ? 0 : in_raw_legacybtn;	/*Patch 307*/
 	in_jrn_lgkreported = (in_raw_legacykey < 0) ? 0 : in_raw_legacykey;	/*Patch 1424*/
+	in_jrn_kdreported = (in_raw_keydropped < 0) ? 0 : in_raw_keydropped;	/*Patch 1576*/
 	in_jrn_nhkreported = (in_raw_kbdnohandle < 0) ? 0 : in_raw_kbdnohandle;
 	in_jrn_obsreported = in_rawkbd_observechanges;
 	in_jrn_padreported = in_jrn_padbase = (in_raw_touchpad < 0) ? 0 : in_raw_touchpad;	/*Patch 468*/
@@ -2532,6 +2624,11 @@ static void IN_JournalBegin_f(void)
 		}
 	}
 
+	IN_Journal_Modules(false);	/*Patch 1577*/
+#if defined(_WIN32) && !defined(WINRT) && !defined(FTE_SDL)
+	if (INS_HookJournalBegin())
+		IN_Journal_Raw("hookscan 1\n");	/*Patch 1586*/
+#endif
 	IN_Journal_Raw("anglecause 1\n");
 	IN_Journal_Raw("begin\n");
 	CL_AllowIndependantSendCmd(allowed);
@@ -2625,6 +2722,8 @@ static void IN_JournalEnd_f(void)
 	  dropped by IN_Journal_Raw's own growth check rather than competing for it,
 	  and such a file already says `truncated`, so the loss is announced.*/
 	INS_EnumerateDevices((void*)"devmap", IN_Journal_DeviceLine);
+	IN_Journal_Modules(true);	/*Patch 1577*/
+	IN_Journal_Hooks(discard);	/*Patch 1586*/
 
 	/*Allow the trailer into a full journal's reserved space, but never lower
 	  the configured limit to the current allocation: an ordinary journal may

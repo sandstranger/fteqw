@@ -66,6 +66,16 @@ static qboolean csqc_isdarkplaces;
 #endif
 static qboolean csqc_nogameaccess;	/*the module is not trusted by the server, so isn't allowed to access origins+stuffcmds+etc*/
 static qboolean csqc_singlecheats;	/*single player or cheats active, allowing custom addons*/
+//FTESurf Patch 1576: connected without cheats, no debugger may change the client's game code -- the ranked
+//input report lives there. poke_csqc's own rule, for every other way in (pipe, breakpoints, editor).
+qboolean CSQC_DebugAllowed(void)
+{
+	return csqc_singlecheats || !cls.state;
+}
+static int CSQC_DebugWriteBlocked(void *ppf)
+{
+	return ppf && ppf == (void*)csqcprogs && !CSQC_DebugAllowed();
+}
 static qboolean csqc_mayread;		/*csqc is allowed to ReadByte();*/
 static qboolean csqc_worldchanged;	/*make sure any caches are rebuilt properly before the next renderscene*/
 
@@ -8702,6 +8712,10 @@ qboolean CSQC_Init (qboolean anycsqc, const char *csprogsname, unsigned int chec
 	csqcprogparms.edicts = (struct edict_s **)&csqc_world.edicts;
 	csqcprogparms.num_edicts = &csqc_world.num_edicts;
 
+	{
+		extern int (*qclib_debugwriteblocked)(void *ppf);
+		qclib_debugwriteblocked = CSQC_DebugWriteBlocked;	//FTESurf Patch 1576: every evaluator write path
+	}
 	csqcprogparms.useeditor = QCEditor;//void (*useeditor) (char *filename, int line, int nump, char **parms);
 	csqcprogparms.user = &csqc_world;
 	csqc_world.keydestmask = kdm_game;
@@ -9222,6 +9236,11 @@ void CSQC_Breakpoint_f(void)
 		Con_Printf("CSQC not running\n");
 		return;
 	}
+	if (!CSQC_DebugAllowed())
+	{	//FTESurf Patch 1576
+		Con_Printf("%s is a cheat command\n", Cmd_Argv(0));
+		return;
+	}
 	wasset = csqcprogs->ToggleBreak(csqcprogs, filename, line, 3);
 	isset = csqcprogs->ToggleBreak(csqcprogs, filename, line, 2);
 
@@ -9234,6 +9253,7 @@ void CSQC_Breakpoint_f(void)
 
 //	Cvar_Set(Cvar_FindVar("pr_debugger"), "1");
 }
+
 
 static void CSQC_Poke_f(void)
 {
@@ -9251,7 +9271,10 @@ void CSQC_WatchPoint_f(void)
 		variable = NULL;
 
 	if (!csqc_singlecheats)
+	{
 		Con_Printf("%s is a cheat command\n", Cmd_Argv(0));
+		return;	//FTESurf Patch 1576: it used to say so and set the watchpoint anyway
+	}
 	else if (!csqcprogs)
 	{
 		Con_Printf("csqc not running\n");
@@ -10362,6 +10385,7 @@ qboolean CSQC_Parse_SetAngles(int seat, vec3_t newangles, qboolean wasdelta)
 extern cvar_t cl_predict_qchook;
 extern cvar_t cl_predict_angleexact, cl_predict_angledebug;	/*cl_pred.c, Patch 396*/
 extern cvar_t cl_predict_listen;	/*cl_pred.c, Patch 862*/
+extern cvar_t cl_predict_listenops;	/*cl_pred.c, Patch 1588*/
 
 /*FTESurf Patch 862: the trigger mirror (this hook and its carrier ring) also runs on a
   listen server.  Patch 335 gated it off as Patch 240's double apply, but nothing it
@@ -10369,12 +10393,29 @@ extern cvar_t cl_predict_listen;	/*cl_pred.c, Patch 862*/
   and basevelocity, and SV_RunCmd reloads all four from the edict for every command
   (sv_user.c; basevelocity from run_basevelocity or cleared), while CSQC's state is
   its own VM.  The view snap goes through the same Patch 396 reconciliation as against
-  a remote server.  The warp-op pre-move hook keeps its gate: on, a local !r/!m would
-  take the server's impulse path instead of its stringcmd.*/
+  a remote server.  The warp-op pre-move hook and the hold gate are Patch 1588's, below.*/
 static qboolean CSQC_PredictListenGated(void)
 {
 #ifdef HAVE_SERVER
 	return sv.state != ss_dead && !cl_predict_listen.ival;
+#else
+	return false;
+#endif
+}
+
+/*FTESurf Patch 1588: the warp-op pre-move hook and the predicted hold also run on a listen
+  server, so a local load rides the command's impulse as a remote one has since P753/P1544
+  instead of a stringcmd whose release waits for the server (every local load showed
+  "Loading save"; under sv_minping the body froze a round trip).  Same argument as 862: the
+  hook writes only pmove fields (body, pm_type, duck state, cmd.msec, basevelocity,
+  safeorigin_known, oldbuttons) that CL_PredictUsercmdPart and PM_PlayerMove already write on
+  every listen piece and SV_RunCmd reloads per client, and movevars.entgravity, which sv_user.c
+  sets before each command.  Only with the trigger mirror on: without cl_predict_listen the
+  post-move hook never runs, so a save would capture a stale posture (WarpOp_PostMove).*/
+static qboolean CSQC_PredictListenOpsGated(void)
+{
+#ifdef HAVE_SERVER
+	return sv.state != ss_dead && (!cl_predict_listenops.ival || !cl_predict_listen.ival);
 #else
 	return false;
 #endif
@@ -10883,10 +10924,8 @@ qboolean CSQC_PredictsHeld(void)
 		return false;
 	if (!csqcg.predinput_held || !*csqcg.predinput_held || cls.demoplayback)
 		return false;
-#ifdef HAVE_SERVER
-	if (sv.state != ss_dead)
+	if (CSQC_PredictListenOpsGated())
 		return false;
-#endif
 	return true;
 }
 
@@ -10900,10 +10939,8 @@ int CSQC_PredictPlayerPreMove(int seat, const usercmd_t *cmd, float offsetmsec)
 
 	if (!csqcprogs || !csqcg.CSQC_PredictPlayerPreMove || !csqcg.predinput_apply || !cl_predict_qchook.ival)
 		return 0;
-#ifdef HAVE_SERVER
-	if (sv.state != ss_dead)
+	if (CSQC_PredictListenOpsGated())
 		return 0;
-#endif
 	if ((unsigned int)seat >= MAX_SPLITS)
 		return 0;
 
@@ -11156,7 +11193,7 @@ void CSQC_PredictPlayerMove(int seat, const usercmd_t *cmd, const float *preorig
 	VectorCopy(pmove.origin, csqcg.predmove_org);
 	VectorCopy(pmove.velocity, csqcg.predmove_vel);
 	*csqcg.predmove_onground = pmove.onground;
-	if (csqcg.predmove_wasground)	//FTESurf P1025: the pre-move hook does not run on a listen server
+	if (csqcg.predmove_wasground)	//FTESurf P1025: the pre-move hook may not run on a listen server (cl_predict_listenops 0, P1588)
 		*csqcg.predmove_wasground = preground;
 	if (csqcg.predmove_mins)
 		VectorCopy(pmove.player_mins, csqcg.predmove_mins);
