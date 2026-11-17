@@ -80,7 +80,7 @@ cvar_t	sv_rconlim					= CVARFD("sv_rconlim", "4", CVAR_ARCHIVE, "Blocks repeated
 cvar_t	sv_crypt_rcon				= CVARFD("sv_crypt_rcon", "", CVAR_ARCHIVE, "Controls whether the rcon password must be hashed or not. Hashed passwords also partially prevent replay attacks, but does NOT prevent malicious actors from reading the commands/results.\n0: completely insecure. ONLY allows plain-text passwords. Do not use.\n1: Mandatory hashing (recommended).\nEmpty: Allow either, whether the password is secure or not is purely the client's responsibility/fault. Only use this for comptibility with old clients.");
 cvar_t	sv_crypt_rcon_clockskew		= CVARFD("sv_timestamplen", "60", CVAR_ARCHIVE, "Limits clock skew to reduce (delayed) replay attacks");
 #ifdef SERVERONLY
-cvar_t	rcon_password				= CVARF("rcon_password", "", CVAR_NOUNSAFEEXPAND);	// password for remote server commands
+cvar_t	rcon_password				= CVARF("rcon_password", "", CVAR_NOUNSAFEEXPAND|CVAR_NOTFROMSERVER);	//FTESurf P1598	// password for remote server commands
 cvar_t	password					= CVARF("password", "", CVAR_NOUNSAFEEXPAND);	// password for entering the game
 #else
 extern cvar_t	rcon_password;
@@ -1401,7 +1401,7 @@ void SV_GeneratePublicServerinfo(char *info, const char *endinfo)
 	*resp = 0;
 	Info_SetValueForKey(resp, "gamename", protocolname, endinfo - resp);//distinguishes it from other types of games
 	Info_SetValueForKey(resp, "protocol", SV_GetProtocolVersionString(), endinfo - resp);
-	Info_SetValueForKey(resp, "modname", FS_GetGamedir(true), endinfo - resp);
+	Info_SetValueForKey(resp, "modname", FS_GamedirWireName(FS_GetGamedir(true)), endinfo - resp);	//FTESurf P1593
 	Info_SetValueForKey(resp, "clients", va("%d", numclients), endinfo - resp);
 	Info_SetValueForKey(resp, "sv_maxclients", maxclients.string, endinfo - resp);
 	Info_SetValueForKey(resp, "mapname", InfoBuf_ValueForKey(&svs.info, "map"), endinfo - resp);
@@ -6715,7 +6715,7 @@ void SV_ExecInitialConfigs(char *defaultexec)
 	Cbuf_AddText("cvarreset *\n", RESTRICT_LOCAL);			//reset all cvars to their current (engine) defaults
 	Cbuf_AddText("alias restart \"map_restart\"\n",RESTRICT_LOCAL);
 
-	Cbuf_AddText(va("sv_gamedir \"%s\"\n", FS_GetGamedir(true)), RESTRICT_LOCAL);
+	Cbuf_AddText(va("sv_gamedir \"%s\"\n", FS_GamedirWireName(FS_GetGamedir(true))), RESTRICT_LOCAL);	//FTESurf P1593: *gamedir is the wire spelling
 
 	Cbuf_AddText("cl_warncmd 0\n", RESTRICT_LOCAL);
 	Cbuf_AddText(defaultexec, RESTRICT_LOCAL);

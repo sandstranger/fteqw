@@ -364,6 +364,26 @@ static int MapKey (int vkey);
 int in_raw_injectedkey;	//FTESurf Patch 1576: uncorroborated presses SendInput's raw report sat beside (a lapse)
 static qboolean rawkey_rawheld[256], rawkey_legheld[256];
 static int rawkey_npending;
+/*FTESurf Patch 1594: releases are paired like presses (rawkey_uptime an unconsumed raw release, rawkey_uppending a
+  legacy release waiting for one), and every pair's gap is counted into in_raw_keytime.  Expected, to be calibrated
+  on real keyboards: the raw report and the legacy message of one keystroke reach this thread together, so an
+  honest gap is small, while a tool that delays or advances only the key messages widens it.  The gap is taken as
+  each message is handled, so this thread's other work between them adds to it.  rawkey_nrawpending counts the
+  unconsumed raw presses in rawkey_time, so an unmet one expires into in_raw_keyrawalone.*/
+static double rawkey_uptime[256];
+static double rawkey_uppending[256];
+static int rawkey_nuppending, rawkey_nrawpending;
+static void INS_KeyTime(int up, double gap)	//gap: legacy time minus raw time
+{
+	static const double edge[IN_KEYTIME_BUCKETS - 1] = {0.0005, 0.001, 0.002, 0.005, 0.01, 0.02, 0.05};
+	int b;
+	if (gap < 0)
+		in_raw_keylegfirst[up]++;
+	gap = fabs(gap);
+	for (b = 0; b < IN_KEYTIME_BUCKETS - 1 && gap >= edge[b]; b++)
+		;
+	in_raw_keytime[up][b]++;
+}
 
 static void INS_RawKeyReset(void)
 {
@@ -378,9 +398,10 @@ static void INS_RawKeyReset(void)
 				in_raw_legacykey++;
 		}
 		rawkey_time[i] = rawkey_pending[i] = rawkey_nohandletime[i] = rawkey_legup[i] = -1;
+		rawkey_uptime[i] = rawkey_uppending[i] = -1;	//Patch 1594: dropped, not counted (QUIESCE decides what is due first)
 		rawkey_rawheld[i] = rawkey_legheld[i] = false;
 	}
-	rawkey_npending = 0;
+	rawkey_npending = rawkey_nuppending = rawkey_nrawpending = 0;
 	rawkey_ready = true;
 }
 
@@ -398,7 +419,7 @@ static void INS_RawKeyExpire(double now)
 {
 	int i;
 
-	if (rawinput_quiesced || !raw || !rawkbd_observe || !rawkey_npending)
+	if (rawinput_quiesced || !raw || !rawkbd_observe || (!rawkey_npending && !rawkey_nuppending && !rawkey_nrawpending))
 		return;
 	for (i = 0; i < (int)countof(rawkey_pending); i++)
 	{
@@ -408,6 +429,18 @@ static void INS_RawKeyExpire(double now)
 			rawkey_pending[i] = -1;
 			rawkey_npending--;
 			in_raw_legacykey++;
+		}
+		if (rawkey_uppending[i] >= 0 && now - rawkey_uppending[i] > RAWKEY_WINDOW)
+		{	//Patch 1594
+			rawkey_uppending[i] = -1;
+			rawkey_nuppending--;
+			in_raw_keyupalone++;
+		}
+		if (rawkey_time[i] >= 0 && now - rawkey_time[i] > RAWKEY_WINDOW)
+		{	//Patch 1594: a raw press no legacy press met
+			rawkey_time[i] = -1;
+			rawkey_nrawpending--;
+			in_raw_keyrawalone++;
 		}
 	}
 }
@@ -1398,6 +1431,7 @@ int INS_RawInput_KeyboardControl(rawkbdop_t op)
 		// A reentrant SendMessage must not acknowledge a read still on this stack.
 		if (rawinput_readdepth || rawinput_quiesced)
 			return 1;
+		INS_RawKeyExpire(Sys_DoubleTime());	//Patch 1594: decide what is already past its window first
 		rawinput_quiesced = true;
 		INS_RawKeyReset();	// Unmatched work cannot survive discarded corroboration.
 		INS_RawInput_KeyObserveAvailability();
@@ -1411,8 +1445,13 @@ int INS_RawInput_KeyboardControl(rawkbdop_t op)
 	}
 	if (op == RAWKBD_CLEARHELD)
 	{
+		int i;
+		INS_RawKeyExpire(Sys_DoubleTime());	//Patch 1594: decide what is already past its window first
 		memset(rawkey_rawheld, 0, sizeof(rawkey_rawheld));
 		memset(rawkey_legheld, 0, sizeof(rawkey_legheld));
+		for (i = 0; i < (int)countof(rawkey_uptime); i++)	//Patch 1594: a focus change ends the release pairings unjudged
+			rawkey_uptime[i] = rawkey_uppending[i] = -1;
+		rawkey_nuppending = 0;
 		return 0;
 	}
 	if (op != RAWKBD_REMOVE && op != RAWKBD_OPTIN && op != RAWKBD_OBSERVE)
@@ -1494,22 +1533,40 @@ static void INS_RawInput_KeyObserve(void)
 		return;
 	}
 	sc = raw->data.keyboard.MakeCode & 0xff;
+	if (raw->data.keyboard.VKey == 0xff && (raw->data.keyboard.Flags & RI_KEY_E0) && (sc == 0x2a || sc == 0x36))
+		return;	//Patch 1594: Windows' fake shift round gray keys and Print Screen: no keystroke of its own
+	if (raw->data.keyboard.Flags & RI_KEY_E1)
+		return;	//Patch 1594: Pause's E1 1D, ahead of the 0x45 report that pairs with its legacy message
+	now = Sys_DoubleTime();
 	if (raw->data.keyboard.Flags & RI_KEY_BREAK)
 	{
 		rawkey_rawheld[sc] = false;
+		INS_RawKeyExpire(now);
+		if (rawkey_uppending[sc] >= 0)
+		{	//Patch 1594: the legacy release arrived first, inside the window
+			INS_KeyTime(1, rawkey_uppending[sc] - now);
+			rawkey_uppending[sc] = -1;
+			rawkey_nuppending--;
+		}
+		else
+			rawkey_uptime[sc] = now;
 		return;
 	}
 	if (rawkey_rawheld[sc])
 		return;	//typematic repeat: vouches for nothing
 	rawkey_rawheld[sc] = true;
-	now = Sys_DoubleTime();
 	INS_RawKeyExpire(now);
 	if (rawkey_pending[sc] >= 0)
 	{	//the legacy press arrived first, inside the window
+		INS_KeyTime(0, rawkey_pending[sc] - now);	//Patch 1594
 		rawkey_pending[sc] = -1;
 		rawkey_npending--;
 		return;
 	}
+	if (rawkey_time[sc] < 0)
+		rawkey_nrawpending++;	//Patch 1594
+	else
+		in_raw_keyrawalone++;	//Patch 1594: pressed again before a legacy press met the last one
 	rawkey_time[sc] = now;
 }
 
@@ -1525,7 +1582,22 @@ static void INS_LegacyKeyObserve(LPARAM lParam, qboolean down)
 	INS_RawKeyExpire(now);
 	if (!down)
 	{
+		if (!rawkey_legheld[sc])
+			return;	//Patch 1594: a release of a press this path never saw (focus came back held) is not judged
 		rawkey_legheld[sc] = false;
+		if (rawkey_uptime[sc] >= 0 && now - rawkey_uptime[sc] <= RAWKEY_WINDOW)
+		{	//Patch 1594: consumed, one raw release for one legacy release
+			INS_KeyTime(1, now - rawkey_uptime[sc]);
+			rawkey_uptime[sc] = -1;
+		}
+		else
+		{
+			if (rawkey_uppending[sc] >= 0)
+				in_raw_keyupalone++;	//released again before a raw release met the last one
+			else
+				rawkey_nuppending++;
+			rawkey_uppending[sc] = now;
+		}
 		return;
 	}
 	if (rawkey_legheld[sc])
@@ -1539,7 +1611,11 @@ static void INS_LegacyKeyObserve(LPARAM lParam, qboolean down)
 		in_raw_legacykey++;
 	}
 	if (rawkey_time[sc] >= 0 && now - rawkey_time[sc] <= RAWKEY_WINDOW)
+	{
+		INS_KeyTime(0, now - rawkey_time[sc]);	//Patch 1594
 		rawkey_time[sc] = -1;	//consumed: one raw down vouches for one press
+		rawkey_nrawpending--;
+	}
 	else
 	{
 		rawkey_pending[sc] = now;
@@ -1990,7 +2066,9 @@ static qboolean INS_KeyGuardBlocks(qboolean down, int qcode, LPARAM lParam, qboo
 		return true;
 #ifdef USINGRAWINPUT
 	if (down && rawkey_pending[sc] >= 0)
-	{	//P1424's observer counted it as reaching the game; it did not ('y' is what reached it)
+	{	//P1576: an earlier press of this scancode still waiting goes with the blocked one, whose handle-less
+		//report could otherwise read as its injection.  P1594: the observer runs after this, so it never sees a
+		//dropped message ('y' and keytimes are what reached the game).
 		rawkey_pending[sc] = -1;
 		rawkey_npending--;
 	}
@@ -2909,7 +2987,7 @@ void INS_RawInput_Read(HANDLE in_device_handle)
 	  activity a press is counted within the window.  A run that goes perfectly idle (mouse
 	  dead still, no keys) defers its still-pending presses to the next event: an
 	  undercount-safe floor, the same safe direction as Patch 307's click counter.*/
-	if (rawkbd_observe && rawkey_npending)
+	if (rawkbd_observe && (rawkey_npending || rawkey_nuppending || rawkey_nrawpending))	//Patch 1594: releases and raw presses too
 		INS_RawKeyExpire(Sys_DoubleTime());
 	INS_RawInput_PadRead();	//FTESurf Patch 468
 	INS_RawInput_MouseRead();
@@ -3547,13 +3625,13 @@ void INS_TranslateKeyEvent(WPARAM wParam, LPARAM lParam, qboolean down, int qdev
 	extern int		keyshift[K_MAX];
 	extern int		shift_down;
 
-#ifdef USINGRAWINPUT
-	if (!genkeystate)
-		INS_LegacyKeyObserve(lParam, down);	//FTESurf Patch 1424: only the legacy callers pass false
-#endif
 	qcode = MapKey(lParam);
 	if (!genkeystate && INS_KeyGuardBlocks(down, qcode, lParam, true))
 		return;	//FTESurf Patch 1576; the raw opt-in path already drops handle-less reports
+#ifdef USINGRAWINPUT
+	if (!genkeystate)
+		INS_LegacyKeyObserve(lParam, down);	//FTESurf Patch 1424: only the legacy callers pass false; P1594: after the guard
+#endif
 #ifdef USINGRAWINPUT
 	if (!genkeystate && !down)
 		rawkey_legup[(lParam >> 16) & 0xff] = Sys_DoubleTime();	//a release the game took (INS_RawInput_KeyObserve)
@@ -4413,11 +4491,13 @@ static void INS_HookImports(inshook_t *h, const unsigned char *base, inspe_t *pe
 static const char *const ins_hookapis[] =
 {	//per DLL: its name, then exports (input below the journal; what this scan calls), NULL.  An exporter
 	//comes before the DLLs importing from it, so their slots are checked against its file.
-	"ntdll", "NtReadVirtualMemory", "NtQueryVirtualMemory", "NtGetContextThread", "NtReadFile", NULL,
+	"ntdll", "NtReadVirtualMemory", "NtQueryVirtualMemory", "NtGetContextThread", "NtReadFile",
+		"RtlQueryPerformanceCounter", NULL,
 	"win32u", "NtUserGetRawInputData", "NtUserGetRawInputBuffer", "NtUserGetCurrentInputMessageSource",
 		"NtUserPeekMessage", "NtUserGetMessage", "NtUserGetAsyncKeyState", "NtUserGetKeyState",
 		"NtUserGetKeyboardState", "NtUserGetRawInputDeviceInfo", "NtUserSetWindowsHookEx", NULL,
-	"kernelbase", "ReadProcessMemory", "VirtualQuery", "GetThreadContext", "ReadFile", "GetModuleHandleExW", NULL,
+	"kernelbase", "ReadProcessMemory", "VirtualQuery", "GetThreadContext", "ReadFile", "GetModuleHandleExW",
+		"QueryPerformanceCounter", NULL,	//Patch 1594: the clock key timing and the journal rest on
 	"user32", "GetCurrentInputMessageSource", "InSendMessage", "InSendMessageEx", "GetRawInputData",
 		"GetRawInputBuffer", "GetRawInputDeviceInfoA", "GetRawInputDeviceInfoW", "GetRawInputDeviceList",
 		"RegisterRawInputDevices", "GetCursorPos", "GetPhysicalCursorPos", "SetCursorPos", "GetAsyncKeyState",

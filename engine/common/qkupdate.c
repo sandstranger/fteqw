@@ -250,8 +250,18 @@ static qboolean QKU_ValidPath(const char *p)
 	return true;
 }
 
+//P1593: the two install identities, picked from the running manifest's BASEGAME
+//(QKU_FSSelectIdentity); must agree with updatefeed.py and the launcher. worldofsurf is the
+//ftesurf policy below with the gamedir and exe respelled (QKU_FSLegacySpelling), so they cannot drift.
+typedef struct { const char *game, *dir, *exe[2], *feed; } qku_identity_t;	//exe: win64, linux64
+static const qku_identity_t qku_identities[] = {
+	{"ftesurf", "ftesurf/", {"ftesurf64.exe", "ftesurf64"}, "https://proto.bar/ftesurf/update.json"},
+	{"worldofsurf", "worldofsurf/", {"WorldofSurf.exe", "worldofsurf64"}, "https://proto.bar/ftesurf/worldofsurf.json"},	//launcher WOS_FEED_URL
+};
+static const qku_identity_t *qku_id;	//NULL refuses every signed manifest
+
 // FTESurf's disk policy is also enforced by updatefeed.py and the native launcher.
-static qboolean QKU_FSManaged(const char *p)
+static qboolean QKU_FSManagedLegacy(const char *p)
 {
 	static const char *roots[] = {"default.fmf", "ftesurf.bat", "ftesurf.sh", "ftesurf_debug.bat", "LICENSE", "INSTALL.txt", "VERSION.txt", "SOURCE.txt", "THIRD-PARTY.txt", "ftesurf64.exe", "ftesurf64", "fteplug_hl2_x64.dll", "fteplug_ui_imgui_x64.dll", "fteplug_hl2_amd64.so", "ftesurf/csprogs.dat", "ftesurf/qwprogs.dat", "ftesurf/menu.dat", "ftesurf/fs_addons.default.txt", "ftesurf/fs_addons.txt", "ftesurf/data/mapmeta.txt", "ftesurf/data/mapdeps.txt", "ftesurf/data/mapmeta_override.txt", "ftesurf/data/mapparticles.txt", "ftesurf/data/mapwr.txt", "ftesurf/data/mapdl.txt", "ftesurf/data/mapmanifest.txt", "ftesurf/maps/tiers.txt", "ftesurf/textures/no_texture.png"};
 	static const char *prefixes[] = {"ftesurf/gfx/", "ftesurf/glsl/", "ftesurf/particles/", "ftesurf/scripts/", "ftesurf/models/", "ftesurf/sound/"};
@@ -284,14 +294,261 @@ static qboolean QKU_FSManaged(const char *p)
 	return false;
 }
 
+//p as the ftesurf policy spells it; false for the other identity's gamedir or exe, or no identity.
+static qboolean QKU_FSLegacySpelling(const char *p, char *out, size_t outsize)
+{
+	const qku_identity_t *old = &qku_identities[0];
+	size_t i, n = strlen(p), dir, olddir = strlen(old->dir);
+	if (!qku_id || n >= outsize) return false;
+	if (qku_id != old)
+	{
+		if (!strcmp(p, old->exe[0]) || !strcmp(p, old->exe[1]) || !strncmp(p, old->dir, olddir)) return false;
+		for (i = 0; i < 2; i++)
+			if (!strcmp(p, qku_id->exe[i]))
+			{
+				p = old->exe[i];
+				n = strlen(p);
+				break;
+			}
+		dir = strlen(qku_id->dir);
+		if (!strncmp(p, qku_id->dir, dir))
+		{
+			if (olddir + n - dir >= outsize) return false;
+			memcpy(out, old->dir, olddir);
+			memcpy(out + olddir, p + dir, n - dir + 1);
+			return true;
+		}
+	}
+	memcpy(out, p, n + 1);
+	return true;
+}
+
+//This install's disk policy. The 240 limit is on the real path, before respelling.
+static qboolean QKU_FSManaged(const char *p)
+{
+	char legacy[MAX_OSPATH];
+	return strlen(p) < 240 && QKU_FSLegacySpelling(p, legacy, sizeof(legacy)) && QKU_FSManagedLegacy(legacy);
+}
+
 static qboolean QKU_FSInGame(const char *p)
 {
+	char legacy[MAX_OSPATH];
+	if (!QKU_FSLegacySpelling(p, legacy, sizeof(legacy))) return false;
+	p = legacy;
 	return !strncmp(p, "ftesurf/", 8) || !strncmp(p, "notices/", 8) || !strcmp(p, "LICENSE") || !strcmp(p, "INSTALL.txt") || !strcmp(p, "VERSION.txt") || !strcmp(p, "SOURCE.txt") || !strcmp(p, "THIRD-PARTY.txt");
 }
 
 static qboolean QKU_FSProtected(const char *p)
 {
+	char legacy[MAX_OSPATH];
+	if (!QKU_FSLegacySpelling(p, legacy, sizeof(legacy))) return false;
+	p = legacy;
 	return !strcmp(p, "ftesurf/fs_addons.txt") || !strncmp(p, "ftesurf/maps/zones/local/", 25);
+}
+
+static const char *qku_required[] = {"menu.dat", "csprogs.dat", "qwprogs.dat"};	//at the root of each identity's gamedir
+
+static qboolean QKU_FSIsGameFile(const char *p, const char *leaf)
+{
+	size_t d = strlen(qku_id->dir);
+	return !strncmp(p, qku_id->dir, d) && !strcmp(p + d, leaf);
+}
+
+static int QKU_JSONHex4(const unsigned char *s)
+{
+	int i, v = 0;
+	for (i = 0; i < 4; i++)
+	{
+		int c = s[i];
+		int h = c >= '0' && c <= '9' ? c - '0' : c >= 'a' && c <= 'f' ? c - 'a' + 10 : c >= 'A' && c <= 'F' ? c - 'A' + 10 : -1;
+		if (h < 0) return -1;
+		v = v << 4 | h;
+	}
+	return v;
+}
+
+//One JSON string at *sp (on its opening quote): escapes as RFC 8259, paired surrogates only,
+//no raw control character, valid UTF-8 without overlongs, surrogates or anything past U+10FFFF.
+static qboolean QKU_JSONStrictString(const unsigned char **sp)
+{
+	const unsigned char *s = *sp + 1;
+	for (;;)
+	{
+		unsigned c = *s++;
+		if (c == '"') { *sp = s; return true; }
+		if (c < 0x20) return false;	//includes the terminating NUL
+		if (c == '\\')
+		{
+			int u, v;
+			c = *s++;
+			if (c && strchr("\"\\/bfnrt", c)) continue;
+			if (c != 'u' || (u = QKU_JSONHex4(s)) < 0) return false;
+			s += 4;
+			if (u >= 0xDC00 && u <= 0xDFFF) return false;
+			if (u >= 0xD800 && u <= 0xDBFF)
+			{
+				if (s[0] != '\\' || s[1] != 'u' || (v = QKU_JSONHex4(s + 2)) < 0xDC00 || v > 0xDFFF) return false;
+				s += 6;
+			}
+			continue;
+		}
+		if (c >= 0x80)
+		{
+			int n = c >= 0xC2 && c <= 0xDF ? 1 : c >= 0xE0 && c <= 0xEF ? 2 : c >= 0xF0 && c <= 0xF4 ? 3 : 0;
+			unsigned lo = c == 0xE0 ? 0xA0 : c == 0xF0 ? 0x90 : 0x80, hi = c == 0xED ? 0x9F : c == 0xF4 ? 0x8F : 0xBF;
+			if (!n || *s < lo || *s > hi) return false;
+			for (s++; --n > 0; s++) if (*s < 0x80 || *s > 0xBF) return false;
+		}
+	}
+}
+
+static qboolean QKU_JSONStrictNumber(const unsigned char **sp)
+{
+	const unsigned char *s = *sp;
+	if (*s == '-') s++;
+	if (*s == '0') s++;
+	else if (*s >= '1' && *s <= '9') while (*s >= '0' && *s <= '9') s++;
+	else return false;
+	if (*s == '.')
+	{
+		if (*++s < '0' || *s > '9') return false;
+		while (*s >= '0' && *s <= '9') s++;
+	}
+	if (*s == 'e' || *s == 'E')
+	{
+		if (*++s == '+' || *s == '-') s++;
+		if (*s < '0' || *s > '9') return false;
+		while (*s >= '0' && *s <= '9') s++;
+	}
+	*sp = s;
+	return true;
+}
+
+//P1593: strict RFC 8259 text with an object at the top and at most QKU_JSONDEPTH levels, which is
+//what the launcher's serde reads, minus what JSON_Parse also takes (comments, trailing commas, a
+//BOM, text after the value, bare words). Iterative, so it runs BEFORE JSON_Parse recurses per
+//level on the 256 KB loader thread. An envelope is one level of exactly two string members, so
+//nothing nested in unsigned text is ever allocated.
+#define QKU_JSONDEPTH 32
+static qboolean QKU_JSONStrict(const char *text, qboolean envelope)
+{
+	const unsigned char *s = (const unsigned char *)text;
+	char stack[QKU_JSONDEPTH];
+	int depth = 0, maxdepth = envelope ? 1 : QKU_JSONDEPTH, members = 0;
+	enum { WANT_VALUE, WANT_VALUE_OR_END, WANT_KEY, WANT_KEY_OR_END, WANT_COLON, WANT_NEXT, WANT_NOTHING } want = WANT_VALUE;
+	for (;;)
+	{
+		while (*s == ' ' || *s == '\t' || *s == '\n' || *s == '\r') s++;
+		if (!*s) return want == WANT_NOTHING && (!envelope || members == 2);
+		switch (want)
+		{
+		case WANT_NOTHING:
+			return false;	//text after the value
+		case WANT_COLON:
+			if (*s++ != ':') return false;
+			want = WANT_VALUE;
+			break;
+		case WANT_NEXT:
+			if (*s == ',') { s++; want = stack[depth-1] == '{' ? WANT_KEY : WANT_VALUE; break; }
+			if (*s++ != (stack[depth-1] == '{' ? '}' : ']')) return false;
+			want = --depth ? WANT_NEXT : WANT_NOTHING;
+			break;
+		case WANT_KEY:
+		case WANT_KEY_OR_END:
+			if (*s == '}' && want == WANT_KEY_OR_END) { s++; want = --depth ? WANT_NEXT : WANT_NOTHING; break; }
+			if (*s != '"' || !QKU_JSONStrictString(&s)) return false;
+			members++;
+			want = WANT_COLON;
+			break;
+		case WANT_VALUE_OR_END:
+			if (*s == ']') { s++; want = --depth ? WANT_NEXT : WANT_NOTHING; break; }
+			want = WANT_VALUE;
+			break;
+		case WANT_VALUE:
+			if (*s == '{' || *s == '[')
+			{
+				if ((!depth && *s != '{') || depth == maxdepth) return false;
+				stack[depth++] = *s;
+				want = *s++ == '{' ? WANT_KEY_OR_END : WANT_VALUE_OR_END;
+				break;
+			}
+			if (!depth) return false;	//an object at the top
+			if (envelope && *s != '"') return false;
+			if (*s == '"') { if (!QKU_JSONStrictString(&s)) return false; }
+			else if (*s == '-' || (*s >= '0' && *s <= '9')) { if (!QKU_JSONStrictNumber(&s)) return false; }
+			else if (!strncmp((const char *)s, "true", 4)) s += 4;
+			else if (!strncmp((const char *)s, "false", 5)) s += 5;
+			else if (!strncmp((const char *)s, "null", 4)) s += 4;
+			else return false;
+			want = WANT_NEXT;
+			break;
+		}
+	}
+}
+
+static int QKU_JSONNameCmp(const void *a, const void *b)
+{
+	return strcmp(*(const char *const *)a, *(const char *const *)b);
+}
+
+//serde and Python keep a repeated key's last value; JSON_FindChild takes the first and lets
+//"name." match "name". Refuse repeated, dotted and escaped keys (names are raw, escapes kept),
+//and objects over 8192 keys. Sorted, so a large object costs n log n.
+static qboolean QKU_JSONBadKeys(json_t *t)
+{
+	json_t *a;
+	const char **names;
+	size_t n = 0, i;
+	qboolean bad = false;
+	if (!t) return false;
+	if (t->type == json_type_object)
+	{
+		for (a = t->child; a; a = a->sibling) if (++n > 8192) return true;
+		names = Z_Malloc(sizeof(*names) * (n + 1));
+		for (n = 0, a = t->child; a; a = a->sibling) names[n++] = a->name;
+		qsort(names, n, sizeof(*names), QKU_JSONNameCmp);
+		for (i = 0; i < n && !bad; i++)
+			bad = strchr(names[i], '.') || strchr(names[i], '\\') || (i && !strcmp(names[i-1], names[i]));
+		Z_Free(names);
+		if (bad) return true;
+	}
+	for (a = t->child; a; a = a->sibling) if (QKU_JSONBadKeys(a)) return true;
+	return false;
+}
+
+//The unsigned envelope is exactly "payload" and "signature", once each; checked before any walk.
+static qboolean QKU_FSEnvelopeKeys(json_t *envelope)
+{
+	json_t *a;
+	unsigned seen = 0, bit;
+	if (envelope->type != json_type_object) return false;
+	for (a = envelope->child; a; a = a->sibling)
+	{
+		bit = !strcmp(a->name, "payload") ? 1u : !strcmp(a->name, "signature") ? 2u : 4u;
+		if (bit == 4u || (seen & bit)) return false;
+		seen |= bit;
+	}
+	return seen == 3u;
+}
+
+static qboolean QKU_FSLegacyIs(const char *p, const char *legacyname)
+{
+	char legacy[MAX_OSPATH];
+	return QKU_FSLegacySpelling(p, legacy, sizeof(legacy)) && !strcmp(legacy, legacyname);
+}
+
+//The gamedir FS_BASEGAMEONLY writes to (the last non-special BASEGAME), matched exactly.
+static const qku_identity_t *QKU_FSSelectIdentity(const ftemanifest_t *man)
+{
+	const char *last = NULL;
+	size_t i;
+	for (i = 0; i < countof(man->gamepath); i++)
+		if ((man->gamepath[i].flags & GAMEDIR_BASEGAME) && !(man->gamepath[i].flags & GAMEDIR_SPECIAL) && man->gamepath[i].path)
+			last = man->gamepath[i].path;
+	for (i = 0; last && i < countof(qku_identities); i++)
+		if (!strcmp(last, qku_identities[i].game))
+			return &qku_identities[i];
+	return NULL;
 }
 
 static qboolean QKU_DecodeHex(const char *h, qbyte *out, size_t len)
@@ -343,13 +600,14 @@ static qboolean QKU_FSValidateManifest(json_t *root)
 	hashtable_t paths, native, hashes;
 	void *pm = NULL, *nm = NULL, *hm = NULL;
 	json_t *list, *exec, *args;
-	size_t i, j, count, buckets;
+	size_t i, j, k, count, buckets;
 	quint64_t total = 0;
 	unsigned ver[3], must = 0;
 	qboolean ok = false;
 	char buf[MAX_OSPATH];
-	const char *exe = !strcmp(QKU_PLATFORM, "win64") ? "ftesurf64.exe" : "ftesurf64";
-	JSON_GetString(root, "game", buf, sizeof(buf), ""); if (strcmp(buf, "ftesurf")) return false;
+	const char *exe = qku_id ? qku_id->exe[!!strcmp(QKU_PLATFORM, "win64")] : "";
+	if (QKU_JSONBadKeys(root)) return false;
+	JSON_GetString(root, "game", buf, sizeof(buf), ""); if (!qku_id || strcmp(buf, qku_id->game)) return false;
 	JSON_GetString(root, "channel", buf, sizeof(buf), ""); if (strcmp(buf, "stable")) return false;
 	JSON_GetString(root, "version", buf, sizeof(buf), ""); if (!QKU_FSVersion(buf, ver)) return false;
 	list = JSON_FindChild(root, "removed"); if (!list || list->type != json_type_array || JSON_GetCount(list)) return false;
@@ -389,9 +647,7 @@ static qboolean QKU_FSValidateManifest(json_t *root)
 		{
 			if (!strcmp(rows[i].path, exe)) must |= 1u;
 			if (!strcmp(rows[i].path, "default.fmf")) must |= 2u;
-			if (!strcmp(rows[i].path, "ftesurf/menu.dat")) must |= 4u;
-			if (!strcmp(rows[i].path, "ftesurf/csprogs.dat")) must |= 8u;
-			if (!strcmp(rows[i].path, "ftesurf/qwprogs.dat")) must |= 16u;
+			for (k = 0; k < countof(qku_required); k++) if (QKU_FSIsGameFile(rows[i].path, qku_required[k])) must |= 4u << k;
 			for (j = 0; rows[i].path[j]; j++) if (rows[i].path[j] >= 'A' && rows[i].path[j] <= 'Z') rows[i].path[j] += 'a'-'A';
 			if (Hash_Get(&native, rows[i].path)) goto done;
 			Hash_Add(&native, rows[i].path, &rows[i], &rows[i].bynative);
@@ -627,6 +883,62 @@ static int QKU_FSRegular(const char *path)
 #endif
 }
 
+//A gamedir counts when at least two qku_required files are regular files with no link on the way:
+//QKU_InstallOne replaces one file at a time, so an interrupted apply is short exactly one.
+static qboolean QKU_FSGamedirCounts(const qku_identity_t *id)
+{
+	char rel[MAX_OSPATH], abs[MAX_OSPATH];
+	size_t k;
+	int have = 0;
+	for (k = 0; k < countof(qku_required); k++)
+	{
+		Q_snprintfz(rel, sizeof(rel), "%s%s", id->dir, qku_required[k]);
+		QKU_InstallPath(abs, sizeof(abs), rel);
+		if (QKU_FSNoLinks(rel) && QKU_FSRegular(abs) == 1) have++;
+	}
+	return have >= 2;
+}
+
+#define QKU_MARKER ".ftesurf-updater/identity"	//the launcher's MARKER
+static char *QKU_ReadTextFile(const char *abspath, size_t maxsize);
+
+//The launcher's identity marker. 1: names *out; 0: absent; -1: unusable (a link, not a regular
+//file, unreadable, or anything but one identity word and an optional newline).
+static int QKU_FSMarker(const qku_identity_t **out)
+{
+	char abs[MAX_OSPATH], *text;
+	size_t i, n;
+	int r;
+	*out = NULL;
+	if (!QKU_FSNoLinks(QKU_MARKER)) return -1;
+	QKU_InstallPath(abs, sizeof(abs), QKU_MARKER);
+	r = QKU_FSRegular(abs);
+	if (r <= 0) return r;
+	text = QKU_ReadTextFile(abs, 64);
+	if (!text) return -1;
+	n = strlen(text);
+	if (n && text[n-1] == '\n') text[--n] = 0;
+	for (i = 0; i < countof(qku_identities); i++)
+		if (!strcmp(text, qku_identities[i].game)) *out = &qku_identities[i];
+	BZ_Free(text);
+	return *out ? 1 : -1;
+}
+
+//P1593: BASEGAME names the identity. A marker, when present, must agree; without one this
+//gamedir must count and the other must not (the launcher's half-moved refusal). Else none.
+static const qku_identity_t *QKU_FSIdentity(const ftemanifest_t *man)
+{
+	const qku_identity_t *id = QKU_FSSelectIdentity(man), *marked;
+	size_t i;
+	int m;
+	if (!id) return NULL;
+	m = QKU_FSMarker(&marked);
+	if (m) return m > 0 && marked == id ? id : NULL;
+	for (i = 0; i < countof(qku_identities); i++)
+		if (QKU_FSGamedirCounts(&qku_identities[i]) != (&qku_identities[i] == id)) return NULL;
+	return id;
+}
+
 // Missing content can be repaired; unreadable content cannot be classified.
 static qboolean QKU_FSReadableClosure(json_t *root)
 {
@@ -728,9 +1040,9 @@ static json_t *QKU_FSParseSigned(const char *text, char **payloadout)
 	char sighex[129], *payload = NULL;
 	size_t n;
 	*payloadout = NULL;
-	if (strlen(text) > 2*1024*1024) return NULL;
+	if (strlen(text) > 2*1024*1024 || !QKU_JSONStrict(text, true)) return NULL;	//2 MiB accepted, as the boot read
 	envelope = JSON_Parse(text);
-	if (!envelope) goto done;
+	if (!envelope || !QKU_FSEnvelopeKeys(envelope)) goto done;
 	body = JSON_FindChild(envelope, "payload");
 	if (!body || body->type != json_type_string || !QKU_FSJSONNoNul(body->bodystart, body->bodyend)) goto done;
 	n = JSON_ReadBody(body, NULL, 0); // escaped-length upper bound, NOT decoded length
@@ -740,7 +1052,7 @@ static json_t *QKU_FSParseSigned(const char *text, char **payloadout)
 	if (!QKU_FSJSONNoNul(payload, payload+strlen(payload))) goto done;
 	JSON_GetString(envelope, "signature", sighex, sizeof(sighex), "");
 	if (!QKU_DecodeHex(QKU_FSKEY, pk, sizeof(pk)) || !QKU_DecodeHex(sighex, sig, sizeof(sig)) || !Ed25519_Verify(sig, (const qbyte *)payload, strlen(payload), pk)) goto done;
-	payloadroot = JSON_Parse(payload);
+	payloadroot = QKU_JSONStrict(payload, false) ? JSON_Parse(payload) : NULL;
 	if (payloadroot) { *payloadout = payload; payload = NULL; }
  done:
 	if (payload) Z_Free(payload);
@@ -910,7 +1222,7 @@ static enum qku_preserve_e QKU_FSPreserveFile(qku_state_t *st, const char *path,
 		return QKUP_UNREADABLE;
 	}
 	old = Hash_Get(&st->ht, path);
-	return (!strcmp(path, "ftesurf/fs_addons.txt") || (strcmp(have, hash) && (!old || !QKU_StateHashEquals(old, have)))) ? QKUP_PRESERVE : QKUP_INSTALL;
+	return (QKU_FSLegacyIs(path, "ftesurf/fs_addons.txt") || (strcmp(have, hash) && (!old || !QKU_StateHashEquals(old, have)))) ? QKUP_PRESERVE : QKUP_INSTALL;
 }
 
 struct qku_checkargs_s
@@ -950,8 +1262,9 @@ static void QKU_Work_Check(void *ctx, void *data, size_t a, size_t b)
 	maxfiles = (update_max_files.ival > 0) ? (unsigned)update_max_files.ival : 400;
 	maxbytes = (quint64_t)((update_max_mb.value > 0) ? update_max_mb.value : 512) * 1024u * 1024u;
 
-	root = JSON_Parse(args->text);
-	if (!root)
+	//FTESurf: unsigned network text reaches JSON_Parse only through QKU_FSParseSigned's checks.
+	root = qku_ftesurf ? NULL : JSON_Parse(args->text);
+	if (!root && !qku_ftesurf)
 	{	//JSON_Parse returns NULL for anything at all, including a cloudflare html error page
 		Q_strncpyz(plan->reason, "manifest is not valid JSON (a proxy error page?)", sizeof(plan->reason));
 		goto done;
@@ -959,14 +1272,15 @@ static void QKU_Work_Check(void *ctx, void *data, size_t a, size_t b)
 
 	if (qku_ftesurf)
 	{
-		JSON_Destroy(root);
+		if (strlen(args->text) > 2*1024*1024 || !QKU_JSONStrict(args->text, true))
+		{ Q_strncpyz(plan->reason, "manifest is not valid JSON (a proxy error page?)", sizeof(plan->reason)); goto done; }
 		root = QKU_FSParseSigned(args->text, &payload);
 		if (!root) { Q_strncpyz(plan->reason, "update manifest signature is invalid", sizeof(plan->reason)); goto done; }
 		if (!QKU_FSValidateManifest(root)) { Q_strncpyz(plan->reason, "signed update format/policy is invalid", sizeof(plan->reason)); goto done; }
 		if (maxfiles > 512) maxfiles = 512;
 		if (maxbytes > 16*1024*1024) maxbytes = 16*1024*1024;
 		JSON_GetString(root, "game", buf, sizeof(buf), "");
-		if (strcmp(buf, "ftesurf") || JSON_GetCount(JSON_FindChild(root, "removed")))
+		if (!qku_id || strcmp(buf, qku_id->game) || JSON_GetCount(JSON_FindChild(root, "removed")))
 		{ Q_strncpyz(plan->reason, "wrong game or unsupported file deletion", sizeof(plan->reason)); goto done; }
 		JSON_GetString(root, "channel", buf, sizeof(buf), "");
 		if (strcmp(buf, "stable")) { Q_strncpyz(plan->reason, "wrong update channel", sizeof(plan->reason)); goto done; }
@@ -2167,9 +2481,10 @@ void QKU_ReplayJournal(void)
 		return;
 	alreadyran = true;
 	// Public gamedir is assigned only when paths mount, AFTER this recovery hook.
-	qku_ftesurf = fs_manifest->installation && !Q_strcasecmp(fs_manifest->installation, "FTESurf");
+	qku_ftesurf = fs_manifest->installation && (!Q_strcasecmp(fs_manifest->installation, "FTESurf") || !Q_strcasecmp(fs_manifest->installation, "WorldofSurf"));
+	if (qku_ftesurf) QKU_FSLock();	//before reading the marker and gamedirs
+	qku_id = qku_ftesurf ? QKU_FSIdentity(fs_manifest) : NULL;	//P1593
 	qku_profileknown = true;
-	if (qku_ftesurf) QKU_FSLock();
 	if (qku_initialised) QKU_ConfigureProfile();
 
 	QKU_SweepOld();		//displaced originals from a previous session; nothing holds them now
@@ -2205,12 +2520,12 @@ void QKU_ReplayJournal(void)
 		qku_state_t state;
 		qboolean older;
 		QKU_InstallPath(sigpath, sizeof(sigpath), ".ftesurf-updater/ingame/manifest.json");
-		signedtext = QKU_ReadTextFile(sigpath, 2*1024*1024);
+		signedtext = QKU_ReadTextFile(sigpath, 2*1024*1024 + 1);	//refuses >= max: 2 MiB accepted, as QKU_FSParseSigned
 		signedroot = signedtext ? QKU_FSParseSigned(signedtext, &signedpayload) : NULL;
 		if (!signedroot || !QKU_FSValidateManifest(signedroot) || !count || count > 8192 || !files || files->type != json_type_array) Sys_Error("Update recovery lacks a valid signed manifest. Run the launcher to repair.");
 		JSON_GetString(signedroot, "version", version, sizeof(version), "");
 		JSON_GetString(signedroot, "game", game, sizeof(game), "");
-		if (strcmp(version, jver) || strcmp(game, "ftesurf")) Sys_Error("Update journal does not match its signed manifest. Run the launcher to repair.");
+		if (strcmp(version, jver) || !qku_id || strcmp(game, qku_id->game)) Sys_Error("Update journal does not match its signed manifest. Run the launcher to repair.");
 		if (!QKU_LoadState(&state))
 		{ QKU_FreeState(&state); Sys_Error("Cannot read the update recovery ledger. Run the launcher to repair; nothing installed."); }
 		older = *state.version && QKU_FSVersionOlder(version, state.version);
@@ -2678,7 +2993,7 @@ static void QKU_ConfigureProfile(void)
 	if (qku_ftesurf)
 	{
 		cvar_t *vars[] = {&update_manifest_url, &update_max_files, &update_max_mb};
-		char *values[] = {"https://proto.bar/ftesurf/update.json", "512", "16"};
+		char *values[] = {(char *)(qku_id ? qku_id : qku_identities)->feed, "512", "16"};
 		char path[MAX_OSPATH], *consent;
 		size_t i;
 		for (i = 0; i < countof(vars); i++)

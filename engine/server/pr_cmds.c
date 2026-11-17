@@ -41,6 +41,7 @@ Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
 #ifndef CLIENTONLY
 
 #include "pr_common.h"
+#include "pm_ag.h"
 #include "sv_held_file.h"
 #include "sv_held_session.h"
 #include "sv_held_session.h"
@@ -11512,7 +11513,7 @@ static void QCBUILTIN PF_held_metadata(pubprogfuncs_t *prinst, struct globalvars
 	profile = PF_HeldString(prinst, ent, "rec_agprofile");
 	if (!profile) profile = ""; // unchanged QC may omit the additive namespace field
 	if (strcmp(profile, InfoBuf_ValueForKey(&svs.info, "*movementprofile")) ||
-		(*profile && strcmp(profile, "ag-100-v1") && strcmp(profile, "ag-250-v1"))) return;
+		(*profile && !PM_ProfileByIdentity(profile))) return;
 	if (*profile) Q_snprintfz(ordinaryroot, sizeof(ordinaryroot), "data/experimental/%s/parts/", profile);
 	else Q_strncpyz(ordinaryroot, "data/parts/", sizeof(ordinaryroot));
 	if (partlob == 1)
@@ -11717,7 +11718,15 @@ static void QCBUILTIN PF_tas_rollout_batch(pubprogfuncs_t *prinst, struct global
 		G_FLOAT(OFS_PARM6), VectorCompare(G_VECTOR(OFS_PARM7), vec3_origin) ? NULL : G_VECTOR(OFS_PARM7));
 }
 
+/* P1592: QC asks which run-leaf word the held close expects before naming a resumed run. */
+static void QCBUILTIN PF_rec_tagword(pubprogfuncs_t *prinst, struct globalvars_s *pr_globals)
+{
+	float tag = G_FLOAT(OFS_PARM0);
+	RETURN_CSTRING(tag >= 1 && tag <= 6 && (unsigned int)tag == tag ? SV_HeldRunTagWord((unsigned int)tag) : "");
+}
+
 static BuiltinList_t BuiltinList[] = {				//nq	qw		h2		ebfs
+	{"rec_tagword", PF_rec_tagword, 0, 0, 0, 0, D("string(float tag)", "The run-leaf tag word the held recording close expects first for a QC RT_* tag (\"\" outside 1..6). RT_SHADOW (3) reads \"segmented\"; the close also accepts the legacy \"shadow\".")},
 	{"sourcepractice_reset", PF_sourcepractice_reset, 0, 0, 0, 0, D("float(entity player)", "Trusted server VM: reset this current player's complete Source carry and jump latch at a neutral zero-duration decoded QW command. No world/transport/counter reset or eligibility grant; unsupported contexts return0.")},
 	{"tas_input", PF_tas_input, 0, 0, 0, 0, D("vector(entity player, float slot, float token, float field)", "TAS checkpoint input: availability0, moves1, signed angle words2, compact jump/duck/walk mask3, editor mode/amount/follow4. Not hardware evidence or file import.")},
 	{"tas_rollout_batch", PF_tas_rollout_batch, 0, 0, 0, 0, D("float(entity player, float *rows, float ticks, float *out, float count, float *params, float aimgain, vector aimface)", "FTESurf Patch 1467: count tas_rollout candidates of ticks rows each (rows count*ticks*7 floats, out count*ticks*13) from the same paused TAS body, on sv_tas_threads worker threads. params: 5 floats a candidate -- its aim point x y z and aimlead, and on return the ticks it ran (tas_rollout's value). aimgain 0: no aim; aimface '0 0 0': no face. A candidate a worker cannot finish (a model to load, a portal) runs on the main thread, as do all where threads cannot run. Returns how many workers ran, or tas_rollout's negative reason.")},

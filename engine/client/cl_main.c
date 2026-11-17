@@ -52,7 +52,7 @@ void Host_FinishLoading(void);
 
 
 cvar_t	cl_crypt_rcon = CVARFD("cl_crypt_rcon", "1", CVAR_ARCHIVE|CVAR_NOTFROMSERVER, "Controls whether to send a hash instead of sending your rcon password as plain-text. Set to 1 for security, or 0 for backwards compatibility.\nYour command and any responses will still be sent as plain text.\nInstead, it is recommended to use rcon ONLY via dtls/tls/wss connections.");	//CVAR_NOTFROMSERVER prevents evil servers from degrading it to send plain-text passwords.
-cvar_t	rcon_password = CVARF("rcon_password", "", CVAR_NOUNSAFEEXPAND);
+cvar_t	rcon_password = CVARF("rcon_password", "", CVAR_NOUNSAFEEXPAND|CVAR_NOTFROMSERVER);	//FTESurf P1598: a server may not set it
 
 cvar_t	rcon_address = CVARF("rcon_address", "", CVAR_NOUNSAFEEXPAND);
 
@@ -3390,8 +3390,17 @@ void CL_CheckServerInfo(void)
 			movevars.sourceversion = Q_atoi(InfoBuf_ValueForKey(&cl.serverinfo, "pm_agversion"));
 		s = InfoBuf_ValueForKey(&cl.serverinfo, "pm_ticrate");
 		movevars.ticrate = *s?Q_atof(s):0.015;
-		movevars.agprofile = PMAg_ProfileRate(InfoBuf_ValueForKey(&cl.serverinfo, "*movementprofile"), movevars.sourceversion, movevars.ticrate);
-		if (!movevars.agprofile && *InfoBuf_ValueForKey(&cl.serverinfo, "*movementprofile")) movevars.agprofile = -1;
+		{	//Patch 1589: HL2 kinds predict PMSrc with agprofile 0; any other unrated identity refuses (-1).
+			const char *id = InfoBuf_ValueForKey(&cl.serverinfo, "*movementprofile");
+			const pmprofile_t *prof = PM_ProfileByIdentity(id);
+			movevars.profilekind = prof ? prof->kind : PMPROFILE_NONE;
+			movevars.agprofile = PMAg_ProfileRate(id, movevars.sourceversion, movevars.ticrate);
+			if (!movevars.agprofile && *id && !(prof && PM_ProfileHL2(prof->kind) && movevars.physicsmode == PHYSMODE_SOURCE))
+				movevars.agprofile = -1;
+		}
+		//Patch 1591: an older server publishes pm_autobunny 1 but its AG mover never autohops.
+		if (movevars.physicsmode == PHYSMODE_AG && !Q_atoi(InfoBuf_ValueForKey(&cl.serverinfo, "pm_agautohop")))
+			movevars.autobunny = false;
 		s = InfoBuf_ValueForKey(&cl.serverinfo, "pm_maxairspeed");
 		movevars.maxairspeed = *s?Q_atof(s):30;
 		s = InfoBuf_ValueForKey(&cl.serverinfo, "pm_jumpvelocity");
@@ -6169,6 +6178,7 @@ void CL_Init (void)
 		cls.userinfo[seat].ChangeCB = CL_UserinfoChanged;
 		InfoBuf_SetStarKey (&cls.userinfo[seat], "*ver", ver);
 		InfoBuf_SetStarKey (&cls.userinfo[seat], "*agmove", "1");
+		InfoBuf_SetStarKey (&cls.userinfo[seat], "*pmprofile", STRINGIFY(PMPROFILE_CLIENTVERSION));	//Patch 1589; 1591 = AG autohop
 	}
 
 	InitValidation();
@@ -7546,6 +7556,8 @@ float CL_MaxFPSFloor(float fps)
 		(movevars.physicsmode != PHYSMODE_SOURCE && movevars.physicsmode != PHYSMODE_AG) || movevars.ticrate <= 0)
 		return fps;
 	tickfps = 1.0f / movevars.ticrate;
+	if (movevars.physicsmode == PHYSMODE_AG && tickfps > 250)
+		tickfps = 250;	//Patch 1589: AG batches ticks per command; ag-1000 must not force 1000 fps
 	return fps < tickfps ? tickfps : fps;
 }
 
@@ -8338,7 +8350,7 @@ void CL_ExecInitialConfigs(char *resetcommand, qboolean fullvidrestart)
 	Cbuf_AddText("cvar_purgedefaults\n", RESTRICT_LOCAL);	//reset cvar defaults to their engine-specified values. the tail end of 'exec default.cfg' will update non-cheat defaults to mod-specified values.
 	Cbuf_AddText("cvarreset *\n", RESTRICT_LOCAL);			//reset all cvars to their current (engine) defaults
 #ifdef HAVE_SERVER
-	Cbuf_AddText(va("sv_gamedir \"%s\"\n", FS_GetGamedir(true)), RESTRICT_LOCAL);
+	Cbuf_AddText(va("sv_gamedir \"%s\"\n", FS_GamedirWireName(FS_GetGamedir(true))), RESTRICT_LOCAL);	//FTESurf P1593: *gamedir is the wire spelling
 #endif
 	Cbuf_AddText(resetcommand, RESTRICT_LOCAL);
 	Cbuf_AddText("\n", RESTRICT_LOCAL);

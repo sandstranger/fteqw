@@ -59,7 +59,8 @@ cvar_t	sv_accelerate		 = CVAR( "sv_accelerate", "10");
 cvar_t	sv_airaccelerate	 = CVAR( "sv_airaccelerate", "0.7");
 cvar_t	sv_wateraccelerate	 = CVAR( "sv_wateraccelerate", "10");
 static int sv_agprofile; //map-spawn authority, never derived from raw pm_physicsmode
-static cvar_t sv_movementprofile = CVARFD("sv_movementprofile", "", CVAR_NOTFROMSERVER|CVAR_MAPLATCH, "Experimental unranked movement, applied only on map spawn: default (or empty), ag-100, ag-250. ag-1000 is not acceptance-qualified. Ladder intent uses analog signs; v1 has no longjump equipment.");
+static int sv_profilekind; //Patch 1589: PMPROFILE_* applied at map spawn
+static cvar_t sv_movementprofile = CVARFD("sv_movementprofile", "", CVAR_NOTFROMSERVER|CVAR_MAPLATCH, "Experimental unranked movement, applied only on map spawn: default (or empty); ag-100, ag-250, ag-1000 and cs16 (GoldSrc-style, CS 1.6 with its jump stamina and bhop cap); hl2-pre and hl2-post (Source mover with HL2 settings and its jump boost before/after the limiter; +speed sprints). Every profile autohops under pm_autobunny. Ladder intent uses analog signs; no longjump equipment.");
 
 static cvar_t pm_sourceversion = CVARFD("pm_sourceversion", STRINGIFY(PMSRC_VERSION), CVAR_SERVERINFO|CVAR_NOSET, "Source mover version used by this server (read-only). 3 adds swimming; 4 linked portals; 5 keeps a linked portal landing exact; 6 keeps moving as the hull clears a linked door; 7 traces a static prop's collision hull as its convex pieces; 8 recovers a surfer pinned to the face it is sliding along; 9 traces a prop hull whose indices overflowed as it really is; 10 honours Momentum's limitmovement and slide triggers; 11 adds Source's ceiling eye clearance and water-lip assist; 12 meets a prop hull's pieces where they really are, so a crease between two pieces no longer snags a surfer. Old clients need updating to predict them correctly.");
 cvar_t	sv_friction			 = CVAR( "sv_friction", "4");
@@ -141,6 +142,53 @@ cvar_t	pm_rampretrace		 = CVARFD("pm_rampretrace", "0.2", CVAR_SERVERINFO, "Mome
 cvar_t	pm_walkspeed		 = CVARFD("pm_walkspeed", "0", CVAR_SERVERINFO, "CS:S's CS_PLAYER_SPEED_WALK_MODIFIER: while the speed button is held, maxspeed is scaled by this. 0.52 is CS:S. 0 disables it, which is what every non-Source game on this engine wants - they use Quake's clientside cl_movespeedkey instead. Needs the client's in_speedbutton set, or the button never reaches the server.");
 cvar_t	pm_lockmovement		 = CVARFD("pm_lockmovement", "0", CVAR_NOTFROMSERVER, "Lock the movement ruleset. Every cvar that feeds the mover is restored to this game's default at each map load, and refused thereafter unless sv_cheats is 1. The engine default is 0, so this does nothing until a game asks for it in its default.cfg.");
 
+/*
+  Patch 1598: switch the movement profile of a game this process hosts, then reload the map.  NULL when it
+  switched, else why not.  sv_movementprofile is CVAR_NOTFROMSERVER and every QC localcmd is insecure, so no
+  QC can set it; the two ways in are the console command below and csprogs' movementprofile_switch
+  (pr_csqc.c).  ForceSet also clears a pending latch, so the reload applies it on any build.
+*/
+const char *SV_MovementProfileSwitch(const char *sel)
+{
+	if (sv.state != ss_active)
+		return "only in a game you host";
+	if (sv_redirected != RD_NONE)
+		return "not over rcon";
+	if (!sel || (strcmp(sel, "default") && !PM_ProfileBySelector(sel)))
+		return "unknown mode";
+	Con_Printf("movementprofile: %s, reloading the map\n", sel);
+	Cvar_ForceSet(&sv_movementprofile, strcmp(sel, "default") ? sel : "");
+	Cbuf_AddText("map_restart\n", RESTRICT_LOCAL);
+	return NULL;
+}
+
+/*
+  `movementprofile [<mode>]`, from the player's own console and binds only (exactly RESTRICT_LOCAL).  Text
+  a server could have supplied runs above it (stufftext, game-code localcmd, timers it queued) or below it
+  (its binds come back at bindlevel 30), so a hosting test alone would not keep it out (review).
+*/
+static void SV_MovementProfile_f(void)
+{
+	const char *why;
+
+	if (Cmd_Argc() < 2)
+	{
+		Con_Printf("movementprofile <default|hl2-pre|hl2-post|ag-100|ag-250|ag-1000|cs16>: set %s, running %s\n",
+				   *sv_movementprofile.string ? sv_movementprofile.string : "default",
+				   sv.state == ss_active && *InfoBuf_ValueForKey(&svs.info, "*movementprofile") ?
+				   InfoBuf_ValueForKey(&svs.info, "*movementprofile") : "default");
+		return;
+	}
+	if (Cmd_ExecLevel != RESTRICT_LOCAL)
+	{
+		Con_Printf("movementprofile: only from your own console or binds\n");
+		return;
+	}
+	why = SV_MovementProfileSwitch(Cmd_Argv(1));
+	if (why)
+		Con_Printf("movementprofile: %s\n", why);
+}
+
 #define cvargroup_serverphysics  "server physics variables"
 void WPhys_Init(void)
 {
@@ -153,6 +201,7 @@ void WPhys_Init(void)
 	Cvar_Register (&sv_airaccelerate,					cvargroup_serverphysics);
 	Cvar_Register (&sv_wateraccelerate,					cvargroup_serverphysics);
 	Cvar_Register (&sv_movementprofile, cvargroup_serverphysics);
+	Cmd_AddCommandD ("movementprofile", SV_MovementProfile_f, "Patch 1598: set sv_movementprofile for a game you host and reload the map (the hud_gamemode picker). Not hosting: refused.");
 	Cvar_Register (&pm_sourceversion,					cvargroup_serverphysics);
 	//Early +set survives registration even for NOSET cvars. Never advertise
 	//a mover different from SV_SetSourceMoveVars or the recorder's pin.
@@ -2980,9 +3029,18 @@ void SV_SetSourceMoveVars(void)
 	movevars.ladderangle		= pm_ladderangle.value ? pm_ladderangle.value : -0.707;
 	movevars.slide				= pm_slide.value;					//Patch 280
 	movevars.agprofile = 0;
-	if (sv.state == ss_active && (movevars.physicsmode == PHYSMODE_AG || sv_agprofile || *InfoBuf_ValueForKey(&svs.info, "*movementprofile")))
+	movevars.profilekind = 0;
+	if (sv.state == ss_active && PM_ProfileHL2(sv_profilekind))
+	{
+		const pmprofile_t *p = PM_ProfileByIdentity(InfoBuf_ValueForKey(&svs.info, "*movementprofile"));
+		if (!p || p->kind != sv_profilekind || movevars.physicsmode != PHYSMODE_SOURCE)
+			Host_Error("Refusing movement: unbound or mismatched HL2 profile");
+		movevars.profilekind = sv_profilekind;
+	}
+	else if (sv.state == ss_active && (movevars.physicsmode == PHYSMODE_AG || sv_agprofile || *InfoBuf_ValueForKey(&svs.info, "*movementprofile")))
 	{
 		movevars.agprofile = PMAg_ProfileRate(InfoBuf_ValueForKey(&svs.info, "*movementprofile"), movevars.sourceversion, movevars.ticrate);
+		movevars.profilekind = sv_profilekind;
 		if (!sv_agprofile || sv_agprofile != movevars.agprofile || !PMAg_ContextValid(&movevars))
 			Host_Error("Refusing movement: unbound or mismatched AG profile/model/version/rate");
 	}
@@ -4248,30 +4306,57 @@ static void SV_AGOverride(const char *name, const char *value)
 
 static void SV_ApplyMovementProfile(void)
 {
-	const char *tick, *identity;
+	const pmprofile_t *p;
+	char tick[16];
 	sv_agprofile = 0;
+	sv_profilekind = 0;
 	InfoBuf_SetValueForStarKey(&svs.info, "*movementprofile", "");
 	InfoBuf_SetValueForKey(&svs.info, "pm_agversion", "");
+	InfoBuf_SetValueForKey(&svs.info, "pm_agautohop", "");
 	if (!*sv_movementprofile.string || !strcmp(sv_movementprofile.string, "default")) return;
-	if (!strcmp(sv_movementprofile.string, "ag-100")) { tick = "0.01"; identity = "ag-100-v1"; }
-	else if (!strcmp(sv_movementprofile.string, "ag-250")) { tick = "0.004"; identity = "ag-250-v1"; }
-	else
+	p = PM_ProfileBySelector(sv_movementprofile.string);
+	if (!p)
 	{
 		Host_Error("Refusing map: unknown sv_movementprofile %s", sv_movementprofile.string);
 		return;
 	}
-	SV_AGOverride("pm_physicsmode", "2"); SV_AGOverride("pm_ticrate", tick);
-	SV_AGOverride("sv_gravity", "800"); SV_AGOverride("pm_stepheight", "18");
-	SV_AGOverride("sv_friction", "4"); SV_AGOverride("sv_stopspeed", "100");
-	SV_AGOverride("pm_edgefriction", "2"); SV_AGOverride("sv_accelerate", "10");
-	SV_AGOverride("sv_airaccelerate", "10"); SV_AGOverride("sv_maxspeed", "320");
-	SV_AGOverride("sv_maxvelocity", "2000"); SV_AGOverride("pm_maxvelocity", "2000");
-	SV_AGOverride("pm_standheight", "72"); SV_AGOverride("pm_duckheight", "36");
-	SV_AGOverride("pm_viewheight", "28"); SV_AGOverride("pm_duckviewheight", "12");
-	InfoBuf_SetValueForStarKey(&svs.info, "*movementprofile", identity);
-	InfoBuf_SetValueForKey(&svs.info, "pm_agversion", "1");
-	sv_agprofile = PMAg_ProfileRate(identity, PMAG_VERSION, atof(tick));
-	Con_Printf("Experimental AG-derived %s: UNRANKED, %gs steps, eight-step cap; analog-sign ladder, no longjump equipment.\n", identity, atof(tick));
+	Q_snprintfz(tick, sizeof(tick), "%g", p->tick);
+	SV_AGOverride("pm_ticrate", tick); SV_AGOverride("pm_stepheight", "18");
+	SV_AGOverride("sv_friction", "4"); SV_AGOverride("sv_airaccelerate", "10");
+	if (PM_ProfileHL2(p->kind))
+	{	// Stock HL2 (SDK gamemovement + hl2_player speeds) with Momentum's surf fixes off.
+		SV_AGOverride("pm_physicsmode", "1"); SV_AGOverride("sv_gravity", "600");
+		SV_AGOverride("sv_stopspeed", "100"); SV_AGOverride("sv_accelerate", "10");
+		SV_AGOverride("sv_maxspeed", "190"); SV_AGOverride("pm_jumpvelocity", "160");
+		SV_AGOverride("sv_maxvelocity", "3500"); SV_AGOverride("pm_maxvelocity", "3500");
+		SV_AGOverride("pm_standheight", "72"); SV_AGOverride("pm_duckheight", "36");
+		SV_AGOverride("pm_viewheight", "64"); SV_AGOverride("pm_duckviewheight", "28");
+		SV_AGOverride("pm_duckspeed", "0.333"); SV_AGOverride("pm_viewscale", "1");
+		SV_AGOverride("pm_maxairspeed", "30");	// pm_autobunny stays the server's (Patch 1591)
+		SV_AGOverride("pm_normalizejump", "0"); SV_AGOverride("pm_jumpaddrise", "0");
+		SV_AGOverride("pm_jumpzoffset", "0"); SV_AGOverride("pm_stamina", "0");
+		SV_AGOverride("pm_walkspeed", "0"); SV_AGOverride("pm_groundtracedist", "2");
+		SV_AGOverride("pm_bumpcount", "4"); SV_AGOverride("pm_snaptoground", "0");
+		SV_AGOverride("pm_groundquadrants", "0"); SV_AGOverride("pm_fixslopes", "0");
+		SV_AGOverride("pm_fixedges", "0"); SV_AGOverride("pm_fixrampbugs", "0");
+		SV_AGOverride("pm_slide", "0");
+	}
+	else
+	{
+		qboolean cs = p->kind == PMPROFILE_CS16;
+		SV_AGOverride("pm_physicsmode", "2"); SV_AGOverride("sv_gravity", "800");
+		SV_AGOverride("sv_stopspeed", cs ? "75" : "100"); SV_AGOverride("sv_accelerate", cs ? "5" : "10");
+		SV_AGOverride("pm_edgefriction", "2"); SV_AGOverride("sv_maxspeed", cs ? "250" : "320");
+		SV_AGOverride("sv_maxvelocity", "2000"); SV_AGOverride("pm_maxvelocity", "2000");
+		SV_AGOverride("pm_standheight", "72"); SV_AGOverride("pm_duckheight", "36");
+		SV_AGOverride("pm_viewheight", cs ? "17" : "28"); SV_AGOverride("pm_duckviewheight", "12");
+		InfoBuf_SetValueForKey(&svs.info, "pm_agversion", "1");
+		InfoBuf_SetValueForKey(&svs.info, "pm_agautohop", "1");	// Patch 1591: this AG mover honours pm_autobunny
+	}
+	InfoBuf_SetValueForStarKey(&svs.info, "*movementprofile", p->identity);
+	sv_profilekind = p->kind;
+	sv_agprofile = PMAg_ProfileRate(p->identity, PMAG_VERSION, p->tick);
+	Con_Printf("Experimental %s: UNRANKED, %gs steps; analog-sign ladder, no longjump equipment.\n", p->identity, p->tick);
 }
 
 void SV_ApplyGamemode(const char *mapname)
@@ -4331,7 +4416,7 @@ void SV_Movement_f(void)
 								 :"pm_lockmovement's default is 0");
 
 	if (*InfoBuf_ValueForKey(&svs.info, "*movementprofile"))
-		Con_Printf("  optional %s: experimental AG-derived UNRANKED, version 1; analog-sign ladder intent, no longjump equipment, eight-step cap\n", InfoBuf_ValueForKey(&svs.info, "*movementprofile"));
+		Con_Printf("  optional %s: experimental UNRANKED, version 1; analog-sign ladder intent, no longjump equipment\n", InfoBuf_ValueForKey(&svs.info, "*movementprofile"));
 	/*Patch 313: print the published key rather than re-deriving it here, so
 	  this line is a test of what QC will actually read and not a second opinion
 	  that could agree while the key was stale.*/

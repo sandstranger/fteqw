@@ -101,16 +101,16 @@ static void Reset(void)
 static void Dry(void)
 {
 	int rate,i,total;
-	int duration[]={10,4};
+	int duration[]={10,4,1};
 	Reset(); pmove.velocity[0]=600; pmove.cmd.buttons=BUTTON_JUMP;
 	PMAg_PlayerMove(1);
 	NEAR(pmove.origin[0],6,0.0001f); NEAR(pmove.origin[2],38.643282f,0.0001f);
 	NEAR(pmove.velocity[2],260.328157f,0.0001f); CHECK(!pmove.onground); CHECK(touches>0);
 	Reset(); pmove.cmd.forwardmove=320; PMAg_PlayerMove(1);
 	NEAR(pmove.velocity[0],32,0.0001f); NEAR(pmove.origin[0],0.32f,0.0001f); CHECK(pmove.onground);
-	for (rate=0;rate<2;rate++)
+	for (rate=0;rate<3;rate++)
 	{
-		Reset(); pmove.origin[2]=1000; pmove.cmd.msec=duration[rate]; movevars.ticrate=duration[rate]==10 ? 0.01f : 0.004f; movevars.agprofile=1000/duration[rate]; total=0;
+		Reset(); pmove.origin[2]=1000; pmove.cmd.msec=duration[rate]; movevars.ticrate=duration[rate]==10 ? 0.01f : duration[rate]==4 ? 0.004f : 0.001f; movevars.agprofile=1000/duration[rate]; total=0;
 		for(i=0;i<1000/duration[rate];i++) {PMAg_PlayerMove(1);total+=pmove.ticksrun;}
 		CHECK(total==1000/duration[rate]); NEAR(pmove.tickused,duration[rate]*0.001f,0.000001f); NEAR(pmove.origin[2],600,0.02f);
 		printf("PASS actual solver %d Hz free-fall/clock: z %.6f, native ms %d\n",1000/duration[rate],pmove.origin[2],total);
@@ -221,12 +221,87 @@ static void ReviewedControls(void)
 	Reset(); CHECK(PMAg_ContextValid(&movevars));
 	CHECK(PMAg_ProfileRate("ag-100-v1",1,0.01f)==100); CHECK(PMAg_ProfileRate("ag-250-v1",1,0.004f)==250);
 	CHECK(!PMAg_ProfileRate("ag-100-v1",2,0.01f)); CHECK(!PMAg_ProfileRate("",1,0.01f));
-	CHECK(!PMAg_ProfileRate("ag-100-v1",1,0.004f)); CHECK(!PMAg_ProfileRate("ag-1000-v1",1,0.001f));
+	CHECK(!PMAg_ProfileRate("ag-100-v1",1,0.004f)); CHECK(PMAg_ProfileRate("ag-1000-v1",1,0.001f)==1000);
+	CHECK(PMAg_ProfileRate("cs16-v1",1,0.01f)==100); CHECK(!PMAg_ProfileRate("hl2-pre-v1",1,0.015f));
+	CHECK(!PMAg_ProfileRate("ag-1000-v1",1,0.01f)); CHECK(!PM_ProfileBySelector("ag-500"));
+	CHECK(PM_ProfileBySelector("cs16")->kind==PMPROFILE_CS16); CHECK(PM_ProfileBySelector("hl2-post")->kind==PMPROFILE_HL2POST);
+	movevars.profilekind=PMPROFILE_HL2PRE; CHECK(!PMAg_ContextValid(&movevars)); movevars.profilekind=PMPROFILE_CS16; CHECK(PMAg_ContextValid(&movevars));
+	movevars.profilekind=0;
 	movevars.agprofile=0; pmove.cmd.forwardmove=320; PMAg_PlayerMove(1); CHECK(pmove.ticksrun==0); CHECK(pmove.origin[0]==0);
 	movevars.agprofile=100; movevars.ticrate=0.001f; PMAg_PlayerMove(1); CHECK(pmove.ticksrun==0);
 	movevars.ticrate=0.01f; movevars.sourceversion=2; PMAg_PlayerMove(1); CHECK(pmove.ticksrun==0);
 	CHECK(PMAg_CommandSlot(0.004f,66,30)==0); CHECK(PMAg_CommandSlot(0.004f,66,32)==32);
 	CHECK(PMAg_CommandSlot(0.004f,66,0)==16); CHECK(PMAg_CommandSlot(0.01f,75,0)==10);
-	puts("PASS binding/refusal and packet ceiling250/30 refused,250/32=8ticks");
+	CHECK(PMAg_CommandSlot(0.001f,100,0)==10); CHECK(PMAg_CommandSlot(0.001f,100,77)==13); CHECK(PMAg_CommandSlot(0.001f,100,30)==0);
+	puts("PASS binding/refusal and packet ceiling250/30 refused,250/32=8ticks, 1000/77=13 ticks, 1000/30 refused");
+	Reset(); movevars.ticrate=0.001f; movevars.agprofile=1000; pmove.origin[2]=1000;
+	pmove.cmd.msec=255; PMAg_PlayerMove(1);
+	CHECK(pmove.ticksrun==32); NEAR(pmove.msec_carry,0,0.000001f);
+	NEAR(pmove.origin[2],1000-400*1024*0.001f*0.001f,0.002f);
+	puts("PASS 1000 Hz stalled command credits the 32-tick budget");
 }
-int main(void) {Dry();Clock();CollisionAndNoEquipment();Duck();WaterLadder();ReviewedControls();puts("PASS AG world solver fixtures (not BSP/socket/oracle acceptance)");return 0;}
+// CS 1.6: fuser2 jump/land stamina, PreventMegaBunnyJumping and the 17-unit eye.
+static void CS16(void)
+{
+	Reset(); movevars.profilekind=PMPROFILE_CS16; movevars.maxspeed=250; movevars.accelerate=5; movevars.stopspeed=75;
+	pmove.cmd.buttons=BUTTON_JUMP; PMAg_PlayerMove(1);
+	NEAR(pmove.velocity[2],260.328157f,0.0001f); NEAR(pmove.stamina,1315.789429f,0.001f); CHECK(fabsf(pmove.viewheight-17)<0.001f);
+	Reset(); movevars.profilekind=PMPROFILE_CS16; movevars.maxspeed=250; movevars.accelerate=5; movevars.stopspeed=75;
+	pmove.stamina=510; pmove.cmd.buttons=BUTTON_JUMP; PMAg_PlayerMove(1);
+	NEAR(pmove.velocity[2],268.3281573f*0.905f-8,0.001f);
+	puts("PASS CS16 jump: fresh 260.33, after 500 ms of fuser2 0.905 x impulse, recharge 1315.79");
+	Reset(); movevars.profilekind=PMPROFILE_CS16; movevars.maxspeed=250; movevars.accelerate=5; movevars.stopspeed=75;
+	pmove.stamina=510; pmove.velocity[0]=200; pmove.onground=true; PMAg_PlayerMove(1);
+	NEAR(pmove.velocity[0],192*0.905f,0.001f);
+	Reset(); pmove.velocity[0]=200; pmove.stamina=510; PMAg_PlayerMove(1); NEAR(pmove.velocity[0],192,0.001f);
+	puts("PASS CS16 landing: friction 192 then x0.905 inside fuser2; plain AG ignores the field");
+	Reset(); movevars.profilekind=PMPROFILE_CS16; movevars.maxspeed=250; movevars.accelerate=5; movevars.stopspeed=75;
+	pmove.velocity[0]=400; pmove.cmd.buttons=BUTTON_JUMP; PMAg_PlayerMove(1);
+	NEAR(pmove.velocity[0],400*(300/sqrtf(400*400+16))*0.8f,0.01f);
+	Reset(); pmove.velocity[0]=400; pmove.cmd.buttons=BUTTON_JUMP; PMAg_PlayerMove(1); NEAR(pmove.velocity[0],400,0.001f);
+	puts("PASS CS16 bhop cap: 400 u/s jump drops to 0.8 x 300; plain AG keeps 400");
+	Reset(); movevars.profilekind=PMPROFILE_CS16; movevars.maxspeed=250; movevars.accelerate=5; movevars.stopspeed=75;
+	pmove.cmd.forwardmove=320; pmove.cmd.buttons=BUTTON_DUCK; PMAg_PlayerMove(1);
+	NEAR(pmove.velocity[0],5*250*0.333f*0.01f,0.001f); // clamp to maxspeed, then crop (PM_CheckParamters)
+	Reset(); movevars.maxspeed=250; movevars.accelerate=5; movevars.stopspeed=75;
+	pmove.cmd.forwardmove=320; pmove.cmd.buttons=BUTTON_DUCK; PMAg_PlayerMove(1);
+	NEAR(pmove.velocity[0],12.5f,0.001f);
+	puts("PASS CS16 duck crop from the first ducking tick, after the maxspeed clamp (4.16 u/s); plain AG crops only once ducked (12.5)");
+	Reset(); pmove.ducked=true; pmove.origin[2]=18; pmove.cmd.forwardmove=450; pmove.cmd.buttons=BUTTON_DUCK; PMAg_PlayerMove(1);
+	NEAR(pmove.velocity[0],10*320*0.333f*0.01f,0.001f);
+	puts("PASS AG ducked 450 forward: clamp to 320 then crop, wish 106.6 (not 149.9)");
+	Reset(); movevars.maxspeed=320; pmove.origin[2]=1000; pmove.cmd.sidemove=450; pmove.cmd.upmove=200; pmove.cmd.buttons=BUTTON_JUMP; PMAg_PlayerMove(1);
+	NEAR(fabsf(pmove.velocity[1]),30,0.001f); // air: client upmove 200 with jump held must not shrink the side wish (P1542 behaviour)
+	Reset(); pmove.cmd.sidemove=450; pmove.cmd.upmove=200; PMAg_PlayerMove(1); NEAR(fabsf(pmove.velocity[1]),32,0.001f);
+	puts("PASS uncropped moves ignore the clamp: held-jump upmove 200 leaves the side wish at 320");
+}
+// Patch 1591: under pm_autobunny a held jump leaves on the first grounded tick; off, one press is one jump.
+static int HeldHops(int commands, int *ground, float *apex)
+{
+	int i, hops=0, run=0; float vz;
+	*ground=0; pmove.cmd.buttons=BUTTON_JUMP;
+	for (i=0;i<commands;i++)
+	{
+		vz=pmove.velocity[2]; PMAg_PlayerMove(1);
+		if (vz<=0 && pmove.velocity[2]>0) hops++;
+		if (apex && hops && hops<=2 && pmove.origin[2]-36>apex[hops-1]) apex[hops-1]=pmove.origin[2]-36;
+		run=pmove.onground ? run+1 : 0; if (run>*ground) *ground=run;
+	}
+	return hops;
+}
+static void Autohop(void)
+{
+	int ground,hops; float apex[2]={0,0};
+	Reset(); hops=HeldHops(200,&ground,NULL); CHECK(hops==1); CHECK(ground>100);
+	printf("PASS autobunny off: 2 s held = %d jump, then %d grounded ticks\n",hops,ground);
+	Reset(); movevars.autobunny=true; hops=HeldHops(200,&ground,NULL); CHECK(hops>=3); CHECK(ground==1);
+	printf("PASS autobunny 100 Hz: 2 s held = %d jumps, longest ground %d tick\n",hops,ground);
+	Reset(); movevars.autobunny=true; movevars.ticrate=0.001f; movevars.agprofile=1000; pmove.cmd.msec=1;
+	hops=HeldHops(2000,&ground,NULL); CHECK(hops>=3); CHECK(ground==1);
+	printf("PASS autobunny 1000 Hz: 2 s held = %d jumps, longest ground %d tick\n",hops,ground);
+	Reset(); movevars.autobunny=true; movevars.profilekind=PMPROFILE_CS16; movevars.maxspeed=250; movevars.accelerate=5; movevars.stopspeed=75;
+	pmove.velocity[0]=400; hops=HeldHops(200,&ground,apex); CHECK(hops>=2); CHECK(ground==1);
+	NEAR(apex[0],45,0.5f); CHECK(apex[1]>20 && apex[1]<apex[0]*0.9f); NEAR(pmove.velocity[0],240,1);
+	printf("PASS CS16 autohop: %d jumps, apex %.2f then %.2f (fuser2), speed %.2f after the 400 cap\n",hops,apex[0],apex[1],pmove.velocity[0]);
+}
+int main(void) {Dry();Clock();CollisionAndNoEquipment();CS16();Autohop();Duck();WaterLadder();ReviewedControls();puts("PASS AG world solver fixtures (not BSP/socket/oracle acceptance)");return 0;}

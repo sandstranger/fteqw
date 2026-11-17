@@ -20,6 +20,7 @@ Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
 #include "quakedef.h"
 #include "../common/anglecause.h"
 #include "com_bih.h"
+#include "pm_ag.h"
 #include "sv_held_ledger.h"
 #include "sv_held_replay.h"
 #include "sv_held_coverage.h"
@@ -1064,8 +1065,7 @@ void SV_Map_f (void)
 	cvar_t *profile = Cvar_FindVar("sv_movementprofile");
 	const char *requested = profile ? (profile->latched_string ? profile->latched_string : profile->string) : "";
 
-	if (*requested && strcmp(requested, "default") && strcmp(requested, "ag-100") &&
-		strcmp(requested, "ag-250"))
+	if (*requested && strcmp(requested, "default") && !PM_ProfileBySelector(requested))
 	{
 		Con_Printf(CON_ERROR "Refusing map: sv_movementprofile %s is unknown or not acceptance-qualified\n", requested);
 		return;
@@ -4399,6 +4399,8 @@ static void SV_DetPinMover(model_t *world, int fixrampbugs, int sourceversion, q
 	pmove.surfacefriction = 1.0f;
 
 	movevars.physicsmode   = PHYSMODE_SOURCE;
+	movevars.agprofile     = 0;
+	movevars.profilekind   = PMPROFILE_NONE;	//Patch 1589
 	movevars.ticrate       = PMDET_TICRATE;	//Patch 325: the mover is a function of it
 	movevars.gravity       = 800;
 	movevars.friction      = 4;
@@ -4689,6 +4691,7 @@ static void SV_DetTest_Run (void)
 			pmove.surfacefriction = 1.0f;
 			movevars = savemv;
 			movevars.physicsmode = PHYSMODE_SOURCE;
+			movevars.agprofile = 0; movevars.profilekind = PMPROFILE_NONE;	//Patch 1589: not the live profile
 			movevars.ticrate     = arm_tick[a];
 			for (k = 0; k < 3; k++)
 				pmove.origin[k] = (float)((lo[k] + hi[k]) / 2);
@@ -6397,6 +6400,13 @@ static void SV_RecSim_Run (const char *fname, int stopat, qboolean verify, const
 			Con_Printf("^3UNSUPPORTED physics mode %g in pm restatement: Source-only verifier, no physics verdict.^7\n", pms[i].pin[1]);
 			goto ag_unsupported_cleanup;
 		}
+	/* Patch 1589: an unpinned replay takes this server's movevars, which a live profile has rewritten. */
+	if (!exact && *InfoBuf_ValueForKey(&svs.info, "*movementprofile"))
+	{
+		Con_Printf("^3UNSUPPORTED: no full pmpin, and this server runs optional profile %s; no replay.^7\n",
+			InfoBuf_ValueForKey(&svs.info, "*movementprofile"));
+		goto ag_unsupported_cleanup;
+	}
 	if (filever >= 9 || pinfound || haveseed)
 		Con_Printf("  v9 state  pin %i/%i names, seed %s, %i pm, %i pe, %i portal -- %s\n",
 		           pinfound, SV_PMPinNeed(hdrpin),
@@ -6706,6 +6716,7 @@ static void SV_RecSim_Run (const char *fname, int stopat, qboolean verify, const
 		VectorSet(pmove.player_maxs,  16,  16, 62);
 
 		movevars.physicsmode = PHYSMODE_SOURCE;
+		movevars.agprofile = 0; movevars.profilekind = PMPROFILE_NONE;	/* Patch 1589: nor the server's profile */
 		movevars.ticrate     = rate;		/* the FILE's, not the server's */
 		if (exact)
 		{	/* Patch 347: the physics the file says ran, not this server's. */

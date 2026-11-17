@@ -277,6 +277,10 @@ int in_raw_legacybtn = -1;
   at begin and as an 'o' record at every change.*/
 int in_raw_legacykey = -1;
 int in_raw_kbdnohandle = -1;
+int in_raw_keytime[2][IN_KEYTIME_BUCKETS];	/*Patch 1594: see in_win.c's rawkey_uptime*/
+int in_raw_keyupalone;
+int in_raw_keylegfirst[2];
+int in_raw_keyrawalone;
 int in_raw_keydropped = -1;	/*Patch 1576: key presses in_keyguard dropped; -1 = this backend has no guard*/
 int in_rawkbd_observe = -1;
 int in_rawkbd_observechanges;
@@ -1062,6 +1066,7 @@ static int			in_jrn_injreported, in_jrn_unenumreported;	/*...and how far the per
 static int			in_jrn_lgbbase, in_jrn_lgbreported;			/*Patch 307: the same pair for the uncorroborated legacy button*/
 static int			in_jrn_kdreported;		/*Patch 1576: key presses in_keyguard dropped, caught up*/
 static int			in_jrn_lgkreported, in_jrn_nhkreported;		/*Patch 1424: legacy keys and handle-less keyboard reports, caught up*/
+static int			in_jrn_ktbase[2][IN_KEYTIME_BUCKETS], in_jrn_kubase, in_jrn_klfbase[2], in_jrn_krabase;	/*Patch 1594: the counters as the journal began*/
 static int			in_jrn_obsreported;							/*Patch 1424: in_rawkbd_observechanges last written*/
 static int			in_jrn_padbase, in_jrn_padreported;			/*Patch 468: accepted touchpad reports, baseline and caught up*/
 static int			in_jrn_prbase, in_jrn_prreported;			/*...and the digitizer reports that armed the window*/
@@ -1638,6 +1643,44 @@ static void IN_Journal_Bypassed(double when)
 	Q_snprintfz(tail, sizeof(tail), "%i", in_raw_legacybtn - in_jrn_lgbreported);
 	in_jrn_lgbreported = in_raw_legacybtn;
 	IN_Journal_Line(when, "b", tail);
+}
+
+/*Patch 1594: `keytimes <8 press buckets> <8 release buckets> <releases alone> <presses legacy-first>
+  <releases legacy-first> <raw presses alone>`, untimestamped, the journal's own differences: how long after (or
+  before) a real keyboard's raw report of the same scancode each legacy press and release arrived
+  (IN_KEYTIME_BUCKETS), legacy releases no raw release met, how many matched pairs had the legacy message first,
+  and raw presses no legacy press met.  Only while the keyboard is observed (kbdobserve 1; a mid-journal change
+  shows as 'o'), taken at the trailer's moment beside 'y', clear of the trailer's reserve.  The header's
+  `keytiming 1` promises it.*/
+static void IN_Journal_KeyTimes(void)
+{
+	char line[256], num[16];
+	int i, up;
+
+	if (!in_jrn_buf || in_jrn_full || in_rawkbd_observe != 1)
+		return;
+	Q_strncpyz(line, "keytimes", sizeof(line));
+	for (up = 0; up < 2; up++)
+		for (i = 0; i < IN_KEYTIME_BUCKETS; i++)
+		{
+			Q_snprintfz(num, sizeof(num), " %i", in_raw_keytime[up][i] - in_jrn_ktbase[up][i]);
+			Q_strncatz(line, num, sizeof(line));
+		}
+	{
+		int tail[4];
+		tail[0] = in_raw_keyupalone - in_jrn_kubase;
+		tail[1] = in_raw_keylegfirst[0] - in_jrn_klfbase[0];
+		tail[2] = in_raw_keylegfirst[1] - in_jrn_klfbase[1];
+		tail[3] = in_raw_keyrawalone - in_jrn_krabase;
+		for (i = 0; i < 4; i++)
+		{
+			Q_snprintfz(num, sizeof(num), " %i", tail[i]);
+			Q_strncatz(line, num, sizeof(line));
+		}
+	}
+	Q_strncatz(line, "\n", sizeof(line));
+	if (in_jrn_len + strlen(line) + 256 <= in_jrn_max)
+		IN_Journal_Raw(line);
 }
 
 /*Patch 1424: 'o <kbdobserve>' when observation started or stopped (even off and on again
@@ -2493,6 +2536,17 @@ static void IN_JournalBegin_f(void)
 	in_jrn_lgkreported = (in_raw_legacykey < 0) ? 0 : in_raw_legacykey;	/*Patch 1424*/
 	in_jrn_kdreported = (in_raw_keydropped < 0) ? 0 : in_raw_keydropped;	/*Patch 1576*/
 	in_jrn_nhkreported = (in_raw_kbdnohandle < 0) ? 0 : in_raw_kbdnohandle;
+	{	/*Patch 1594: element by element, each a whole int the window thread writes*/
+		int up, b;
+		for (up = 0; up < 2; up++)
+		{
+			for (b = 0; b < IN_KEYTIME_BUCKETS; b++)
+				in_jrn_ktbase[up][b] = in_raw_keytime[up][b];
+			in_jrn_klfbase[up] = in_raw_keylegfirst[up];
+		}
+		in_jrn_kubase = in_raw_keyupalone;
+		in_jrn_krabase = in_raw_keyrawalone;
+	}
 	in_jrn_obsreported = in_rawkbd_observechanges;
 	in_jrn_padreported = in_jrn_padbase = (in_raw_touchpad < 0) ? 0 : in_raw_touchpad;	/*Patch 468*/
 	in_jrn_prreported = in_jrn_prbase = (in_raw_padreports < 0) ? 0 : in_raw_padreports;
@@ -2628,6 +2682,7 @@ static void IN_JournalBegin_f(void)
 #if defined(_WIN32) && !defined(WINRT) && !defined(FTE_SDL)
 	if (INS_HookJournalBegin())
 		IN_Journal_Raw("hookscan 1\n");	/*Patch 1586*/
+	IN_Journal_Raw("keytiming 1\n");	/*Patch 1594: a `keytimes` line follows while the keyboard is observed*/
 #endif
 	IN_Journal_Raw("anglecause 1\n");
 	IN_Journal_Raw("begin\n");
@@ -2698,6 +2753,7 @@ static void IN_JournalEnd_f(void)
 	IN_Journal_RenderCvars(now);	/*Patch 310*/
 	IN_Journal_Bypassed(now);	/*Patch 307*/
 	IN_Journal_Keys();		/*Patch 1424*/
+	IN_Journal_KeyTimes();	/*Patch 1594: at the same moment as the last 'y'*/
 
 	/*The trailer carries the WHOLE-RUN totals beside the per-frame deltas on purpose:
 	  two independent statements of the same quantity, so a hand-edited journal has to

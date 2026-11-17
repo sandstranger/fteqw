@@ -978,6 +978,37 @@ void CL_DownloadFinished(qdownload_t *dl)
 	}
 }
 
+//FTESurf P1593: the gamedir a server announced, as this client mounts it. On an identity install
+//(base ftesurf/worldofsurf; other games keep stock behaviour) anything but one plain name
+//([A-Za-z0-9_.-], under 64 bytes, no leading dot) is our own base: FS_Manifest_ChangeGameDir splits on
+//';', whitespace, control and high bytes, and `~` reaches a folder by its 8.3 name. Any spelling of either
+//identity is our base too (FS_GamedirAlias): no mount, no config reload, files land in our folder.
+//Only a valid spelling is kept, for web downloads: <dlURL>/<gamedir>/ (surfd/maps.nginx serves /ftesurf/maps/).
+static char cl_servergamedir[MAX_QPATH];
+static const char *CL_ServerGamedir(const char *str)
+{
+	const char *own, *c;
+	*cl_servergamedir = 0;
+	if (!*str || !FS_GamedirIdentityInstall())
+		return str;
+	for (c = str; *c; c++)
+		if (!((*c >= 'a' && *c <= 'z') || (*c >= 'A' && *c <= 'Z') || (*c >= '0' && *c <= '9') ||
+			*c == '_' || *c == '-' || *c == '.'))
+			break;
+	if (*c || c - str >= 64 || *str == '.')
+	{
+		Con_DPrintf("Server gamedir \"%s\" is not one plain name: our own base\n", str);
+		return "";
+	}
+	Q_strncpyz(cl_servergamedir, str, sizeof(cl_servergamedir));
+	own = FS_GamedirAlias(str);
+	if (!own)
+		return str;
+	if (strcmp(str, own))
+		Con_DPrintf("Server gamedir \"%s\" is \"%s\" here\n", str, own);
+	return own;
+}
+
 static qboolean CL_CheckFile(const char *filename)
 {
 	if (strstr (filename, ".."))
@@ -1027,9 +1058,29 @@ qboolean	CL_CheckOrEnqueDownloadFile (const char *filename, const char *localnam
 	if (flags & DLLF_NONGAME)
 	{
 		/*pak/pk3 downloads have an explicit leading package/ as an internal/network marker*/
+		//FTESurf P1593: these land under the install root in a folder the server names (//paknames,
+		//redirects; FS_GenCachedPakName applies the same rule). A long one or `~` is refused; either
+		//identity in any spelling is our base: no second identity folder.
+		static char pkglocal[MAX_OSPATH];	//not va(): filename holds one of its two buffers
+		const char *rest = localname?strchr(localname, '/'):NULL, *own = NULL;
+		char dir[64];	//MAX_QPATH is 128 here
 		if (!strchr(filename, ':'))
 			filename = va("package/%s", filename);
-		localname = va("package/%s", localname);
+		if (rest && FS_GamedirIdentityInstall())
+		{
+			if ((size_t)(rest - localname) >= sizeof(dir) || memchr(localname, '~', rest - localname))
+			{
+				Con_DPrintf("Refusing package download to \"%s\"\n", localname);
+				return true;
+			}
+			Q_strncpyz(dir, localname, rest - localname + 1);
+			own = FS_GamedirAlias(dir);
+		}
+		if (own)
+			Q_snprintfz(pkglocal, sizeof(pkglocal), "package/%s%s", own, rest);
+		else
+			Q_snprintfz(pkglocal, sizeof(pkglocal), "package/%s", localname);
+		localname = pkglocal;
 	}
 	/*files with a leading * should not be downloaded (inline models, sexed sounds, etc). also block anyone trying to explicitly download a package/ because our code (wrongly) uses that name internally*/
 	else if (*filename == '*' || !strncmp(filename, "package/", 8))
@@ -1098,7 +1149,8 @@ qboolean	CL_CheckOrEnqueDownloadFile (const char *filename, const char *localnam
 			if (!strncmp(filename, "pics/../", 8))
 				filename += 8;
 #endif
-			Q_snprintfz(weburl, sizeof(weburl), "%s%s%s/%s", dlURL, ((dlURL[strlen(dlURL)-1]=='/')?"":"/"), FS_GetGamedir(true), filename);
+			Q_snprintfz(weburl, sizeof(weburl), "%s%s%s/%s", dlURL, ((dlURL[strlen(dlURL)-1]=='/')?"":"/"),
+				(cls.state != ca_disconnected && *cl_servergamedir)?cl_servergamedir:FS_GamedirWireName(FS_GetGamedir(true)), filename);
 			filename = weburl;
 			flags |= DLLF_TRYWEB|DLLF_ALLOWWEB;
 		}
@@ -3844,10 +3896,13 @@ static void CLQW_ParseServerData (void)
 	if (!*str)
 		str = "qw";	//FIXME: query active manifest's basegamedir
 
+	{
+		const char *dir = CL_ServerGamedir(str);
 #ifndef CLIENTONLY
-	if (!sv.state)
+		if (!sv.state)
 #endif
-		COM_Gamedir(str, NULL);
+			COM_Gamedir(dir, NULL);
+	}
 
 	CL_ClearState (true);
 #ifdef QUAKEHUD
@@ -4148,10 +4203,7 @@ static void CLQ2_ParseServerData (void)
 	// game directory
 	str = MSG_ReadString ();
 	// set gamedir
-	if (!*str)
-		COM_Gamedir("baseq2", NULL);
-	else
-		COM_Gamedir(str, NULL);
+	COM_Gamedir(CL_ServerGamedir(*str?str:"baseq2"), NULL);	//FTESurf P1593
 
 	Cvar_Get("timescale", "1", 0, "Q2Admin hacks");	//Q2Admin will kick players who have a timescale set to something other than 1
 													//FTE doesn't actually have a timescale cvar, so create one to 'fool' q2admin.
@@ -4527,11 +4579,14 @@ static void CLNQ_ParseServerData(void)		//Doesn't change gamedir - use with caut
 	}
 	if (str)
 	{
+		const char *dir = CL_ServerGamedir(str);
 #ifndef CLIENTONLY
 		if (!sv.state)
 #endif
-			COM_Gamedir(str, NULL);
+			COM_Gamedir(dir, NULL);
 	}
+	else
+		*cl_servergamedir = 0;
 	if (cl.allocated_client_slots > MAX_CLIENTS)
 	{
 		cl.allocated_client_slots = MAX_CLIENTS;

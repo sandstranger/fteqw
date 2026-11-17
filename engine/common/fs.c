@@ -1049,6 +1049,37 @@ mirror:
 	return false;
 }
 
+//FTESurf P1593: `ftesurf` and `worldofsurf` are one game. The first is the wire spelling (what servers
+//announce, demos record and download URLs name); the local folder may be either.
+static const char *fs_gamedir_aliases[] = {"ftesurf", "worldofsurf"};
+
+//case-insensitive and blind to the trailing dots and spaces Windows drops from a folder name.
+static qboolean FS_GamedirNameIs(const char *dir, const char *name)
+{
+	size_t len = strlen(dir), n = strlen(name);
+	while (len && (dir[len-1] == '.' || dir[len-1] == ' '))
+		len--;
+	return len == n && !Q_strncasecmp(dir, name, n);
+}
+static qboolean FS_GamedirIsIdentity(const char *dir)
+{
+	size_t j;
+	for (j = 0; dir && j < countof(fs_gamedir_aliases); j++)
+		if (FS_GamedirNameIs(dir, fs_gamedir_aliases[j]))
+			return true;
+	return false;
+}
+//man's basegame in its own spelling when it is either identity name, else NULL. Lives in man.
+static const char *FS_Manifest_IdentityBase(ftemanifest_t *man)
+{
+	size_t i;
+	for (i = 0; man && i < countof(man->gamepath); i++)
+		if (man->gamepath[i].path && (man->gamepath[i].flags & GAMEDIR_BASEGAME) &&
+			FS_GamedirIsIdentity(man->gamepath[i].path))
+			return man->gamepath[i].path;
+	return NULL;
+}
+
 static qboolean FS_GamedirIsOkay(const char *path, qboolean verbose)
 {
 	char tmp[MAX_QPATH];
@@ -1212,6 +1243,11 @@ static qboolean FS_Manifest_ParseTokens(ftemanifest_t *man)
 		int i;
 		char *newdir = Cmd_Argv(1);
 		qboolean basegame = !Q_strcasecmp(cmd, "basegame");
+
+		//FTESurf P1593: per name, as FS_Manifest_ChangeGameDir splits a server's list: neither identity,
+		//in any spelling, is ever a mod over an identity base.
+		if (!basegame && FS_GamedirIsIdentity(newdir) && FS_Manifest_IdentityBase(man))
+			return true;
 
 		for (i = 0; i < sizeof(man->gamepath) / sizeof(man->gamepath[0]); i++)
 		{
@@ -6074,6 +6110,31 @@ char *FS_GetGamedir(qboolean publicpathonly)
 		return gamedirfile;
 }
 
+//FTESurf P1593: this install's basegame (its manifest's spelling) when dir is any spelling of either
+//name and the base is one of them, else NULL. A copy: COM_Gamedir may free the manifest it came from.
+const char *FS_GamedirAlias(const char *dir)
+{
+	static char base[MAX_QPATH];
+	const char *b = FS_GamedirIsIdentity(dir)?FS_Manifest_IdentityBase(fs_manifest):NULL;
+	if (!b)
+		return NULL;
+	Q_strncpyz(base, b, sizeof(base));
+	return base;
+}
+
+//FTESurf P1593: true when this install's base is ftesurf or worldofsurf; the stricter rules apply only then.
+qboolean FS_GamedirIdentityInstall(void)
+{
+	return FS_Manifest_IdentityBase(fs_manifest) != NULL;
+}
+
+//FTESurf P1593: the wire spelling of a local gamedir: `ftesurf` for either name when this install's
+//base is one of them (an unrelated mod called worldofsurf stays itself), else dir.
+const char *FS_GamedirWireName(const char *dir)
+{
+	return (FS_GamedirIsIdentity(dir) && FS_Manifest_IdentityBase(fs_manifest))?fs_gamedir_aliases[0]:dir;
+}
+
 //returns the commandline arguments required to duplicate the fs details
 char *FS_GetManifestArgs(void)
 {
@@ -6315,7 +6376,7 @@ void COM_Gamedir (const char *dir, const struct gamepacks *packagespaths)
 #ifdef HAVE_SERVER
 	if (!*dir)
 		dir = FS_GetGamedir(true);
-	InfoBuf_SetStarKey (&svs.info, "*gamedir", dir);
+	InfoBuf_SetStarKey (&svs.info, "*gamedir", FS_GamedirWireName(dir));	//FTESurf P1593: older clients mount what this names
 #endif
 }
 
@@ -6370,7 +6431,26 @@ qboolean FS_GenCachedPakName(const char *pname, const char *crc, char *local, in
 		*local = 0;
 		return false;
 	}
-	Q_strncpyz(local, pname, min((fn - pname) + 1, llen));
+	{	//FTESurf P1593, identity installs only: the folder is the server's word. A long one or `~` (8.3
+		//names: WORLDO~1) is refused; either identity in any spelling is this install's base, for the
+		//download and the mount.
+		char dir[64];	//MAX_QPATH is 128 here
+		const char *own = NULL;
+		if (FS_GamedirIdentityInstall())
+		{
+			if ((size_t)(fn - pname) > sizeof(dir) || memchr(pname, '~', fn - pname))
+			{
+				*local = 0;
+				return false;
+			}
+			Q_strncpyz(dir, pname, fn - pname);
+			own = FS_GamedirAlias(dir);
+		}
+		if (own)
+			Q_snprintfz(local, llen, "%s/", own);
+		else
+			Q_strncpyz(local, pname, min((fn - pname) + 1, llen));
+	}
 	Q_strncatz(local, "dlcache/", llen);
 	Q_strnlowercatz(local, fn, llen);
 	if (crc && *crc)

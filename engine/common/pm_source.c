@@ -73,6 +73,7 @@ Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
 #include "cl_master.h"
 #endif
 #include "pm_thread.h"
+#include "pm_ag.h"
 #include "com_bih_ts.h"
 
 /* Patch 1467: the mover's per-command state, one a thread (a tas_rollout_batch worker binds its own) */
@@ -2684,12 +2685,19 @@ float PMSrc_MaxSpeedForInputs (int pm_type, int buttons, float stamina)
 	if (!spec && movevars.walkspeed > 0 && (buttons & BUTTON_SPEED))
 		ms *= movevars.walkspeed;
 
+	//Patch 1589: HL2 sprints on +speed, HL2_SPRINT_SPEED / HL2_NORM_SPEED of whatever maxspeed is.
+	if (!spec && PM_ProfileHL2(movevars.profilekind) && (buttons & BUTTON_SPEED))
+		ms = ms * 320 / 190;
+
 	return ms;
 }
 
 static float PMSrc_EffectiveMaxSpeed (void)
 {
-	return PMSrc_MaxSpeedForInputs(pmove.pm_type, pmove.cmd.buttons, pmove.stamina);
+	int buttons = pmove.cmd.buttons;
+	if (PM_ProfileHL2(movevars.profilekind) && pmove.ducked)
+		buttons &= ~BUTTON_SPEED;	//Patch 1589: HL2's CanSprint refuses while fully ducked
+	return PMSrc_MaxSpeedForInputs(pmove.pm_type, buttons, pmove.stamina);
 }
 
 /*
@@ -2839,6 +2847,34 @@ static int PMSrc_BhopCooldownTicks (void)
 	if (!(pmove.momcool > 0) || pms_frametime <= 0)
 		return 0;
 	return (int)ceil (min (pmove.momcool, 60.0f) / pms_frametime - 0.001f);
+}
+
+/* Patch 1589: HL2's single-player jump boost (gamemovement.cpp CheckJumpButton, HL2_DLL,
+   maxClients 1), along the flat view axis. pre: fmove * frac, unclamped (accelerated hopping).
+   post: clamped to maxspeed * (1 + frac), but the sign still comes from fmove after the clamp,
+   so a negative remainder speeds up a player facing away from the travel direction (ABH). */
+static void PMSrc_HL2JumpBoost (void)
+{
+	vec3_t axis;
+	float frac = ((pmove.cmd.buttons & BUTTON_SPEED) || pmove.ducked) ? 0.1f : 0.5f;
+	float add;
+
+	VectorSet (axis, pms_forward[0], pms_forward[1], 0);
+	VectorNormalize (axis);
+	if (movevars.profilekind == PMPROFILE_HL2POST)
+	{
+		float limit = pms_maxspeed * (1 + frac);
+		float speed = sqrt (pmove.velocity[0]*pmove.velocity[0] + pmove.velocity[1]*pmove.velocity[1]);
+		add = fabs (pms_forwardmove * frac);
+		if (add + speed > limit)
+			add -= add + speed - limit;
+		if (pms_forwardmove < 0)
+			add = -add;
+	}
+	else
+		add = pms_forwardmove * frac;
+	pmove.velocity[0] += axis[0] * add;
+	pmove.velocity[1] += axis[1] * add;
 }
 
 static qboolean PMSrc_CheckJumpButton (void)
@@ -3055,6 +3091,9 @@ static qboolean PMSrc_CheckJumpButton (void)
 		PMSrc_StaminaSpend (movevars.staminajumpcost > 0 ?
 			movevars.staminajumpcost : PMSRC_STAMINA_JUMP_COST);
 	}
+
+	if (PM_ProfileHL2 (movevars.profilekind))
+		PMSrc_HL2JumpBoost ();
 
 	if (movevars.normalizejump)
 	{
@@ -5196,6 +5235,46 @@ static void PMSrc_TestBankStartGravity(void)
 	movevars.jumpvelocity = 268.3281572999747f;
 	PMSrc_Check("P1133 actual grounded jump acts", PMSrc_CheckJumpButton(), 1, 0);
 	PMSrc_Check("P1133 grounded jump rises finitely", isfinite(pmove.velocity[2]) && pmove.velocity[2] > 0, 1, 0);
+	/* Patch 1589: HL2 jump boost at maxspeed 190 facing +x (cap 285 in post). */
+	{
+		static const struct { int kind; float vx, fmove, want; const char *name; } hl2[] = {
+			{PMPROFILE_HL2PRE,	300,	190,	395,	"P1589 pre forward boost unclamped"},
+			{PMPROFILE_HL2POST,	200,	190,	285,	"P1589 post boost stops at 1.5x maxspeed"},
+			{PMPROFILE_HL2POST,	300,	190,	285,	"P1589 post forward over the cap is cut back"},
+			{PMPROFILE_HL2POST,	-400,	0,		-515,	"P1589 post facing away, no input: ABH gain"},
+			{PMPROFILE_HL2POST,	-400,	-190,	-285,	"P1589 post holding back clamps"},
+			{PMPROFILE_HL2PRE,	-400,	0,		-400,	"P1589 pre facing away, no input: no change"},
+			{PMPROFILE_NONE,	300,	190,	300,	"P1589 default profile has no boost"},
+		};
+		size_t h;
+		for (h = 0; h < countof(hl2); h++)
+		{
+			movevars.profilekind = hl2[h].kind;
+			pmove.onground = true; pmove.ducked = pmove.ducking = false;
+			pmove.oldbuttons = 0; pmove.cmd.buttons = BUTTON_JUMP;
+			VectorSet(pmove.velocity, hl2[h].vx, 0, 0);
+			VectorSet(pms_forward, 1, 0, 0);
+			pms_forwardmove = hl2[h].fmove; pms_maxspeed = 190;
+			PMSrc_CheckJumpButton();
+			PMSrc_Check(hl2[h].name, pmove.velocity[0], hl2[h].want, 0.001f);
+		}
+		{	/* P1589: HL2 sprint is 320/190 of maxspeed on +speed, refused fully ducked */
+			float savems = movevars.maxspeed, savewalk = movevars.walkspeed, savestamon = movevars.stamina, savestam = pmove.stamina;
+			int savebuttons = pmove.cmd.buttons;
+			movevars.walkspeed = movevars.stamina = pmove.stamina = 0;	//as the profile sets them
+			movevars.profilekind = PMPROFILE_HL2POST; movevars.maxspeed = 190;
+			pmove.cmd.buttons = BUTTON_SPEED; pmove.pm_type = PM_NORMAL; pmove.ducked = false;
+			PMSrc_Check("P1589 HL2 sprint maxspeed", PMSrc_EffectiveMaxSpeed(), 320, 0.001f);
+			pmove.ducked = true;
+			PMSrc_Check("P1589 HL2 no sprint fully ducked", PMSrc_EffectiveMaxSpeed(), 190, 0.001f);
+			movevars.profilekind = PMPROFILE_NONE;
+			PMSrc_Check("P1589 default +speed without walkspeed unchanged", PMSrc_EffectiveMaxSpeed(), 190, 0.001f);
+			pmove.ducked = false; movevars.maxspeed = savems; pmove.cmd.buttons = savebuttons;
+			movevars.walkspeed = savewalk; movevars.stamina = savestamon; pmove.stamina = savestam;
+		}
+		movevars.profilekind = PMPROFILE_NONE;
+		pms_forwardmove = 0;
+	}
 	pmove.onground = false;
 	pmove.oldbuttons = pmove.cmd.buttons = 0;
 	movevars.entgravity = INFINITY;
@@ -6262,6 +6341,7 @@ static void PMSrc_SelfTest_f (void)
 
 	VectorCopy (pmove.velocity, save_vel);
 	VectorCopy (pmove.origin, save_org);
+	movevars.profilekind = PMPROFILE_NONE;	//Patch 1589: the live server's profile is not under test
 
 	pms_test_fails = 0;
 	pms_frametime = dt;

@@ -1,5 +1,260 @@
 # Engine patches (fteqw `fteqw64.exe`)
 
+## Patch 1598 - movementprofile: the in-game mode picker's switch, for the player only
+
+**Problem.** Lex: a small in-game UI to switch game mode, the modes 1-7, click or press the number. The modes are
+P1589's movement profiles, chosen by `sv_movementprofile` and applied at map spawn. The cvar is CVAR_NOTFROMSERVER,
+PF_cvar_set refuses that flag, and every QC `localcmd` runs at RESTRICT_INSECURE, so no QC -- the csprogs panel
+included -- can set it. Whatever lets the panel do it must not let server-supplied text do it.
+
+**Change.**
+- SV_MovementProfileSwitch (sv_phys.c): only while this process hosts an active server and not under rcon
+  (sv_redirected); a known selector is Cvar_ForceSet (it also clears a pending latch) and `map_restart` is queued at
+  RESTRICT_LOCAL.
+- Console `movementprofile [<mode>]`: exactly RESTRICT_LOCAL, i.e. the player's console, binds and cfgs. Text a
+  server can supply runs above that level, or below it (its binds replay at bindlevel 30).
+- CSQC builtin `movementprofile_switch(mode)` (pr_csqc.c, by name): only under a device press or click
+  (CSQC_RealKey) or inside a console command run at RESTRICT_LOCAL -- CS_ConsoleCommand_f now records the level
+  (csqc_cmdlevel, cleared on abort and VM start) because a registered command runs for any source. `cmdlevel_local()`
+  exposes that test to the panel, which refuses to open from anything else.
+- rcon_password is CVAR_NOTFROMSERVER (rcon_level too, where it is a cvar: a client exe fixes it at 20).
+- The panel is QC P1598 (`hud_gamemode`, src/client/cl_gamemode.qc).
+
+**Verified.** FTESurf tools/p1598gamemode.py on bhop_1n5an3. Local game (rendered): digits 2 and 4 and a click on row
+5 switch to hl2-pre, ag-100 and ag-250, the console to cs16, each a map_restart with `*movementprofile` following;
+the running mode's digit closes with no reload and its repeat and release stay the panel's (no save). While hosting,
+the listen server stuffing its own client: `hud_gamemode 7` and `hud_gamemode open` are refused by the panel, a
+stuffed digit into the open panel and `movementprofile cs16` by the engine, `rcon_password` by its flag; rcon to the
+same server is refused; the mode never moves. Not hosting (dedicated server): the panel and the console say so.
+An engine without the builtins: the panel says it needs this engine. Mutants: the builtin's source check compiled
+out, a stuffed `hud_gamemode 7` switches to cs16; the console level check out, rcon switches to ag-1000. Three
+review rounds (the first two each found a way for server text in; details in the private notes).
+
+## Patch 1593 - World of Surf names, stage 1: the updater and the game folder accept both identities
+
+**Problem.** Lex: the player's exe and game folder should be World of Surf (WorldofSurf.exe / worldofsurf64,
+`worldofsurf/`). Players' launchers and every shipped engine refuse a feed whose game, exec or paths are not
+`ftesurf`, and the launcher cannot update itself, so the rename needs readers that understand both names first.
+
+**Change.**
+- qkupdate.c: exactly two identities (legacy ftesurf / new worldofsurf), never mixed in one feed; the new allowlist
+  is the legacy one with the folder respelled; identity from the manifest BASEGAME, agreeing with the launcher's
+  `.ftesurf-updater/identity` marker when present, else the BASEGAME folder must hold 2 of the 3 .dat files and the
+  other must not; the signed updater and install lock also switch on for GAME "WorldofSurf"; per-identity feed URL
+  (`ftesurf/worldofsurf.json`); envelopes strict JSON (depth <= 32, exactly payload + signature, no duplicate,
+  dotted or escaped keys, 128 lowercase hex) checked before any parse; lock taken before the identity is read.
+- fs.c / cl_parse.c / cl_demo.c / cl_main.c / sv_main.c: `ftesurf` and `worldofsurf` are one game on an identity
+  install -- a server gamedir naming either (any case, trailing dots/spaces) is the client's own base, lists and
+  non-plain names fall back to the base, the alias also applies per manifest gamedir name, to //paknames download
+  folders and FS_GenCachedPakName; `~` and over-63-byte pack folders refused on identity installs; `ftesurf` stays
+  the wire/recorded spelling (*gamedir, demos, getinfo modname, offline download URLs). Other games unchanged.
+
+**Verified.** tools/test_update_identity.py 102/102 on win64 and linux64 with 35 mutant controls each;
+test_update_tiers.py; the launcher (58+7 tests, 23 mutants) and tools/updatefeed.py (26 tests, 34 mutants) carry
+the same contract. Alias rig: forward (`Server gamedir "ftesurf" is "worldofsurf" here`, /ftesurf/maps 200),
+`ftesurf;worldofsurf` -> own base, offline download into worldofsurf/, controls on the previous builds mount or
+create the other folder. Five review rounds on the contract, two on the alias. The launcher folder move (stage 2)
+and the release (stage 3) are not in this patch.
+
+## Patch 1594 - The journal times each key press and release against the keyboard's own raw report
+
+**Problem.** P1576 drops key messages Windows says another program made, and P1586 notes patched code, but a
+tool inside the process that holds, delays or advances genuine key messages keeps their hardware origin and can
+do it without patching anything the scan compares. Key timing is what such a tool shapes (a strafe-sync helper
+moves releases), and nothing measured it: P1424 pairs presses with the raw keyboard inside a 100 ms window and
+never looked at releases.
+
+**Change.** in_win.c pairs legacy releases with a real keyboard's raw release of the same scancode as P1424 pairs
+presses (either order, one for one, inside RAWKEY_WINDOW; a second release before one is met counts the first
+alone; a release of a press the legacy path never saw is not judged; a focus change or raw re-registration ends
+the release pairings, after deciding what is already past its window). Every matched press and release adds its
+gap to `in_raw_keytime[2][8]` (0-0.5, 0.5-1, 1-2, 2-5, 5-10, 10-20, 20-50, 50-100 ms) and, when the legacy
+message came first, to `in_raw_keylegfirst`; a legacy release no raw release met counts in `in_raw_keyupalone`,
+a raw press no legacy press met in `in_raw_keyrawalone` (the game's own blocked keys, hotkeys, IMEs). Raw reports of
+Windows' fake shift (VKey 0xFF, E0 0x2A/0x36) and Pause's E1 report vouch for nothing. The observer now runs after
+the P1576 key guard, only for messages the guard passed, so a dropped keystroke is the guard's `kd` and never a
+lone release or a timed pair; the guard keeps its own clear of an earlier pending press of that scancode, so
+P1576's lapse path is as it was. Every raw report, mouse motion included, decides
+waiting presses, releases and raw presses, as P1424's presses were decided. All of it on the window thread. A
+journal snapshots the counters as it begins, promises them with the header `keytiming 1`, and at the trailer's
+moment beside the last 'y' writes `keytimes <8 press> <8 release> <releases alone> <presses legacy-first>
+<releases legacy-first> <raw presses alone>` while the keyboard is observed (kbdobserve 1), with 256 bytes left
+under in_jrn_max for `end`. The 8+8+1 layout is fixed; fields are appended. P1586's scan adds
+kernelbase!QueryPerformanceCounter and ntdll!RtlQueryPerformanceCounter, the clock this and the journal rest
+on. hidcheck lists the counts (PARTIAL where P1424's counts are), notes late pairs and lone releases, says when
+nothing paired, and never faults.
+
+**Verified.** tools/p1594keys.py (FTESurf), 10 posted taps a journal (no keyboard behind them). Guard off: 16
+zero buckets, 10 releases alone, P1424's 'y' 10, no raw press alone. Guard on (the default): `kd` 6, and the 4 taps that reached the game after P1576 stood down (a session
+with no hardware key, as on a rig) are exactly the releases alone; none of the dropped ones. Control (installed 0.1.48 exe): no keytimes line or promise. hidcheck this tree and the previous
+one: no fault; test_hidcheck 1680/0. Four review rounds. Round 1 (pairing/threading; evidence and what a tool keeps): a
+dropped keystroke counted as a lone release, releases decided only by key events, Windows' fake keys mispairing,
+a second release lost, the snapshot taken late, the reader calling a partial journal whole. Round 2: the line's
+tail overflowing a 16-byte buffer, a slot-based undo that could turn a blocked injection into a lapse, Pause
+broken by the fake-key filter, an expiry call that never ran. Round 3: the snapshot-and-restore undo could still
+lapse a held key and, with vid_winthread 1, make a journal count go backwards -- replaced by running the guard
+first. The pre-fix build counts all 10 guarded releases alone (6 of them dropped); the fix, 4. A real
+keyboard's gaps are the owner's to supply (lextest): a rig cannot press a key, so the pairing and bucketing are
+first exercised by the owner's journals.
+
+**Limits.** Measures the gap between the raw report and the legacy message of one keystroke as each is handled:
+this thread's own work between them adds to it, a tool that shapes both together (at the raw layer too) or stays
+under the smallest bucket is not seen, mouse buttons and the wheel have no second path to time against, and the
+histogram has no time or key (a handful of shaped keystrokes among thousands can hide in it). A lone legacy
+release followed by a real release of the same key within 100 ms is timed against the wrong one. Real-keyboard
+gaps are not calibrated yet.
+
+## Patch 1592 - A run resumed from a save is "segmented", in its file name too
+
+**Problem.** Lex: rename the "shadow" runs and their demos to segmented. A shadow run (QC TF_SHADOW, RT_SHADOW 3)
+is a segmented run picked up from a save with its clock. The held recording close rebuilds each run's expected leaf
+with a fixed word table (`sv_held_prepare.inc`) and would refuse a progs that names the file `_segmented.rec`.
+
+**Change.**
+- The table is file scope (`held_run_tags`); tag 3 reads `segmented`, and `Held_PrepareCloseNamespace` also accepts
+  the legacy `shadow` for tag 3 only (a second pass), so an older progs keeps closing.
+- New builtin `string(float tag) rec_tagword` (`SV_HeldRunTagWord`): "" outside 1..6. QC (P1592 part 2) writes
+  `segmented` only when it answers so, and never on a lobby until surfd takes the leaf.
+
+**Verified.** Game-repo arm `tools/p1592seg.py` (surf_dune, start box beside the end, save, resume, finish): new
+engine + new progs `0000283_local-..._segmented.rec`; P1591 engine + new progs `_shadow.rec`; new engine + live
+progs `_shadow.rec`; all flags 133257 (TF_SHADOW|TF_SEGMENT). Two reviews (control flow; evidence/readers/cheater
+gain) found no defect in the change. Not measured: the held close itself, which a listen server never admits, and
+which refuses every history finish anyway (`Held_PrepareWho` wants "" locally; e26b5768's `<owner>-<32 hex>` who)
+-- dormant, `rec_held_metadata` defaults to 0; recorded in the game repo's BACKLOG.
+
+## Patch 1591 - Autohop under every movement profile
+
+**Problem.** Lex: "add autohop to every game mode". The default mode autohops (`pm_autobunny 1`, canonical in
+default.cfg), but P1589's hl2-pre/hl2-post forced `pm_autobunny 0`, and the AG mover (ag-100/250/1000, cs16) never
+read it: PMAg_JumpEdge jumped only on a fresh press.
+
+**Change.**
+- PMAg_JumpEdge takes the movevars; with `vars->autobunny` a held button counts as a press, so a held jump leaves on
+  the first grounded tick. Airborne presses, release and death behave as before; autobunny 0 is the old predicate.
+- SV_ApplyMovementProfile no longer overrides `pm_autobunny` for HL2, so every profile runs the server's value.
+  PMSrc_HL2JumpBoost applies on each autohop takeoff.
+- GoldSrc profiles publish `pm_agautohop 1`. A client predicts AG autohop only with it: an older server publishes
+  `pm_autobunny 1` too, but its AG mover never autohops (both reviewers).
+- Clients advertise `*pmprofile 1591`; SV_New_f refuses a client below PMAG_AUTOHOPVERSION from a GoldSrc profile
+  while `pm_autobunny` is on ("needs a newer client (autohop)"): its AG mover would predict a landing where the
+  server jumps, every hop. That includes 0.1.48 on ag-100/ag-250. HL2 needs no gate: P1589 clients already predict
+  PMSrc's autobunny from serverinfo.
+- CS 1.6 under autohop is ReGameDLL's `sv_autobunnyhopping 1`: the jump leaves on the landing tick, so PM_WalkMove's
+  fuser2 slowdown never runs, but each jump still pays the stamina impulse cut and PreventMegaBunnyJumping.
+
+**Verified.** test_pm_ag.c's autobunny block passes and test_pm_ag.py rejects 7/7 mutants (the new
+`wrong-no-autohop` at line 124). World solver: 2 s held = 3 jumps at 100 Hz and 4 at 1000 Hz, longest ground 1 tick;
+CS16 apex 44.99 then 34.63 (stamina), 239.99 u/s after the bunny cap. Rendered dedicated/client arms, held +jump
+(test_ag_profile_runtime.py `--autohop`; server takeoffs in the ring / max airborne per-axis prediction error):
+ag-100 3/0.01, ag-250 3/0.01, ag-1000 3/0.01, cs16 7/0.01, hl2-pre 4/0.00 (peak 475), hl2-post 4/0.00 (peak 285),
+default 3/0.00; the tapped ag-250 arm still passes. Controls: a P1589 server+client gives 1 takeoff (the arm fails);
+a P1589 server with this client 1 takeoff, 0.01; the same server with this patch before `pm_agautohop` 12.42 u and 47
+prediction-error lines. This server refuses a P1589 client from ag-100 with the "(autohop)" text and admits it on
+hl2-post (4/0.00). pm_dettest and pm_selftest pass under cs16 and hl2-post. The arm now grades rows that catch up a
+client stall (> 10 commands) apart: they read 0.02-0.03 z in every AG build since P1588 and every other airborne row
+<= 0.01; the first ag-250 run read 0.03 on one and failed the old single bound.
+
+**Limits.** The gate runs at connect and map change only (a mid-map pm_autobunny flip, lock off, is not re-gated).
+AG physics changed under the same identities and pin; nothing replays AG today (BACKLOG). Under hl2-* a ceiling
+within 2 units re-jumps every tick and the boost adds each time: stock Source rules with a free press (BACKLOG).
+
+## Patch 1590 - Groups on the leaderboards, one mode row, the server beside the board, a map family counted once
+
+QC + surfd (FTESurf main 03922e48); no engine change. ftesurf-06, root C:\FTESurf-worktrees\groups-20261116-c7.
+
+**Problem.** Lex, 16 Nov: Momentum/KSF-style Groups on the leaderboards -- coloured lines where the group
+changes, your own group as a badge on Main/stages/bonuses -- based on Momentum's or KSF's times because ours are
+too few; the board filters as one exclusive mode row (Segmented in blue, TAS in purple, then the directions; TAS
+was a tab and Segmented a switch beside the directions); the server's players floating right of the TAB board
+with their main time in their colour; the Stats page counting surf_borderlands and its CS:S build once.
+
+**Change.**
+- surfd `game_groups` (`/api/board?groups=<map>&style=<s>&me=<mark|handle>`): per leg, the larger imported
+  board (Momentum, else KSF; Momentum imports Normal only, KSF all four directions; Segmented and TAS have none).
+  Ranks from Lex's calculator with its defaults: Top 10; G1 ends at max(15, 10 + round(2% X)); cutoff
+  C = min(X, max(100, round(67% X))); G2-G5 log-spaced from G1's end to C, G6 ends at C; each group at least 5
+  ranks, capped at C (reproduces 50 / 150 / 50,000 exactly). Cut times are the millis at those ranks
+  (`ORDER BY millis LIMIT 1 OFFSET r-1` on runs_board), cached 600 s keyed by the import base. The asker's group
+  is their ranked (TAS: community) time on the leg against the cuts. Its own request because test_momindex.py
+  holds the ranked board's body identical across an import.
+- surfd `_tier_table` / `_tier_maps`: a map and its second builds (variant_base's catalogue) are one family; a
+  finish on any build credits it, in the map pool or not; the family's tier is the base's.
+- csprogs cl_groups.qc stores the answer (one map|mode); cl_scores.qc draws a group strip per row, a line and a
+  pill where consecutive rows' groups differ, a badge per leg and "groups from <source>, N times" in the footer;
+  Scores_Mode / Scores_ModeSet make the mode row exclusive (tabs Online / Local keep it; the finish follow and the
+  console words go through it); Scores_RoomFloat lists the server's players (Players_Need split from Players_Draw).
+- menu m_board.qc: the same mode row (TAS as tier community, its own leg counts `nt`), lines and badges.
+
+**Verified.** surfd test_groups 10/10; test_board, test_web, test_completion_pool, test_home_completion,
+test_mapcards, test_profile_*, test_variants pass. tools/p1590groups.py (this checkout's surfd over a scratch
+database, the game driven by `scores mode`, graded on `scores status`): 14/14, screenshots inspected; the
+first runs failed on stale fixtures (rec_terms 4, no listen-client mark) and were fixed in the arm. Read-only
+timing on the Pi's database: cold worst 0.3 s (surf_rookie, 19 legs). One review round each lens (QC state,
+surfd cost/consistency): map-name case loop, console paths lighting Segmented over segmented_sw, the follow
+bypassing the mode, unindexed sort, per-map scan, out-of-pool finishes -- all fixed and re-measured.
+Limits: the surfd half needs a guarded backend generation; a partly crawled KSF board's X is a lower bound;
+ui_native_scores draws no group lines (BACKLOG).
+
+## Patch 1589 - HL2 (before/after the jump limiter), AG 1000 and CS 1.6 movement profiles
+
+**Problem.** Lex asked for HL2 movement before and after its jump-boost limiter, HL1/AG at 100/250/1000 and
+CS 1.6 movement as practice modes. P1542 shipped ag-100/ag-250 on `sv_movementprofile`; ag-1000 was refused
+(eight ticks per command cannot carry a 1 ms rate) and the others did not exist. A separate private attempt
+moved HL2's whole player state over a new wire format and never got a client to accept it.
+
+**Change.** pm_ag.c holds one profile table (PM_ProfileByIdentity/BySelector); the selector check (sv_ccmds.c),
+SV_ApplyMovementProfile, the held-file roots (sv_held_file.c), the held recorder (pr_cmds.c) and the client's
+context (cl_main.c) read it instead of naming ag-100/ag-250. movevars.profilekind (appended) carries the kind to
+both movers on both sides; SV_PMPinApply, SV_DetPinMover and pm_selftest clear it (a recording's pin names none).
+- `hl2-pre`, `hl2-post`: PMSrc with HL2's values (gravity 600, jump 160 = SDK movement optimisations,
+  sv_maxspeed 190, +speed sprints at maxspeed*320/190 unless fully ducked, hull 72/36, eyes 64/28, duck crop
+  0.333, full-delta air duck, no autobunny/stamina/normalised jump, Momentum's surf fixes off, 0.015 s ticks)
+  plus PMSrc_HL2JumpBoost, gamemovement.cpp's single-player boost along the flat view axis: fmove * 0.5 (0.1
+  sprinting or ducked). Pre adds it unclamped; post clamps the total to 1.5x maxspeed and takes the sign from
+  fmove after the clamp, so facing away from the travel direction gains speed (ABH).
+- `ag-1000`: 1 ms ticks; PMAg_TickBudget allows 32 ticks per command there (8 at 100/250, unchanged);
+  CL_MaxFPSFloor stops at 250 for AG so the frame cap is not forced to 1000.
+- `cs16`: PMAg with accelerate 5, stopspeed 75, maxspeed 250 (knife), eyes 17 (VEC_VIEW), the 0.333 crop from
+  the first ducking tick, CS 1.6's fuser2 in pmove.stamina (a jump scales its impulse by (100 - fuser2*0.019)/100,
+  then recharges 1315.789 ms; ground ticks inside it scale horizontal speed by the same ratio) and
+  PreventMegaBunnyJumping (a jump above 1.2x maxspeed leaves 0.8 of that). pmsrc is not networked, so the
+  server publishes run_movestamina and cs16's phase stat appends it ("owner:lo:hi:carry:stamina");
+  CL_PredictSourcePhase seeds the replay with it.
+- Clients advertise `*pmprofile 1589`; SV_New_f drops an older client from a profile newer than it (it would
+  refuse the identity or predict without the rules); ag-100/250 keep the `*agmove` gate.
+- When the duck crop applies, PMAg clamps forward/side to maxspeed first (PM_CheckParamters order; not upmove, which
+  this client sets to 200 while jump is held), so a ducked 450 forward wishes 106.6 under AG (was 149.9) and 83.3
+  under cs16. Uncropped moves are P1542's exactly.
+- pm_dettest's census arm clears the live profile, and pm_recsim refuses an unpinned recording on a profile server
+  (an AG server ended the map there since P1542).
+QC (2b7430e4, 9c200faa): the four identities join FS_MovementProfileKnown and the sweeps;
+FS_MovementProfileGoldSrc picks the centred hull and the AG water-jump save path, so hl2-* spawn on Source's feet
+origin and save without an agwaterjump line. reccheck.py notes an HL2-profile recording as unsupported (no physics
+verdict) instead of faulting it (main's reader faulted the real hl2-pre file), and still requires its unranked
+flag. pm_verify already abstains on any `movementprofile` header.
+
+**Verified.** pm_selftest: all checks passed (1841 ok), P1589 cases: boost pre 300->395; post 200->285, 300->285; post
+facing away at 400 u/s, no input -> 515; holding back -> 285; pre facing away -> 400; default -> 300; sprint
+320, fully ducked 190. tools/test_pm_ag_world.c (gnu99 -Wall -Wextra -Werror): 1000 Hz free fall z 600.000 over
+1000 commands; 32-tick stalled command; CS16 jump 260.33 fresh, 0.905x after 500 ms of fuser2; landing
+192 -> 173.76 (plain AG 192); bhop 400 -> 239.99 (AG 400); cs16 first ducking tick 4.16 (AG 12.5); AG ducked 450 -> 10.66 u/s (the previous
+mover fails both); old 100/250 fixtures unchanged. tools/test_pm_ag.py: 6 mutants still rejected. Rendered dedicated+client runs
+(tools/test_ag_profile_runtime.py --rendered, rig.lock): every profile's airborne commands predicted within one
+%.2f print step (hl2 63+63 rows 0.00, cs16 87 and ag-1000 247 rows <= 0.01) except ag-100/ag-250's one-row 0.02 z
+transient, which the pre-P1589 engine shows too (ctl-ag-250); server peak speed 285
+under hl2 from a 190 walk (default 260, no boost); cs16 landings predicted command for command after the stamina
+seed (before it: 0.39 u, 8 prederr lines). Default shows the same 1-2 u walk-start error, so that is not P1589's.
+Profile runs saved/restored in their namespace, recorded only under data/experimental/<identity>/, no PB or
+submission. One server process default -> hl2-post -> cs16 -> default: the last step's movement cvars equal the
+first's. A 0.1.47 client is dropped from cs16 ("needs a newer client"). reccheck 979/0, test_reccheck_ag 7/7.
+
+**Limits.** Values come from SDK 2013/ReGameDLL as known, not a reference recording. HL2's duck-jump timers
+(m_flJumpTime/m_flDuckJumpTime), +walk and suit-power sprint drain are not modelled (sprint is unlimited); CS 1.6
+runs at knife speed only; ag-1000 samples input once per command (8-13 ms) and its run_movetick float stops
+counting exactly after ~4.7 h on one map. QC traces using PM_HULL (zone_goto, teleports) keep the 62-unit hull.
+TAS projects under hl2-pre/hl2-post share one pin (BACKLOG). Human feel check pending (lextest.md).
+
 ## Patch 1588 - A game this PC hosts predicts save loads and holds, as a remote one does
 
 **Problem.** Lex (16 Nov, after 0.1.47): `map surf_colin_blaster_69000` from the console, then a load: "Loading save"
