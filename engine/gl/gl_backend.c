@@ -103,18 +103,9 @@ int r_cubelight_used;
 int r_cubelight_gated;
 
 #ifdef GLQUAKE
-static texid_t shadowmap[3];	//[0] and [1] are unused: realtime lights take shadowmapring below. [2] the fake-shadow atlas.
+static texid_t shadowmap[3];
 static int shadow_fbo_id;
 static int shadow_fbo_depth_num;
-//realtime lights (omni, spot) each render their shadowmap into a texture of their own within a frame, as the vulkan
-//backend does with its 8 layers. with one texture for every light, each light's shadowmap render overwrote the texture
-//the previous light's lighting pass had just sampled; on gles (adreno and mali alike) rtlight shadows popped in and out
-//from frame to frame while the camera moved. r_shadow_shadowmapping_buffers 1 brings the shared texture back to compare.
-#define SHADOWMAP_RING_MAX 32
-static texid_t shadowmapring[2][SHADOWMAP_RING_MAX];
-static unsigned int shadowmapringnext[2];
-static int shadowmapringframe[2];
-static cvar_t r_shadow_shadowmapping_buffers = CVARD("r_shadow_shadowmapping_buffers", "0", "Shadowmap textures that realtime lights rotate through within a frame, so that no light renders its shadowmap into a texture an earlier light of the same frame was lit from. Textures are made as lights need them, up to this many each for point lights and spotlights. 0: 16 on OpenGL ES, 1 on desktop GL (one texture shared by every light, the old behaviour).");
 #endif
 
 #ifndef GLSLONLY
@@ -1462,52 +1453,17 @@ void GLBE_SetFakeShadowSlotInfo(int slot, const vec4_t info)
 //---------------------------------------------------------------------------------------------------
 
 int GLBE_BeginRenderBuffer_DepthOnly(texid_t depthtexture);
-static int GLBE_ShadowMapBuffers(void)
-{
-	int n = r_shadow_shadowmapping_buffers.ival;
-	if (n <= 0)
-		n = gl_config_gles ? 16 : 1;
-	return bound(1, n, SHADOWMAP_RING_MAX);
-}
 qboolean GLBE_BeginShadowMap(int id, int w, int h, uploadfmt_t encoding, int *restorefbo)
 {
-	texid_t *smap;
-	const char *smapname;
 	if (!gl_config.ext_framebuffer_objects)
 		return false;
 
-	if (id < 2)
-	{	//realtime lights: the next texture not yet used this frame (the least recently used one once they run out)
-		unsigned int slot, n = GLBE_ShadowMapBuffers();
-		if (shadowmapringframe[id] != host_framecount)
-		{
-			shadowmapringframe[id] = host_framecount;
-			shadowmapringnext[id] = 0;
-			for (slot = n; slot < SHADOWMAP_RING_MAX; slot++)
-			{	//the cvar was lowered: give back what is no longer used
-				if (shadowmapring[id][slot])
-				{
-					Image_DestroyTexture(shadowmapring[id][slot]);
-					shadowmapring[id][slot] = r_nulltex;
-				}
-			}
-		}
-		slot = shadowmapringnext[id]++ % n;
-		smap = &shadowmapring[id][slot];
-		smapname = va("***shadowmap2d%i_%u***", id, slot);
-	}
-	else
-	{
-		smap = &shadowmap[id];
-		smapname = va("***shadowmap2d%i***", id);
-	}
-
-	if (!TEXVALID(*smap) || (*smap)->width != w || (*smap)->height != h || (*smap)->format != encoding || (*smap)->status != TEX_LOADED)
+	if (!TEXVALID(shadowmap[id]) || shadowmap[id]->width != w || shadowmap[id]->height != h || shadowmap[id]->format != encoding || shadowmap[id]->status != TEX_LOADED)
 	{
 		texid_t tex;
-		if (*smap)
-			Image_DestroyTexture(*smap);
-		tex = *smap = Image_CreateTexture(smapname, NULL, IF_NOPURGE|IF_CLAMP|IF_NOMIPMAP|IF_RENDERTARGET);
+		if (shadowmap[id])
+			Image_DestroyTexture(shadowmap[id]);
+		tex = shadowmap[id] = Image_CreateTexture(va("***shadowmap2d%i***", id), NULL, IF_NOPURGE|IF_CLAMP|IF_NOMIPMAP|IF_RENDERTARGET);
 		tex->width = w;
 		tex->height = h;
 		tex->format = encoding;
@@ -1555,7 +1511,7 @@ qboolean GLBE_BeginShadowMap(int id, int w, int h, uploadfmt_t encoding, int *re
 		}
 		tex->status = TEX_LOADED;
 	}
-	shaderstate.curshadowmap = *smap;
+	shaderstate.curshadowmap = shadowmap[id];
 	//pcf taps must step one real texel. cube faces are drawn at a lod-dependent size into fixed cells of this atlas,
 	//so GLBE_SetupForShadowMap's 1/(3*smsize) put them several texels apart on distant lights (gaps that shimmer as
 	//the lod changes, and leaks across face seams). vk and d3d11 step by the atlas size too. no-op for square maps.
@@ -3153,15 +3109,6 @@ void GLBE_DestroyFBOs(void)
 			shadowmap[i] = r_nulltex;
 		}
 	}
-	for (i = 0; i < countof(shadowmapring)*SHADOWMAP_RING_MAX; i++)
-	{
-		if (shadowmapring[i/SHADOWMAP_RING_MAX][i%SHADOWMAP_RING_MAX])
-		{
-			Image_DestroyTexture(shadowmapring[i/SHADOWMAP_RING_MAX][i%SHADOWMAP_RING_MAX]);
-			shadowmapring[i/SHADOWMAP_RING_MAX][i%SHADOWMAP_RING_MAX] = r_nulltex;
-		}
-	}
-	shadowmapringnext[0] = shadowmapringnext[1] = 0;
 
 	//nuke deferred rendering stuff
 	for (i = 0; i < countof(shaderstate.tex_gbuf); i++)
@@ -3228,9 +3175,6 @@ void GLBE_Init(void)
 			Cvar_Register(&r_msaa_backend, "GL Renderer Options");
 			Cvar_Register(&gl_workaround_mali3809560, "GL Renderer Options");
 			Cvar_Register(&gl_fbo_depth16, "GL Renderer Options");
-#ifdef RTLIGHTS
-			Cvar_Register(&r_shadow_shadowmapping_buffers, "Realtime Lighting");
-#endif
 		}
 	}
 	GLRT_Init();
