@@ -5723,6 +5723,23 @@ float SV_Frame (void)
 			sv.starttime += (sv.time - oldtime)/sv.gamespeed;	//move the offset
 			sv.time = oldtime;	//and keep time as it was.
 		}
+#ifdef HAVE_CLIENT
+		/*the process was frozen since the last server frame: android's onPause blocks SDL's main thread
+		  until onResume, and a suspended laptop or a debugger break do the same. sv.time follows the wall
+		  clock, so the whole freeze arrived in one frame; SV_Physics runs sv_limittics tics of it and
+		  timewarps the rest, and the QC sees `time` leap by all of it. id1's WaterMove reads that leap as
+		  time spent under water (air_finished < time+9) and the player gasps on resume - and powerups,
+		  monster timers and the rest of the game ran on while nobody played.
+		  A freeze is absorbed like a pause, but only where the auto-pause already stops the clock
+		  whenever the menu or console is up (a single slot game with its client in it), so it stops
+		  nothing that could not already be stopped. No real frame is a second long.*/
+		else if (!isDedicated && sv.allocated_client_slots == 1 && cls.state == ca_active
+			&& (sv.time - oldtime)/sv.gamespeed > 1.0)
+		{
+			sv.starttime += (sv.time - oldtime)/sv.gamespeed;
+			sv.time = oldtime;
+		}
+#endif
 	}
 
 #ifdef SV_MASTER
