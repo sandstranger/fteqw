@@ -2352,6 +2352,13 @@ static const char *glsl_hdrs[] =
 				"float ShadowmapFilter(sampler2DShadow smap, vec4 cubeproj)\n"
 				"{\n"
 					"vec3 shadowcoord = ShadowmapCoord(cubeproj);\n"
+					//a map that is one CELL of an atlas (r_shadows 2 past one cell: FAKESHADOWS_ATLASCELL = xy
+					//origin, zw size, in texture uv): the edge fade below works in the cell's own 0..1, the taps
+					//land inside the cell.  Without it the cell is the whole texture, exactly as before.
+					"vec3 cellcoord = shadowcoord;\n"
+					"#ifdef FAKESHADOWS_ATLASCELL\n"
+						"shadowcoord.xy = FAKESHADOWS_ATLASCELL.xy + shadowcoord.xy*FAKESHADOWS_ATLASCELL.zw;\n"
+					"#endif\n"
 #ifdef SHADOWDBG_COLOURNOTDEPTH
 					//just r, unfortunately. oh well.
 					"return texture2D(smap, shadowcoord.xy + (vec2(0.0,0.0)*l_shadowmapscale.xy)).r;\n"
@@ -2399,11 +2406,11 @@ static const char *glsl_hdrs[] =
 							"s/=9.0;\n"
 						"#endif\n"
 						"#if defined(FAKESHADOWS)||defined(ORTHO)\n"	//no cascaded shadow maps, so just fade shadows to 1 near the various edges of the shadow maps
-							"float d = shadowcoord.z;\n"
-							"d = max(d, shadowcoord.x);\n"
-							"d = max(d, 1.0-shadowcoord.x);\n"
-							"d = max(d, shadowcoord.y);\n"
-							"d = max(d, 1.0-shadowcoord.y);\n"
+							"float d = cellcoord.z;\n"
+							"d = max(d, cellcoord.x);\n"
+							"d = max(d, 1.0-cellcoord.x);\n"
+							"d = max(d, cellcoord.y);\n"
+							"d = max(d, 1.0-cellcoord.y);\n"
 							"if (d > 0.7)\n"
 								"s = mix(s, 1.0, min(1.0,10.0*(d-0.7)));\n"
 						"#endif\n"

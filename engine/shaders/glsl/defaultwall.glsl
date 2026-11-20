@@ -36,6 +36,21 @@
 
 #include "sys/fog.h"
 
+//r_shadows 2 with more than one cell (r_shadows_propshadows, which is on by default, or _cascades / _slots):
+//the engine packs the fake shadows into an ATLAS and renders the sun (slot 0) into ONE inset cell of it,
+//a quarter of the texture with the default worldmask. l_cubematrix covers the WHOLE texture, so reading
+//through it put the shadows at the wrong scale and offset, and since the sun box follows the view they
+//jumped about with every turn of the camera. Read slot 0 through its own matrix and cell instead.
+//Only the sun slot is received here; the multi-cell receivers live in the mod's glsl override.
+#if defined(FAKESHADOWS) && defined(FAKESHADOWS_COUNT)
+	#if FAKESHADOWS_COUNT > 1
+		#define FAKESHADOWS_ATLAS
+		uniform mat4 l_fakeshadowmatrix[FAKESHADOWS_COUNT];
+		uniform vec4 l_fakeshadowcell[FAKESHADOWS_COUNT];
+		#define FAKESHADOWS_ATLASCELL l_fakeshadowcell[0]
+	#endif
+#endif
+
 #if !defined(TESS_CONTROL_SHADER)
 	#if defined(OFFSETMAPPING) || defined(SPECULAR) || defined(REFLECTCUBEMASK) || defined(PBR)
 		varying vec3 eyevector;
@@ -108,7 +123,11 @@ void main ()
 
 #ifdef FAKESHADOWS	
 	gl_Position = ftetransform();
+	#ifdef FAKESHADOWS_ATLAS
+	vtexprojcoord = (l_fakeshadowmatrix[0]*vec4(v_position.xyz, 1.0));
+	#else
 	vtexprojcoord = (l_cubematrix*vec4(v_position.xyz, 1.0));
+	#endif
 #else
 	gl_Position = ftetransform();
 #endif

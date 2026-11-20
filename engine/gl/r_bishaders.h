@@ -5025,6 +5025,21 @@ YOU SHOULD NOT EDIT THIS FILE BY HAND
 
 "#include \"sys/fog.h\"\n"
 
+//r_shadows 2 with more than one cell (r_shadows_propshadows, which is on by default, or _cascades / _slots):
+//the engine packs the fake shadows into an ATLAS and renders the sun (slot 0) into ONE inset cell of it,
+//a quarter of the texture with the default worldmask. l_cubematrix covers the WHOLE texture, so reading
+//through it put the shadows at the wrong scale and offset, and since the sun box follows the view they
+//jumped about with every turn of the camera. Read slot 0 through its own matrix and cell instead.
+//Only the sun slot is received here; the multi-cell receivers live in the mod's glsl override.
+"#if defined(FAKESHADOWS) && defined(FAKESHADOWS_COUNT)\n"
+"#if FAKESHADOWS_COUNT > 1\n"
+"#define FAKESHADOWS_ATLAS\n"
+"uniform mat4 l_fakeshadowmatrix[FAKESHADOWS_COUNT];\n"
+"uniform vec4 l_fakeshadowcell[FAKESHADOWS_COUNT];\n"
+"#define FAKESHADOWS_ATLASCELL l_fakeshadowcell[0]\n"
+"#endif\n"
+"#endif\n"
+
 "#if !defined(TESS_CONTROL_SHADER)\n"
 "#if defined(OFFSETMAPPING) || defined(SPECULAR) || defined(REFLECTCUBEMASK) || defined(PBR)\n"
 "varying vec3 eyevector;\n"
@@ -5097,7 +5112,11 @@ YOU SHOULD NOT EDIT THIS FILE BY HAND
 
 "#ifdef FAKESHADOWS \n"
 "gl_Position = ftetransform();\n"
+"#ifdef FAKESHADOWS_ATLAS\n"
+"vtexprojcoord = (l_fakeshadowmatrix[0]*vec4(v_position.xyz, 1.0));\n"
+"#else\n"
 "vtexprojcoord = (l_cubematrix*vec4(v_position.xyz, 1.0));\n"
+"#endif\n"
 "#else\n"
 "gl_Position = ftetransform();\n"
 "#endif\n"
