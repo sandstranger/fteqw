@@ -6307,6 +6307,23 @@ qboolean GLBE_LightCullModel(vec3_t org, model_t *model)
 	return false;
 }
 
+//the program for BEM_DEPTHDARK (the world's base pass under realtime world lighting), shadowmap casters and stencil
+//volumes. rtlight passes add onto that depth with an EQUAL test, so the two must compute gl_Position bit for bit alike;
+//invariant only promises that for the same expressions in the same language version. on gles3 the light programs
+//compile as GLSL ES 3.00 while this one was GLSL ES 1.00 (sh_config.minver), and adreno and mali round the two
+//differently: whole world polygons lost a light on some frames, so rtlight shadows popped in and out as the camera moved.
+static void GLBE_InitAllBlackShader(void)
+{
+	const char *defs[] = {NULL};
+	int ver = sh_config.minver;
+	if (shaderstate.allblackshader.glsl.handle)
+		return;
+	if (gl_config_gles)
+		ver = bound(sh_config.minver, 300, sh_config.maxver);	//what rtlight.glsl (!!ver 100 300) and defaultwall get
+	shaderstate.allblackshader = GLSlang_CreateProgram(NULL, "allblackprogram", ver, defs, "#include \"sys/skeletal.h\"\nvoid main(){gl_Position = skeletaltransform();}", NULL, NULL, NULL, "void main(){gl_FragColor=vec4(0.0,0.0,0.0,1.0);}", false, NULL);
+	shaderstate.allblack_mvp = qglGetUniformLocationARB(shaderstate.allblackshader.glsl.handle, "m_modelviewprojection");
+}
+
 //Note: Be cautious about using BEM_LIGHT here, as it won't select the light.
 void GLBE_SelectMode(backendmode_t mode)
 {
@@ -6348,12 +6365,7 @@ void GLBE_SelectMode(backendmode_t mode)
 			}
 			else
 #endif
-				if (!shaderstate.allblackshader.glsl.handle)
-			{
-				const char *defs[] = {NULL};
-				shaderstate.allblackshader = GLSlang_CreateProgram(NULL, "allblackprogram", sh_config.minver, defs, "#include \"sys/skeletal.h\"\nvoid main(){gl_Position = skeletaltransform();}", NULL, NULL, NULL, "void main(){gl_FragColor=vec4(0.0,0.0,0.0,1.0);}", false, NULL);
-				shaderstate.allblack_mvp = qglGetUniformLocationARB(shaderstate.allblackshader.glsl.handle, "m_modelviewprojection");
-			}
+				GLBE_InitAllBlackShader();
 			/*BEM_DEPTHONLY does support mesh writing, but its not the only way its used... FIXME!*/
 			while(shaderstate.lastpasstmus>0)
 			{
@@ -6377,12 +6389,8 @@ void GLBE_SelectMode(backendmode_t mode)
 			GLBE_PolyOffsetStencilShadow();
 #endif
 
-			if (gl_config_nofixedfunc && !shaderstate.allblackshader.glsl.handle)
-			{
-				const char *defs[] = {NULL};
-				shaderstate.allblackshader = GLSlang_CreateProgram(NULL, "allblackprogram", sh_config.minver, defs, "#include \"sys/skeletal.h\"\nvoid main(){gl_Position = skeletaltransform();}", NULL, NULL, NULL, "void main(){gl_FragColor=vec4(0.0,0.0,0.0,1.0);}", false, NULL);
-				shaderstate.allblack_mvp = qglGetUniformLocationARB(shaderstate.allblackshader.glsl.handle, "m_modelviewprojection");
-			}
+			if (gl_config_nofixedfunc)
+				GLBE_InitAllBlackShader();
 
 			//disable all tmus
 			while(shaderstate.lastpasstmus>0)
@@ -7323,12 +7331,7 @@ static void DrawMeshes(void)
 		{
 			if (gl_config.arb_shader_objects)
 			{
-				if (!shaderstate.allblackshader.glsl.handle)
-				{
-					const char *defs[] = {NULL};
-					shaderstate.allblackshader = GLSlang_CreateProgram(NULL, "allblackprogram", sh_config.minver, defs, "#include \"sys/skeletal.h\"\nvoid main(){gl_Position = skeletaltransform();}", NULL, NULL, NULL, "void main(){gl_FragColor=vec4(0.0,0.0,0.0,1.0);}", false, NULL);
-					shaderstate.allblack_mvp = qglGetUniformLocationARB(shaderstate.allblackshader.glsl.handle, "m_modelviewprojection");
-				}
+				GLBE_InitAllBlackShader();
 
 				GL_SelectProgram(shaderstate.allblackshader.glsl.handle);
 				BE_SendPassBlendDepthMask(shaderstate.curshader->passes[0].shaderbits);
