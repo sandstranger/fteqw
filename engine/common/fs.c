@@ -345,6 +345,13 @@ static cvar_t fs_automount_state	= CVARFD	("fs_automount_state", "4", CVAR_NOSAV
 //FTESurf Patch 1382: the fs_addons.txt games FS_RemountAddons could not mount, so the material
 //census stops saying "never shipped" when the game the map was checked against is just not found.
 static cvar_t fs_addons_missing		= CVARFD	("fs_addons_missing", "", CVAR_NOSAVE, "ftesurf (P1382): the steam: lines of fs_addons.txt that did not mount at the last filesystem build, comma-separated (Steam folder/game dir). Read by the missing-material warning; setting it by hand only lies to that warning.");
+static cvar_t fs_steamlibs_note		= CVARFD	("fs_steamlibs_note", "", CVAR_NOSAVE|CVAR_NOSET, "FTESurf Patch 1636: the first steam_libraries.txt problem this run found (a listed root that is missing, or one that beats Steam's own copy of a game); the missing-content banner shows it. Empty when there is none.");
+static char fs_steamlibs_seen[4096] = "\n";	//P1636: "<kind>:<key>\n" per steam_libraries.txt root/game already checked
+static void FS_SteamLibs_Reset(void)
+{	//fs_restart and a successful fs_steamlibs remove look again
+	strcpy(fs_steamlibs_seen, "\n");
+	Cvar_ForceSet(&fs_steamlibs_note, "");
+}
 static cvar_t fs_automount_spec		= CVARFD	("fs_automount_spec", "", CVAR_NOSAVE, "ftesurf (P231): the data/mapdeps.txt spec behind fs_automount_state -- the pack the loaded map asks for, or empty when it asks for none. In state 3 this is the one an fs_load would name.");
 //nettest: Half-Life ships its high-definition model pack as a SEPARATE gamedir sibling
 //("valve" -> "valve_hd", "bshift" -> "bshift_hd", "anticlimax" -> "anticlimax_hd", ...),
@@ -7446,6 +7453,7 @@ static void FS_ReloadPackFiles_f(void)
 		Con_Printf("Blocking insecure command: %s %s\n", Cmd_Argv(0), Cmd_Args());
 		return;
 	}
+	FS_SteamLibs_Reset();	//P1636: a remounted drive or an edited list is looked at again
 
 	if (Sys_LockMutex(fs_thread_mutex))
 	{
@@ -7627,6 +7635,110 @@ static qboolean Sys_SteamParseLibraries(void(*callback)(void*ctx,const char*base
 #define FS_STEAMLIBS_FILE "steam_libraries.txt"
 #define FTESURF_STEAMLIBS 1		//the guard above is long; this records that the helpers below exist
 
+//FTESurf Patch 1636: a listed root that is gone, or one that beats Steam's own copy of a game (Lex, 17 Nov:
+//a Windows library on a dirty NTFS drive supplied CS:S over Linux Steam's), warned once per process each.
+static qboolean Sys_SteamDirsWithFile(char *steamdir, char *fname, void(*callback)(void*ctx,const char*basepath),void*ctx);
+static qboolean FS_SteamRootLooksReal(const char *root, char *out, size_t outsize);
+static qboolean fs_steamlibs_steamonly;	//Sys_SteamExtraRoots answers false: probe Steam's own libraries
+static qboolean FS_SteamLibs_FirstTime(const char *kind, const char *key)
+{
+	char tag[MAX_OSPATH + 8];
+	Q_snprintfz(tag, sizeof(tag), "\n%s:%s\n", kind, key);
+	if (strstr(fs_steamlibs_seen, tag) || strlen(fs_steamlibs_seen) + strlen(tag) >= sizeof(fs_steamlibs_seen))
+		return false;
+	Q_strncatz(fs_steamlibs_seen, tag + 1, sizeof(fs_steamlibs_seen));
+	return true;
+}
+static void FS_SteamLibs_Note(const char *text)
+{	//the first one wins: the banner has room for one line
+	if (!*fs_steamlibs_note.string)
+		Cvar_ForceSet(&fs_steamlibs_note, text);
+}
+//Always fills buf: path, or with fs_hidesyspaths the home folder as ~ (the note reaches the banner,
+//screenshots and csprogs). Compared with separators normalised: USERPROFILE has '\\', built paths '/'.
+static const char *FS_SteamLibs_Show(const char *path, char *buf, size_t bufsize)
+{
+	char home[MAX_OSPATH], clean[MAX_OSPATH];
+	const char *env;
+	size_t l;
+#ifdef _WIN32
+	env = getenv("USERPROFILE");
+#else
+	env = getenv("HOME");
+#endif
+	Q_strncpyz(buf, path, bufsize);
+	if (!fs_hidesyspaths.ival || !env || !*env)
+		return buf;
+	Sys_SteamCleanRoot(home, sizeof(home), env);
+	Sys_SteamCleanRoot(clean, sizeof(clean), path);
+	l = strlen(home);
+#ifdef _WIN32
+	if (l > 2 && !Q_strncasecmp(clean, home, l) && (!clean[l] || clean[l] == '/'))
+#else
+	if (l > 1 && !strncmp(clean, home, l) && (!clean[l] || clean[l] == '/'))
+#endif
+		Q_snprintfz(buf, bufsize, "~%s", clean + l);
+	return buf;
+}
+static qboolean FS_SteamSameDir(const char *a, const char *b)
+{
+	char ca[MAX_OSPATH], cb[MAX_OSPATH];
+#ifndef _WIN32
+	char *ra = realpath(a, NULL), *rb = realpath(b, NULL);
+	qboolean same = ra && rb && !strcmp(ra, rb);
+	free(ra);
+	free(rb);
+	if (same)
+		return true;
+#endif
+	Sys_SteamCleanRoot(ca, sizeof(ca), a);
+	Sys_SteamCleanRoot(cb, sizeof(cb), b);
+	return !Q_strcasecmp(ca, cb);
+}
+static void FS_SteamLibs_FirstDir(void *vctx, const char *basepath)
+{
+	char *out = vctx;
+	if (!*out)
+		Q_strncpyz(out, basepath, MAX_OSPATH);
+}
+static void FS_SteamLibs_CheckRoot(const char *root)
+{
+	char probe[MAX_OSPATH], shown[MAX_OSPATH];
+	const char *s;
+	if (!FS_SteamLibs_FirstTime("root", root) || FS_SteamRootLooksReal(root, probe, sizeof(probe)))
+		return;
+	s = FS_SteamLibs_Show(root, shown, sizeof(shown));
+	Con_Printf(CON_WARNING"%s lists \"%s\", which is missing or empty (a drive that is not mounted?), so it is skipped. "
+		"^2fs_steamlibs remove %s^7 drops the line.\n", FS_STEAMLIBS_FILE, s, s);
+	FS_SteamLibs_Note(va("%s lists %s, which is missing. Console: fs_steamlibs", FS_STEAMLIBS_FILE, s));
+}
+static void FS_SteamLibs_CheckShadow(const char *root, const char *gamedir, char *steamdir, char *fname)
+{
+	char own[MAX_OSPATH], shown[3][MAX_OSPATH];
+	const char *sroot;
+	if (fs_steamlibs_steamonly || !FS_SteamLibs_FirstTime("game", steamdir))
+		return;
+	*own = 0;
+	fs_steamlibs_steamonly = true;
+	Sys_SteamDirsWithFile(steamdir, fname, FS_SteamLibs_FirstDir, own);
+	if (!*own && !Q_strcasecmp(steamdir, "csgo legacy/csgo"))	//Sys_SteamHasFile's CS:GO aliases
+		Sys_SteamDirsWithFile("Counter-Strike Global Offensive/csgo", fname, FS_SteamLibs_FirstDir, own);
+	else if (!*own && !Q_strcasecmp(steamdir, "Counter-Strike Global Offensive/csgo"))
+		Sys_SteamDirsWithFile("csgo legacy/csgo", fname, FS_SteamLibs_FirstDir, own);
+	fs_steamlibs_steamonly = false;
+	if (!*own || FS_SteamSameDir(own, gamedir))
+		return;
+	sroot = FS_SteamLibs_Show(root, shown[2], sizeof(shown[2]));
+	Con_Printf(CON_WARNING"%s: using %s from %s, not Steam's own copy at %s. "
+		"If that library is an old install, type ^2fs_steamlibs remove %s^7 then fs_restart.\n",
+		steamdir, FS_SteamLibs_Show(gamedir, shown[0], sizeof(shown[0])), FS_STEAMLIBS_FILE,
+		FS_SteamLibs_Show(own, shown[1], sizeof(shown[1])), sroot);
+	Q_strncpyz(own, steamdir, sizeof(own));
+	if (strchr(own, '/'))
+		*strchr(own, '/') = 0;	//"Counter-Strike Source/cstrike" -> the game's name
+	FS_SteamLibs_Note(va("%s is read from %s (%s), not Steam's own copy. Console: fs_steamlibs", own, sroot, FS_STEAMLIBS_FILE));
+}
+
 //probe one root both ways.  `basepath` receives the resolved game dir on success.
 static qboolean Sys_SteamRootHasGame(char *basepath, int basepathlen, const char *root, const char *steamdir, const char *fname)
 {
@@ -7659,8 +7771,10 @@ static qboolean Sys_SteamExtraRootsFile(void(*callback)(void*ctx,const char*base
 		if (!*line || *line == '#' || (line[0]=='/' && line[1]=='/'))
 			continue;
 
+		FS_SteamLibs_CheckRoot(line);
 		if (Sys_SteamRootHasGame(basepath,sizeof(basepath), line, steamdir, fname))
 		{
+			FS_SteamLibs_CheckShadow(line, basepath, steamdir, fname);
 			callback(ctx, basepath);
 			FS_FreeFile(listfile);
 			return true;
@@ -7693,6 +7807,8 @@ static qboolean Sys_SteamExtraRoots(void(*callback)(void*ctx,const char*basepath
 	int idx;
 
 	*prev = 0;
+	if (fs_steamlibs_steamonly)
+		return false;
 	for (idx = 0; idx < 2; idx++)
 	{
 		if (!FS_SteamLibsFilePath(p, sizeof(p), idx))
@@ -8285,6 +8401,17 @@ static qboolean Sys_SteamHasFile(char *steambasedir,size_t steambasedirsize, cha
 			Sys_SteamDirsWithFile(alternate, "pak01_dir.vpk", Sys_FoundGameData, &ctx))
 			return ctx.found;
 		return false;
+	}
+	//FTESurf Patch 1625: a game folder left by an uninstall or a library move (cfg/, download/, custom/) passed the
+	//bare-folder test and beat the real install in a later library. First ask for the game's own gameinfo.txt
+	//(Source) or liblist.gam (GoldSrc); the bare folder stays the fallback.
+	if (!*fname)
+	{
+		static char *markers[] = {"gameinfo.txt", "liblist.gam"};
+		size_t m;
+		for (m = 0; m < countof(markers); m++)
+			if (Sys_SteamDirsWithFile(steamdir, markers[m], Sys_FoundGameData, &ctx))
+				return ctx.found;
 	}
 	return Sys_SteamDirsWithFile(steamdir, fname, Sys_FoundGameData,&ctx);
 }
@@ -10660,6 +10787,81 @@ static qboolean FS_Addon_MountMomentumPack(const char *syspath, const char *pakn
 	Con_DPrintf("fs_load: automatic Source pack \"%s\"\n", pakpath);
 	return true;
 }
+//FTESurf Patch 1656: a GoldSrc package may hold only what tools/gsrcpack.py writes: maps/<id>.bsp, WADs at its
+//root, and models, sprites, sounds and sky images. Anything else (a cfg, shader, progs, particle script) refuses
+//the whole package, so a packing mistake cannot add a file the engine would run.
+typedef struct {const char *bsp; int bad; char first[MAX_QPATH];} gspackcheck_t;
+static int QDECL FS_Addon_PackFileOk(const char *fname, qofs_t fsize, time_t mtime, void *parm, searchpathfuncs_t *spath)
+{
+	gspackcheck_t *c = parm;
+	const char *ext = COM_GetFileExtension(fname, NULL);
+	size_t len = strlen(fname);
+	qboolean ok;
+	if (strchr(fname, '\\') || len >= MAX_QPATH)
+		ok = false;
+	else if (len && fname[len-1] == '/')
+		ok = true;	//a directory entry
+	else if (!Q_strcasecmp(fname, c->bsp))
+		ok = true;
+	else if (!Q_strcasecmp(ext, ".wad"))
+		ok = !strchr(fname, '/');
+	else if (!Q_strncasecmp(fname, "models/", 7))
+		ok = !Q_strcasecmp(ext, ".mdl");
+	else if (!Q_strncasecmp(fname, "sprites/", 8))
+		ok = !Q_strcasecmp(ext, ".spr");
+	else if (!Q_strncasecmp(fname, "sound/", 6) || !Q_strncasecmp(fname, "media/", 6))
+		ok = !Q_strcasecmp(ext, ".wav") || !Q_strcasecmp(ext, ".mp3") || !Q_strcasecmp(ext, ".ogg");
+	else if (!Q_strncasecmp(fname, "gfx/env/", 8))
+		ok = !Q_strcasecmp(ext, ".tga") || !Q_strcasecmp(ext, ".bmp");
+	else
+		ok = false;
+	if (!ok && !c->bad++)
+		Q_strncpyz(c->first, fname, sizeof(c->first));
+	return true;
+}
+//One archive as an addon mount (a GoldSrc map package). UNTRUSTED: third-party files, so nothing in it answers a
+//secure lookup or a ruleset read.
+static qboolean FS_Addon_MountPack(const char *arg, const char *syspath)
+{
+	char dir[MAX_OSPATH], bsp[MAX_QPATH], id[MAX_QPATH];
+	searchpath_t *s, *oldpaths = NULL;
+	searchpathfuncs_t *pak;
+	vfsfile_t *file;
+	gspackcheck_t check;
+	char *sl;
+
+	for (s = com_searchpaths; s; s = s->next)
+		if (!Q_strcasecmp(s->logicalpath, syspath))
+			return true;
+	file = VFSOS_Open(syspath, "rb");
+	if (!file)
+		return false;
+	pak = FS_OpenPackByExtension(file, NULL, COM_SkipPath(syspath), syspath, "");
+	if (!pak)
+	{
+		Con_Printf(CON_WARNING"fs_load: \"%s\" is not a readable package\n", COM_SkipPath(syspath));
+		return false;
+	}
+	COM_StripExtension(COM_SkipPath(syspath), id, sizeof(id));
+	Q_snprintfz(bsp, sizeof(bsp), "maps/%s.bsp", id);
+	memset(&check, 0, sizeof(check));
+	check.bsp = bsp;
+	pak->EnumerateFiles(pak, NULL, FS_Addon_PackFileOk, &check);	//NULL: every member (fs_zip.c), not one directory level
+	if (check.bad)
+	{
+		Con_Printf(CON_WARNING"%s: not mounted, it holds %i file%s a map package may not (%s)\n",
+				   COM_SkipPath(syspath), check.bad, check.bad==1?"":"s", check.first);
+		pak->ClosePath(pak);
+		return false;
+	}
+	Q_strncpyz(dir, syspath, sizeof(dir));
+	sl = strrchr(dir, '/');
+	if (sl)
+		*sl = 0;
+	FS_AddPathHandleOrigin(&oldpaths, arg, syspath, pak, "",
+		SPF_ADDON|SPF_COPYPROTECTED|SPF_PRIVATE|SPF_UNTRUSTED, 0, FSORIGIN_OSFILE, 0, 0, syspath, dir);
+	return true;
+}
 static qboolean FS_Addon_MountSourceBase(const char *syspath)
 {
 	return FS_Addon_MountMomentumPack(syspath, "hl2_dir.vpk");
@@ -10699,6 +10901,7 @@ static qboolean FS_Addon_AutoSourceBase(void)
 	return base;
 }
 
+static qboolean fs_addon_nosiblings;	//P1656: set around a GoldSrc map's Half-Life mounts
 static qboolean FS_Addon_Mount(const char *arg, unsigned int loadstuff)
 {
 	char syspath[MAX_OSPATH];
@@ -10709,6 +10912,8 @@ static qboolean FS_Addon_Mount(const char *arg, unsigned int loadstuff)
 		return false;
 	if (!Q_strcasecmp(arg, FS_MOMENTUM_BASE_SPEC))
 		return FS_Addon_MountSourceBase(syspath);	//old generated deps and saved mounts
+	if (!Q_strcasecmp(COM_GetFileExtension(syspath, NULL), ".pk3"))
+		return FS_Addon_MountPack(arg, syspath);	//P1656
 
 	for (s = com_searchpaths; s; s = s->next)	//skip if already mounted
 		if (!Q_strcasecmp(s->logicalpath, syspath))
@@ -10733,7 +10938,7 @@ static qboolean FS_Addon_Mount(const char *arg, unsigned int loadstuff)
 		searchpath_t *ds;
 		searchpathfuncs_t *dlhandle;
 		Q_snprintfz(dlpath, sizeof(dlpath), "%s_downloads", syspath);
-		if (!Sys_EnumerateFiles(dlpath, "*", FS_DirDoesHaveGame, NULL, NULL))	//returns false => callback cancelled => dir has >=1 entry
+		if (!fs_addon_nosiblings && !Sys_EnumerateFiles(dlpath, "*", FS_DirDoesHaveGame, NULL, NULL))	//returns false => callback cancelled => dir has >=1 entry
 		{
 			for (ds = com_searchpaths; ds; ds = ds->next)
 				if (!Q_strcasecmp(ds->logicalpath, dlpath))
@@ -10835,6 +11040,71 @@ static int FS_Addon_Unmount(const char *syspath)
 	Sys_UnlockMutex(fs_thread_mutex);
 	COM_WorkerUnlock();
 	return removed;
+}
+//FTESurf Patch 1656: move these mounted addons, in the order given, ahead of every other addon (still below the
+//mod's own paths). A GoldSrc map's sound/x.wav or models/x.mdl must not be answered by a Source game's file.
+static void FS_Addon_Raise(char paths[][MAX_OSPATH], int count)
+{
+	searchpath_t *sp, **link, *up = NULL, **tail = &up;
+	size_t len;
+	int i;
+
+	COM_AssertMainThread("FS_Addon_Raise");
+	if (!com_searchpaths || !fs_thread_mutex)
+		return;
+
+	COM_WorkerLock();
+	Sys_LockMutex(fs_thread_mutex);
+	//already in place: each family's nodes, in order, right after the mod's own paths, and none further down
+	for (link = &com_searchpaths; *link && !((*link)->flags & SPF_ADDON); )
+		link = &(*link)->next;
+	for (sp = *link, i = 0; i < count; i++)
+		for (len = strlen(paths[i]); sp && len && FS_Addon_IsFamily(sp, paths[i], len); )
+			sp = sp->next;
+	for (; sp; sp = sp->next)
+	{
+		for (i = 0; i < count; i++)
+			if (*paths[i] && FS_Addon_IsFamily(sp, paths[i], strlen(paths[i])))
+				break;
+		if (i < count)
+			break;
+	}
+	if (!sp)
+	{
+		Sys_UnlockMutex(fs_thread_mutex);
+		COM_WorkerUnlock();
+		return;
+	}
+	for (i = 0; i < count; i++)
+	{
+		len = strlen(paths[i]);
+		if (!len)
+			continue;
+		for (link = &com_searchpaths; *link; )
+		{
+			sp = *link;
+			if (FS_Addon_IsFamily(sp, paths[i], len))
+			{
+				*link = sp->next;
+				sp->next = NULL;
+				*tail = sp;
+				tail = &sp->next;
+			}
+			else
+				link = &sp->next;
+		}
+	}
+	if (up)
+	{
+		for (link = &com_searchpaths; *link && !((*link)->flags & SPF_ADDON); )
+			link = &(*link)->next;
+		*tail = *link;
+		*link = up;
+		FS_FlushFSHashReally(false);	//depths moved
+		fs_listgen++;
+	}
+	Sys_UnlockMutex(fs_thread_mutex);
+	COM_WorkerUnlock();
 }
 
 //nettest: mount `spec`'s HIGH-DEFINITION sibling ("<spec>_hd") if fs_hdmodels is set.
@@ -11316,8 +11586,10 @@ static char fs_automountwant[FS_MAXAUTOMOUNT][MAX_OSPATH];	//ftesurf (P184): wha
 static int fs_numautomountwant;
 // One fixed client asset request may retain its pack for this FS session.
 static double fs_knife_assets_retry;
+static void FS_GoldSrc_Forget(void);
 static void FS_AutoMount_Forget(void)	//ftesurf (P184): forward-declared at the top of the file, called from FS_FreePaths
 {
+	FS_GoldSrc_Forget();	//P1656
 	fs_numautomounted = 0;
 	fs_numautomountwant = 0;
 	fs_knife_assets_path[0] = 0;
@@ -12387,12 +12659,49 @@ static void FS_Cache_Clear_f(void)
 //ftesurf (P184): the drop pass, run from SV_SpawnServer once the map is committed.
 //ftesurf (P186): and the point at which the asset-cache harvest is armed, because this is the
 //first moment the set of packs that are ours is final AND the map is known to exist.
+//FTESurf Patch 1656: a GoldSrc map's mounts (its package, and the Half-Life folders this code mounted) last only as
+//long as that map: fs_gswant says whether the map now loading is one, fs_gsours what was raised for the last one.
+static qboolean fs_gsactive, fs_gswant;
+static char fs_gsours[FS_MAXAUTOMOUNT][MAX_OSPATH];	//every GoldSrc mount this code made and has not dropped
+static int fs_numgsours;
+static void FS_GoldSrc_Forget(void)
+{
+	fs_gsactive = fs_gswant = false;
+	fs_numgsours = 0;
+}
+static void FS_GoldSrc_AfterDrop(void)
+{	//fs_autounmount 0 keeps other packs, never these: a map that does not want one must not see GoldSrc files
+	int i, j, k;
+	for (i = 0; i < fs_numgsours; )
+	{
+		for (k = 0; k < fs_numautomountwant; k++)
+			if (!Q_strcasecmp(fs_automountwant[k], fs_gsours[i]))
+				break;
+		if (k < fs_numautomountwant)
+		{
+			i++;
+			continue;
+		}
+		for (j = 0; j < fs_numautomounted; j++)
+			if (!Q_strcasecmp(fs_automounted[j], fs_gsours[i]))
+			{
+				FS_Addon_Unmount(fs_automounted[j]);
+				memmove(fs_automounted[j], fs_automounted[j+1], (fs_numautomounted-j-1)*sizeof(fs_automounted[0]));
+				fs_numautomounted--;
+				break;
+			}
+		memmove(fs_gsours[i], fs_gsours[i+1], (fs_numgsours-i-1)*sizeof(fs_gsours[0]));
+		fs_numgsours--;
+	}
+	fs_gsactive = fs_gswant;
+}
 void FS_AutoUnmountStale(void)
 {
 	int i, j;
 
 	if (!fs_automount.ival || !fs_autounmount.ival)
 	{
+		FS_GoldSrc_AfterDrop();	//P1656
 		FS_Cache_BeginMap();	//ftesurf (P186): still arm the harvest -- it does not depend on the drop
 		return;
 	}
@@ -12425,6 +12734,7 @@ void FS_AutoUnmountStale(void)
 	}
 
 	//ftesurf (P186): last, so SPF_HARVEST is computed from the set that survived the drop.
+	FS_GoldSrc_AfterDrop();	//P1656: nothing of a GoldSrc map is left in the set the harvest reads
 	FS_Cache_BeginMap();
 }
 //ftesurf (P1102): a data/map* table, read only from the gamedir's own loose files -- FS_GAMEONLY
@@ -12510,7 +12820,11 @@ static void FS_AutoMountStep(const char *spec, qboolean cached)
 {
 	char step[64];
 	const char *g = "content";
-	if (strstr(spec, "/csgo"))
+	if (strstr(spec, "/goldsrc/"))	//P1656
+		g = "map package";
+	else if (strstr(spec, "Half-Life/"))
+		g = "Half-Life";
+	else if (strstr(spec, "/csgo"))
 		g = "CS:GO";
 	else if (strstr(spec, "/tf"))
 		g = "TF2";
@@ -12524,8 +12838,205 @@ static void FS_AutoMountStep(const char *spec, qboolean cached)
 	SCR_SetLoadingFileNow(step);
 }
 #endif
+/*FTESurf Patch 1656: GoldSrc map packages.
+<gamedir>/downloads/goldsrc/<map>.pk3 holds one BSP-30 map and the files only it needs (tools/gsrcpack.py). It is
+mounted, with the Half-Life game folders it names, only while that map is loaded, so a Source map never sees a
+GoldSrc file. The menu fetches the catalogue (id, sizes, sha256, games) to data/goldsrc.net.txt.*/
+#define FS_GOLDSRC_NET "data/goldsrc.net.txt"
+static qboolean FS_GoldSrc_Id(const char *name, char *id, size_t idsize)
+{
+	size_t i, l = name ? strlen(name) : 0;
+	if (!l || l > 60 || l >= idsize)
+		return false;
+	for (i = 0; i < l; i++)
+	{
+		char c = name[i];
+		if (c >= 'A' && c <= 'Z')
+			c += 'a' - 'A';
+		if (!((c >= 'a' && c <= 'z') || (c >= '0' && c <= '9') || c == '_' || c == '-'))
+			return false;
+		id[i] = c;
+	}
+	id[l] = 0;
+	return l > 3 && !strcmp(id + l - 3, "_gs");	//tools/gsrcpack.py's suffix: a catalogue can never name a Source map
+}
+static qboolean FS_GoldSrc_Hex64(const char *h)
+{
+	int i;
+	for (i = 0; i < 64; i++)
+		if (!((h[i] >= '0' && h[i] <= '9') || (h[i] >= 'a' && h[i] <= 'f')))
+			return false;
+	return !h[64];
+}
+//The catalogue's row for a map; false when the map is not listed (see tools/gsrcpack.py for the columns).
+qboolean FS_GoldSrc_Row(const char *name, goldsrcrow_t *row)
+{
+	char id[64], rid[64], rkind[16], rsha[72], rxzsha[72];
+	unsigned long rxz, rpk3;
+	char *file, *line, *nl;
+	int rneeds, rflags;
+	qboolean found = false;
+
+	if (!FS_GoldSrc_Id(name, id, sizeof(id)))
+		return false;
+	file = FS_LoadTable(FS_GOLDSRC_NET);
+	if (!file)
+		return false;
+	if (!strncmp(file, "FTESURF-GOLDSRC 1", 17) && (file[17] == '\n' || file[17] == '\r'))
+	for (line = file; line && *line && !found; line = nl)
+	{
+		nl = strchr(line, '\n');
+		if (nl)
+			*nl++ = 0;
+		if (nl && nl - line >= 2 && nl[-2] == '\r')
+			nl[-2] = 0;
+		if (strncmp(line, "gs ", 3) || sscanf(line, "gs %63s %15s %lu %lu %71s %d %d %71s",
+				rid, rkind, &rxz, &rpk3, rsha, &rneeds, &rflags, rxzsha) != 8)
+			continue;
+		if (strcmp(rid, id) || !FS_GoldSrc_Hex64(rsha) || !FS_GoldSrc_Hex64(rxzsha) || rneeds < 0 || rneeds > 7)
+			continue;
+		found = true;
+		if (row)
+		{
+			Q_strncpyz(row->sha, rsha, sizeof(row->sha));
+			Q_strncpyz(row->xzsha, rxzsha, sizeof(row->xzsha));
+			row->pk3bytes = rpk3;
+			row->xzbytes = rxz;
+			row->needs = rneeds;
+		}
+	}
+	BZ_Free(file);
+	return found;
+}
+//Where a map's package is kept; `have` says whether it is there now.
+qboolean FS_GoldSrc_Package(const char *name, char *syspath, size_t syssize, qboolean *have)
+{
+	char id[64], path[MAX_OSPATH];
+	vfsfile_t *f;
+	if (!FS_GoldSrc_Id(name, id, sizeof(id)))
+		return false;
+	if (!syspath)
+	{
+		syspath = path;
+		syssize = sizeof(path);
+	}
+	if (!FS_SystemPath(va("goldsrc/%s.pk3", id), FS_GAMEDOWNLOADS, syspath, syssize))
+		return false;
+	if (have)
+	{
+		f = VFSOS_Open(syspath, "rb");
+		*have = !!f;
+		if (f)
+			VFS_CLOSE(f);
+	}
+	return true;
+}
+static qboolean fs_gsverify_reset;	//set when a package is written (FS_GoldSrc_Reverify)
+//Is the package at syspath the catalogue's bytes? Hashed once per session per (path, size, sha).
+static qboolean FS_GoldSrc_Verified(const char *syspath, const goldsrcrow_t *row)
+{
+	static struct {char path[MAX_OSPATH]; char sha[65]; qofs_t size; qboolean ok;} seen[16];
+	static int next;
+	qbyte buf[16384], digest[DIGEST_MAXSIZE];
+	char got[72];
+	vfsfile_t *f;
+	qofs_t size;
+	void *ctx;
+	int i, n;
+
+	if (fs_gsverify_reset)
+	{
+		memset(seen, 0, sizeof(seen));
+		fs_gsverify_reset = false;
+	}
+	f = VFSOS_Open(syspath, "rb");
+	if (!f)
+		return false;
+	size = VFS_GETLEN(f);
+	for (i = 0; i < countof(seen); i++)
+		if (seen[i].size == size && !strcmp(seen[i].sha, row->sha) && !strcmp(seen[i].path, syspath))
+		{
+			VFS_CLOSE(f);
+			return seen[i].ok;
+		}
+	if (size != row->pk3bytes)
+	{
+		VFS_CLOSE(f);
+		return false;
+	}
+	ctx = alloca(hash_sha2_256.contextsize);
+	hash_sha2_256.init(ctx);
+	while ((n = VFS_READ(f, buf, sizeof(buf))) > 0)
+		hash_sha2_256.process(ctx, buf, n);
+	VFS_CLOSE(f);
+	hash_sha2_256.terminate(digest, ctx);
+	got[Base16_EncodeBlock((const char*)digest, hash_sha2_256.digestsize, (qbyte*)got, sizeof(got)-1)] = 0;
+	i = next++ % countof(seen);
+	Q_strncpyz(seen[i].path, syspath, sizeof(seen[i].path));
+	Q_strncpyz(seen[i].sha, row->sha, sizeof(seen[i].sha));
+	seen[i].size = size;
+	seen[i].ok = !Q_strcasecmp(got, row->sha);
+	return seen[i].ok;
+}
+qboolean FS_GoldSrc_Involved(const char *map)
+{
+	char id[MAX_QPATH];
+	qboolean have;
+	COM_StripExtension(COM_SkipPath(map), id, sizeof(id));	//callers pass maps/<id>.bsp
+	return fs_gsactive || (FS_GoldSrc_Package(id, NULL, 0, &have) && have);
+}
+//N4/N3: installed means present AND the catalogue's bytes; a fresh download resets the verdicts
+void FS_GoldSrc_Reverify(void)
+{
+	fs_gsverify_reset = true;
+}
+qboolean FS_GoldSrc_Ready(const char *name)
+{
+	char path[MAX_OSPATH];
+	goldsrcrow_t row;
+	qboolean have;
+	return FS_GoldSrc_Package(name, path, sizeof(path), &have) && have && FS_GoldSrc_Row(name, &row) &&
+		   FS_GoldSrc_Verified(path, &row);
+}
+//The mounts a GoldSrc map wants, most specific first; 0 when the map has no package here.
+static int FS_GoldSrc_Wants(const char *map, char specs[][MAX_OSPATH])
+{
+	static const char *const games[] = {"steam:Half-Life/cstrike", "steam:Half-Life/czero", "steam:Half-Life/valve"};
+	static const int bits[] = {2, 4, 1};
+	char path[MAX_OSPATH];
+	goldsrcrow_t row;
+	qboolean have, listed;
+	int needs = 0, n = 0, i;
+
+	if (!FS_GoldSrc_Package(map, specs[0], sizeof(specs[0]), &have) || !have)
+		return 0;
+	listed = FS_GoldSrc_Row(map, &row);
+	if (!listed || !FS_GoldSrc_Verified(specs[0], &row))
+	{	//only the catalogue's bytes mount; a stale or foreign file is left alone (the menu offers the download again)
+		Con_Printf(CON_WARNING"goldsrc/%s: %s, not mounted\n", COM_SkipPath(specs[0]),
+				   listed ? "not the catalogue's package" : "not in the GoldSrc catalogue");
+		return 0;
+	}
+	n = 1;
+	needs = row.needs;
+	for (i = 0; i < countof(games); i++)
+	{	//A game the row names is wanted even when absent, so the miss is reported. Half-Life itself is also
+		//taken whenever installed: door, button and breakable sounds are named by number, not in the catalogue.
+		if (!(needs & bits[i]))
+		{
+			if (bits[i] != 1)
+				continue;
+			if (!FS_Addon_ResolveEx(games[i], path, sizeof(path), true))
+				continue;
+		}
+		Q_strncpyz(specs[n++], games[i], sizeof(specs[0]));
+	}
+	return n;
+}
 void FS_AutoMountForMap(const char *mapname)
 {
+	char gsspec[4][MAX_OSPATH];
+	int numgs, firstgs;
 	char *file, *net, *line, *nl, *e, *spec;
 	char stampfile[15], stampnet[15];
 	char tmp[MAX_QPATH], want[MAX_QPATH];
@@ -12547,6 +13058,7 @@ void FS_AutoMountForMap(const char *mapname)
 	Before the fs_automount early-out, because the previous map's harvest has to be flushed
 	even if the cvar was turned off in between. */
 	FS_Cache_EndMap();
+	fs_gswant = false;	//P1656
 
 	//ftesurf (P231): "I do not know" is the honest answer on every path that gives up below,
 	//and it has to be written BEFORE the first of them -- see fs_automount_state.
@@ -12590,8 +13102,13 @@ void FS_AutoMountForMap(const char *mapname)
 		else
 			BZ_Free(net);
 	}
-	if (!file)
+	numgs = FS_GoldSrc_Wants(want, gsspec);	//P1656
+	if (!file && !numgs)
+	{
+		fs_numautomountwant = 0;	//no table: this map wants nothing, so the last GoldSrc map's mounts go
+		*fs_hv_pending = 0;
 		return;
+	}
 
 	for (line = file; line && *line; line = nl)
 	{
@@ -12640,7 +13157,17 @@ void FS_AutoMountForMap(const char *mapname)
 		//No break: a map may name more than one pack, and mounting both is
 		//cheaper than being wrong about which one wins.
 	}
-	BZ_Free(file);
+	if (file)
+		BZ_Free(file);
+	firstgs = numwant;
+	for (i = 0; i < numgs && numwant < FS_MAXAUTOMOUNT; i++, numwant++)
+	{	//P1656: the package, then the Half-Life folders it takes files from
+		Q_strncpyz(wantspec[numwant], gsspec[i], sizeof(wantspec[0]));
+		if (!FS_Addon_ResolveEx(gsspec[i], wantpath[numwant], sizeof(wantpath[0]), true))
+			wantpath[numwant][0] = 0;
+	}
+	numgs = numwant - firstgs;
+	fs_gswant = numgs > 0;
 
 	//ftesurf (P186): the name the harvest will be filed under, if this load commits.  `want` is
 	//already normalised out of the `maps/x.bsp` and `x#pak` forms, and it is promoted to
@@ -12648,6 +13175,8 @@ void FS_AutoMountForMap(const char *mapname)
 	//SV_SpawnServer, writes no manifest.  Set before the completeness check below, which reads
 	//the manifest belonging to exactly this name.
 	Q_strncpyz(fs_hv_pending, want, sizeof(fs_hv_pending));
+	if (numgs)
+		*fs_hv_pending = 0;	//P1656: Half-Life's folders are small loose dirs; nothing to cache
 
 	/* ftesurf (P197): decide cached-or-not FIRST, because it changes what "this map wants".
 
@@ -12661,7 +13190,7 @@ void FS_AutoMountForMap(const char *mapname)
 	There is no global cache mount any more, so a proven load mounts each pack's cache
 	DIRECTORY in that pack's place -- and the want-set has to name those directories, or
 	P184's drop pass would unmount them again on the very next map for not being wanted. */
-	cached = fs_assetcache.ival && numwant && FS_Cache_MapIsComplete(want, wantpath, numwant);
+	cached = fs_assetcache.ival && numwant && !numgs && FS_Cache_MapIsComplete(want, wantpath, numwant);
 	for (i = 0; i < numwant; i++)
 	{
 		cachedir[i][0] = 0;
@@ -12709,9 +13238,13 @@ void FS_AutoMountForMap(const char *mapname)
 			}
 			else
 			{
-				Con_Printf("fs_automount: %s needs \"%s\"\n", want, wantspec[i]);
-				FS_Addon_MountHD(wantspec[i], ~0u);
+				qboolean pk3 = !Q_strcasecmp(COM_GetFileExtension(wantspec[i], NULL), ".pk3");	//P1656
+				Con_Printf("fs_automount: %s needs \"%s%s\"\n", want, pk3?"goldsrc/":"", pk3?COM_SkipPath(wantspec[i]):wantspec[i]);
+				if (!pk3)
+					FS_Addon_MountHD(wantspec[i], ~0u);
+				fs_addon_nosiblings = numgs && i >= firstgs;	//P1656: no Half-Life *_downloads for a GoldSrc map
 				FS_Addon_Mount(wantspec[i], ~0u);
+				fs_addon_nosiblings = false;
 			}
 			if (fs_thread_mutex)
 				Sys_UnlockMutex(fs_thread_mutex);
@@ -12730,6 +13263,29 @@ void FS_AutoMountForMap(const char *mapname)
 			if (j == fs_numautomounted && fs_numautomounted < FS_MAXAUTOMOUNT)
 				Q_strncpyz(fs_automounted[fs_numautomounted++], path, sizeof(fs_automounted[0]));
 		}
+	}
+
+	if (numgs)
+	{	//P1656: only what this code mounted moves up; a Half-Life folder from fs_addons.txt keeps its own place
+		char ours[4][MAX_OSPATH];
+		int numours = 0;
+		for (i = firstgs; i < firstgs + numgs; i++)
+			for (j = 0; j < fs_numautomounted; j++)
+				if (*wantpath[i] && !Q_strcasecmp(fs_automounted[j], wantpath[i]) && numours < countof(ours))
+				{
+					Q_strncpyz(ours[numours++], wantpath[i], sizeof(ours[0]));
+					break;
+				}
+		FS_Addon_Raise(ours, numours);
+		for (i = 0; i < numours; i++)
+		{
+			for (j = 0; j < fs_numgsours; j++)
+				if (!Q_strcasecmp(fs_gsours[j], ours[i]))
+					break;
+			if (j == fs_numgsours && fs_numgsours < FS_MAXAUTOMOUNT)
+				Q_strncpyz(fs_gsours[fs_numgsours++], ours[i], sizeof(fs_gsours[0]));
+		}
+		fs_gsactive = true;
 	}
 
 	/* ftesurf (P231): and say, for the material census, what all of that came to.  Written
@@ -12752,8 +13308,9 @@ void FS_AutoMountForMap(const char *mapname)
 		else
 		{	//truncation here is fine: this is a diagnostic string, not a path to open.
 			state = cached?2:1;
-			for (j = 0; j < numwant; j++)
-				Q_strncatz(spec, va(j?", %s":"%s", wantspec[j]), sizeof(spec));
+			for (j = 0; j < numwant; j++)	//P1656: a package by its label, never the player's own path
+				Q_strncatz(spec, va(j?", %s%s":"%s%s", (numgs && j == firstgs)?"goldsrc/":"",
+								(numgs && j == firstgs)?COM_SkipPath(wantspec[j]):wantspec[j]), sizeof(spec));
 		}
 		Cvar_ForceSetValue(&fs_automount_state, state);
 		Cvar_ForceSet(&fs_automount_spec, spec);
@@ -13068,13 +13625,103 @@ static void FS_SteamLibs_f(void)
 		Con_Printf("run ^2fs_restart^7 (or relaunch) to mount what it finds.\n");
 		return;
 	}
+	if (!Q_strcasecmp(Cmd_Argv(1), "remove") && Cmd_Argc() > 2)
+	{	//FTESurf Patch 1636: drop a root, as its warnings say; comments and other lines are kept as written
+		char root[MAX_OSPATH], want[MAX_OSPATH], typed[MAX_OSPATH], raw[MAX_OSPATH], have[MAX_OSPATH], prevp[MAX_OSPATH];
+		char *out, *t;
+		int removed = 0, here;
+		vfsfile_t *f;
+
+		while (*args && *args != ' ' && *args != '\t')
+			args++;
+		while (*args == ' ' || *args == '\t')
+			args++;
+		Q_strncpyz(root, args, sizeof(root));
+		for (e = root+strlen(root); e > root && (e[-1]==' '||e[-1]=='\t'||e[-1]=='"'); )
+			*--e = 0;
+		while (*root == '"')
+			memmove(root, root+1, strlen(root));
+		Sys_SteamCleanRoot(typed, sizeof(typed), root);	//a hand-written "~/..." line matches as typed
+		if (root[0] == '~' && (!root[1] || root[1] == '/' || root[1] == '\\'))
+		{	//the warnings print the home folder as ~ (FS_SteamLibs_Show)
+#ifdef _WIN32
+			const char *home = getenv("USERPROFILE");
+#else
+			const char *home = getenv("HOME");
+#endif
+			if (home && *home)
+			{	//cleaned as FS_SteamLibs_Show compares it: a trailing separator would double up
+				Sys_SteamCleanRoot(have, sizeof(have), home);
+				Q_snprintfz(raw, sizeof(raw), "%s%s", have, root + 1);
+				Q_strncpyz(root, raw, sizeof(root));
+			}
+		}
+		Sys_SteamCleanRoot(want, sizeof(want), root);
+		*prevp = 0;
+		for (i = 0; i < 2; i++)
+		{
+			if (!FS_SteamLibsFilePath(path, sizeof(path), i) || !Q_strcasecmp(path, prevp))
+				continue;
+			Q_strncpyz(prevp, path, sizeof(prevp));
+			if (!(file = FS_MallocFile(path, FS_SYSTEM, NULL)))
+				continue;
+			out = BZ_Malloc(strlen(file) + 2);
+			*out = 0;
+			here = 0;
+			for (line = file; line && *line; line = nl)
+			{
+				nl = strchr(line, '\n');
+				if (nl)
+					*nl++ = 0;
+				for (t = line; *t == ' ' || *t == '\t' || *t == '"'; t++)
+					;
+				Q_strncpyz(raw, t, sizeof(raw));
+				for (e = raw+strlen(raw); e > raw && (e[-1]==' '||e[-1]=='\t'||e[-1]=='\r'||e[-1]=='"'); )
+					*--e = 0;
+				Sys_SteamCleanRoot(have, sizeof(have), raw);
+#ifdef _WIN32
+				if (*want && (!Q_strcasecmp(have, want) || !Q_strcasecmp(have, typed)))
+#else
+				if (*want && (!strcmp(have, want) || !strcmp(have, typed)))
+#endif
+				{
+					here++;
+					continue;
+				}
+				strcat(out, line);
+				if (nl)
+					strcat(out, "\n");
+			}
+			if (here && (f = VFSOS_Open(path, "wb")))
+			{
+				VFS_WRITE(f, out, strlen(out));
+				VFS_CLOSE(f);
+				Con_Printf("fs_steamlibs: removed \"%s\" from %s\n", root, path);
+				removed += here;
+			}
+			else if (here)
+				Con_Printf(CON_ERROR"fs_steamlibs: could not write %s\n", path);
+			BZ_Free(out);
+			FS_FreeFile(file);
+		}
+		if (removed)
+		{
+			FS_SteamLibs_Reset();
+			Con_Printf("run ^2fs_restart^7 (or relaunch) to remount without it.\n");
+		}
+		else
+			Con_Printf("fs_steamlibs: \"%s\" is not listed in %s\n", root, FS_STEAMLIBS_FILE);
+		return;
+	}
 	if (Cmd_Argc() > 1)
 	{
-		Con_Printf("usage: fs_steamlibs [add <path>]\n");
+		Con_Printf("usage: fs_steamlibs [add <path> | remove <path>]\n");
 		return;
 	}
 
 	Con_Printf("^2Steam library overrides^7 (tried before the registry / libraryfolders.vdf):\n");
+	if (*fs_steamlibs_note.string)
+		Con_Printf("  "CON_WARNING"%s\n", fs_steamlibs_note.string);	//P1636
 	*resolved = 0;
 	for (i = 0; i < 2; i++)
 	{
@@ -13169,7 +13816,7 @@ void COM_InitFilesystem (void)
 	Cmd_AddCommandD("fs_unload",  FS_Unload_f,  "nettest: remove a game added with fs_load and rebuild the searchpaths.");
 	Cmd_AddCommandD("fs_loadlist",FS_LoadList_f,"nettest: list the games added with fs_load.");
 #ifdef FTESURF_STEAMLIBS
-	Cmd_AddCommandD("fs_steamlibs",FS_SteamLibs_f,"ftesurf (P276): show where the engine looked for your Steam games and how every fs_addons.txt spec resolved. `fs_steamlibs add <path>` records an extra Steam library root in steam_libraries.txt -- the fix when Steam is somewhere the registry and libraryfolders.vdf do not mention.");
+	Cmd_AddCommandD("fs_steamlibs",FS_SteamLibs_f,"ftesurf (P276): show where the engine looked for your Steam games and how every fs_addons.txt spec resolved. `fs_steamlibs add <path>` records an extra Steam library root in steam_libraries.txt -- the fix when Steam is somewhere the registry and libraryfolders.vdf do not mention. `fs_steamlibs remove <path>` drops one (P1636).");
 #endif
 	Cmd_AddCommandD("fs_cache_info", FS_Cache_Info_f, "ftesurf (P186/P197): report how much disk the runtime asset cache is using. Reports the whole cache regardless of which packs happen to be mounted.");
 	Cmd_AddCommandD("fs_cache_clear",FS_Cache_Clear_f,"ftesurf (P186/P197): empty the runtime asset cache. With a map name, forgets just that map -- it keeps its cached files but must re-prove them, which is the fix if one map ever looks short. With no argument, deletes the lot.");
@@ -13215,6 +13862,7 @@ void COM_InitFilesystem (void)
 	Cvar_Register(&fs_automount_state, "Filesystem");	//ftesurf (P231)
 	Cvar_Register(&fs_automount_spec, "Filesystem");	//ftesurf (P231)
 	Cvar_Register(&fs_addons_missing, "Filesystem");	//FTESurf Patch 1382
+	Cvar_Register(&fs_steamlibs_note, "Filesystem");	//FTESurf Patch 1636
 	Cvar_Register(&fs_loadstats, "Filesystem");		//ftesurf (P180)
 	Cvar_Register(&fs_maploadhash, "Filesystem");	//ftesurf (P180)
 	Cvar_Register(&fs_mapmaterials, "Filesystem");	//ftesurf (P765)

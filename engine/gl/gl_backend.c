@@ -8447,6 +8447,8 @@ static void GLBE_WaterGather(bewaterview_t *wv, batch_t *first, const plane_t *p
 	out->meshes = out->maxmeshes = n;
 }
 //before this view submits anything: pick its water
+extern qboolean r_voidcleared;	//FTESurf Patch 1627: gl_rmain.c R_Clear, the primary view's overview clear
+static qboolean be_voidoverview;	//FTESurf Patch 1627: the primary view is the void overview; no water captures
 static void GLBE_WaterViewsBegin(batch_t **worldbatches)
 {
 	int level = r_refdef.recurse, i, n = 0, s, t, best, hidden = -1, kept = 0, seat = 0, pass;
@@ -8464,6 +8466,14 @@ static void GLBE_WaterViewsBegin(batch_t **worldbatches)
 	wv->helddone = 0;
 	if (r_refdef.playerview && r_refdef.playerview >= cl.playerview && r_refdef.playerview < cl.playerview + MAX_SPLITS)
 		seat = r_refdef.playerview - cl.playerview;
+	if (!level)
+		be_voidoverview = r_voidview;	//read here: a capture's Surf_SetupFrame clears r_voidview for the rest of the view
+	if (be_voidoverview && !level)
+	{	//FTESurf Patch 1627: the void overview draws no water (GLBE_GenerateBatchTextures refuses its batches); leaving
+		//chosen NULL alone sent every water batch to its own whole-map capture (review)
+		be_waterlastvalid[seat] = false;
+		return;
+	}
 	//nothing here can capture: past the recursion limit, or inside a water capture (Patch 864). A view
 	//without the world (the avatar card's renderscene) leaves the seat's hold alone.
 	if (!r_waterviews.ival || !worldbatches || level >= r_portalrecursion.ival || be_watercapture)
@@ -8848,6 +8858,8 @@ static qboolean GLBE_GenerateBatchTextures(batch_t *batch, shader_t *bs)
 	vec3_t keepeye = {0}, keepfwd = {0};
 	if (r_refdef.recurse >= r_portalrecursion.ival || r_refdef.recurse == R_MAX_RECURSE)
 		return false;
+	if (be_voidoverview && !r_refdef.recurse)
+		return false;	//FTESurf Patch 1627: see GLBE_WaterViewsBegin
 	//FTESurf Patch 864: no water capture inside a water capture.  r_portalrecursion 2
 	//(kitsune's doors) let surf_garden's ponds render 1+2+4 views facing the pond,
 	//6.2 ms against 3.0 at 1.  Source has one reflection target, so it never nests
@@ -9830,6 +9842,8 @@ static void GLBE_SubmitMeshesSortRange(batch_t *sortlist, batch_t *end)
 				continue;
 		if (bs->flags & SHADER_SKY)
 		{
+			if (r_voidcleared && !r_refdef.recurse)
+				continue;	//FTESurf Patch 1627 (Lex, 20 Nov): no sky in the void overview -- only where R_Clear cleared it
 			if (shaderstate.mode == BEM_STANDARD || shaderstate.mode == BEM_DEPTHDARK)// || shaderstate.mode == BEM_WIREFRAME)
 			{
 				float il = shaderstate.identitylighting;	//this stuff sucks!

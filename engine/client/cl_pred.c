@@ -167,6 +167,7 @@ typedef struct
 	int			frame, servercount;
 	vec3_t		feet;	//a kept eye is used only while from.state is still here
 	float		eye;	//world z, as P917's limit
+	float		raw;	//P1686: the unclipped eye offset, lerped under a clip too
 	qboolean	clipped;
 } srceye_t;
 static srceye_t srceye[MAX_SPLITS][SRCEYE_RING];
@@ -177,7 +178,8 @@ static void CL_SourceEyeKeep (int seat, int frame, const vec3_t feet)
 	e->servercount = cl.servercount;
 	VectorCopy(feet, e->feet);
 	e->eye = feet[2] + pmove.viewheight;
-	e->clipped = pmove.pm_type == PM_NORMAL && pmove.viewheight < PMSrc_UnclippedViewHeight();
+	e->raw = movevars.physicsmode == PHYSMODE_SOURCE ? PMSrc_UnclippedViewHeight() : pmove.viewheight;
+	e->clipped = movevars.physicsmode == PHYSMODE_SOURCE && pmove.pm_type == PM_NORMAL && pmove.viewheight < e->raw;
 }
 #define PRING_KEEP 120		//report files kept in data/prederr/ (a report is two)
 static cvar_t	cl_pushlatency = CVAR("pushlatency","-999");
@@ -845,7 +847,14 @@ void CL_CalcCrouch (playerview_t *pv)
 
 	if (pv->onground && orgz - pv->oldz)
 	{
-		if (pv->oldz > orgz)
+		if (pv->oldz > orgz && movevars.physicsmode == PHYSMODE_AG)
+		{	//FTESurf Patch 1628: HL1's view (V_CalcRefdef) eases only steps UP. Easing down caught the duck's own 18-unit
+			//origin drop on finishing, holding the camera up to 15 high then lowering it again (Lex, 20 Nov: "a reduck").
+			pv->oldz = orgz;
+			pv->crouchspeed = 100;
+			pv->extracrouch = 0;
+		}
+		else if (pv->oldz > orgz)
 		{	//stepping down should be a little faster than stepping up.
 			//so steps will still feel a little juddery. my knees hate walking down steep hills, so I guess this is similar.
 			if (pv->crouchspeed > 0)
@@ -1896,6 +1905,9 @@ void CL_PredictMovePNum (int seat)
 	float		source_eye_raw = 0, source_eye_limit = 0;
 	qboolean	source_eye_valid = false;
 	float		source_eye_f = -1;	/*P1301: the fraction the feet were lerped by, -1 if they were not*/
+	float		source_eye_to = 0;	/*P1686: the to-tick's world eye, from to.state rather than pmove's origin*/
+	float		ag_eye = 0;			/*P1628: AG's newest world eye z, when ag_eye_valid*/
+	qboolean	ag_eye_valid = false;
 	int			pt_rec = -1;		/*P1301: this frame's cl_predtrace record, if any*/
 	qboolean diag_phasehit;
 	pred_diag_seed_t diag = {0};
@@ -2397,8 +2409,8 @@ void CL_PredictMovePNum (int seat)
 			diag.parts += cl_pred_diag_parts;
 			diag.ticks += cl_pred_diag_ticks;
 			pt_replays++;	//FTESurf Patch 269
-			if (movevars.physicsmode == PHYSMODE_SOURCE && movevars.sourceversion >= 11)
-				CL_SourceEyeKeep(seat, to.frame, to.state->origin);	//P1301; extrapolated partial commands are not kept
+			if ((movevars.physicsmode == PHYSMODE_SOURCE && movevars.sourceversion >= 11) || movevars.physicsmode == PHYSMODE_AG)
+				CL_SourceEyeKeep(seat, to.frame, to.state->origin);	//P1301 (P1628: and AG); extrapolated partial commands are not kept
 			if (i <= validsequence && simtime >= to.time)
 			{	//this frame is final keep track of our propagated values.
 				pv->prop.onground = pmove.onground;
@@ -2483,11 +2495,17 @@ void CL_PredictMovePNum (int seat)
 		if (movevars.physicsmode == PHYSMODE_SOURCE || movevars.physicsmode == PHYSMODE_AG)
 		{
 			pv->viewheight = pmove.viewheight;
+			if (movevars.physicsmode == PHYSMODE_AG && pmove.pm_type == PM_NORMAL)
+			{	//FTESurf Patch 1628: see the blend after CL_CalcCrouch
+				ag_eye = pmove.origin[2] + pmove.viewheight;
+				ag_eye_valid = true;
+			}
 			if (movevars.sourceversion >= 11 && pmove.pm_type == PM_NORMAL)
 			{
 				source_eye_raw = PMSrc_UnclippedViewHeight();
 				source_eye_clipped = (pmove.viewheight < source_eye_raw);
 				source_eye_limit = pmove.origin[2] + pmove.viewheight;
+				source_eye_to = to.state->origin[2] + pmove.viewheight;
 				source_eye_valid = true;
 			}
 			if (movevars.sourceversion >= 4)
@@ -2831,6 +2849,17 @@ void CL_PredictMovePNum (int seat)
 		CL_CatagorizePosition(pv, to.state->origin);
 
 	CL_CalcCrouch (pv);
+	/* FTESurf Patch 1628: AG/HL1's duck ends by dropping the origin 18 and raising the eye offset 18 in one tick. The
+	   drawn feet are lerped across that tick but the offset was the newest, so the eye popped up to 18 high for one
+	   command (15 ms). Lerp the world eye between the two kept ticks instead, as P1301 does for Source's roof limit. */
+	if (ag_eye_valid && source_eye_f >= 0)
+	{
+		srceye_t *e = &srceye[seat][from.frame & (SRCEYE_RING-1)];
+		vec3_t moved;
+		VectorSubtract(e->feet, from.state->origin, moved);
+		if (e->frame == from.frame && e->servercount == cl.servercount && DotProduct(moved, moved) < 1)
+			pv->viewheight = e->eye + (ag_eye - e->eye) * source_eye_f - pv->simorg[2];
+	}
 	/* P917: the roof limit belongs to world space, not the last mover tick.
 	   Feet/stair interpolation must not turn it into a per-frame eye sawtooth.
 	   Do this after the legacy categorizer, which overwrites pmove.origin.
@@ -2841,16 +2870,20 @@ void CL_PredictMovePNum (int seat)
 	{
 		srceye_t *e = &srceye[seat][from.frame & (SRCEYE_RING-1)];
 		vec3_t moved;
+		qboolean kept;
 		VectorSubtract(e->feet, from.state->origin, moved);
-		if (source_eye_f >= 0 && e->frame == from.frame && e->servercount == cl.servercount &&
-			DotProduct(moved, moved) < 1 && (e->clipped || source_eye_clipped))
+		kept = source_eye_f >= 0 && e->frame == from.frame && e->servercount == cl.servercount &&
+			DotProduct(moved, moved) < 1;
+		if (kept && (e->clipped || source_eye_clipped))
 		{
 			float up = max(0, pv->crouch);
 			float fromeye = e->clipped ? e->eye : e->eye + up;
 			float toeye = source_eye_clipped ? source_eye_limit : source_eye_limit + up;
-			pv->viewheight = PMSrc_ClipRenderEye(source_eye_raw,
+			pv->viewheight = PMSrc_ClipRenderEye(e->raw + (source_eye_raw - e->raw) * source_eye_f,	//P1686: the raw cap lerps too
 				fromeye + (toeye - fromeye) * source_eye_f, pv->simorg[2] + pv->crouch);
 		}
+		else if (kept)	//P1686: unclipped too, or the 0.4 s duck slide steps once a tick (3 frames at 300 fps, 100 Hz)
+			pv->viewheight = e->eye + (source_eye_to - e->eye) * source_eye_f - pv->simorg[2];
 		else if (source_eye_clipped)
 			pv->viewheight = PMSrc_ClipRenderEye(source_eye_raw, source_eye_limit,
 				pv->simorg[2] + pv->crouch);

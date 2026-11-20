@@ -16,6 +16,7 @@ typedef struct
 	unsigned int probe_contents;
 	unsigned int probe_seq;
 	char probe_surf[32];
+	int oldwind;				//Patch 1630: 1 = Patch 256's winding (Source movers below 13); last, so positional initializers keep their fields
 } bih_tstate_t;
 extern FTE_TLS bih_tstate_t *bih_ts;
 size_t BIH_ThreadStateSize(void);
@@ -24,6 +25,7 @@ void BIH_ThreadState(void *state);	//NULL: the main one
 #define bih_phybrushes		(bih_ts->phybrushes)
 #define bih_phyfix			(bih_ts->phyfix)
 #define bih_phypick			(bih_ts->phypick)
+#define bih_oldwind			(bih_ts->oldwind)
 #define bih_probe_plane		(bih_ts->probe_plane)
 #define bih_probe_kind		(bih_ts->probe_kind)
 #define bih_probe_idx		(bih_ts->probe_idx)

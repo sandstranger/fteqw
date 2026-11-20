@@ -2636,6 +2636,14 @@ static void QCBUILTIN PF_m_downloadmap(pubprogfuncs_t *prinst, struct globalvars
 		G_FLOAT(OFS_RETURN) = 2;
 		return;
 	}
+	else
+	{	//FTESurf Patch 1656: an installed GoldSrc package is not mounted until its map loads
+		if (FS_GoldSrc_Ready(name))	//present and the catalogue's bytes; a stale one is fetched again
+		{
+			G_FLOAT(OFS_RETURN) = 2;
+			return;
+		}
+	}
 
 	//CL_CheckOrEnqueDownloadFile returns TRUE for "do not wait" -- already held, a
 	//local server, or the enqueue failed -- and FALSE once it is really queued.
@@ -2682,6 +2690,14 @@ static void QCBUILTIN PF_m_mapfilekb(pubprogfuncs_t *prinst, struct globalvars_s
 
 	if (FS_FLocateFile(rel, FSLF_IFFOUND, &loc))
 		G_FLOAT(OFS_RETURN) = (float)((loc.len + 1023) / 1024);	//integer divide FIRST: this is a ceiling, not a ratio
+	else
+	{	//FTESurf Patch 1656: a GoldSrc map's package, which holds the map (downloads/ is a mounted path)
+		char id[MAX_QPATH];
+		Q_strncpyz(id, name, sizeof(id));
+		Q_strlwr(id);
+		if (FS_FLocateFile(va("goldsrc/%s.pk3", id), FSLF_IFFOUND, &loc))
+			G_FLOAT(OFS_RETURN) = (float)((loc.len + 1023) / 1024);
+	}
 }
 
 //FTESurf Patch 480: which of a map's extra packs this player has, for the map

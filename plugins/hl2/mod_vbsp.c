@@ -116,11 +116,12 @@ cvar_t *hl2_propcollision_nophy;	//FTESurf Patch 262: likewise -- "no .phy" mean
 extern int vmt_stat_water, vmt_stat_refract, vmt_stat_translucent;
 extern int vmt_stat_missing;
 #define VMT_MISSING_LIST 256	//FTESurf Patch 174/231, must match mat_vmt.c
-#define VMT_MISSING_SHOW 24		//FTESurf Patch 231: how many of them the warning prints; `hl2_missing` prints the rest
+#define VMT_MISSING_SHOW 10		//FTESurf Patch 231 (24), Patch 1625 (Lex, 20 Nov: ten): how many the warning prints; `hl2_missing` prints the rest
 static int vmt_census_atload;	//FTESurf Patch 231: the count as of the load-time warning, see there
 //FTESurf Patch 233: what each of those names IS, worked out once while the world model is
 //in hand and kept so `hl2_missing` can print it later without one.  See VBSP_MissReason.
 static char vmt_miss_reason[VMT_MISSING_LIST][72];
+static qboolean vmt_miss_seen[VMT_MISSING_LIST];	//FTESurf Patch 1625: VBSP_MissReason's answer, for the visible-first print order
 static int vmt_miss_reasons;
 //...and how many of them are on something the player can end up looking at.  Published as
 //hl2_unresolved_visible, which is what decides whether the HUD banner is worth drawing.
@@ -426,6 +427,10 @@ typedef struct dispinfo_s
     vec3_t aamin;
     vec3_t aamax;
     pvscache_t pvs; //which pvs clusters this displacement is visible in...
+    //FTESurf Patch 1626: when pvs overflowed (num_leafs -1), every cluster and real area its box reaches. NULL otherwise.
+    unsigned int *pvsclusters, numpvsclusters;
+    int *pvsareas;
+    unsigned int numpvsareas;
     unsigned int contents;
     unsigned int collflags;	//FTESurf Patch 250: DISPSURF_* -- the mapper's per-displacement collision opt-out.
     qboolean lightopaque;	//Source MASK_OPAQUE, independent of movement flags/remapping.
@@ -8004,13 +8009,45 @@ Collision Stuff.
 ===============================================================================
 */
 
+/*
+FTESurf Patch 1626: a displacement whose box reaches more than 128 leaves or 32 clusters overflowed pvscache, and an
+overflowed record passed the PVS test from nearly every view (P257's fail-open; the box's top node was the map root
+for two of ahop_coast's) -- other stages' cliffs drew behind the sky. Source links a displacement to every leaf it
+reaches; this keeps every cluster and real area its box reaches instead. An empty cluster list means "never visible".
+*/
+static void VBSP_DispOwnLists(model_t *mod, dispinfo_t *d)
+{
+	int *leafs = plugfuncs->Malloc(sizeof(*leafs) * (mod->numleafs + 1)), n, i, c, a;
+	unsigned int k, nc = 0, na = 0;
+	n = VBSP_BoxLeafnums(mod, d->aamin, d->aamax, leafs, mod->numleafs, NULL);
+	d->pvsclusters = plugfuncs->GMalloc(&mod->memgroup, sizeof(*d->pvsclusters) * (n + 1));
+	d->pvsareas = plugfuncs->GMalloc(&mod->memgroup, sizeof(*d->pvsareas) * (n + 1));
+	for (i = 0; i < n; i++)
+	{
+		c = VBSP_LeafCluster(mod, leafs[i]);
+		for (k = 0; c >= 0 && k < nc && d->pvsclusters[k] != (unsigned int)c; k++)
+			;
+		if (c >= 0 && k == nc)
+			d->pvsclusters[nc++] = c;
+		a = VBSP_LeafArea(mod, leafs[i]);
+		for (k = 0; a > 0 && k < na && d->pvsareas[k] != a; k++)
+			;
+		if (a > 0 && k == na)
+			d->pvsareas[na++] = a;
+	}
+	d->numpvsclusters = nc;
+	d->numpvsareas = na;
+	plugfuncs->Free(leafs);
+}
+
 //FTESurf Patch 1235: a big prop's own clusters (see the loader) against the view's cluster PVS.
-static qboolean VBSP_PropClustersVisible(const struct staticprop_s *sp, const qbyte *pvs)
+//Patch 1626: and an overflowed displacement's (VBSP_DispOwnLists).
+static qboolean VBSP_ClustersVisible(const unsigned int *cl, unsigned int n, const qbyte *pvs)
 {
 	unsigned int i, c;
-	for (i = 0; i < sp->numpvsclusters; i++)
+	for (i = 0; i < n; i++)
 	{
-		c = sp->pvsclusters[i];
+		c = cl[i];
 		if (pvs[c >> 3] & (1 << (c & 7)))
 		{
 			vbsp_pvs_why = VBSP_PVSWHY_VISIBLE;
@@ -8145,6 +8182,61 @@ static int VBSP_MissFaces(model_t *mod, const char *name, int *warp)
 		n++;
 	}
 	return n;
+}
+
+//FTESurf Patch 1625: scripts/assetgames.txt (tools/assetgames.py), "<directory> <game>[,<game>...]" -- which game ships
+//a materials/ or models/ directory, so a miss can name what to install. Longest prefix wins; "?" when none lists it
+//below the generic top folders.
+static char *vbsp_agfile;
+static const char **vbsp_agline;
+static size_t vbsp_agn;
+static qboolean vbsp_agtried;
+static const char *VBSP_AssetGame(const char *name, char *out, size_t outsize)
+{
+	char key[MAX_QPATH+16], *c, *sl;
+	size_t i, kl;
+	if (!vbsp_agtried)
+	{
+		size_t sz = 0, n = 1;
+		char *p, *e, *nlp;
+		vbsp_agtried = true;
+		vbsp_agfile = (char*)filefuncs->LoadFile("scripts/assetgames.txt", &sz);
+		if (vbsp_agfile)
+		{
+			for (p = vbsp_agfile, e = vbsp_agfile + sz; p < e; p++)
+				n += (*p == '\n');
+			vbsp_agline = plugfuncs->Malloc(sizeof(*vbsp_agline) * n);
+			for (p = vbsp_agfile; p < e && (nlp = memchr(p, '\n', e - p)); p = nlp + 1)
+			{
+				*nlp = 0;
+				if (nlp > p && nlp[-1] == '\r')
+					nlp[-1] = 0;
+				if (*p && *p != '/' && strchr(p, ' '))
+					vbsp_agline[vbsp_agn++] = p;
+			}
+		}
+	}
+	Q_snprintfz(key, sizeof(key), "%s%s", (Q_strncasecmp(name, "materials/", 10) && Q_strncasecmp(name, "models/", 7)) ? "materials/" : "", name);
+	for (c = key; *c; c++)
+		*c = (*c == '\\') ? '/' : (*c >= 'A' && *c <= 'Z') ? *c + 'a'-'A' : *c;
+	Q_strlcpy(out, "?", outsize);
+	while ((sl = strrchr(key, '/')))
+	{
+		*sl = 0;	//the file's directory first, then each parent
+		if (!strcmp(key, "materials") || !strcmp(key, "models") || !strcmp(key, "materials/models") || !strcmp(key, "materials/maps"))
+			break;	//every game has these: naming them all says nothing (ftesurf/paint, maps/<map> cubemaps)
+		kl = strlen(key);
+		for (i = 0; i < vbsp_agn; i++)
+			if (!strncmp(vbsp_agline[i], key, kl) && vbsp_agline[i][kl] == ' ')
+			{
+				Q_strlcpy(out, vbsp_agline[i] + kl + 1, outsize);
+				for (c = out; *c; c++)
+					if (*c == ',')
+						*c = '/';
+				return out;
+			}
+	}
+	return out;
 }
 
 //true if this name is something the player can actually end up looking at.
@@ -8461,6 +8553,63 @@ static qboolean VBSP_TraceVisual(struct model_s *model, int hulloverride, const 
 	return hit;
 }
 
+//FTESurf Patch 1604: a solid static prop whose model FILE this machine lacks collides with nothing here, while Source
+//collides with it. Noted once per file, case-insensitively (the model cache is case-sensitive, so ahop_coast's
+//Handrail04_long and handrail04_long are two models); a file that exists but would not load is another fault and
+//stays out, since the lobby's .rec (`propmiss`) names these as content it lacked.
+static void VBSP_NoteStaticMissing(model_t **list, size_t *n, model_t *m)
+{
+	size_t i;
+	if (!list)
+		return;
+	for (i = 0; i < *n; i++)
+		if (!Q_strcasecmp(list[i]->name, m->name))
+			return;
+	if (!filefuncs->LocateFile(m->name, FSLF_IFFOUND, NULL))
+		list[(*n)++] = m;
+}
+
+//FTESurf Patch 1604: a token for the QC's tokenize_console: every byte up to space and the quote become '_', and a
+//leading '/' too (a token starting "//" or "/*" is a comment there).
+static void VBSP_SprpToken(char *s)
+{
+	char *c;
+	for (c = s; *c; c++)
+		if ((unsigned char)*c <= ' ' || *c == '"' || (c == s && *c == '/'))
+			*c = '_';
+}
+
+//FTESurf Patch 1604: hl2_sprpmiss = "<world model> <distinct files> <names...>" for the lobby's QC
+//(sv_entities.qc SV_PropStaticMissing), "" when prop collision is off (nothing measured). The world's name leads
+//because only a Source map sets it: a value naming another map is the last Source map's.
+#define SPRPMISS_NAMES 512
+static void VBSP_PublishStaticMissing(model_t *world, model_t **list, size_t n)
+{
+	size_t i, at, size = (SPRPMISS_NAMES + 1) * (MAX_QPATH + 1) + 16;
+	char *buf;
+	if (!hl2_propcollision->ival)
+	{
+		cvarfuncs->ForceSetString("hl2_sprpmiss", "");
+		return;
+	}
+	buf = plugfuncs->Malloc(size);
+	Q_snprintfz(buf, size, "%s", world->name);
+	VBSP_SprpToken(buf);
+	at = strlen(buf);
+	Q_snprintfz(buf + at, size - at, " %u", (unsigned)n);
+	for (i = 0; i < n && i < SPRPMISS_NAMES; i++)
+	{
+		at = strlen(buf);
+		Q_snprintfz(buf + at, size - at, " %s", list[i]->name);
+		VBSP_SprpToken(buf + at + 1);
+	}
+	cvarfuncs->ForceSetString("hl2_sprpmiss", buf);
+	plugfuncs->Free(buf);
+	if (n)
+		Con_Printf(CON_WARNING "%s: %u solid static prop model file(s) are missing here and those props collide with "
+			"nothing (hl2_sprpmiss lists them)\n", world->name, (unsigned)n);
+}
+
 static cvar_t *hl2_lt_prewarm;	//Patch 1364's, defined with its warm below; read by Patch 1501 here
 static void VBSP_BuildBIHMain(void *ctx, void *unusedp, size_t unuseda, size_t unusedb)
 {	//NOTE: must be on main thread because we're waiting for submodels for their size.
@@ -8474,6 +8623,9 @@ static void VBSP_BuildBIHMain(void *ctx, void *unusedp, size_t unuseda, size_t u
 	size_t phyprobes = 0;
 	struct vbsp_phypieces_s *phypiece = NULL;	//FTESurf Patch 764
 	size_t phypieces = 0;
+	model_t **sprpmiss;	//FTESurf Patch 1604, one slot per prop like phyprobe
+	size_t sprpmisses = 0;
+	qboolean vbsp_dispwindtype = cvarfuncs->GetFloat("pm_sourceversion") >= 13;	//FTESurf Patch 1630: the exe knows BIH_TRIANGLE_REWOUND
 
 	//FTESurf Patch 1501: every prop model, not only the solid ones below, starts loading now, while the map does,
 	//so r_mapready waits for them and warms their shaders; before, the rest loaded in the frame that first drew them,
@@ -8574,7 +8726,8 @@ static void VBSP_BuildBIHMain(void *ctx, void *unusedp, size_t unuseda, size_t u
 				Con_DPrintf("%s: %u of %u displacements re-wound outward for collision (%.1f%%)%s\n",
 					mod->name, (unsigned)flipped, (unsigned)prv->numdisplacements,
 					100.0*flipped/prv->numdisplacements,
-					hl2_dispwinding->ival ? "" : " -- DISABLED by hl2_dispwinding 0");
+					!hl2_dispwinding->ival ? " -- DISABLED by hl2_dispwinding 0" :
+					(cvarfuncs->GetFloat("pm_sourceversion") >= 13) ? "; the player traces them as rendered (mover 13, P1630)" : "");
 
 			/*
 			Patch 256: and WHERE.  An offline reimplementation of this loader got
@@ -8625,6 +8778,7 @@ static void VBSP_BuildBIHMain(void *ctx, void *unusedp, size_t unuseda, size_t u
 	phyprobe = prv->numstaticprops ? plugfuncs->Malloc(sizeof(*phyprobe)*prv->numstaticprops) : NULL;
 	phypieces = 0;	//FTESurf Patch 764, sized as phyprobe is
 	phypiece = prv->numstaticprops ? plugfuncs->Malloc(sizeof(*phypiece)*prv->numstaticprops) : NULL;
+	sprpmiss = prv->numstaticprops ? plugfuncs->Malloc(sizeof(*sprpmiss)*prv->numstaticprops) : NULL;
 	vbsp_stat_phyprops = vbsp_stat_phypieces = vbsp_stat_phyrefused = vbsp_stat_phyplanes = 0;
 	vbsp_stat_phyfixprops = vbsp_stat_phyfixrefused = 0;	//Patch 888
 
@@ -8695,7 +8849,9 @@ static void VBSP_BuildBIHMain(void *ctx, void *unusedp, size_t unuseda, size_t u
 			index_t *v = d->cidx+j;	//FTESurf Patch 256: outward-wound, not the render copy
 			vec_t *v1 = d->xyz[v[0]], *v2 = d->xyz[v[1]], *v3 = d->xyz[v[2]];
 
-			l->type = BIH_TRIANGLE;
+			//FTESurf Patch 1630: re-wound triangles carry their own type, traced as rendered except inside a Source mover
+			//below 13; only on an exe that knows the type (pm_sourceversion >= 13), or an older one would collide with nothing.
+			l->type = (d->cidx != d->idx && vbsp_dispwindtype) ? BIH_TRIANGLE_REWOUND : BIH_TRIANGLE;
 			l->data.tri.xyz = d->xyz;
 			l->data.tri.indexes = v;
 
@@ -8739,6 +8895,7 @@ static void VBSP_BuildBIHMain(void *ctx, void *unusedp, size_t unuseda, size_t u
 		if (!l->data.mesh.model->funcs.NativeTrace || !l->data.mesh.model->funcs.NativeContents)
 		{
 			Con_Printf("%s has no collision info and must not be used as a solid static prop\n", l->data.mesh.model->name);
+			VBSP_NoteStaticMissing(sprpmiss, &sprpmisses, l->data.mesh.model);	//FTESurf Patch 1604
 			continue;
 		}
 
@@ -8812,6 +8969,8 @@ static void VBSP_BuildBIHMain(void *ctx, void *unusedp, size_t unuseda, size_t u
 	}
 
 	modfuncs->BIH_Build(mod, bihleaf, l-bihleaf);
+	VBSP_PublishStaticMissing(mod, sprpmiss, sprpmisses);	//FTESurf Patch 1604
+	plugfuncs->Free(sprpmiss);
 	VBSP_BuildLightBIH(mod);
 	prv->vis_trace_model = NULL;	//FTESurf Patch 799
 	prv->vis_built = false;
@@ -9018,7 +9177,7 @@ static void VBSP_BuildBIHMain(void *ctx, void *unusedp, size_t unuseda, size_t u
 		//printed -- hl2_missing shows the rest and the visible count has to cover all of them.
 		vmt_miss_reasons = (vmt_stat_missing > VMT_MISSING_LIST) ? VMT_MISSING_LIST : vmt_stat_missing;
 		for (i = 0; i < vmt_miss_reasons; i++)
-			if (VBSP_MissReason(mod, vmt_stat_missing_name[i], vmt_miss_reason[i], sizeof(vmt_miss_reason[0])))
+			if ((vmt_miss_seen[i] = VBSP_MissReason(mod, vmt_stat_missing_name[i], vmt_miss_reason[i], sizeof(vmt_miss_reason[0]))))
 				vmt_miss_visible++;
 		//past the cap the names were never stored, so nothing can be proven inert: count them all.
 		vmt_miss_visible += vmt_stat_missing - vmt_miss_reasons;
@@ -9054,13 +9213,23 @@ static void VBSP_BuildBIHMain(void *ctx, void *unusedp, size_t unuseda, size_t u
 		allshipped = haslist && listed == vmt_stat_missing;	//names past VMT_MISSING_LIST were never stored, so never listed
 		vmt_miss_quiet = allshipped && !*nogame && (state == 0 || state == 1);
 		say = vmt_miss_quiet ? Con_DPrintf : Con_Printf;
-		say(CON_WARNING "%s: %i material(s) did not resolve:\n",
-			mod->name, vmt_stat_missing);
-		for (i = 0; i < shown; i++)
-			say(CON_WARNING "    %-42s -- %s\n",
-				vmt_stat_missing_name[i], vmt_miss_reason[i]);
+		//FTESurf Patch 1625 (Lex, 20 Nov): "<game>: <path>", ten at most, visible ones first; the why moved to developer
+		//and hl2_missing. Names past vmt_miss_reasons have no reason and are not printed here.
+		say(CON_WARNING "%s: %i material(s) did not resolve:\n", mod->name, vmt_stat_missing);
+		{
+			char game[64];
+			int pass, printed = 0;
+			for (pass = 0; pass < 2; pass++)
+				for (i = 0; i < vmt_miss_reasons && printed < shown; i++)
+					if (vmt_miss_seen[i] == !pass)
+					{
+						say(CON_WARNING "    %s: %s  (%s)\n", VBSP_AssetGame(vmt_stat_missing_name[i], game, sizeof(game)),
+							vmt_stat_missing_name[i], vmt_miss_reason[i]);
+						printed++;
+					}
+		}
 		if (vmt_stat_missing > shown)
-			say(CON_WARNING "    ...and %i more (`hl2_missing` lists every one)\n",
+			say(CON_WARNING "    ...%i more: type ^2hl2_missing^7 in the console for the full list\n",
 				vmt_stat_missing - shown);
 
 		if (*nogame)
@@ -9079,16 +9248,16 @@ static void VBSP_BuildBIHMain(void *ctx, void *unusedp, size_t unuseda, size_t u
 			break;
 		case 0:	//no pack wanted: mapdeps.txt has no line for this map (censused or not -- P1560)
 		case 1:	//its pack is mounted from disk
-			if (!haslist)	//P1560: no scripts/unshipped.txt -- the pre-P1560 wording, unchanged
+			if (!haslist)	//P1560: no scripts/unshipped.txt -- the pre-P1560 wording; P1625: developer only, hl2_missing says it
 			{
 				if (state == 0)
-					Con_Printf(CON_WARNING
+					Con_DPrintf(CON_WARNING
 						"  No asset pack supplies these.  data/mapdeps.txt names none for this map,\n"
 						"  which is tools/mapdeps.py having already resolved every material against\n"
 						"  every pack and the map's own pakfile.  Mounting something will not bring\n"
 						"  them back: this map references content that was never shipped with it.\n");
 				else
-					Con_Printf(CON_WARNING
+					Con_DPrintf(CON_WARNING
 						"  \"%s\" is already mounted for this map, so these are missing from it too.\n"
 						"  The map references content that was never shipped with it.\n", spec);
 				break;
@@ -9161,6 +9330,19 @@ static void VBSP_BuildBIHMain(void *ctx, void *unusedp, size_t unuseda, size_t u
 	cvarfuncs->SetFloat("hl2_unresolved", vmt_stat_missing);
 	cvarfuncs->SetString("hl2_unresolved_first",
 		vmt_stat_missing ? vmt_stat_missing_name[0] : "");
+	{	//FTESurf Patch 1625: the visible ones for the banner, ';'-separated, as "<game>: <name>"
+		char list[2048], game[64], one[MAX_QPATH+80];
+		int i, k = 0;
+		*list = 0;
+		for (i = 0; i < vmt_miss_reasons && k < VMT_MISSING_SHOW; i++)
+			if (vmt_miss_seen[i])
+			{
+				Q_snprintfz(one, sizeof(one), "%s%s: %s", k ? ";" : "", VBSP_AssetGame(vmt_stat_missing_name[i], game, sizeof(game)), vmt_stat_missing_name[i]);
+				Q_strlcat(list, one, sizeof(list));
+				k++;
+			}
+		cvarfuncs->SetString("hl2_unresolved_list", vmt_miss_quiet ? "" : list);
+	}
 	/*
 	FTESurf Patch 233: and how many of them are on something you can look at.
 
@@ -10476,7 +10658,8 @@ static qboolean VBSP_UnvisedPairVisible(const vbspinfo_t *prv, const qbyte *area
 }
 
 //its verdict for one object, or the test's (kept); vbsp_pvs_why as the test leaves it
-static qboolean VBSP_PVSMemoTest(qbyte *memo, size_t idx, model_t *mod, const struct staticprop_s *sp, const pvscache_t *pvs, const qbyte *surfvis, const int *areas)
+//cl: the object's own cluster list (P1235 props, P1626 displacements), or NULL for the pvscache test
+static qboolean VBSP_PVSMemoTest(qbyte *memo, size_t idx, model_t *mod, const unsigned int *cl, unsigned int ncl, const pvscache_t *pvs, const qbyte *surfvis, const int *areas)
 {
 	qboolean vis;
 	if (memo && memo[idx])
@@ -10484,7 +10667,7 @@ static qboolean VBSP_PVSMemoTest(qbyte *memo, size_t idx, model_t *mod, const st
 		vbsp_pvs_why = memo[idx] - 1;
 		return memo[idx] == 1 + VBSP_PVSWHY_VISIBLE;
 	}
-	vis = (sp && sp->numpvsclusters) ? VBSP_PropClustersVisible(sp, surfvis) : VBSP_EdictInFatPVS(mod, pvs, surfvis, areas);
+	vis = cl ? VBSP_ClustersVisible(cl, ncl, surfvis) : VBSP_EdictInFatPVS(mod, pvs, surfvis, areas);
 	if (memo)
 		memo[idx] = 1 + vbsp_pvs_why;
 	return vis;
@@ -10923,8 +11106,15 @@ static void VBSP_PrepareFrame(model_t *mod, refdef_t *r_refdef, int area, int cl
 				(*mark++)->visframe = vbsp_surfsequence;
 		}
 		for (i = 0; i < prv->numdisplacements; i++)
-			if (VBSP_UnvisedPairVisible(prv, r_refdef->areabits, &prv->displacements[i].pvs, 0))
-				prv->displacements[i].surf->visframe = vbsp_surfsequence;
+		{
+			dispinfo_t *d = &prv->displacements[i];
+			qboolean vis = !d->pvsclusters && VBSP_UnvisedPairVisible(prv, r_refdef->areabits, &d->pvs, 0);
+			unsigned int a;
+			for (a = 0; !vis && d->pvsclusters && a < d->numpvsareas; a++)	//FTESurf Patch 1626: its own areas, not "overflowed, draw"
+				vis = VBSP_UnvisedAreaVisible(prv, r_refdef->areabits, d->pvsareas[a]);
+			if (vis || (d->pvsclusters && !d->numpvsareas))
+				d->surf->visframe = vbsp_surfsequence;
+		}
 		for (i = 0; i < mod->nummodelsurfaces; i++)
 		{
 			surf = &mod->surfaces[i];
@@ -10958,7 +11148,7 @@ static void VBSP_PrepareFrame(model_t *mod, refdef_t *r_refdef, int area, int cl
 		for (i = 0; i < prv->numdisplacements; i++)
 		{
 			disp = &prv->displacements[i];
-			if (VBSP_PVSMemoTest(memo, prv->numstaticprops + i, mod, NULL, &disp->pvs, surfvis, areas))
+			if (VBSP_PVSMemoTest(memo, prv->numstaticprops + i, mod, disp->pvsclusters, disp->numpvsclusters, &disp->pvs, surfvis, areas))
 			{
 				surf = disp->surf;
 				if (surf->visframe == vbsp_surfsequence)
@@ -11331,7 +11521,7 @@ static void VBSP_PrepareFrame(model_t *mod, refdef_t *r_refdef, int area, int cl
 			//PVS/area cull, exactly like the displacement loop above (VBSP_EdictInFatPVS at ~3587).
 			//Only valid when we actually have view PVS: surfvis==NULL means portal-recursion / novis / no model vis, where everything must draw.
 			//src->pvscache.leafnums hold CLUSTERS, and surfvis is the cluster-PVS from VBSP_MarkLeaves, so this is index-consistent (same as displacements).
-			if (surfvis && !VBSP_PVSMemoTest(memo, i, mod, sent, &src->pvscache, surfvis, areas))
+			if (surfvis && !VBSP_PVSMemoTest(memo, i, mod, sent->numpvsclusters ? sent->pvsclusters : NULL, sent->numpvsclusters, &src->pvscache, surfvis, areas))
 			{
 				sent->lastpvswhy = vbsp_pvs_why;	//FTESurf Patch 257: set by the call above
 				PROP_VERDICT(PROPV_PVS);
@@ -11654,7 +11844,7 @@ static void VBSP_GenerateShadowMesh(model_t *model, dlight_t *dl, const qbyte *l
 	for (i = 0; i < prv->numdisplacements; i++)
 	{
 		disp = &prv->displacements[i];
-		if (VBSP_EdictInFatPVS(model, &disp->pvs, litvis, NULL))
+		if (disp->pvsclusters ? VBSP_ClustersVisible(disp->pvsclusters, disp->numpvsclusters, litvis) : VBSP_EdictInFatPVS(model, &disp->pvs, litvis, NULL))
 		{
 			callback(disp->surf);
 		}
@@ -13879,8 +14069,18 @@ static qboolean VBSP_LoadModel(model_t *mod, qbyte *mod_base, size_t filelen, ch
 	mod->funcs.InfoForPoint			= VBSP_InfoForPoint;
 
 	//displacements suck
-	for (i = 0; i < prv->numdisplacements; i++)
-		VBSP_FindTouchedLeafs(mod, &prv->displacements[i].pvs, prv->displacements[i].aamin, prv->displacements[i].aamax);
+	{
+		unsigned int own = 0;
+		for (i = 0; i < prv->numdisplacements; i++)
+		{
+			VBSP_FindTouchedLeafs(mod, &prv->displacements[i].pvs, prv->displacements[i].aamin, prv->displacements[i].aamax);
+			if (prv->displacements[i].pvs.num_leafs == -1)
+				VBSP_DispOwnLists(mod, &prv->displacements[i]), own++;
+		}
+		if (own)
+			Con_DPrintf("%s: %u of %u displacements reach past pvscache's 32 clusters and carry their own lists (P1626)\n",
+				mod->name, own, (unsigned int)prv->numdisplacements);
+	}
 //	if (noerrors)
 //		CM_CreatePatchesForLeafs (mod, prv);
 
@@ -14347,6 +14547,7 @@ static void VBSP_PropCensus_f(void)
 static void VBSP_Missing_f(void)
 {
 	int i, n;
+	char game[64];	//FTESurf Patch 1625
 	int unsupported = Mat_VMT_ReportUnsupported();
 
 	if (!vmt_stat_missing && !vmt_stat_unparsed)
@@ -14369,7 +14570,7 @@ static void VBSP_Missing_f(void)
 		//must not be given one -- a prop skin is still identifiable by its path, and anything
 		//else gets nothing rather than a guess.
 		for (i = 0; i < n; i++)
-			Con_Printf("    %-42s -- %s\n", vmt_stat_missing_name[i],
+			Con_Printf("    %-10s %-42s -- %s\n", VBSP_AssetGame(vmt_stat_missing_name[i], game, sizeof(game)), vmt_stat_missing_name[i],
 				(i < vmt_miss_reasons) ? vmt_miss_reason[i] :
 				!Q_strncasecmp(vmt_stat_missing_name[i], "models/", 7) ? "a prop skin, loaded after the map" :
 				"loaded after the map; not measured");
@@ -14383,6 +14584,9 @@ static void VBSP_Missing_f(void)
 		if (vmt_miss_quiet)	//FTESurf Patch 1560
 			Con_Printf("Every one is on scripts/unshipped.txt as never shipped with this map, so the banner's\n"
 				"count (hl2_unresolved_visible) is published as 0 and the load-time list was developer-only.\n");
+		//FTESurf Patch 1625: the game column is scripts/assetgames.txt -- a game with a file in that folder, not proof it has this one
+		Con_Printf("The first column names the game(s) that ship that folder (? = none of them). If that game is installed,\n"
+			"type fs_steamlibs to see where it was found; a game folder with missing archive parts says so at launch.\n");
 	}
 	if (vmt_stat_unparsed)
 	{
@@ -14871,9 +15075,11 @@ qboolean VBSP_Init(void)
 		on the next launch before any map had loaded.
 		*/
 		cvarfuncs->GetNVFDG("hl2_unresolved", "0", CVAR_NOSAVE, "How many materials the map that is loaded failed to resolve. Set by the loader; see the console for the list and the fs_load line that fixes it.", MAPOPTIONS);
+		cvarfuncs->GetNVFDG("hl2_unresolved_list", "", CVAR_NOSAVE, "FTESurf Patch 1625: up to ten of hl2_unresolved_visible's materials as \"<game>: <name>\", ';'-separated, the game from scripts/assetgames.txt. Read by the missing-content banner.", MAPOPTIONS);
 		cvarfuncs->GetNVFDG("hl2_unresolved_first", "", CVAR_NOSAVE, "The first material the loaded map failed to resolve, as a hint at which asset pack it wants.", MAPOPTIONS);
 		//FTESurf Patch 233: ...and how many of them are on a face or a prop rather than only
 		//in the texdata string table.  The HUD banner draws on THIS, not on the raw count.
+		cvarfuncs->GetNVFDG("hl2_sprpmiss", "", CVAR_NOSAVE|CVAR_NOSET, "FTESurf Patch 1604, read-only: the solid static props whose model file this machine lacks, so they collide with nothing here while Source collides with them: \"<world model> <distinct files, case-insensitive> <names>\" (at most 512 names; control bytes, spaces and quotes as _). Set when a Source map's collision is built; \"\" while hl2_propcollision is 0. The lobby adds them to the .rec header propmiss.", MAPOPTIONS);
 		cvarfuncs->GetNVFDG("hl2_unresolved_visible", "0", CVAR_NOSAVE, "How many of hl2_unresolved are on something you can actually look at -- a drawn world face, or a prop skin. A material named in the map's texdata table that no face uses cannot be seen and does not count. `hl2_missing` says which is which. FTESurf Patch 1560: 0 when scripts/unshipped.txt lists every miss as content the map never shipped.", MAPOPTIONS);
 
 		/*

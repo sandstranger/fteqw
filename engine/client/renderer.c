@@ -40,6 +40,9 @@ void R_RestartRenderer (rendererstate_t *newr);
 static void R_UpdateRendererOpts(void);
 
 qboolean vid_isfullscreen;
+//FTESurf Patch 1611: set by a video backend that can change fullscreen state on the live window (Wayland);
+//R_SetFullscreenMode tries it before a renderer restart. Returns false to ask for the restart after all.
+qboolean (*VID_SetFullscreenLive)(int fullscreen, int width, int height);
 
 #define VIDCOMMANDGROUP "Video config"
 #define GRAPHICALNICETIES "Graphical Nicaties"	//or eyecandy, which ever you prefer.
@@ -418,6 +421,10 @@ cvar_t r_voidvis							= CVARFD ("r_voidvis", "1", CVAR_ARCHIVE,
 												"0: Patch 138 -- keep the last visible cluster you could see from.\n"
 												"1: Draw the whole world, with the frustum and area culls kept.\n"
 												"Has no effect anywhere except in the void while noclipping.");
+//FTESurf Patch 1627: noclipping through a wall put the eye in solid for 1-3 frames, each a whole-world frame (Lex,
+//20 Nov: "a massive fps spike for a frame" on every map). The overview waits until the eye is this far from open space.
+cvar_t r_voidvis_margin = CVARFD("r_voidvis_margin", "512", CVAR_ARCHIVE,
+	"With r_voidvis, how far (units) the eye must be from where it last saw open space before the void overview starts; nearer, the last visible cluster stays (Patch 138). 0: the overview starts the first frame in solid.");
 //FTESurf P1345: independent suppression control keeps identical world visibility for A/B.
 cvar_t r_voidscene = CVARFD("r_voidscene", "1", 0,
 	"Fast noclip-void overview: world and structural brush models, no props, entities, particles, decals or 3D skyroom. 0 retains the old effects for comparison; does not change r_voidvis or saved quality settings.");
@@ -1321,6 +1328,7 @@ static void R_SetFullscreenMode(int targetinternal)
 #ifndef ANDROID
 	double time;
 	rendererstate_t newr;
+	int latched;
 
 	if (currentrendererstate.renderer == NULL)
 	{
@@ -1331,7 +1339,7 @@ static void R_SetFullscreenMode(int targetinternal)
 	if (currentrendererstate.renderer->rtype == QR_HEADLESS || currentrendererstate.renderer->rtype == QR_NONE)
 		return;
 
-	Cvar_ApplyLatches(CVAR_VIDEOLATCH|CVAR_RENDERERLATCH, false);
+	latched = Cvar_ApplyLatches(CVAR_VIDEOLATCH|CVAR_RENDERERLATCH, false);
 
 	newr = currentrendererstate;
 	newr.fullscreen = targetinternal;
@@ -1364,6 +1372,18 @@ static void R_SetFullscreenMode(int targetinternal)
 		//still decides whether it opens maximized.
 		newr.width = (vid_width.ival > 0)?vid_width.ival:DEFAULT_WIDTH;
 		newr.height = (vid_height.ival > 0)?vid_height.ival:DEFAULT_HEIGHT;
+	}
+
+	//FTESurf Patch 1611: on a backend that can (Wayland + OpenGL) the window changes state in place: no window
+	//rebuild, no texture reload, no lost shader warm-up. Only when no latched video/renderer cvar was just applied
+	//above, since those need the restart to mean anything.
+	if (!latched && VID_SetFullscreenLive && VID_SetFullscreenLive(newr.fullscreen, newr.width, newr.height))
+	{
+		currentrendererstate.fullscreen = newr.fullscreen;
+		currentrendererstate.width = newr.width;
+		currentrendererstate.height = newr.height;
+		Con_DPrintf("%s: %s, live (no video restart)\n", currentrendererstate.renderer->description, newr.fullscreen?"fullscreen":"windowed");
+		return;
 	}
 
 	time = Sys_DoubleTime();
@@ -1488,6 +1508,7 @@ void Renderer_Init(void)
 	Cvar_Register (&r_voidvis, GLRENDEREROPTIONS);
 	Cvar_Register (&r_voidscene, GLRENDEREROPTIONS);
 	Cvar_Register (&r_voidfog, GLRENDEREROPTIONS);	//FTESurf Patch 329
+	Cvar_Register (&r_voidvis_margin, GLRENDEREROPTIONS);	//FTESurf Patch 1627
 	Cvar_Register (&r_blendsort, GLRENDEREROPTIONS);
 	Cvar_Register (&r_blendcache, GLRENDEREROPTIONS);	//FTESurf Patch 1409
 	Cvar_Register (&r_blendsort_boxes, GLRENDEREROPTIONS);	//FTESurf Patch 1457
@@ -3124,6 +3145,7 @@ void R_RestartRenderer (rendererstate_t *newr)
 			qboolean failed = true;
 			rendererinfo_t *skip = newr->renderer;
 			struct sortedrenderers_s sorted[countof(rendererinfo)];
+			rendererstate_t asked = *newr;	//P1602: the other renderers below get this mode first, not the 640x480 retry
 
 			if (failed && newr->vr)
 			{
@@ -3171,8 +3193,21 @@ void R_RestartRenderer (rendererstate_t *newr)
 				newr->renderer = sorted[i].r;
 				if (newr->renderer && newr->renderer != skip && newr->renderer->rtype != QR_HEADLESS)
 				{
+					newr->width = asked.width;
+					newr->height = asked.height;
+					newr->fullscreen = asked.fullscreen;
+					newr->rate = asked.rate;
 					Con_Printf(CON_NOTICE "Trying %s"CON_DEFAULT"\n", newr->renderer->description);
 					failed = !R_ApplyRenderer(newr);
+					if (failed && (newr->fullscreen || newr->rate || newr->width != DEFAULT_WIDTH || newr->height != DEFAULT_HEIGHT))
+					{	//P1602: then its safe mode, before the next renderer
+						newr->width = DEFAULT_WIDTH;
+						newr->height = DEFAULT_HEIGHT;
+						newr->fullscreen = 0;
+						newr->rate = 0;
+						Con_Printf(CON_NOTICE "Trying %s windowed %i*%i"CON_DEFAULT"\n", newr->renderer->description, DEFAULT_WIDTH, DEFAULT_HEIGHT);
+						failed = !R_ApplyRenderer(newr);
+					}
 				}
 			}
 

@@ -1,5 +1,2018 @@
 # Engine patches (fteqw `fteqw64.exe`)
 
+## Patch 1685 - Chat names open profiles; a picture before every name (QC client + menu)
+
+**Problem.** Lex's 21 Nov list: "allow clicking on names in chats, to see their profiles. Also ensure peoples display
+picture is always before their name." The in-game chat drew a picture only for an account mark that had loaded (a line
+without one started at the margin, one still loading left a blank square), and no name could be clicked; the menu's
+lobby chat put no picture beside an ordinary message at all (only the board's "* " lines had one).
+
+**Change.** cl_chat.qc keeps per line who to open (the account mark, else the board's guid digest), the speaker
+prefix's length ("* name", "(name", "name") and the name's initial; every player's line gets the picture's square:
+the picture, else a chip with the initial (Friends lines keep their picture-only rule). With the history open
+(typing), the picture or the prefix under the cursor is underlined and a click there closes chat (as Esc) and opens
+that player's card on its Stats page (Av_OpenAt). Chat_HistHit reports the row and x it hit. m_chat.qc draws the
+sender's picture (or initial chip) before every name; name and picture open Stats, the name underlined on hover.
+
+**Review.** One read found the click area measured after Font_Reset (console font, up to twice the name's width) and
+on HistHit's band rather than the underline's: Chat_NameAt now tests the hover underline's rectangle in ui_font_ui.
+The menu chip strips colour codes (strdecolorize). A second read of the fixes: see the lane.
+
+**Verified.** Rig (nested labwc, local surf_ace, chat_open + chat_mouse): initial chips before both lines, underline
+on hover, a click on the name opened hud_player on the speaker (open 1, Stats, the board's identity), a click 20 px
+past the name kept the selection path (open 0); menu chat with real pictures and initial chips. The in-game half
+reaches players with the lobbies' csprogs.
+
+## Patch 1684 - Open tournament rooms first in the Lobbies grid (menu QC)
+
+**Problem.** Lex: "is it possible for the main lobby selection of maps, to list Tournaments first, with a Special
+coloured name." Tournament rooms were only on the Tournament tab.
+
+**Change.** m_home.qc draws up to 3 rooms from m_tournament.qc's directory ahead of the public lobbies, in gold
+(MH_TOUR_COL): a TOURNAMENT plate where a lobby has its map picture, the room's title, phase and seats. A click opens
+the Tournament tab and joins the room (MT_Connect: Watch once it has started). Home asks the directory every 30 s
+(MT_Directory keeps its own 10 s floor); the grid counts the rooms. The chat line announcing a room is P1674's.
+
+**Review.** surfd refuses a join once a room has started, so a started room's tile only opens the tab; element ids
+carry the room id so a refresh between press and release cannot join another room.
+
+**Verified.** Rig with two fixture rooms (open, drafting): tiles first, gold plate and title, the lobbies after them.
+Joining from a tile is MT_Connect's (P1651) path; not exercised against a live room.
+
+## Patch 1683 - The Settings sky switch no longer stalls (engine gl_warp.c + menu)
+
+**Problem.** Lex: "in-game sky switch in the setting menu is really stutter when changing, I didn't even have a map
+loaded?" r_skybox (and r_skybox_default) carried CVAR_SHADERSYSTEM, so every change re-parsed every shader: measured
+on the rig's menu with no map, 96 shaders reparsed / 93 regenerated, a 21-34 ms frame per switch. The menu set
+r_skybox even with no map, where csprogs applies milk_sky at the next map anyway.
+
+**Change.** gl_warp.c: neither sky cvar has CVAR_SHADERSYSTEM; R_SkyBox_Changed already reloads the sky (R_SetSky),
+and nothing parses the name into another shader. m_settings.qc: the switch sets r_skybox only while connected.
+
+**Verified.** Rig, Settings > In-game sky flipped 3 times each way with no map: control logged "shaders 21-34ms reload
+... 96 reparsed, 93 regenerated" per switch, new no r_skybox change and no reload. Inside surf_ace (new engine): the
+switch set r_skybox milk / "" with no reload line.
+
+## Patch 1682 - Desktop audio for the visualizer on Linux; desktop audio by default (engine snd_vis + menu)
+
+**Problem.** Lex: "desktop audio porting to the main menu visuals, and skybox visuals in linux support. Make this a
+default option, so if someone turns on visualizer skybox it's already ported." The loopback source was WASAPI only
+(snd_vis_loopback_supported 0 elsewhere) and opt-in; with it unavailable the visuals had nothing.
+
+**Change.** snd_vis_loopback.h (VISLB_PULSE): libpulse.so.0 by dlopen, a pa_mainloop pumped without blocking from
+VISLB_Poll (no thread), a FLOAT32LE 48 kHz stereo record stream on @DEFAULT_MONITOR@ (0.5 s held at most, 10 ms
+fragments); a stream whose source name does not end ".monitor" is closed before any sample (never a microphone);
+connect/stream deadline 3 s, retry 5 s; holes are silence and an idle sink is zero-filled like the WASAPI path.
+snd_vis.c: snd_vis_loopback_supported is forced to 1 when libpulse loads; snd_vis_source defaults to 1; the mixer tap
+is always on and the analysis uses the game mix whenever desktop capture is unsupported or not delivering (vis.src
+reinitialises the core on a switch); snd_vis_status says which it is feeding. Menu: "game mix | desktop audio",
+platform-neutral notes; ui_vis_source_rev moves a saved 0 (every cfg holds the old default) to 1 once, on an engine
+whose default is 1 with capture supported. The menu has not autoplayed its own music since P1059, so nothing else
+changes.
+
+**Review.** One read found: no PA_STREAM_DONT_MOVE and a one-time name check (a server moving the stream off an
+unplugged sink would land it on the default source, a microphone) -- now DONT_MOVE (the stream fails and reconnects
+to the new default's monitor) and the name checked every poll; failed opens retried every 2-5 s for good (synchronous
+COM / pa_context_new on the main thread) -- now VISLB_Fail backs off 2 s doubling to 60, reset by packets or a source
+change; a capture stayed open in a game once opened -- now closed after 3 s nobody asked (no menu visuals, no
+visualiser sky). A second read: DONT_MOVE kept a PipeWire stream on the old output when the default changed, so it
+went (the per-poll name check runs before any sample is read, so a move onto a microphone still closes it); the
+backoff resets once a capture has stayed up 10 s (an idle endpoint sends no packets). Open: a desktop that is
+connected but silent while the game plays to another output does not fall back (BACKLOG).
+
+**Verified.** This PC (PipeWire 1.6.11): snd_vis_status "source 1 supported 1 active 1 available 1 packets 3833 rms
+0.028 feeding desktop" with desktop music playing (control engine: "source 0 supported 0"); pactl showed the stream
+"World of Surf visualiser" (float32le 2ch 48 kHz) on alsa_output...iec958-stereo.monitor in the menu and no capture
+in surf_ace with milk_sky 0; the migration moved the copied cfg's 0 to 1. The Windows path is not built here.
+
+## Patch 1681 - Story medals: silver G6, gold G4 (tools + surfd data)
+
+**Problem.** Lex: "Make the Story mode trophies slightly easier ... it's set at G2 and G4? maybe G6 and G4 for
+silver/gold."
+
+**Change.** tools/story_groups.py calibrates silver at the snapshot's group 6 cut and gold at group 4 (index = group:
+[Top 10, G1..G6]); surfd/story.txt regenerated from the unchanged tools/story-groups.json (95 levels with cuts, Events
+untouched); test_story.py checks the new indexes. Live once tools/story_push.py puts it on the Pi (lextest).
+
+**Verified.** test_story 54 OK (the old file fails the new test); story_push --check accepts it (rev 84d58cc6aa73).
+
+## Patch 1680 - Menu text fields scroll inside their box (menu QC)
+
+**Problem.** Lex: "text goes outside of the text box in the main menu". ui_field drew the whole text from the box's
+left edge with no clip: a long chat message ran over the send button and out of the panel.
+
+**Change.** m_main.qc: ui_field and ui_field_sel clip to the box (inside any clip already set) and scroll: the focused
+field keeps an offset moved only as far as keeps the caret in view (sui's own focus rule: sui_begin clears
+sui_text_has_focus until the field's input call), others show their start; sui_text_metrics takes the offset so
+clicks still land on the right character.
+
+**Verified.** Rig: control spills past send; new clips, shows the tail at End, the head at Home, and follows the caret.
+
+## Patch 1679 - Friends: a linear map reads Main (menu QC)
+
+**Problem.** Lex: "if a map has 1 stage, display it as main in the main menu friends list." Lobbies report "Stage 1"
+for a one-segment course, and surfd accepts only Stage/Bonus/Spectating from them (a "Main" would refuse the roster).
+
+**Change.** m_friends.qc MF_Activity: "Stage 1" on a map mapmeta calls linear (or one stage) reads Main.
+
+**Verified.** Rig: a friend on surf_nova read "surf_nova Main" (control "Stage 1"); one on surf_beginner "Stage 2".
+
+## Patch 1678 - Key-cap digits centred at larger HUD scales (QC client)
+
+**Problem.** Lex: "save-lock numbers inside the icons blocks are to low". Measured on the Save Lock menu: ink gaps
+above/below the digit 5/5 px at hud_scale 2, 7/6 at 2.5, 9/7 at 3 -- FONT_CAPDROP's fixed 0.18 over-drops as the rung
+grows.
+
+**Change.** KeyMenu_Row (every digit menu) takes back max(0, lsz - 16) / 8 px from the drop.
+
+**Verified.** Same measurement after (rig, surf_ace, 1600x900): gaps 5/5, 7/7, 8/8 at hud_scale 2, 2.5, 3.
+
+## Patch 1677 - Map filter chips keep their room (menu QC)
+
+**Problem.** Lex: "ahop and kz/climb tags disapearing and reapearing in the menu causes the rest of the menu to shift".
+P1583's chips existed only under Bhop, so the Mode group's width changed with the switch and Library/Extra/Sort moved
+(at 1600 px Library and Extra jumped to the second row).
+
+**Change.** ui_map_filters always counts them; under Surf ui_also_chips draws them inert (dim, no action element).
+
+**Verified.** Rig, Surf vs Bhop: control moved two groups a row; new identical apart from the chips' tint.
+
+## Patch 1676 - Lobby chat box at the panel bottom (menu QC)
+
+**Problem.** Lex: "global chat text box is a little far up the page because of the room it has for 'Chat service
+unavailable' can you place that under the global chat bot floating?"
+
+**Change.** MC_Panel: the field sits 22 px (compact 18) above the panel bottom, 30 px lower; the note is drawn only
+when set, in the padding under the field.
+
+**Verified.** Rig: field 30 px lower; "Chat service unavailable." under it inside the panel.
+
+## Patch 1689 - The similarity census tells a run stored twice from a copy, and compares turning (game tools only)
+
+**Cause.** Lex's anti-cheat finish list, item 4: the similarity reader should compare angles on top runs. After P1671
+the lobby census's highest "honest" pair (match 0.9977) was one practice run written twice under one `runid`, and honest
+same-map pairs reach 0.94 on the move columns alone (forced routes), too close to a replay's 1.0.
+
+**Change.** game tools/census/recsim.py: a Rec keeps the header `runid` and each move row's yaw (a bad yaw reads 0,
+never a malformed file). yaw_agreement(a, b, d): over aligned rows where either run turns more than 0.001 deg, the share
+whose turn steps agree within 0.05 deg (wrapped). `pairs` skips pairs sharing a runid and prints the yaw distribution
+with exact and jittered (0.01 deg) replay positives. compare_paths and surfd/simcheck are unchanged: storing the figure
+is a surfd projection change for a guarded generation (tools/backend-pending.md, stage C). Test
+test_runid_and_yaw_agreement.
+
+**Review.** No independent review round: tools only, and nothing acts on the figure. One is due before surfd stores it.
+
+**Verified.** Lobby census on the Pi (21 Nov): 47 same-runid pairs skipped; honest pairs match max 0.8659, yaw agreement
+max 0.4100 (p99 0.3129, median 0.0442); exact replays 1.0, jittered 0.9957. recsim tests pass. **Not verified:** a
+replay re-aimed by hand; no real playback corpus.
+
+## Patch 1688 - !hide / !show: other players are not drawn for you until the next map (game QC only)
+
+**Cause.** Lex, 21 Nov 2026: "option to hide the other players with !hide/!show either just toggles (reset peoples state
+to show when they join a map)".
+
+**Change.** game src/server/sv_player.qc: a bare `!hide` or `!show` in chat (each toggles, as asked) stuffs the client
+command `hideplayers` and is not broadcast. src/client: `hideplayers` (cl_main.qc; no argument toggles, 0|1 sets, a line
+says which) sets pb_hideothers (cl_keys.qc), a plain CSQC global, so every map load clears it (CL_ParseServerData shuts
+csprogs down). While set, Body_Predraw draws no pose-stream body (and so no kit or glow), cl_playerlabels.qc draws no
+name, and turning it on empties the other players' trail lines at once (PTrail_ClearBodies) instead of letting them fade.
+
+**Review.** One independent read with P1686/P1687: the trails faded over up to 3 s after hiding (fixed). Left in BACKLOG:
+with `lobby_av_stream 0` avatars take the engine's entity path and are not hidden (default is 1); aim-to-share
+(cl_share.qc) can still pick a hidden player.
+
+**Verified.** Rig, lobby-mode dedicated server on bhop_sandtrap2 with a second (headless) client standing 150 u in
+front: `!hide` prints "Other players hidden until the next map", the partner's body and name tag vanish (21,000-23,000
+pixels in its box), `!show` brings them back (only the chat line differs), and after `map bhop_sandtrap2` the partner is
+drawn again and the next `!hide` hides (the state was reset, not toggled back). Screenshots in the lane's artifacts/.
+**Not verified:** a real lobby (needs the lobby QC deploy).
+
+## Patch 1687 - GoldSrc: the eye follows the mode, CS 1.6 never autohops, noclip flies like the rest of the game
+
+**Cause.** Lex, 21 Nov 2026, on bkz_goldbhop_gs: "CS 1.6 is a lower view hight then HL/AG, currently HL/AG has the
+counter-strike view height", "CS 1.6 isn't suppoed to have autohop", "noclip in cs1.6 sinks you into the ground, and you
+have a max move speed of 250". P1665 chose the eye from the MAP (a Counter-Strike map showed 17 under ag-250 too);
+P1591 let every profile autohop under the server's pm_autobunny (1 in default.cfg); and PMAg_Tick flew PM_SPECTATOR
+through PMAg_Wish's swim branch, which adds a 60 u/s sink when no key is held and caps the speed at sv_maxspeed (250 under
+cs16, 320 under ag-*), then the 2000 maxvelocity clamp.
+
+**Change.** server/sv_phys.c SV_ApplyMovementProfile, GoldSrc branch: pm_viewheight is the profile's own (cs16 17,
+ag-100/250/1000 28) unless sv_goldsrcview is hl or cs (BSP-30 maps only, as before); SV_GoldSrcMapIsCS and
+SV_GoldSrcWadIsCS are removed (no other user). cs16 adds SV_AGOverride("pm_autobunny", "0"), which
+SV_ClearGamemodeOverrides restores at the next map; clients predict it from serverinfo, and sv_user.c's old-client refusal
+no longer fires under cs16. common/pm_ag_world.c: noclip and spectators take PMSrc_NoClipMove's rule -- direction from the
+command, speed pm_noclipspeed x sv_maxspeed (1000 under cs16, 1280 under ag-*), doubled on +speed, a held jump does not
+climb (P154), no maxvelocity clamp. The duck crop no longer changes it. sv_movementprofile's and sv_goldsrcview's
+descriptions say so.
+
+**Review.** One independent read with P1686/P1688: no defects in this part; it asked for the noclip clamp to go (done)
+and noted that a pre-1687 client on a 1687 server mispredicts noclip on GoldSrc profiles. Accepted: GoldSrc profiles run
+only in local games today (lobbies set no sv_movementprofile, tournament servers never apply one), where client and
+server are one binary.
+
+**Verified.** tools/test_pm_ag_world.c Noclip (gnu99 -Wall -Wextra -Werror): idle holds z, cs16 1000 u/s also ducked,
++speed 2560 u/s (velocity too), held jump stays, +moveup climbs; the whole harness passes, and the old mover fails the
+first noclip check. Rig, dedicated server on bkz_goldbhop_gs, this build against the installed one (patch-1666):
+serverinfo under ag-250 pm_viewheight 28 (installed 17) and pm_autobunny 1; under sv_goldsrcprofile cs16 pm_viewheight 17
+and pm_autobunny 0 (installed 1). Held jump: ag-250 keeps hopping; cs16 makes one jump and stays on the ground (installed:
+keeps hopping). Noclip, 2 s with no key: z unchanged on both profiles (installed: -122 u, through the floor); 1 s of
++forward: 1280 u ag-250, 1000 u cs16 and 1000 u ducked (installed 320, 250, 150).
+
+## Patch 1686 - The duck's eye height moves every rendered frame (Source mover)
+
+**Cause.** Lex, 21 Nov 2026: "i'm not convinced that the crouching transition mechanic, isn't being smoothed perfectly to
+my 300fps, it looks not as smooth as it should when you hold crouch and your view lowers to the ground". cl_pred.c lerps
+the feet between the two kept movement ticks (P269c), but took the eye offset from the newest tick (P132b) unless a roof
+clipped it (P1301). Source's duck slides the eye over 0.4 s (SimpleSpline, pm_source.c), so the slide advanced once a
+tick. cl_predtrace on bhop_sandtrap2 (dedicated server, cl_maxfps 300, 10 ms ticks): 117 of the 177 frames in a duck and
+unduck kept the previous frame's eye, then it jumped up to 1.271 u. AG already lerps its eye (P1628): bkz_goldbhop_gs at
+250 Hz moved every frame.
+
+**Change.** client/cl_pred.c: CL_SourceEyeKeep also keeps the unclipped offset (srceye_t.raw). When both ticks are kept
+and neither is clipped, the eye lerps from the from-tick's kept world eye to the to-tick's (to.state's origin +
+pmove.viewheight) by the feet's fraction, exactly as P1301 does under a roof; under a roof the raw cap passed to
+PMSrc_ClipRenderEye lerps the same way (review). Display only: the mover, prediction state, recordings and the stat are
+unchanged; pv->crouch (stair smoothing) is still added by V_CalcRefdef.
+
+**Review.** One independent read with P1687/P1688: no correctness defect; it found the roof-clip branch still capped by
+the newest tick's raw offset (a mid-duck step under a roof edge) and that the new branch read pmove's origin, which can be
+stale on a frame that predicted nothing. Both fixed as above.
+
+**Verified.** The same arm: 0 of 180 transition frames hold, largest step 0.424 u (the old 1.271 spread over the three
+frames between ticks), ending at 47 ducked and 64 standing; the same numbers after the review fixes. **Not verified:**
+the roof-clip mid-duck case (code path only), Windows, Lex's eyes (lextest.md).
+
+## Patch 1675 - A start packet's untimed ticks are counted; past 0.06 s the run is practice (QC server only)
+
+**Cause.** Lex's anti-cheat finish list, item 3 ("start latched per tick"). SV_TimerFrame latches a run's start once per
+packet, so ticks the start packet ran after the body left its START box (or after a bhop launch) were never timed. A
+stock client sends one tick a packet (the ruleset locks cl_netfps); a modified one batching commands could start up to
+about 0.48 s late with the clock none the wiser. Honest lobby packets (300 REC 14 runs): 99.49% one tick, 0.27% 6-7.
+
+**Change.** game src/server/sv_timer.qc: SV_TimerLagNote, called per one-tick part from PlayerPreThink after the
+start-cap clamp, notes the first tick this packet the body was outside the box its start latches from (ARMED: armzone;
+bhop maps RUNNING/FINISHED: azone) and the first jump-like rise (velocity_z crossing PM_NONJUMP_VEL); PlayerPostThink
+clears both every packet, so a lag can never exceed its packet. SV_TimerPacketLag gives run_movetick minus the note (a
+launch: the later of the two); the leave path and both bhop launch commits store it. SV_TimerStart converts ticks with
+run_movetickrate; above run_startlag seconds (cvar, default 0.06, 0 = off) the start is practice with "start packet too
+long" when it would otherwise be clean. Every measured start writes `startlag <ticks> <s> <max>` to the recording (off
+under held metadata, as `cseq`); a stage handover is -1, not measured. surfd/recplot.py counts the record.
+
+**Review.** Two rounds, both lenses. Round 1: a walk-out before a bhop jump uncounted, a stale jump tick (booster), a
+tick limit every AG start broke, re-entry hiding an excursion, tick 0 as a sentinel, the held-metadata reader -- all
+fixed by the per-packet note design. Round 2: no correctness bug; the 0.1 s allowance was larger than some world-record
+margins (now 0.06), record every measured start. Left in BACKLOG: stage handovers and held stage-box splits, AG/GoldSrc
+profiles (whole commands per part), a review-page flag for `startlag` of 3 ticks or more.
+
+**Verified.** Rig, surf_ace (and bhop mode): normal play 0 ticks; with `cl_c2spps 1` 2 ticks (0.030 s) clean at 0.06,
+practice + chat at 0.01; off at 0; a bhop launch 1 tick, practice at 0.005. Game tools/p1675-arms.md. **Not verified:**
+the record inside a kept `.rec` (headless runs never finish), a real batching client, a lobby (needs the QC deploy).
+
+## Patch 1671 - The similarity reader reads current recordings (REC 12 and 14) (game tools only)
+
+**Cause.** Lex's anti-cheat finish list, item 4. Every lobby run since 10 Nov is REC 14, and tools/census/recsim.py
+refused any format 12 or later that is not a held-metadata native file (a blanket guard from Patch 914), so
+surfd/simcheck compared none of them: 5,147 comparable pairs in the whole archive.
+
+**Change.** game tools/census/recsim.py: MOVE_ROW_VERSIONS = (12, 14) read as move rows -- v12's inclusive viewing clock
+adds held seconds, not input, and v14 only makes the mc counters relative. 13 still needs a valid native file; 16 and
+later are still refused. Tests: test_recsim_parsing (test_viewclock_move_rows_are_read), test_input_numeric_spelling.
+Reaches surfd with a guarded generation (tools/backend-pending.md).
+
+**Review.** No independent review round (tools only; simcheck stores scores and never acts on them).
+
+**Verified.** Pi census, 21 Nov: comparable pairs 5,147 -> 193,303; replays 1.0000. **Not verified:** surfd's own run
+(pinned SURFD_TOOLS until the next generation).
+
+## Patch 1668 - The Linux ui_imgui plugin reaches players (files_ext; Linux launcher 0.1.7) (game tools + launcher)
+
+**Cause.** P1654 built fteplug_ui_imgui_amd64.so for Linux but no release could ship it: every installed launcher
+(through 0.1.6, source 8de1339) and every engine refuse a whole signed feed when one "files" entry is outside their
+own path policy, so naming it would have stopped every update. P1666 made the game replace the launcher from the feed,
+so a launcher that knows the name can now reach existing installs. Lex: "Well do the still open please. fix it all up."
+
+**Change.** Quakers-Launcher ftesurf-files-ext (0.1.7, from 8de1339; merged into main as 0.1.8): the payload may carry
+"files_ext", entries a launcher before 0.1.7 ignores (it parses the payload without deny_unknown_fields; the engine's
+QKU_FSValidateManifest reads only "files"). decode() appends them to "files" before every check (policy, duplicates,
+sizes, overlap, totals) and flags them; managed() gains the plugin. recover() finishes a journal from an older launcher
+that omits them, and an offline start leaves out an absent one but still verifies a present one, so a stale plugin
+refuses like any wrong file. Game tools/updatefeed.py: EXT = {"linux64": {"fteplug_ui_imgui_amd64.so"}}, a Linux
+stage's plugin goes only to files_ext, validated (exact keys, exec false, unique (path, platform) across both lists,
+its platform has its own files); a feed that drops a files_ext path the previous one shipped is refused in build and
+check_publication (nothing deletes files, so a left-behind plugin would load into a newer engine). src/release/
+release.ps1: $LinuxShipImgui on; -WindowsLauncherRoot names the published Windows bootstrap's source when only the
+Linux launcher changed (frozen, rechecked at sealing; the receipt keeps that Windows provenance for the next reuse);
+refuses a -LauncherRoot without files_ext while the plugin ships, and two launcher sources with different dependency
+sets (one notices file covers both). tools/release_smoke.py rehashes files_ext.
+
+**Review.** One independent read of the first cut (compatibility, security, failure modes) found no break in the
+shipped readers and these, all fixed: nothing kept a later launcher or feed from dropping the plugin; a 0.1.6 journal
+deadlocked 0.1.7's recovery; an offline start refused over a plugin never received; validate() missed duplicates on a
+platform without its own files; the smoke ignored files_ext; the shared notices could misdescribe the Windows launcher.
+
+**Verified.** cargo test (branch) 47 + 7, (main after the merge) 68 + 7 + 32 migrate; test_updatefeed.py 32 OK;
+test_releaselib 127 + the 2 template checks that fail on main; test_bootstrap_reuse 11. Release 0.1.53 (15:01Z,
+engine binaries unchanged from 0.1.52): end to end on the candidate and again in production from the live feed, a
+0.1.52 Linux install's 0.1.6 launcher updates and ignores files_ext, the engine's check replaces it with 0.1.7, 0.1.7
+installs the plugin, plug_list shows it loaded; release_smoke linux64 1380 (plugin and its notices) / win64 1379.
+
+## Patch 1667 - The Linux release starts on a Wayland compositor with wl_compositor v6
+
+**Cause.** Found while testing Patch 1666, not from a report. The portable Linux build (0.1.49-0.1.51; Debian 11 rootfs,
+wayland 1.18 headers) aborted at start under labwc 0.9: "listener function for opcode 2 of wl_surface is NULL". Patch
+1602 (HiDPI) binds wl_compositor up to v6, bounded by WL_BindVersion with the interface table of the SYSTEM
+libwayland-client (v6 on a current distro), and gave wl_surface four handlers (enter, leave, preferred_buffer_scale,
+preferred_buffer_transform). Debian 11's header declares a two-member struct wl_surface_listener, so the struct
+initialiser dropped the two v6 handlers at compile time (an excess-initialiser warning, not an error), and the first
+preferred_buffer_scale event made libwayland abort. Builds on a current distro (the developer installs) have the
+four-member struct and never showed it. Any compositor advertising wl_compositor v6 (wlroots 0.18+, recent KWin and
+mutter) is affected when WAYLAND_DISPLAY is set.
+
+**Change.** engine gl/gl_vidwayland.c: surface_listener is a fixed table of four function pointers handed to
+wl_proxy_add_listener, independent of the header's struct size. Every other bind is capped at a version whose events
+the 1.18 headers already list (wl_output 2, wl_seat 4 and its pointer/keyboard, shm/shell/data device 1).
+
+**Verified.** 0.1.51's released ftesurf64 aborts under headless labwc (gles2) with the message above; the same tree
+built in the release rootfs (Debian 11, GCC 10) with this patch starts and runs every Patch 1666 arm there (22 checks).
+
+## Patch 1666 - The game keeps the launcher current
+
+**Cause.** Lex: "make a auto updater for the launcher or whatever you need". No feed has ever updated WOS-Launcher:
+every installed launcher (and engine) refuses a whole signed feed when one entry is outside its built-in path policy,
+and the launcher's name is in none of them, so a launcher fix or a new managed path (the Linux ui_imgui plugin, P1654)
+could only reach players who download a new launcher by hand.
+
+**Change.** game tools/updatefeed.py; engine common/qkupdate.c; cvars update_launcher (default 1, archived, not settable
+by a server) and update_launcher_state (read-only).
+- The signed payload gains "launcher": {"win64"|"linux64": {"path", "hash", "size"}}, built from the staged
+  WOS-Launcher.exe / WOS-Launcher (still never a "files" entry), its bytes stored as an ordinary object so objects.txt,
+  verify-objects and the release's R2 round trip carry it. validate() requires the canonical name per platform, 64
+  lowercase hex, 1..32 MiB, no other keys, one size per hash. A Windows-only release keeps the previous Linux entry.
+- Every shipped reader ignores the field: the launcher (5c60f69 to 8de1339) parses the payload into a struct without
+  deny_unknown_fields; the engine's QKU_JSONBadKeys refuses only dotted, escaped or repeated names.
+- The engine, after a verified check that passed the installed release's version floor (never with no usable
+  state.json, never for update_verify), hashes an installed WOS-Launcher and a pre-P1209 ftesurf-launcher (regular files
+  reached without a link; a missing one is never created; never in a source checkout with .git). A stale one is fetched
+  from the feed's mirror into .ftesurf-updater/ingame/launcher/ (.part unlinked first), verified by size and BLAKE2b
+  while written, and must be this platform's executable kind (PE x86-64 / ELF64 x86-64). Never while connected to a
+  server: the verified object waits for a later check, and is kept and reused across a failed install. Then: a verified
+  copy of the old bytes (and mode) to .ftesurf-updater/launcher-previous/; the object copied beside the launcher as
+  <name>.new (verified again) with the old mode plus u+x; both flushed to disk; the copy must START here
+  (--ui-preview exits 0 within 10 s; it returns before any lock or network in every launcher since 8de1339; the
+  client's SigChld handler is set aside for it); then one-step swap (rename(2) + directory fsync, or MoveFileExW
+  REPLACE_EXISTING, which refuses while that launcher runs). update_cancel, update_permission 0 and shutdown abandon an
+  in-flight download. The console says "update: launcher updated <names>" or why not.
+- A hash that is the wrong kind or does not start here is marked (ingame/launcher/<hash>.failed) and neither fetched
+  nor tested again until the feed names another launcher. The test is capped at 4.5 s; one timeout is a slow first
+  start (<hash>.slow), a second marks it. Once the bytes started here (<hash>.ran, kept while the hash is current) no
+  later failure with them marks them. A test that could not run at all, or an unreadable staged file, retries later.
+- Existing installs get it by the route they already take: their launcher installs the new engine, and the engine's
+  next check replaces the launcher. Consent, update_enabled and dedicated servers gate it as they gate the check.
+
+**Review.** Two independent reads of the first cut (attacker; failure modes and compatibility) found: no version floor
+on the no-state path (a replayed older signed feed could roll the launcher back); update_verify replaced it; no check
+that the bytes are a launcher for this platform, or that they start here (a Linux build needing a newer glibc would
+have left players without a working launcher); nothing flushed before the rename; cancel, a withdrawn permission and
+shutdown did not stop an in-flight download; a swap could hitch a run on a server; the backup was unverified and the
+mode widened to 0755; a failed install re-downloaded every start. All fixed (above). The tests then found two more in
+the fix itself: a backup path built from an aliased buffer, and the client's SigChld handler reaping the test run's
+child before waitpid. Generator: launcher_kind() at stage time and in verify_objects. Round 2 (no correctness or
+security defect): a hung or broken launcher hash was retried every start; unbounded wait after a kill; a terminated
+Windows test child could keep the .new mapped; narrow flush sharing; the Linux test child inherited the install lock.
+Fixed. Reads of rounds 3 and 4 found ways a good hash could still be marked failed for the whole release (a later
+name failing after the same bytes started; a single timeout; an unreadable file; proof of a start lost between
+starts), each fixed and covered by an arm.
+
+**Verified.** test_updatefeed.py 32 OK (5 new). Linux arm (tools/p1666arm.py in the lane, a loopback feed signed with
+exactly the published 0.1.51 content plus a descriptor of the published launchers): the published launcher installs
+from it; the pre-P1666 engine verifies it with no policy error; the new engine replaces stale WOS-Launcher and
+ftesurf-launcher (executable, old copies kept, no .new, staging emptied), leaves a current one untouched, refuses a
+corrupt object, does nothing with update_launcher 0 or a .git checkout, and the refreshed launcher then repairs the
+install, and with no state.json nothing happens; 22 checks. Negative arms (tools/p1666neg.py) with a scratch copy whose
+pinned key is patched to the RFC 8032 test key: a program exiting 0 installs (control); one exiting 1 is kept out, its
+hash is marked and the next check neither downloads nor tests it, while a later feed's other hash installs; a PE named
+as the Linux launcher is refused; a launcher that hangs is kept out and noted slow, the second timeout marks it; a
+successful run leaves the .ran note (14 checks). Wine arm 7 checks. Windows arm under Wine (from the
+prefix's C:): the published Windows launcher installs from the feed, the new engine replaces a stale WOS-Launcher.exe
+via MoveFileExW and keeps the old copy, the refreshed launcher repairs ftesurf64.exe.
+
+## Patch 1665 - A Counter-Strike map's eye height under the GoldSrc profiles
+
+**Cause.** Lex on bkz_goldbhop_gs, 20 Nov 2026: "my view height was to high". Patch 1659 runs every BSP-30 map under
+an AG profile (ag-250 by default), and the AG mover's standing eye was the profile's: 28 above the body's centre
+(Half-Life's VEC_VIEW) for every AG profile, 17 only under cs16. bkz_goldbhop is a Counter-Strike 1.6 map, and so are
+most of the published kz and bhop maps; their ledges, windows and crates are built around CS's lower eye. At Lex's
+save the ledge top is 59 above the feet: Half-Life's eye (64 above the feet) looked over it, CS's (53) does not.
+
+**Change.** engine server/sv_phys.c, common/pm_ag_world.c; new server cvar `sv_goldsrcview` (auto | hl | cs, default
+auto, map-latched like sv_goldsrcprofile).
+- SV_GoldSrcMapIsCS decides per BSP-30 map: its catalogue row (data/goldsrc.net.txt, Patch 1656) needs Counter-Strike
+  or Condition Zero files, or its entity lump has a CS-only class (armoury_entity, func_buyzone, info_map_parameters,
+  hostage/bomb/VIP/escape entities, CS-only weapons; not weapon_knife, which Opposing Force also has), or worldspawn's
+  wad list names cstrike.wad or a cs_*/de_* wad. The lump is read straight from the BSP (bounded to 8 MB, header and
+  lump bounds checked, two terminating NULs), before the world loads.
+  On the 923 published maps: 816 CS, 107 Half-Life (ag_bhop_master and the other AG maps).
+- SV_ApplyMovementProfile's GoldSrc branch publishes the eye through pm_viewheight: 17 under cs16, or under an AG
+  profile on a CS map (auto), or always with `cs`; 28 otherwise, or always with `hl`. The console says
+  "<map> is a Counter-Strike map: eye 17 above the body's centre (sv_goldsrcview hl for 28)". hl and cs apply only on
+  a BSP-30 map (a Source map under an explicit AG profile keeps 28).
+- PMAg_StandView (server and client prediction) takes the eye from movevars.viewheight when it is 12..28, which only
+  the GoldSrc branch publishes; anything else (a bare harness's 0, Source's 64) keeps the profile's own value. The duck
+  blend starts from that eye and still ends at 12. view_ofs follows it, so the +use button search (sv_goldsrc.qc) aims
+  from the CS eye on a CS map, as in CS.
+- PMAg_WaterEye: the waterlevel-3 sample keeps the profile's own eye (stand to stand, the blend at the same fraction,
+  ducked 12; bit-identical when the two agree), so water jumps and currents are unchanged.
+- Movement is unchanged: hull, step, jump, speeds, water and the profile identity (runs stay under ag-250-v1). Source
+  maps never reach the branch.
+
+**Review.** One independent read of the first cut: the shown eye fed the water test (a surface 17-28 above the centre
+stopped a water jump and a current pushed harder on a CS map: movement changed), fixed by PMAg_WaterEye; a one-byte
+over-read on an entity lump ending in an open quote (two NULs); weapon_knife misfiling Opposing Force maps (dropped);
+hl|cs reaching Source maps under an explicit AG profile (gated). Accepted, not fixed: a 0.1.50 client on a new
+dedicated server predicts eye 28 while the server uses 17 (GoldSrc maps are local games today; pm_agversion stays 1
+because an old client refuses a newer one).
+
+**Verified.** tools/test_pm_ag_world.c ServerEye: published 17 stands at 17, blends to 5.5 at half duck, ducks to 12,
+stands back at 17; with eye 17 shown a water surface at 60 or 50 standing and 45 at half duck stays waterlevel 2, 66 is
+3; 64 under AG gives 28; 64 under cs16 gives 17; 28 under cs16 gives 28. The first cut fails the first water check, the
+pre-patch mover the first eye check; this passes the whole harness. Server matrix (new fteqw-sv64): de_dust2 pm_viewheight 64 on old and new; bkz_goldbhop_gs 17
+(hl: 28); ag_bhop_master_gs 28 (cs: 17); kz_cellblock_gs 17 (catalogue row) and the same BSP loose as kz_cellblock 17
+(wad list only); loose ag_bhop_master 28, loose kz_man_everest 17; cs16 17, cs16 + hl 28; the old binary 28 on
+bkz_goldbhop_gs; de_dust2 under an explicit sv_movementprofile ag-250 with sv_goldsrcview cs: 28. Client rig at Lex's
+save: serverinfo pm_viewheight 17, the eye sits below the ledge top (screenshots artifacts/p1665-cs-eye-split.png in
+the lane); ag_bhop_master_gs 28. Linux release drop (Debian 11 rootfs, GCC 10) at this commit: gates all PASS.
+
+**Not verified.** Windows; a player-made BSP-30 map with an overlong wad key (the lump parser truncates a token at
+2047 characters and can misfile such a map, which only moves the camera).
+
+## Patch 1664 - GoldSrc maps: the pre-strafe assist stays off (QC client only)
+
+**Cause.** Lex on bkz_goldbhop_gs, 20 Nov 2026: "I wasn't able to crouch jump into this ledge". The pre-strafe assist
+(BUILD 13b, `run_prestrafe`, default 1) takes +forward for the whole flight of a jump made after 0.25 s on the ground
+with W held, so a standing crouch-jump onto a ledge went straight up. A debug server logged `fwd 0` from the jump
+tick on (fwd 450 the tick before); the server-side bot, which has no client game code, made the same jump.
+
+**Change.** game src/client/cl_main.qc PreStrafe_InputFrame returns (and clears run_ps_release) when
+serverkey("*bspversion") is "30". A KZ climb is exactly a standing jump with W held. Source maps unchanged; the HUD
+key block and wish arrow read run_ps_release, which stays clear there.
+
+**Verified.** Client rig at Lex's save (setpos 1866.07 -1306.37 -347.97, yaw 12.83; +forward, then +jump +duck):
+before, apex z -303 with horizontal speed 0, back on the floor; `run_prestrafe 0` or re-pressing W mid-air landed on
+the ledge; after, with default settings, on the ledge (z -289 standing). csprogs 0 warnings.
+
+## Patch 1657 - Bhop- and ahop-mode maps: a run starts clean only from a run-up (QC server only)
+
+**Cause.** Patch 1643's rest rule left bhop-mode maps out by design: there the clock starts on a jump taken in the
+START after a ground dwell (SV_TimerJumpWatch), or on the walk out while armed. Speed built before the clock stayed
+clean three ways: an idle body arms on entering a START and starts on leaving it at whatever speed it crossed; an
+armed attempt can hop inside the box (run_starthop is 0 on bhop maps, mode_bhop.cfg) and leave at the speed the
+hops built; and a jump 0.25 s after a fast landing keeps what friction has not removed, which a run in progress or
+finished can use because a START entered then arms nothing until that jump arms and starts in one tick. Owner ruling,
+20 Nov 2026: "pre-speed on bhop is not allowed, you have to start from a run, jump. Not a fly into the start zone at
+max speed." Asked the same day about ahop maps (mode_ahop.cfg also sets run_starthop 0, and they start on leaving):
+"Yes, no pre-speed please besides the run up!"
+
+**Change.** game src/server/sv_timer.qc; cvars `run_bhoprest` (default 1; 0 is the rule before this patch, and
+`run_startrest 0` turns both off) and `run_bhoprestspeed` (default 0, an exact override of the bound), cached per
+map. The rule is on for gamemode bhop, bhop-hl1 and ahop (SV_BhopRestOn).
+- SV_StartUnrested applies on bhop-mode maps: a start without `run_t_rested` takes the SV_TimerPractice funnel and
+  says "unrested start -- on a bhop map start from a run: under 300 on the ground in the start, then jump or leave
+  it (or !r)"; its arm reads AS_HOPPED on the HUD.
+- The start is judged on how it left, not on a rest the arm saw earlier. Every launch commit (an armed attempt, and
+  a run that was RUNNING or FINISHED re-arming in one tick) sets `run_t_rested` to `run_t_restnow` (Patch 1643: some
+  tick of this packet began slow on the ground). In step 1 of SV_TimerFrame, a leave of the armed box takes the same
+  if a launch was latched this packet (the launch commit then finds the run started), and otherwise is unrested when
+  the body's own horizontal speed is at or above SV_TimerRestCap.
+- SV_TimerRestCap under the rule: the larger of run_rearmspeed and SV_TimerRunupCeiling() + 10, the steady state of
+  optimal ground strafing, v^2 = (2aW - a^2) / (1 - k^2) with k = 1 - friction*tick, a = accelerate*W*tick and W the
+  fastest wish speed (sv_maxspeed, times pm_walkspeed where that is ahop's sprint): 299.95 u/s on bhop (0.01 tick)
+  and 504.09 on ahop sprinting. SV_TimerSlowGround uses it too. The formula reproduces the known CS:S prestrafe
+  ceiling, 289.95 at a 0.01 tick, and follows a profile's own numbers.
+- A map push reaching the armed attempt (run_pushed while ARMED: a booster or setspeed in the START) exempts its
+  leave from the own-speed test (`run_t_armpushed`), as SV_TimerSlowGround leaves the carrier out, until the body is
+  seen slow on the ground with no push or a save is restored.
+- Not under a `*movementprofile`: those runs never rank, and the formula does not model hl2-* sprint (a hard-coded
+  factor with pm_walkspeed 0) or the AG mover. The ceiling is worked out once a map.
+- Every new line is gated on the rule; `cmd timer`'s rest line prints `bhop B cap C`; the message names the bound.
+
+**Review.** Two lenses (control flow; what a cheater gains) on the first cut found the same hole independently: the
+armed attempt's rest was sticky, so speed built by hops in the box left clean (bounded by the box's size; a 512-unit
+box allows about 875 u/s). Also the 290 bound's lack of margin, a same-tick launch and leave applying the credit after
+the start, and `run_bhoprest 0` reading differently from control in the diagnostics. All reworked as above. A clause
+withdrawing the rest on any hop in the box was written and removed: the leave check covers the hole, and it would
+have made an honest slow hop out of the box practice. A second round on the rework found a booster in a START would
+make an honest walk-off practice (now exempt), that a launch could be vouched for by an earlier slow tick of its packet
+(Patch 1643 now clears that on a fast ground tick), and that ahop maps were not covered (the owner ruled they are). A
+narrow round on those changes and the ahop extension found the exemption lasting the whole attempt and the formula
+wrong under the hl2-* and AG profiles; both as above, and a further round read that.
+
+**Verified.** game tools/p1657-arms.md. Headless server and client, surf_ace under `sv_gamemode bhop` (run_starthop
+0), control (P1643 as delivered) against the fix, graded on the server's `starts:` line. With both bounds lowered to
+100 so that a 260 u/s run stands in for a body over 300: after `!r`, running out of the START reads rested 1 practice
+0 on control and rested 0 unrested 1 practice 1 on the fix; an idle body running through a START, 0 / unrested 1; a
+jump in the START from a run while a run is live, 0 / unrested 1; the same jump after standing reads rested 1. At the
+default bounds the walk-out, the run-through, `!r` and a jump, a re-launch at a run, and `!r`, run, jump all read
+rested 1 unrested 0 practice 0. `run_bhoprest 0` reads as control line for line. Under `sv_gamemode ahop`, after
+`!r` a run out at 190 reads clean on control and unrested with the bound lowered to 100, and at the computed bound
+(504.089 in `cmd timer`) a walk-out and a sprint-out at 320 read clean. Build 0 warnings; qcframes clean on
+qwprogs. The lobbies' 69 bhop and kz starts with a `seed` (read-only): median 265 u/s, 287 at the honest maximum,
+one at (0, 1200, 460) on bhop_sandtrap, that map's launcher, which leaves slow ground and stays clean.
+
+**Limits.** Not measured: a real bhop map, a real fast landing, an airborne exit (the rig's `!r` in the air left the
+body standing), bhop-hl1, a booster in a START, overlapping STARTs, two players, a live lobby. A launch is judged on
+any tick of its packet and a leave on the packet-end speed, so a client batching commands gains up to about 30 u/s of
+air strafe after a slow ground tick; the start is still latched per packet. A push carrier is left out of the ground
+test, and a map push in the START exempts the leave. The bound is a formula, not a measurement: on ahop nobody has
+measured what a human reaches (the lobbies have one ahop start on record). Game BACKLOG.
+
+## Patch 1652 - Lobbies set run_slowclock 1 (lobby config only)
+
+**Cause.** Patch 840 demotes a run whose game clock fell behind real time (slow-motion play) once the judged sum
+reaches `run_slowclock`, and shipped that bound at 5 s with a note that it was not calibrated. The 20 Nov audit
+flagged it: about five seconds of slowed play could be spent in one hard section of a run that still ranks.
+
+**Change.** game cfg/lobby/lobby.cfg: `set run_slowclock 1`. The QC default stays 5 for games off the lobbies. No QC
+or engine change; the value is read at map load.
+
+**Verified.** Read-only over the lobbies' recordings on 20 Nov: 1,294 files carry a `clk` record (19 players, 231
+maps, the longest 5,151 s of wall time), all written under bound 5. The judged sum is 0.000 at the median, 0.020 at
+p99 and 0.236 s at the honest maximum (a 480 s run with one credited stall); 38 runs had a stall and 14 took a
+credit (largest 0.81 s). Exactly two runs read 0.25 s or more: the owner's own slow-motion tests, 12.5 and 13.1 s
+behind over 27-28 s of wall time, already TF_SLOWCLOCK and cheat-class. So 1 s is four times the honest maximum with
+none of 1,292 honest runs within a factor of four of it.
+
+**Limits.** 19 players. A connection worse than any measured could pass 1 s; the run would then read unranked for a
+slow clock (a demotion, not an accusation). The residual patterns in Patch 840's private note (repaid pauses under the
+hysteresis) are unchanged by a lower bound.
+
+## Patch 1645 - The input report takes "Windows" from in_guard_live as well as sys_platform (QC client only)
+
+**Cause.** The same audit. cl_replay.qc's Rec_InputCvarWin reported the Windows-only input settings (in_rawinput and
+the guard cvars) only while `sys_platform` read "Win" (P1603, so a copied Windows cfg could not describe them on
+Linux). `sys_platform` is a plain cvar: a Windows game whose owner changed it reported like the Linux game, which the
+lobbies rank (marked) without the raw-input, click, touchpad and key rules.
+
+**Change.** Rec_IsWin: Windows if `sys_platform` says so, or if `in_guard_live` is read-only. That cvar exists only in
+the Windows engine (in_win.c, 1576+); `set` returns "is readonly" for a CVAR_NOSET cvar before touching its flags
+(cmd.c), and Cvar_Register replaces a name the launch line pre-set with the engine's own struct and flags (cvar.c).
+Nothing changes for a game that left sys_platform alone, on either platform.
+
+**Verified.** game tools/p1645-platform.md. Linux rig: `cmd timer` reads the same report (`ev "14 0 0 0 1 0"`,
+wouldplat 1) on main and on the patch, and again with `+set sys_platform Win` on the launch line (the cvar then reads
+back "Win", which is the hole). Build 0 warnings.
+
+**Limits.** The Windows half was not run (no Windows game on the build PC): it rests on the two engine sites above and
+on the live keyguard rule (sv_rank_keyguard 1 since 16 Nov), which already ranks a Windows run only when csprogs sees
+`in_guard_live` as read-only. One Windows check is owed (lextest). An engine older than 1576 has no such cvar and can
+still report as Linux. Patch 1646 makes `sys_platform` itself read-only in the engine.
+
+## Patch 1643 - A run starts clean only from rest in its start box (QC server only)
+
+**Cause.** The 20 Nov anti-cheat audit (Lex's request) traced the start rule. SV_TimerArm re-derives an attempt's
+class from the live movetype ("are you noclipping right now") and sv_cheats, and the hopped-start rule judges a
+commanded jump only. So an attempt armed while the body was in flight, or armed after a noclip or a setpos had already
+ended, left its START as a clean run; and a start mark or an off-the-clock save made from such an attempt was a clean
+spot for `!r`. run_startcap (0 since 20 Sep) never applied: it trims a map push's carrier, not the body's own speed.
+The game BACKLOG had carried three entries for these since September ("confirmed in code, not measured"). A read-only
+scan of the lobbies' recordings (about 1,000 clean full and bonus runs with a `seed`) found no start the map does not
+explain: ordinary starts leave at 300-346 u/s and every faster one is a booster map where all runs show the same speed.
+
+**Change.** QC server only (sv_timer.qc, sv_zones.qc, sv_player.qc, sv_saveloc.qc, sv_practicereturn.qc); cvar
+`run_startrest`, default 1, cached per map (0 is the rule before this patch). No engine, recorder, verifier, csprogs
+or surfd change.
+- `.run_t_rested`, cleared by SV_TimerArm (kept when the same armed zone is armed again: the scan re-arms the box
+  SV_ZoneMoveAt armed a tick earlier): this arm has seen the body at rest. Set by SV_TimerPlaceArm (new; the arm of
+  SV_ZoneMoveAt, which has zeroed the velocity), by SV_TimerTryArm for a map teleport that is not fast (Patch 775's
+  SV_TimerFast; its fall is the map's), by the P1008 rest re-arm, by SV_TimerJumpWatch on an armed packet where
+  SV_TimerSlowGround holds (MOVETYPE_WALK, no hold, on the ground, not rising, own horizontal speed under
+  run_rearmspeed, 290; the carrier is left out), and from `.run_t_prerest`.
+- `.run_t_prerest`: PlayerPreThink sets it when SV_TimerSlowGround holds before a command moves the body;
+  PutClientInServer and SV_TimerPlaceArm set it (the server's placement, at rest). SV_TimerFrame hands it to
+  `.run_t_restnow` and clears it once per packet, before any return. SV_TimerTryArm credits `rested` from it only if
+  the packet left the body slow (SV_TimerArriveSlow: own horizontal speed under 290 and not falling faster than 290;
+  a jump's rise passes). A held body runs no SV_TimerFrame, so a body placed and then held -- the tournament countdown
+  respawns, restarts and holds, and the hold voids the arm -- keeps the credit to the packet that lets it go.
+- SV_StartUnrested: on a start-on-leave map (not run_t_bhopjump), an attempt armed in a ZONE_START that leaves without
+  `run_t_rested` is practice; SV_TimerStart says "unrested start" and takes the SV_TimerPractice funnel. Stage boxes
+  keep Lex's 21 Sep rule (run_stagecap 0) and bhop-mode starts are not judged by it.
+- `.run_t_placed`: SV_NoclipWatch raises it at level while the body noclips, SV_SetPosSelf raises it (setpos,
+  tp_player), and SV_ZoneMoveAt raises it for a zone that arms nothing (zone_goto to an END or a checkpoint).
+  SV_TimerArm and the bhop-mode START boundary keep the attempt dirty while it stands. SV_TimerPlaceArm, a spawn and
+  the P1008 rest re-arm (which already refuses a dirty body standing higher than the restart spot) clear it.
+- The latch in saves, key `placed` (the readers are key-match loops, so old and new files read both ways).
+  SV_SaveWriteState writes SV_TimerPlacedNow (below). SV_SaveWriteAt (the position-only shape) writes 1 for a point
+  with no ring sample -- the client's own, from sl_saveview or save sync's add -- and otherwise the sample's
+  RW_PLACED, as SV_RewindWriteState does for a rewind row. The keep-window demotion rewrites the row's own value. A file without
+  the key (older than this patch, or written under run_startrest 0, which writes none): a position-only one (a point
+  its client may have typed) is placed; an off-the-clock or FINISHED one is judged by height in the feet frame -- on
+  the start's floor (no higher than SV_ZoneDestRead + 2, the rest re-arm's ledge, in the START the body is in after the
+  load) it stays a `!r` spot and loads clean, above it neither; a running one reads walked to unless its `cheat` key
+  is set. Both readers decide alike. SV_SaveReadLight keeps the answer in a row
+  column of its own, `rec_sl_placed[]` (allocated, reset, sorted and shifted with the others), and
+  SV_SaveLocPickInZone skips such a row, so `!r` does not restart there. The full restore reads the key the same
+  way, keeps it across retry, and a load or a Multi-Session resume only RAISES the latch from the row, before
+  SV_SaveLoadTag words the next start, saying "not a clean start spot". A restored attempt starts with `rested` clear.
+- What a save records is SV_TimerPlacedNow: the latch, a noclip body, sv_cheats (or an ent_fire-edited map) or an
+  engine spectator (not slow practice or TAS: they still move the body; a start mark counts every cheat level). PlayerPreThink raises the latch for a noclip body per command, before the warp op that runs a save
+  (SV_NoclipWatch runs once a packet). The rewind ring samples it (column RW_PLACED). A match's non-competitor (the
+  tournament's `*spectator`, which runs no PlayerPreThink or PostThink) has every `sl_` command but sl_holdoff refused.
+- run_t_prerest is cleared by a tick that begins on the ground but not slow (SV_TimerFastGround), so run_t_restnow
+  speaks for the packet's last ground tick, not one before a landing.
+- Start marks: `startmark set` needs FL_ONGROUND (SV_TimerMarkGround: under the rule only); `.run_mark_dirty` remembers a mark set while the latch stood or at
+  a cheat level (SV_TimerMarkClean) and `!r` at it raises the latch again over its arm (SV_TimerPlaceTaint). The
+  practice return re-places the body where it stands and keeps a standing latch.
+- SV_ArmStateStat reports an unrested arm as AS_HOPPED (the HUD's "not armed - stand below 290") and a placed one
+  reads AS_NOCLIP. `cmd timer` prints `rest: rule R rested N placed N unrested N prerest N`; a developer server logs
+  `timer: <name> starts: rested N placed N dirty N hopped N cheat N unrested N`.
+
+**Review.** Two independent reviews of the first cut (control flow; what a cheater gains), a re-review of the
+fixes, and a round on the fixes to that. The first cut observed the ground before the arm in the arming packet, so a just-spawned or just-released body
+that was already airborne read unrested: a tournament start with jump held would not have scored. It refused
+`startmark set` under any taint (marks are a practice tool under sv_cheats, slow practice and TAS), and it left the
+saved-spot restart, the mid-air mark and the in-flight armed load open. All reworked as above. The second cut kept
+the saved-spot answer by turning the row's tick into "demoted" in memory, and every load compares the row with its
+file (SV_SaveRowIs): a save taken off the clock while the latch stood could never be loaded again ("that save changed
+on disk"), nor synced, shared or prepared. It also set the latch FROM the row on a load, so a row without the key (a
+rewind's) ended a standing latch, and it read every `demoted` row as placed although the server writes that key for
+honest rows too. The third cut is the column and the `placed` rules above. A fourth round found the third cut's
+rewind rows reading placed for any practice run (it used dirty-or-cheat for the latch: now the ring samples it), the
+per-command save against the per-packet noclip watch, match spectators saving untainted, keyless files trusted, and
+rule 0 still writing the key; all as above. A fifth round found that distrusting every older off-the-clock save
+broke every player's existing "your save" spot (now judged by height), that counting a cheat level flagged slow
+practice saves with messages blaming noclip, and that a packet's earlier slow tick could vouch for a later landing;
+all as above. A sixth found old typed points no longer raising on load, the height test comparing a feet point with
+an origin under centred hulls and calling a writing zone function from a read-only picker, sv_cheats placements (fly)
+unlatched, and the two readers disagreeing; all as above. A seventh read that delta.
+
+**Verified.** game tools/p1643-arms.md. Headless dedicated server + client on surf_ace (engine as installed 20 Nov),
+sv_cheats 0, control (base QC) against the fix, graded on `cmd timer`'s own lines: the fall-through arm reads running
+practice 0 / practice 1 with "unrested start", and the next attempt after the map's fail teleport is armed, practice
+0, rested 1; a start region over the spawn room with jump held reads rested 1 at the first poll (the first cut: rested
+0); the setpos-back arm reads dirty 0 / 1; a mark set there restarts dirty 0 / 1; `!r` after a save made there lands
+on the save / on the map's spot, and its state.txt reads `placed 1`; 6 s standing clears the latch; an ordinary start
+stays practice 0. Round 3 (rows L1-L8): with a walked-to save B and a placed save C in the box `!r` lands on B; C
+loads and reads placed 1 (the second cut: "that save changed on disk"); a load of B does not end a latch a noclip
+raised (the second cut: placed 0); with B deleted `!r` is the map's spot; an sl_saveview row writes `placed 1` and
+its load raises the latch; zone_goto to the END raises it; sl_saveat writes `placed 0` in a clean run and `placed 1`
+after a setpos in the run; under run_startrest 0 a mark is set in the air. Round 4: a save with its `placed` line removed
+is, after a map reload, not where `!r` restarts and its load says "not a clean start spot" (the round-3 build restarts
+there); a hopped-start practice run writes a rewind row `placed 0` (the round-2 build wrote 1). Round 5: of two
+key-stripped saves, the one on the floor stays the `!r` spot and loads clean, the one taken in the air (z 3279) raises
+the latch on load (the round-4 build distrusted both); an older sl_saveview point raises the latch on load (the
+round-5 build loaded it clean). tools/tournament_playtest.py --smoke --round-end: 4 starts, each `rested 1 ... unrested 0` (its own
+round_end_hold_voids_run check is False on main as well: the host's run had been re-armed when the round ended).
+Build 0 warnings; qcframes clean on qwprogs. Three arms first measured nothing (a single late read, a fixture round
+one of several spawn points, a save taken after the rest had already cleared the latch) and are named in the record.
+
+**Limits.** Not measured: a stage box, a retry or Multi-Session restore, the practice return, the keep-window
+demotion, a shared save, save sync's add, the per-command noclip line, a match spectator's refusal, two players, a
+live lobby (bhop-mode maps: Patch 1657). An older save above the start's floor stops being a restart spot until it
+is saved again. In-box hops hidden from the per-packet hop tag by long packets, and carriers in a START, still give
+clean speed (the start is latched per packet). A map teleport into a START is still judged on
+horizontal speed only and does not end the latch; a keyless timed save reads walked to; a start mark is ground-tested
+when set, not when used; the start is still latched per packet. All in the game BACKLOG.
+
+## Patch 1660 - A GoldSrc texture with no WAD here draws in its own colour
+
+**Cause.** Lex, on the GoldSrc map import: "In Source maps, I got the bot to make an Index of all the textures, so if
+any are missing, we can flat colour it at least the colour of the texture, could we do the same here?" A BSP-30 map
+takes most of its textures from Half-Life's and Counter-Strike's WADs; without those games every such face was the
+pink and black missing pattern.
+
+**Change.** wad.c: on a WAD miss while the world is a BSP 30 (wad_hlmap, set where the map's wad list is read),
+W_GetTexture returns a 16x16 block of the colour listed for that name in data/wadcolours.net.txt (the menu's copy, read
+from the gamedir's loose files only, like the map tables) or scripts/wadcolours.txt (shipped). FTESURF-WADCOLOURS 1,
+`<name> <rrggbb>` per line: 6,664 names from valve, cstrike and czero (ftesurf tools/wadcolours.py: linear-light mean of
+mip 0, a '{' texture's transparent index skipped, names normalised as W_CleanupName does). No pixels are stored. Decal
+requests are not answered. QC_MenuTable keeps CSQC from writing wadcolours.net.txt.
+
+**Verified.** Rig client on bhop_assault_gs (84 textures from halflife.wad) with HOME pointed at an empty folder so no
+Steam library resolves: table present, flat colours; table absent, the missing pattern (two screenshots, same view). A
+Source map never reaches the branch (the flag follows the world's format).
+
+**Boundary.** One colour per face: fences and grates ('{' textures) are solid. Skies are not covered. Not run on Windows.
+
+## Patch 1659 - A GoldSrc map runs AG 250 unless the host picked a mode
+
+**Cause.** Lex: "AG250 as most people play AG maps on"; "is it possible for the Lobbys to state their movement style
+(Surf/Bhop/AG250) with the map they are playing? and have an ability to swap per map?" The profile was one global
+setting (sv_movementprofile): a BSP-30 map ran Source movement until someone typed it, and then every map ran it.
+
+**Change.** sv_phys.c: sv_goldsrcprofile (default "ag-250", CVAR_NOTFROMSERVER|CVAR_MAPLATCH). With sv_movementprofile at
+default, SV_ApplyMovementProfile reads the incoming map's BSP header (SV_MapIsGoldSrc, under the map's @spec prefer-hint)
+and a version 30 map runs that profile; the next Source map runs the game's own movement. A value that is not a GoldSrc
+profile (empty, an HL2 one) warns and runs ag-250: a BSP-30 map never runs this game's own movement, so its runs stay
+unranked and filed apart (review). Never on a tournament server (tournament_enable or tournament_reserved set;
+worldofsurf-ed: surfd pins each tournament map's movement). An explicit sv_movementprofile still wins on every map.
+sv_init.c: FS_AutoUnmountStale now runs before SV_ApplyGamemode, so the previous GoldSrc map's raised Half-Life folders
+are gone when the header is read (review: a CS:S de_dust2 after a GoldSrc map read Half-Life's CS 1.6 de_dust2.bsp and
+got AG 250).
+
+**Verified.** Rig server, bhop_assault_gs then surf_mom_training in one process: default -> *movementprofile ag-250-v1
+at pm_ticrate 0.004, then no profile at 0.015; tournament_enable 1 and sv_goldsrcprofile "" -> no profile; cs16 ->
+cs16-v1; sv_movementprofile ag-100 -> ag-100-v1 on both. After the review fixes (r3_*): default, "" and hl2-pre ->
+ag-250-v1, cs16 -> cs16-v1, tournament_enable 1 -> none, the Source map none in all five; a CS:S de_dust2 loaded after
+bhop_assault_gs runs Momentum movement at 0.015 with the three GoldSrc mounts dropped first (r2_srv).
+
+**Boundary.** The lobby directory does not carry the style yet (tools/backend-pending.md). Lobbies host no GoldSrc map.
+
+## Patch 1658 - GoldSrc maps in the map finder; a compact list (menu QC only)
+
+**Cause.** P1656 installs GoldSrc packages from data/goldsrc.net.txt, which nothing fetched, and the finder had no row for
+them and no dense view. Lex: "display them in the list, maybe including the rest with reason why not included"; "a small
+list without thumbnails ... Just an option if people want it."
+
+**Change.** m_goldsrc.qc fetches https://maps.proto.bar/goldsrc/catalog.txt once a session (online tier), checks every row
+under P1099's rules (ids ending _gs, 64-hex hashes, # stamp and a matching # end) and replaces the saved table through
+.tmp and a rename. Its rows are appended after the Source ones and listed only under a new goldsrc Library chip (Mode
+all/bhop/kz/installed; unavailable rows last, greyed, with the reason; Play is the local game, no zone fetch, no record
+requests). ui_classify never files Half-Life's folders as CS:S. m_maprows.qc adds Cards | List for every library
+(ui_maps_list, default cards; 26 px rows, no record requests).
+
+**Verified.** 0 warnings. Source rows pixel-identical to the pristine menu at 1600x900 (only the Library strip and the
+switch differ); live fetch byte-identical to the CDN; nine bad replies refused; real downloads sha256-matched; a 404 reads
+failed; Play reaches kz_man_everest_gs. One independent review, five defects fixed. Linux only.
+
+## Patch 1656 - GoldSrc map packages in downloads/goldsrc
+
+**Cause.** Lex's AG/GoldSrc archive (1,308 BSP-30 maps) was never published. Momentum ships Source ports under the same
+names, GoldSrc sound/ and models/ paths collide with Source games', and the menu's download fetched one maps/<name>.bsp
+into the game folder. Lex: "maybe we need a 'goldsrc' folder in downloads where all the goldsrc content gets downloaded
+to"; Valve's files "we just mount them like every other game".
+
+**Change.** One package per map, <gamedir>/downloads/goldsrc/<name>_gs.pk3 (ftesurf tools/gsrcpack.py: the BSP and only
+the custom files it names, custom WADs cut to the textures used, Valve's files left to Steam). fs.c FS_AutoMountForMap
+adds, for a map whose package is there AND matches its catalogue row (size and sha256, verdict cached), the package
+(FS_Addon_MountPack: SPF_ADDON|COPYPROTECTED|PRIVATE|UNTRUSTED; refused whole if it holds anything but maps/<id>.bsp, root
+WADs, models/*.mdl, sprites/*.spr, sound|media audio, gfx/env images), steam:Half-Life/valve whenever installed, and
+cstrike / czero when the row names them. FS_Addon_Raise moves only what this code mounted ahead of the other addons (below
+the mod); FS_GoldSrc_AfterDrop drops them when the next map is not GoldSrc, whatever fs_autounmount says. Catalogue ids
+must end _gs. cl_parse.c: a listed map's maps/<id>.bsp request becomes a web download of
+https://maps.proto.bar/objects/goldsrc/<sha256 of the .xz>.xz into goldsrc/<id>.tmp, stopped at the row's .xz size; the
+.xz is hashed, then decoded through a counter that refuses output past the package size and hashes it; only the
+catalogue's bytes are renamed into place. CL_EnqueDownload refuses any local name with a goldsrc segment (Windows
+trailing dots and spaces stripped) unless it is exactly goldsrc/<id>.pk3 from its row's address. A package that arrives
+while connecting is mounted and its map loaded without an fs restart; demos of a GoldSrc map, savegame loads and
+recordmap run the mount pair too. pr_menu.c: downloadmap() reports an installed package as held; mapfilekb() its size.
+QC_MenuTable keeps CSQC from writing data/goldsrc.net.txt. fs_automount_spec and the console name the package
+goldsrc/<file>, never the player's path.
+
+**Verified.** Rig, 20 Nov: server `map bhop_assault_gs` mounts package, cstrike, valve directly under the game folder;
+`map surf_mom_training` drops all three; `map kz_cellblock_gs` remounts (pristine engine: map not found). Client:
+`ui_dlmap kz_man_everest_gs` fetched, decoded and installed the package; a row with one wrong digit was discarded; a client
+without the package joined a server on ag_bhop_master_gs, fetched it and loaded in (screenshots). Two independent
+reviews (security; file-system ordering) found 17 issues; three rounds of fixes, each re-reviewed (the last found no high
+or medium item left open). After them (rig, artifacts/f_*): a CS:S de_dust2 loaded after bhop_assault_gs runs Momentum
+movement with the three GoldSrc mounts dropped first; a package holding particles/map_evil_gs.cfg is refused whole; a
+package that is not the catalogue's bytes is refused; with fs_autounmount 0, bhop_assault_gs -> kz_cellblock_gs ->
+surf_mom_training leaves no GoldSrc path mounted; a Half-Life folder listed in fs_addons.txt keeps its own slot; a
+server-stuffed download to package/ftesurf/downloads/goldsrc/... and two from the player's console print the refusal
+and write nothing while a control name is requested; a real download installs with the catalogue's sha256 and a wrong
+row is discarded; a stale ag_bhop_master_gs.pk3 is refused at join, fetched again and mounted.
+
+**Boundary.** Windows not built or run. The unpack runs on the main thread (largest package 130 MB). Three pre-existing
+download weaknesses the review found are recorded privately, not fixed here.
+
+## Patch 1655 - GoldSrc map entities: ladders, liquids, doors, buttons, map logic
+
+**Cause.** BSP-30 maps load under the AG profiles but their entities spawned the Source way: ladders were walls, liquid
+skins all water, doors/buttons/trains static, pushes ignored players, teleports kept velocity, spawns sat 36 high and
+target-chain entities were deleted. The AG mover also took a ladder's plane only from a wall behind it. Lex: "it would be
+nice if we could support the regular ladders/water/door/buttons for goldsrc maps", without "messing with my Source maps".
+
+**Change.** QC sv_gsdefs.qc / sv_goldsrc.qc behind GS_Map() (cvar halflifebsp) with six gated hooks (CheckSpawn,
+ED_ParseUnknownEpair, SV_UseFrame, SV_EntityIOBuild, SV_EntityDamageInner, PutClientInServer's spawn lift); GoldSrc keys go
+to private gs_* fields. func_ladder is a SOLID_BSP skin -16 volume; liquids keep their map skin; doors, buttons (+use
+search as the SDK, touch, shot), trains, breakables, teleports (velocity zeroed), trigger_push, conveyors and
+multi_manager / trigger_relay / trigger_auto / multisource / trigger_changetarget / env_global / game_counter /
+func_wall_toggle run. cl_triggers.qc translates teleport/push/conveyor keys when *bspversion is 30. Engine pm_ag_world.c /
+pmovetst.c: PMAg_Ladder falls back to the ladder brush's own face on a Half-Life world (PM_LadderEntPlane).
+
+**Verified.** Server-only arms (rig, ag-250): bhop_assault 6/6 ladders climb (control 0/6); 163 of 165 touchable ladders
+over 60 maps with the engine fix; slime jump-out 78.7 against 98.4 in water; 13,951 of 13,951 stood-on touch doors start
+(319 maps); every targetname fired once on 319 maps with no QC error; teleport -397 in, 0 out. Source maps unchanged: 18
+of 18 spawn-frame comparisons (QC core dump + level cache + log) identical to the pristine progs on nine Source maps.
+Independent isolation review: no change on a Source map or to Source runs; its two GoldSrc-only findings fixed
+(GS_MapStart also runs with vbsp_entity_io 0; killtarget and trigger_changetarget held on lobbies like GS_Break).
+
+**Boundary.** No client prediction run. trigger_hurt is inert (no health model; Lex to decide). 728 maps not loaded yet.
+
+## Patch 1654 - Linux builds the ui_imgui plugin
+
+**Cause.** Lex: "I don't have imgui on linux?? can you fix that please?" The plugin's objects were compiled without
+-DMULTITHREAD, which only Windows gets implicitly (bothdefs.h), so pmove.h's FTE_TLS externs did not parse; its link line
+passed -static, which cannot make an ELF shared object.
+
+**Change.** plugins/Makefile: -DMULTITHREAD in IMGUI_FLAGS; $(PLUG_FULLSTATIC) (-static on Windows only) on the link line;
+on Linux -Wl,--exclude-libs,ALL keeps the static libstdc++ private (a GL driver's libstdc++.so cannot interpose; dynamic
+symbols 142 -> 1). Release half (ftesurf): tools/linux/build.sh builds and hashes it, gates G1/G2/G10 cover it,
+release.ps1 can ship it behind $LinuxShipImgui (off): every installed launcher refuses a whole update feed naming a file it
+does not know, so it ships with the first worldofsurf feed (P1593 stage 3).
+
+**Verified.** fteplug_ui_imgui_amd64.so builds (needs libm/libc only); a Linux client loads it (plug_list) and
+ui_imgui_status answers version=1.91.9b. Release tooling: test_releaselib.ps1 and test_updatefeed.py pass; gates.sh and
+linux-pack.sh checked on scratch fixtures with origin/main controls.
+
+**Boundary.** Not in any release yet; this PC gets it from wos-build.sh. A drawn panel on Linux not screenshotted. The
+bullseye release build of the plugin has not run.
+
+## Patch 1648 - Tournament lobbies run themselves (QC + lobby; no engine change)
+
+**Cause.** Lex asked for a stream tournament with strangers. The 20 Nov research found the in-game Ready/Start
+buttons unreachable (F6 was bound only in the playtest harness), so every match would abort after 120 s of loading; a
+competitor missing at the countdown aborted everyone; and a dedicated server keeps every model name it loads
+(gl_model.c mod_known, 8192 slots; Mod_Purge frees data, never the slot), so one lobby process dies of MAX_MOD_KNOWN after
+~17-36 map loads (measured by tournament_qualify_live: 30 crashes over 1104 maps).
+
+**Change.** sv_tournament.qc: Tour_AutoReady sends P1650's server-only `autostart` tournament_autostart (20) s after every
+competitor is present on the arrived map (a live linked slot via Tour_Client); a competitor missing for 60 s on end, at
+least 120 s after arrival and not while anyone is still connecting, is named in `absent` (forfeited by surfd); every
+grace is capped so any absence forfeits by arrival + 300 s; the host's Start in auto mode means start now. An older surfd's
+refusal ("token required") switches the match to the manual buttons (serverinfo tournament_auto 0, cvar
+tournament_noauto = match id). Loading limit 600 s, host-gone 180 s outside loading (120 s in manual/host-only mode), no
+countdown abort. Players' requests are capped (one queued each, 32 total, a 3 s pause while a server op waits). Forced
+spectators carry *tqspec and rejoin through the engine's `join` at release, with an account re-hello and their old avatar
+freed. Tour_Recycle: an empty, unreserved lobby (120 s) past lobby_maploads_max 12 / _tour 4 loads quits and systemd
+restarts it. Tour_Reply no longer find()s the empty token; AG movement names normalised to surfd's spelling.
+
+**Verified.** Native two-client playtests against the live and the P1650 backends: auto start ("Everyone is here" ->
+countdown -> GO), round end under both rule sets, announcements; a two-server arm showed the recycle quitting at its cap
+while a control (cap 0) stayed up. Seven independent review rounds (control flow; integrity/compat); none above P3 open.
+
+**Boundary.** A lobby deploy carries it; before P1650 surfd the auto start falls back to the manual buttons. The engine
+fix (reusing freed mod_known slots) is not done; the QC restart is the mitigation.
+
+## Patch 1649 - Tournament guidance in game (QC only)
+
+**Cause.** Nothing outside the F6 panel showed the phase, round, clock, standings or winner; F6 itself was unbound; F6
+standings printed times with ticks-per-second as seconds-per-tick (a 60 s run read ~74 hours).
+
+**Change.** cl_tournament.qc: Tour_Key gives F6 to the tournament while the server holds a match (both key branches in
+CSQC_InputEvent; a report box keeps its F6); Tour_Hud draws a top-left banner (phase, round, map, clock, next step) and
+standings with plain draw calls (an always-on sui bracket emptied sui's hit-test list and cleared other menus' clicks),
+plus centre lines (countdown, GO, round over, out, winner/shared, no contest). sv_tournament.qc Tour_Announce: chat lines
+per phase, every new best with its rank, who is out, who won. Why a finish did not count; leave confirmation; PLAYED /
+WINNER / round order in F6 (tourney_map gains a 5th field, the client accepts 4 or 5); the time unit fix.
+
+**Verified.** Playtest screenshots at 1280x800 (banner clear of the run timer and the map card); see P1648.
+
+**Boundary.** csprogs is served by the lobby, so the client half ships with the lobby deploy.
+
+## Patch 1650 - Tournament rules and rooms that don't end in no contest (surfd)
+
+**Cause.** settle aborted on two non-finishers or a tied slowest; a leave after lock aborted; no early finish; AFK
+drafters stalled rooms; late viewers were locked out; ordinary map requests could occupy the tournament servers.
+
+**Change.** surfd tournament_rules/party_lobbies/tournaments/surfd.py: every non-finisher (or the tied slowest) is out,
+nobody finished = everyone goes through, shared places, early finish, the reserve map once then shared first; leave
+after launch = forfeit, before = back to the lobby (launched() sticky); server-only autostart readies the present and
+forfeits `absent`; plain abort reasons; 45 s draft clock with a deterministic auto ban/pick; host unseat/kick before
+launch; join any phase as a spectator with a cooldown; leave/ban/pick exempt from the revision check; no-op repeats;
+notes capped (160 bytes, short name lists); idle tournament nodes are last choice for ordinary joins (SURFD_TOURNAMENT_HOLD).
+
+**Verified.** test_tournaments 31 -> 52, test_party_lobbies 27 -> 42, each new test failing without its change; three
+independent review rounds; guarded generation gen1650 (independent token CLEAR).
+
+**Boundary.** Live with gen1650. The live 0.1.49 menu does not show the draft clock or notes; P1651 does.
+
+## Patch 1651 - Tournament tab explains itself (menu QC)
+
+**Change.** m_tournament.qc: confirm before leaving or closing; Rejoin / Watch on the server; Link Steam from the tab;
+plain-language errors; the rules in one line; the room code in the header; the draft clock (turn_left); Kick for
+spectators before launch.
+
+**Boundary.** Ships with a client release (0.1.50).
+
+## Patch 1663 - Console: the completion list hangs from the window's edge
+
+**Cause.** Lex, on P1662 in a clean window: the space under the typing line (the padding plus the window's 16 px
+bottom resize grip) "looks like an extra line"; then "it's the grip, maybe just place the completion window up by like
+8 units so it's closer to your typing text". Under a clean window the list started max(3, padding) below the window.
+
+**Change.** console.c: Con_DrawInput records a clean window's bottom edge itself (was +3), and Con_DrawCompletionPopup
+puts the box's top line one virtual pixel up, on the window's bottom hairline (wnd_y+wnd_h-1), so the list reads as
+attached to the window, 9 px closer at padding 8. The grip and the text box are unchanged (a variant that reclaimed the
+grip strip under the text was set aside: Lex kept the grip). Flip, plain-window and drop-down placement are unchanged.
+
+**Verified.** Nested headless labwc, 1600x900, cfg/default.cfg: `con_window_` draws the box from y 703 (the window's
+last row) with rows from 707; con_selftest's click map row 0 at y 715, "all checks passed"; a virtual-pointer click at
+y 747 typed completion 3. Review: nothing wrong; its notes (a stale comment; one physical px is not one virtual px at
+a scaled display) were fixed before commit.
+
+## Patch 1662 - Console: room round the completion list
+
+**Cause.** Lex, after P1647's padding: "a few pixel breathing room between your text and the drop down suggetions ...
+both would be nice to modernize and make feel better." The completion popup started on the typing row's bottom edge (or
+3 px under a clean window), and its rows ran flush against the box's left edge, top and bottom.
+
+**Change.** console.c, `con_completion_padding` (virtual px, 0..32; engine default 0 = the old list; FTESurf's
+cfg/default.cfg sets 8). Con_DrawCompletionPopup keeps top/bot as the ROWS and draws the box padx wider each side and
+pady (half the padding) taller above and below, so the suggestion text stays lined up with the typed text; the box sits
+the padding below the typing row (below a clean window, max(3, padding) from its edge), and a popup that flips ends the
+padding above the typing row. padx is clamped to the row's left edge and never negative (a window dragged left keeps
+the old box). Con_PopupCovers takes the box; Con_CompletionRowAt and Con_CompletionPopupRows (con_selftest) read the
+rows' own rectangle (con_popuphitrowx/rowsw/rowy/rowsh), so a click in the padding types nothing.
+
+**Verified.** Nested headless labwc, 1600x900, cfg/default.cfg values: `con_window_` hangs the list 8 px below the
+window with the text inset 8 px and level with the typed text; con_selftest's click map puts row 0 at y 724 (704 window
+edge + 8 + 4 + half a row) and "all checks passed"; a virtual-pointer click at row 3's y typed completion 3; `r_` (457)
+flips the list to end 8 px above the typing row; with con_window_padding 0 / clean 0 the list starts 8 px under the
+typing row; con_completion_padding 0 draws the old flush list.
+
+**Review.** One round: padx went negative for a window dragged off the left (rows outside the box, at padding 0 too),
+and a click in the side padding still picked a row. Both fixed (padx = max(0, con_popupl); the row test checks x);
+re-review found nothing further.
+
+## Patch 1661 - QC strtolower/strtoupper no longer overrun their 8 KB result
+
+**Cause.** Found in review of P1653, which sends every map-name lookup and lobby map name through strtolower.
+unicode_strtolower/unicode_strtoupper (common.c) passed `outsize - l` to the encoder, where `l` was the length of the
+LAST character written, not the running total, so the limit never shrank and a string that maps to 8192+ bytes wrote
+past PF_strtolower's `char result[8192]` (stack). The lobby directory's map names have no length cap, and m_board.qc /
+m_mapcards.qc already lowercase directory JSON.
+
+**Change.** Both keep a running total, pass `outsize - total`, return it (no caller reads the return value), and stop
+at the first character that does not fit (the encoders write nothing and return 0 then), so the result is a prefix.
+
+**Verified.** The real functions from common.c (decoders, encoders, both helpers) in an AddressSanitizer harness:
+before, a 9000-byte input is a stack-buffer-overflow; after, it gives 8191 bytes; 8000 two-byte UTF-8 characters give
+8190; 8190 ASCII bytes then "\xc3\x89x" give the 8190 (no character after the one that did not fit); 100 and 8191
+bytes are unchanged. Review: one round on the fix; its note (a wider character skipped, narrower ones after it still
+written) became the stop.
+
+## Patch 1653 - Main-menu render audit: Story/Event rows, map-name lookups (QC only; no engine change)
+
+**Cause.** Lex: "audit all of the main menu/s to ensure they render 'quickly' ... all the menus when not loading into a
+map." Measured every out-of-game screen; Story and Event took 6.5-8.3 ms a frame where the rest took about 1. A skip
+test put ~5 ms in the ladder rows: Sty_LivePlayers (the live-player count on the header, the side panel and every
+visible row) compared every lobby's map with every level of the ladder on each call -- 12 lobbies x 120 levels, three
+builtins a pair, ~50,000 builtin calls a frame. First visits (r_spikes + profile_menuqc over the first 0.4 s at
+cl_maxfps 30) showed ui_map_index scanning all ~1650 map rows, two builtins a row, per lookup: Story's first visit
+spent 11.3 ms (profiled) there resolving its level rows, the home lobby cells 2.2 ms a poll.
+
+**Change.** m_story.qc: Sty_LiveIndex keeps, per lobby row, whether its map is one of ladder L's levels, rebuilt only
+when the lobby list (lb_received, lb_count), the ladder (sty_lrecv, sty_nlv[L]) or L changes, through a table of the
+ladder's maps; Sty_LivePlayers sums the flagged live lobbies (on one map when `map` is set). m_main.qc: ui_map_index
+reads a table (strtolower name -> first row, built backwards with HASH_REPLACE), rebuilt on the first lookup after
+ui_load_maps (the only writer of ms_name/ms_count; it clears ms_ixok) or a count change. strcasecmp (ASCII fold) equal
+implies strtolower equal, so a miss is a miss; a hit is checked with strcasecmp and a failed check falls back to the
+scan. Both answer exactly what the old loops did.
+
+**Verified.** Nested headless labwc at 1600x900, cl_maxfps 0, menu commands driving each screen (artifacts
+menu_audit.py), r_frametime/r_budget per screen, steady average ms on the clean build: home 0.8-1.6, Maps 1.3-1.5,
+Story 1.5-1.9 (was 6.5-7.4), Event 1.5-1.9 (was 6.5-8.3), Settings 0.9-1.2 (sections 0.9-1.6), Tournament 0.8-1.0,
+Stats 1.2-1.6, Updates 0.4, Chat 0.8-1.0, Terms 0.8-1.0 (three runs, the last with Patch 1661's binaries; spread
+about 0.3). First visit, profiled: ui_map_index
+11.3 -> 0.05 ms on Story, 2.2 -> 0.02 ms on home; the ladder index rebuild 4.1 -> 0.4 ms. Story screenshots before and
+after match (rows, thumbnails, medals). profile_menuqc: the largest QC self cost on every screen is sui's rounded box
+(_sui_round_draw, ~7 drawsubpic calls a box), but skipping it on Story gained little real time, so it stays in QC.
+
+**Review.** Two independent rounds: no defect in the caching or the table (every writer of the lobby rows, the ladder
+and ms_name traced; strcasecmp vs strtolower folding; hash handles across menu_restart). Notes acted on: a hit failing
+the strcasecmp check no longer drops the table (a non-ASCII case pair rebuilt it on every lookup); strtolower's overrun
+became Patch 1661.
+
+**Boundary.** The first visit to Story still has one ~20 ms frame: its per-map thumbnails decode on the main thread at
+first draw (drawsubpic); Stats does the same when profile pictures arrive (MP_Upload). The first frame after a switch
+can also wait 10-18 ms in swap/present on this rig. BACKLOG.
+
+## Patch 1647 - Console window: padding and a quieter look
+
+**Cause.** Lex: "give the UI of the console a little bit of padding? it's very tight, and I want it to look a bit
+cleaner like the kitty terminal". The text ran to within 8 px of the window's left edge and straight to the scrollbar,
+the title bar and the bottom; the title was drawn in the highlight colour (red), the close mark was a big X, the
+scrollbar a 16 px slab, and the completion list started inside the window's bottom edge.
+
+**Change.** console.c, three cvars, engine defaults keeping the old window (FTESurf's cfg/default.cfg opts in):
+`con_window_padding` (px) moves the text box in on the left, right (inside the scrollbar strip) and bottom, and the
+scissor in on all four sides (half the padding under the title bar); a gap of the padding and a hairline in the accent
+separate the log from the typing line; the window's minimum size grows by it. Con_DrawOneConsole shifts the log
+selection box and the input-line mouse by the same x offset as the y one it already had (Patch 213), so selection and
+caret clicks stay on the characters. `con_window_alpha` is the focused background opacity (0.625 of it unfocused; was a
+fixed 0.8/0.5). `con_window_clean 1`: the title in soft grey (^7 focused, ^9 not) at the text's own left edge, a small
+"x" that turns red on hover, a 1 px accent border round the window and under the bar, a slim scrollbar thumb centred
+in its strip (the strip still takes the clicks), and the completion popup hangs just below the window instead of over
+its padding. The log's drag-selection highlight now uses the same accent blue as the other selection paths (P1642).
+
+**Verified.** Nested headless labwc, in game: before/after screenshots at con_window_padding 12, alpha 0.92, clean 1,
+titlepad 7 -- padded text, grey title, hairline border, divider above the input, popup below the window. A virtual
+pointer drag in the log, screenshotted with the button held, highlights from the pressed character to the released one;
+a click on the input line puts the caret after the clicked character.
+
+**Review.** One independent round: with the popup hung below a clean window, its "no room below" flip still measured
+from that bottom, so the flipped list covered the typing line (and its click rows sat on it); a clean window's bottom
+stayed set for the drop-down console drawn after it; the divider gap read con_window_padding unclamped where the insets
+stop at 64. Fixed: the flip measures from the input row (con_popupib), the drop-down path clears con_popupwndb, the
+gap uses the clamp. Re-review of the fix: nothing further. After the fix, at cfg/default.cfg's values (1600x900): `sv_air`
+hangs its popup below the window; `r_` (457 matches) flips it to end on the typing line's top with the line visible; a
+log drag highlights in the accent blue from the pressed character; con_window_padding 200 insets and gaps by 64.
+
+**Boundary.** Padding applies to console windows (con_window 1), not the classic drop-down console. Line spacing is
+unchanged (the console assumes rows of one font height in ~50 places).
+
+## Patch 1644 - Console: Ctrl+Z undo, no "]" prompt
+
+**Cause.** Lex, after confirming P1641-P1642 ("it works and I like it!"): "add ctrl+z undo and remove the ] prompt
+please!" Ctrl+Z typed nothing (P1642 swallows Ctrl+<key>) and the input line still began with Quake's "]".
+
+**Change.** keys.c: Key_Console is now a wrapper around the line editor (Key_ConsoleKey). It copies the line, caret
+and selection before every key and, if the key changed the line, pushes the old state onto con_undo (100 steps), so
+every edit is undoable without knowing about undo: typing, Backspace/Delete, cut, Ctrl+U/W, Tab completion, history
+recall. Typed characters join one step until a space starts a new word or the caret moves; a new edit clears redo;
+Enter (a new edit line) starts a fresh history. Ctrl+Z undoes, Ctrl+Y and Ctrl+Shift+Z redo, restoring the caret and
+the selection the edit replaced. An asynchronous paste (Wayland) records itself in Key_ConsolePaste. Not for consoles
+with a redirect, nor while the find bar is open. console.c: the main console's prompt is empty; the input line starts
+at its left edge, and a line entered from it echoes into the log in ^4 (the accent blue) instead of after "]".
+con_edittest: 8 undo/redo cases; it also no longer restores a con->display pointer saved before printing -- printing
+reallocates the line being written, so that pointer could dangle, and it crashed Con_DrawConsoleLines once (P1642's
+test only; players never run it). It now snaps the log to the bottom.
+
+**Verified.** Nested headless labwc, connected to a local dedicated server: `con_edittest` 28/28 ok (undo the last word,
+the word before, stop at the start, Ctrl+Y and Ctrl+Shift+Z redo, undo brings back a replaced selection, Backspace one
+step at a time, a new edit clears redo) and the client kept running (the previous build's dangling-pointer crash gone).
+Screenshot: the input line shows `echo typed|` with no prompt.
+
+**Boundary.** The blue echo is read from the code, not screenshotted: the rig cannot press Enter on the console line
+(Wayland keys, see P1642). Other consoles (plugins, QC) keep their own prompts and the old echo.
+
+## Patch 1642 - The console's input line edits like a text box
+
+**Cause.** Lex: "it behaves like a terminal type, however I prefer regular text typing and selection ... I think i'm
+even missing the | that you know where your typing, and it does the copy on select and weird stuff I don't like."
+The caret was the Quake charset glyph 0xe00b drawn over the character under it, flashing 4 times a second; this game's
+fonts have no such glyph, so there was no caret and the character under it blinked out. The line had no selection at
+all. A mouse selection in the log was copied on release (on Windows straight into the clipboard; Wayland/X11 into the
+primary buffer, pasted by middle-click). Ctrl+<letter>/digit typed Quake glyphs from two tables (and the plain letter
+for any letter not in them), Alt+<letter> typed red text, Ctrl+C/Ctrl+X with nothing selected copied or cut the whole
+line, Delete at the end of the line backspaced, and plain Home/End scrolled the log instead of moving the caret.
+
+**Change.** keys.c: key_selanchor (byte offset, -1 none) with key_linepos is the input line's selection. Shift +
+arrows/Home/End extend it (Ctrl for words), an arrow without Shift collapses it to that end, Ctrl+A selects the line;
+typing, Backspace, Delete and Ctrl+V replace it (the paste callback deletes it, so an empty clipboard deletes nothing);
+Ctrl+C/Ctrl+X copy/cut it, else the log selection (Ctrl+C), else nothing. Ctrl+Backspace and Ctrl+Delete delete a word;
+Delete at the end does nothing. Control codes and Ctrl+<key> insert nothing (AltGr, which Windows reports as Ctrl+right
+Alt, still types); the Alt red-text bit is gone. No middle-click paste. Key_Console clears the selection on entry for
+every key but modifiers, PgUp/PgDn, the wheel and mouse2, and gives it back just before Key_EntryLine, so only the
+editor keeps one. Plain Home/End move the caret on a line with text (Shift selects); Ctrl+Home/End, and Home/End on an
+empty line, still jump to the top/bottom of the log. The engine chat line has no selection and keeps whole-line copy/cut.
+Mouse: a mouse1 press on the input line (con->mouseoninput, set by the last draw) records CB_INPUTSEL (CB_INPUTWORD on a
+double-click; Shift keeps the old anchor); release makes it CB_INPUTUP; Con_DrawInput maps the mouse x to the nearest
+byte boundary against the previous frame's layout (con->inputorigin; prefix-parse widths, the same trick it uses for its
+cursor), sets the caret/anchor and finishes the state (also when mouse1 is no longer held). A click in the log drops the
+input selection, and an input click drops the log selection. console.c: a caret bar between characters (2 px at 16 px
+text, the glyphs flushed first so it sits on top), solid for 0.53 s after any edit or move then blinking at about 1 Hz,
+hidden when the window is not active; the input selection drawn under the text in con_colour_accent, and the log's
+selection now in the same colour (was dark navy). Log selections are no longer copied on release or double-click; they
+stay highlighted for Ctrl+C. The line scrolls like a text box: it keeps last frame's position and moves only as far as
+needed to keep the caret in view (it used to re-centre on the caret whenever it overflowed, sliding under every move);
+dragging past an edge scrolls it. New `con_edittest [clip]` presses key sequences through Key_Console and checks the line.
+
+Review (independent, read-only): a held click on an overflowing line re-centred each frame under a still mouse and ran
+the caret to one end, selecting text nobody picked -- fixed by the text-box scrolling above; the hit test parsed once per
+byte every frame (now bisects, monotonic widths); Right with a selection at the end accepted the completion hint (now it
+only collapses); con_settext, Key_ConsoleReplace/Insert, Key_ClearTyping and history load now drop the selection, and an
+anchor inside a UTF-8 sequence is discarded; any key pressed mid-drag ends the drag, a Shift release does not, and a drag
+whose release went elsewhere is cancelled rather than finished at the current mouse.
+
+**Verified.** Nested headless labwc, 1600x900, connected to a local dedicated server, windowed console (con_window 1):
+`con_edittest clip` 22/22 ok (20 without clip). A virtual pointer (artifacts/vptr, wlr-virtual-pointer) clicked the input line (caret
+after "echo"), dragged ("echo h" selected), double-clicked ("hello" selected), dragged in the log (log text highlighted,
+input selection gone); the same click/drag on the classic drop-down console (con_window 0). After the review: a
+400 ms hold mid-way along a 130-character line places the caret with no selection and the text does not move; a drag
+from mid-line past the left edge scrolls to the start, selecting back to the press point; a short line sits flush left. With a real pointer event
+first (Wayland needs an input serial), Ctrl+X put "me" on the system clipboard (wl-paste), and a later log drag left it
+"me" -- no copy on select. Screenshots show the caret bar and the blink-off frame with the character intact. Engine
+builds with no new warnings.
+
+**Boundary.** Real keyboard typing was not injected: this engine's Wayland input maps keys by evdev keycode, and wtype's
+generated keymap makes its first letter arrive as Escape -- every key was driven through Key_Console by con_edittest
+instead. A first click into a just-opened in-game console in the rig closed it on the old build too (pointer still
+locked); not this patch. Lex's own keyboard/mouse check is in lextest.md. No undo (Ctrl+Z) yet.
+
+## Patch 1641 - The console and hud_debug read a remote server's live values
+
+**Cause.** Lex: "Can you ensure hud_debug reads the server values correctly, same with the console cvars for
+sv_airaccelerate and friction and whatnot, I want the values to read correctly live as the server value." On a remote
+server, typing `sv_airaccelerate` printed the client's own copy -- a value no game was using (150 on a bhop server
+running 1000). hud_debug's `tick` row printed a compile-time 0.015, so bhop (100 Hz) read as surf, and its eye/hull row
+compared against the surf hull (62/45, eyes 64/47), so on an ahop/HL2 server every duck went amber.
+
+**Change.** cvar.c: Cvar_ServerValue(var) returns the serverinfo key of the same name while connected to a server the
+client is not hosting (NULL when disconnected, hosting -- sv.state not dead, loading included --, playing a demo,
+for userinfo or NOUNSAFEEXPAND cvars, for a cvar that is not a server one -- CVAR_SERVERINFO or an sv_/pm_ name, so a key
+that shares a client cvar's name is never shown as its value -- or when the server publishes no such key) -- the keys cl_main.c already copies into movevars, which the game's QC republishes on
+change. Cvar_Command prints `"sv_airaccelerate" is "1000" on the server`, plus `Your own copy is "150"; it only applies
+when you host a game.` when they differ; setting one at the local level (console, or a cfg/bind run while connected)
+adds a one-line note that the server runs X. The
+completion dropdown row and footer show the server's value. QC (cl_hud.qc, P1641 in the game repo): hud_debug's tick
+reads pm_ticrate (seconds and Hz), new rows accel, stop, maxspd, maxvel (pm_maxvelocity when set, else sv_maxvelocity,
+the engine's order) and mode beside aacc/fric/grav, `--` for a key the server does not publish; the eye/hull row takes
+pm_standheight/pm_duckheight/pm_viewheight/pm_duckviewheight, the state gate pm_standablenormal.
+
+**Verified.** Client connected to a separate fteqw-sv64 (so remote): on surf_ace the console printed the server's 150
+and the panel read tick 0.0150 66.67 Hz, aacc 150, accel 5, fric 4, stop 75, grav 800, maxspd 260, maxvel 3500, mode
+surf. A locked server refused `sv_airaccelerate 555` and the client correctly kept reading 150. On a bhop-mode map with
+`sv_cheats 1; sv_airaccelerate 555; sv_friction 5.5` on the server, the panel went 1000 -> 555 and 4.0 -> 5.5 and the
+console query followed within 2 s; tick read 0.0100 100.00 Hz. Setting the local copy printed the note and the query
+then showed both values. A local-only cvar (sv_mapcompletion) and a client cvar (sensitivity) printed as before.
+
+**Boundary.** Only cvars the server publishes under their own name are covered (the movement set, CVAR_SERVERINFO cvars,
+anything the QC forceinfokeys); others still print the local copy. QC cvar() reads in CSQC are unchanged.
+
+## Patch 1639 - Tournaments on bhop maps: the default profile keeps each map kind's tick
+
+**Cause.** The live map qualification pilot (20 Nov) refused every bhop map: the lobbies run bhop at 100 Hz
+(cfg/lobby/mode_bhop.cfg, pm_ticrate 0.01) but the tournament "default" movement profile demanded 15000 us (66.7 Hz)
+in the backend rules, the server QC and the menu. No bhop map could qualify and a bhop round would fail the arrival
+tick check. Node selection also required an idle node's CURRENT tick to equal the match's, so a lobby idling on a
+surf map could never be picked for a bhop match.
+
+**Change.** surfd tournament_rules: KIND_TICK {surf 15000, bhop 10000}, tick_for(profile, kind) (default -> the kind's
+tick; every other profile keeps its fixed tick) sets the frozen settings tick; observe() checks arrival against that
+frozen tick. node_ticks(profile): a default-profile node may sit at either kind's tick (tick == clock) between matches;
+tournaments.compatible, the public slot list and party_lobbies' Start SELECT (bound IN list) use it. QuakeC:
+Tour_ProfileTick(profile, kind) (server) and MT_ProfileTick/MT_ProfileLabel(id, kind) (menu: "Default, 100 tick" for
+bhop). tools/tournament_qualify(_live).py expect tick_for.
+
+**Verified.** surfd: test_tournaments 31 (new: settings ticks per kind, node compatibility, bhop arrival refuses 15000),
+test_party_lobbies 27 (new: a default node at 10000/10000 is selected, 10000/15000 is not); both new tests fail on the
+previous backend. Qualifier tests 10/10 (bhop at 100 Hz valid, at 66 refused; surf at 100 refused). All three VMs 0
+warnings. Native playtest (surf) --round-end at 1920x1200 passes.
+
+**Boundary.** Live only when all three move: a surfd generation with this rules change, the lobby QC and the client
+menu. Version skew fails closed: an older backend still demands 15000 at arrival (a bhop round aborts), an older menu
+rejects a 100-tick bhop room snapshot, an older lobby QC refuses the new frozen tick and aborts. No native bhop match
+was played end to end.
+
+## Patch 1637 - zone and map-settings files accept Ahop (Momentum gamemode 9)
+
+**Cause.** Lex: ahop_coast's published zone says bhop at 100 Hz, "if that's wrong then fix it". It is: Momentum ranks the
+map in ahop and bhop, and the name and the map index say ahop. But zone_edit offered only Surf and Bhop, the engine read
+a zone file's or the local editor file's gamemode as 1 or 2 only (anything else: the zone's ignored with a warning, the
+editor file's whole override thrown out), and the editor's own guess on a map with no settings file read 66.67 Hz as Surf.
+
+**Change.** sv_phys.c: SV_ZoneRulesetFile and SV_ReadEditorRuleset take 9 beside 1 and 2; the warning names it. QC
+(FTESurf P1637): an Ahop button and `zone_edit mode ahop` (presets air accel 10 and, entering or leaving Ahop, gravity
+600/800: mode_ahop.cfg's values, since the local file overrides the mode ruleset), sh_zones.qc reads 9, sv_zones.qc's
+mismatch note knows "ahop", and the panel guesses Ahop from serverinfo gamemode.
+
+**Verified.** Hidden rig, ahop_coast with its zone file at gamemode 9 on a dedicated server: this build "ahop (zone
+file), 18 cvars from cfg/lobby/mode_ahop.cfg" (66.67 Hz, airaccel 10, hull 72/36); the 1633 build "gamemode is not 1
+(surf) or 2 (bhop) - ignored" then "bhop (mapmeta)", and with the candidate map index (ahop_coast 9) "ahop (mapmeta)" --
+the lobby engine's path. Listen server: the panel showed "Lobbies run Ahop from the zone file", press ze_mode_ahop,
+savesettings wrote `gamemode 9 / sv_airaccelerate 10`, and the reload ran "ahop (local editor)". After review (gravity
+kept from the session, `zone_edit mode ahop` staging Surf, timer text): on surf_ace `zone_edit mode ahop` saved gravity
+600 / air accel 10 and `mode surf` 800 / 150.
+
+**Boundary.** Lobbies on older engines ignore a zone's 9 with a warning and use the map index, so the published zone and
+data/mapmeta.txt should agree; the mode is not in zone_crc, so boards do not split by it (as for surf/bhop). The zone
+service never checked gamemode; publishing needs an admin's click. An engine before this one rejects a local settings
+file with `gamemode 9` whole (speed cap and gravity too) while the QC readback says saved: ENGINE.txt pins this one.
+Ahop's timer starts on leaving the zone (sv_timer.qc sets run_t_bhopjump for bhop/bhop-hl1 only).
+
+## Patch 1636 - steam_libraries.txt: a root that is gone, or that beats Steam's own copy, is named
+
+**Cause.** Lex: "do we have a warning for this? can't find mount at location or something?" On 17 Nov a
+steam_libraries.txt from the setup pointed at a Windows Steam library on an NTFS drive flagged dirty; its roots are tried
+before Steam's own libraries, so CS:S came from there (part of its pack unreadable) while Linux Steam had a good copy,
+and nothing said which library supplied the game.
+
+**Change.** fs.c: the first time a listed root is seen and is missing or empty, a warning says it is skipped. When a
+listed root supplies a game, the resolver asks Steam's own libraries for the same game (fs_steamlibs_steamonly makes
+Sys_SteamExtraRoots answer false for that probe) and warns once per game if Steam has a different copy, naming both and
+`fs_steamlibs remove <root>` (CS:GO's two folder names are both asked). The first such line goes in fs_steamlibs_note
+(NOSAVE|NOSET), which the missing-content banner prints (FTESurf P1636) and fs_steamlibs lists; with fs_hidesyspaths
+the home folder shows as ~ (not NOUNSAFEEXPAND: PF_cvar_string would hide it from the banner). `fs_steamlibs remove
+<path>` rewrites both candidate files without the matching lines (case-sensitive off Windows), comments kept; it and
+fs_restart clear the note and the once-only list. Resolution is unchanged: the listed root still wins.
+
+**Verified.** Hidden rig: a fake library with a CS:S whose _011.vpk is missing, listed in steam_libraries.txt, with
+Linux Steam's real CS:S: the warning names both folders and surf_fuchnut's banner carries "Counter-Strike Source is read
+from <root> (steam_libraries.txt), not Steam's own copy". A file listing a comment, /mnt/nonexistent-wos-test/
+SteamLibrary and another root: "missing" once; remove dropped only that line, a second remove said "not listed". No
+steam_libraries.txt: the note stays empty and nothing prints.
+
+**Boundary.** The "rescan" is fs_restart (the resolver re-reads both lists on every rebuild). Paths outside the home
+folder (a /mnt or /run/media mount) are shown as written. Review round 1 (one reviewer): note never cleared, CS:GO
+alias, a wrong "Steam's libraries are used", home paths on screen, case-insensitive remove -- all fixed. Round 2 found
+the display helper printing an unfilled buffer for any root outside the home folder (exactly a /mnt library) or with
+fs_hidesyspaths 0; it now always fills it. Re-run: /mnt/nonexistent-wos-test, a hand-written ~ line and a library
+under /tmp, fs_hidesyspaths 1 then 0 -- each printed as expected, and remove dropped the ~ line as typed. Round 3:
+remove expanded ~ from an uncleaned HOME (a trailing / gave //); fixed as suggested and re-run with HOME=/home/lex/.
+
+## Patch 1635 - Tournament pre-enable: a round-end hold ends the run; F6 closes at the countdown
+
+**Cause.** Two findings before tournaments go live (FTESurf BACKLOG, P1634). (1) A tournament server holds its
+competitors during the countdown, results and finished/aborted/broken states (Tour_Hold: run_pmhold, velocity zeroed).
+A player mid-run when the round clock ran out stayed TS_RUNNING while frozen, and Tour_Unhold released the body with
+no rollback, so that attempt could continue from a standstill and post to the ordinary board. (2) An open F6 panel
+makes CSQC_Input_Frame send empty moves; the host clicks Start in it, so at GO the host could not move until they
+closed it.
+
+**Change.** QuakeC only. sv_tournament.qc Tour_Hold: on the hold's first edge, after SV_SpecRelease, SV_TimerVoid(e,
+"tournament hold") -- the attempt ends like a teleport ends one (recording discarded, "run cancelled (tournament
+hold)"); repeated hold frames do not void again. An armed player in the start box re-arms after GO as before.
+cl_tournament.qc: a snapshot that moves the phase to countdown closes an open panel (F6 reopens it). Review
+rounds: Tour_Finished also refuses TF_MULTISESSION (resumed from a park), TF_SPEC (paused to spectate) and TF_UNCERT
+(slow clock, no ruleset, ...) finishes, all clean by class, and tells the player; a journal opt-out (TF_NOJOURNAL, the
+player's privacy choice) still scores -- Lex's call (BACKLOG).
+tools/tournament_playtest.py --round-end (60 s round; the host walks out of the start and the round ends mid-run);
+tools/test_tournament_server.py's snapshot carries the settings/ruleset_id that Tour_Adopt has required since the
+settings work (11 of its checks had been failing silently), stubs Tour_Observe around the finish checks so the
+eligibility predicates run on its zone-less map, and adds hold-void, multi-session, spectate, slow-clock and
+journal-opt-out checks plus --mutant-no-hold-void.
+
+**Verified.** Native two-client playtest --round-end (1280x800): panel closed at GO, run started, "run cancelled
+(tournament hold)" at round end, timer idle after; the same build without the server line: timer still "running"
+while held at results. Full --tour smoke at 1920x1200 passes all gates. Server fixture: 36 checks pass;
+--mutant-no-hold-void fails exactly "hold ends a running ordinary run", --mutant-no-score the four scoring checks,
+and the old server code fails the multi-session, spectate and slow-clock checks. Two independent review rounds: no
+P1; round 1's P2 (resumed runs scoring) and round 2's P2 (uncertified runs scoring, pre-existing) fixed here, the
+second without a third round; P3 leads in BACKLOG. All three VMs compile with 0 warnings.
+
+**Boundary.** Only opt-in tournament servers are affected (Tour_Hold and Tour_Finished need an owned match). The
+transport fixture's round flow still needs a zoned, rule-locked synthetic course (BACKLOG).
+
+## Patch 1634 - Tournament lobbies (off by default): the menu signs tournament actions
+
+**Cause.** Lex asked for tournaments run like an AoE2/Worms game lobby: everyone joins one room from the main menu,
+the host sets the rules where everyone can see them, the group drafts maps, and Start sends everybody to one server.
+The main-menu room acts through signed requests (the friends key, as Friends and chat do), and CL_FriendsSign had no
+operation for it, so the menu could only answer "update the native game client".
+
+**Change.** cl_receipt.c: CL_FriendsSign accepts `op tournament` whose `who` is the 64-hex SHA256 of the exact form
+payload the backend then verifies, and only while disconnected: unlike P1009's ops not even in a loopback game, so
+a server driving the menu (stufftext, or text left in the buffer after a disconnect) cannot obtain one. The QuakeC, backend and tools are FTESurf's
+(main-menu room, in-game F6 panel, surfd tournament modules, tools/tournament_playtest.py); every part is off by
+default: tournament_enable 0 on servers, SURFD_TOURNAMENTS=0 in surfd, and the menu's TOURNAMENT tab appears only
+where the service reports tournaments enabled (or ui_tournament_tab 1).
+
+**Verified.** Engine client builds (linux64 m-rel) with no new warning. A local native fixture (two signed clients,
+dedicated server, surfd on loopback; tools/tournament_playtest.py --smoke --tour) passes create, seat/accept, a live
+settings edit, room chat both ways, ban/pick, ready, start and both clients bound on the live server, at 1920x1200,
+1024x768 and 800x600. surfd tournament suites: 60 tests. Launch is handed out only after the node reports the round
+map loaded: a client still loading the waiting map when the node changed level hung on "Changing map" (server log
+"SV_Begin_f from different level"), seen once in the fixture before the fix.
+
+**Boundary.** No live rollout: the lobbies, surfd and the menu tab stay off until the backend enables tournaments
+and nodes are qualified. Free beta only; no billing.
+
+## Patch 1633 - Linux: the window names itself (taskbar icon); web downloads land in downloads/
+
+**Cause.** Lex: "on linux the game doesn't have an icon in the taskbar" (labwc here; a player on KDE Plasma 6 too). The
+Wayland toplevel had no app_id and the X11 window no WM_CLASS, so no taskbar could tie the window to a .desktop file
+or icon, and X11's window icon came only from a gamedir-root icon.png that the update allowlist refuses. Separately,
+for "GoldSrc maps... don't install sounds and textures to the ftesurf folders": netchan downloads already go to
+ftesurf/downloads/ (mounted lowest), but a web (sv_dlURL) download kept FS_GAMEONLY from DL_Create, so a server's
+sounds, models and wads would have landed loose in ftesurf/.
+
+**Change.** gl_vidwayland.c: xdg_toplevel.set_app_id("worldofsurf") right after get_toplevel. gl_vidlinuxglx.c:
+WM_CLASS worldofsurf / WorldofSurf before mapping; the window icon tries the shipped gfx/icons/worldofsurf-256.png
+first. cl_parse.c: every web download except a top-level maps/<name>.bsp (downloadmap's forced re-get must shadow a
+lower mount) goes to FS_GAMEDOWNLOADS, its .tmp and rename included. The game side (ftesurf.sh writing
+~/.local/share/applications/worldofsurf.desktop and hicolor icons; the icons in the ship set) is in FTESurf.
+
+**Verified.** Nested headless labwc, WAYLAND_DEBUG=1: `xdg_toplevel.set_app_id("worldofsurf")` before the first
+commit; labwc maps `identifier=worldofsurf`. Xwayland: xprop `WM_CLASS "worldofsurf", "WorldofSurf"` and a 256x256
+_NET_WM_ICON (FTE's built-in one is 64x64). The download predicate, cut out and compiled against
+COM_GetFileExtension: maps/x.bsp to ftesurf/; sound/, models/, textures/*.wad, maps/x.lit, maps/sub/x.bsp to
+downloads/. Not run: a live sv_dlURL download, or a real KDE/waybar taskbar.
+
+**Boundary.** Zone files are fetched by QC into maps/zones/dl/ and unaffected; admin `download <url>` keeps its path.
+
+## Patch 1630 - mover 13: Patch 256's re-wound displacements collide on their visible side
+
+**Cause.** Lex: "windings? of displacements cause the player to fall off the ladder when climbing ahop_coast since the
+rock wall 'bulges' out... bhopping and movement not quite right on displacements on this map." Patch 256 took a
+Source face's outward normal to be (side ? -plane : +plane) and re-wound every displacement on a side==1 face for
+collision (cidx), so com_bih's four-unit back slab would sit under the terrain. But side is only planenum's parity
+(side == planenum & 1 for all 31,152 ahop_coast faces): planenum already names the face's outward plane, as
+mod_vbsp.c's own plane read notes, and every one of ahop_coast's 2047 displacement faces winds around +plane, whose
+side the BSP finds empty. The re-wound third (P256 measured 30.2% of the library; 321 of 2047 here) therefore has its
+slab IN FRONT of the visible surface: the rock behind ahop_coast's ladder (disp 2008) pushed a climber off the rungs,
+and flipped/unflipped seams stand 4/n_z (4-8) units proud. P256's own check traced downward and could not tell which
+side the player stood on; Patch 258 then found the snag it was after elsewhere.
+
+**Change.** com_bih: a new leaf type BIH_TRIANGLE_REWOUND (appended to the enum) for those triangles, traced and
+tested in the render winding (vertices 1 and 2 swapped back) unless `bih_oldwind` is set; the trace cache keys on the
+flag. pm_source.c sets bih_oldwind for `sourceversion < 13` (a replayed old recording) like P764/P888/P1248's
+switches; every other trace (QC, entity physics, the AG/HL1 movers) meets the visible surface. PMSRC_VERSION 12 -> 13, and SV_PMSrcVer accepts 13. The hl2 plugin builds the new type only
+for movement-tree triangles cidx re-wound, and only when the exe's pm_sourceversion is 13 or more, so a new plugin on
+an older exe keeps BIH_TRIANGLE. Light/occluder trees and point contents are unchanged.
+
+**Verified.** Hidden rig, ahop_coast, local server, setpos at the ladder (-9773 8281 4975) facing it, +forward,
+viewpos every 0.5 s. Installed winding (hl2_dispwinding 1 at mover 12): 4975, 5091.8, 5220.2, 5264.2, then falls to
+4916.5. hl2_dispwinding 0: 4975 ... 5453.3, rests at the top, 5413. This build at mover 13 with the default
+hl2_dispwinding 1: the same climb to 5413. Two independent reviews (control flow and compatibility; evidence and
+replay). Real defects, all fixed: SV_PMSrcVer stopped at 12, so a mover-13 server would have pinned every recording
+pmsrcver=2 and pm_verify replayed honest runs at mover 2 (as P1248's review found); a field inserted mid-struct
+shifted bih_main_ts's positional initializer, starting the main thread with the flag on and probe_plane 0; and with
+the old winding outside the mover, QC traces (practice return, start marks) found a mover-13 player inside the old
+slab -- hence render winding by default and the old one only inside old Source movers. A re-review of those fixes
+found nothing that could rank, corrupt or crash; its one finding (the AG mover kept the old slab while QC met the
+visible surface, so a teleport could leave an AG player stuck) is why AG follows QC. Serverinfo reads
+pm_sourceversion 13.
+
+**Boundary.** Physics: times on maps whose routes touch a side==1 displacement are not comparable with a mover-12
+build. Recordings replay at their own pmsrcver, so older runs verify as before. Old clients on a mover-13 server
+mispredict there until updated. AG/HL1 profiles (unranked) collide as rendered too, with no fence of their own: an
+older AG recording can replay differently where it touched such a displacement. The hl2 plugin and the exe
+must ship together: an old plugin on this exe advertises 13 and collides like 12. A mover bump is one-way for the
+fleet (a mover-12 verifier refuses v13 recordings), so the lobby engines move with it. Maps with no displacements,
+or only side==0 ones, are unchanged.
+
+## Patch 1629 - Linux: the QC temp-string table no longer climbs to its cap; error dialogs on Wayland
+
+**Cause.** metalgio (0.1.48, CachyOS/KDE Wayland) crashed twice with `menu.dat: temp-string table full at 16907264
+slots, 16907264 live`. PR_RunGC starts a collection only when live temps and `nexttempstring` are both past half the
+table, and the allocator searched on from wherever it stopped. After a collection freed the low slots the pointer
+wrapped low, so no collection could start until it climbed past half again, by which time the table was nearly full
+of garbage and doubled (`*2+1024`) each cycle. Windows escapes through P1481's budget trigger; Linux gained it only
+with P1605's userfaultfd write-watch (kernel 6.7+, no seccomp sandbox), so 0.1.48 had none and older kernels and
+sandboxes still don't. The crash dialog then failed as well: Sys_Error exec'd xmessage, which needs X core fonts
+("Unable to load any usable ISO8859 font"), so the window just vanished.
+
+**Change.** qclib initlib.c: after a collection frees anything (threaded finish and the same-thread sweep),
+`nexttempstring = 0`, so allocation refills the freed low slots first and the pointer tracks occupancy. sys_linux.c:
+the fatal-error dialog tries zenity, then kdialog, then xmessage, and only with a DISPLAY or WAYLAND_DISPLAY and without
+WOS_NOERRORDIALOG (review: a rig redirecting stderr would otherwise hang on the modal dialog).
+
+**Verified.** The crash investigation's simulator of the 1588 rules (scratch/crash/gcsim.py, 4000 temps a frame,
+3-frame collections, 2000 kept): 131072 -> 527360 -> 1055744 -> 2112512 slots in 1500 frames without the reset,
+131072 throughout with it. In-game, menu idling 3 minutes at uncapped fps with `pr_gc_writewatch 0` (the Linux
+fallback) on two diagnostic clients printing growth from 131k (PR_TEMPS_WARN lowered, one with the reset removed): without the
+reset the table grew 263168 -> 527360 -> 1055744 -> 2112512 -> 4226048 -> 8453120 -> 16907264 slots in 2 m 14 s, the
+step before the cap metalgio hit; with it, two growths in the boot burst (to 527360) and none in the next 3 minutes. The dialog order was read, not driven
+(it runs only on a fatal error).
+
+**Boundary.** Same collector, same marking; only where the next temp goes. A stale temp index held where the scan
+cannot see it (the existing hash_add hazard) reads new text sooner than before. Server VMs take the same change.
+
+## Patch 1628 - AG/HL1 crouch: no second dip when the duck finishes (view only)
+
+**Cause.** Lex: "AG/crouching... you follow it down, and then when you finally make it all the way down, the animation
+sort of does a quick 'reduck'." The AG mover is continuous: ducking eases the eye from 28 to -6 over 0.4 s, then the
+finish drops the origin 18 and sets the offset to 12 in one tick, the world eye unmoved (pm_ag_world.c). Two client
+layers broke that. The drawn feet are lerped between the last two commands while the eye offset came from the
+newest, so the eye stood up to 18 high for one command; and CL_CalcCrouch eases step DOWNS as well as ups, so it read
+the 18-unit origin drop as a stair, held the camera up to 15 high and lowered it at 200 u/s.
+
+**Change.** cl_pred.c, PHYSMODE_AG only: kept commands record their world eye (CL_SourceEyeKeep, P1301's ring; its
+roof flag stays Source-only), and the drawn eye is lerped between the two kept ticks like P1301's roof limit.
+CL_CalcCrouch snaps step-downs under AG, as HL1's V_CalcRefdef does (it eases only steps up).
+
+**Verified.** Hidden rig, local server at `sv_movementprofile ag-1000`, `cl_predtrace 700` while holding duck 1.2 s on
+a flat floor, drawn eye = simorg z + crouchr + vhr. Installed exe: at the finish frame the eye rose 17.33 and eased
+back over ~100 ms. This build: it never rises while ducking (max rebound 0.00), constant to 0.001 across the finish
+frames; the unduck stays eased.
+
+**Boundary.** Drawn values only (eye offset, stair offset); the mover, commands, server, recordings and verification
+are untouched. Source profiles keep their path. AG walking down stairs is no longer eased, as in HL1.
+
+## Patch 1627 - noclip through walls keeps the view; no sky in the void; a stock sky when the default is missing
+
+**Cause.** Lex: "noclipping into brushes, the transition causes a massive fps spike on all maps... when in void, stop
+rendering the skybox." With `r_voidvis 1`, the first frame the noclipping eye is in solid switches to the whole-world
+overview (all-visible PVS, every displacement, water captures), so flying through a 16-unit wall drew one to three
+whole-map frames. The overview also drew the 2D skybox, every sky face being "visible". Separately,
+surf_colin_blaster_69000 names no sky and r_skybox_default (sky_cape_hill) exists only as loose files in Momentum's
+folder: without them the six faces are r_blackimage and the sky is black (metalgio's log, and here).
+
+**Change.** r_surf.c: the overview waits until the eye is more than `r_voidvis_margin` (512, 0 = old behaviour) from
+where it last saw open space; nearer, Patch 138's last cluster stays. Surf_WorldOnlyView (CSQC) and R_Clear read the
+same test (Surf_VoidNear); R_Clear also accepts r_renderscale's megascreeny target, as Surf_WorldOnlyView does.
+gl_backend.c: no sky batches in the primary view when R_Clear cleared it for the overview (r_voidcleared), and no water
+there (GLBE_GenerateBatchTextures refuses its batches). Vulkan keeps the sky: it has no overview clear. gl_warp.c: when the sky in use has no face, sky_day01_01 (in HL2 and
+Momentum's mount/hl2_dir.vpk) is drawn; `sky` says so.
+
+**Verified.** Hidden rig, surf_colin_blaster_69000, developer 1: stepping the noclip eye down into the floor in 32-unit
+steps, the installed exe logged `cluster -1 ... VOID VIEW` on entering solid; this build `cluster -1 ... off` (last
+cluster kept, entities still drawn), then `VOID VIEW` 4000 units below the map, where the sky is black instead of
+drawn (artifacts/void2_compare.png). Without Momentum mounted the installed exe drew a black sky on colin; this build
+HL2's day sky (sky_compare.png). Frame time was not measured. One independent review: its real findings fixed --
+an early return in GLBE_WaterViewsBegin had left `chosen` NULL, sending every water batch to its own whole-map capture
+(P1386's 184-scene path) and a capture's Surf_SetupFrame then cleared r_voidview mid-view; and skipping the sky where
+nothing clears (split screen, secondary views, render targets, Vulkan) would have left stale pixels.
+
+**Boundary.** Render only. A wall thicker than 512 shows the last view until the margin; flying out still turns the
+overview on once, now only when you are really out.
+
+## Patch 1626 - big displacements no longer draw in other areas (ahop_coast's cliffs in the sky)
+
+**Cause.** Lex: "ahop_coast has displacements in the sky, it's behind the skybox and has weird backward culling that
+makes it vanish as you get closer." A displacement's visibility record is VBSP_FindTouchedLeafs on its box: 32
+clusters, 128 leaves. Past either it overflows to "headnode" (num_leafs -1), and an overflowed record skips the area
+test and passes whenever any leaf under that node is visible -- for two of ahop_coast's the map root. 17 of its 2047
+displacements overflowed, each drawn from 3,000-4,700 of 5,270 clusters: other stages' cliffs behind the sky, where Patch 990's
+sky depth mask (2x the sky face's distance) cuts them off as you approach. Patch 1235 fixed exactly this for
+static props; displacements never got it.
+
+**Change.** mod_vbsp.c: an overflowed displacement keeps every cluster and real area its box reaches
+(VBSP_DispOwnLists, uncapped VBSP_BoxLeafnums at load). The PVS test, the unvised area test and dynamic-light marking
+use those lists; an empty cluster list means never visible. VBSP_PropClustersVisible became VBSP_ClustersVisible.
+
+**Verified.** ahop_coast: `17 of 2047 displacements ... carry their own lists` (the investigation's offline count was
+17). Hidden rig at C0304_dest looking up: the installed exe draws a slab in the sky behind the rock, this build does
+not; the rest of the frame matches (artifacts/coast_compare.png). The investigation's offline simulation over 32
+local maps with displacements found 21 with overflowed records and 0 under-draws with own lists.
+
+**Boundary.** Render only (collision unchanged). Load cost: one uncapped box walk per overflowed displacement.
+
+## Patch 1625 - missing content: half-installed games, leftover folders, and a warning that names the game
+
+**Cause.** Lex: surf_ace, surf_fuchnut and surf_classics lost CS:S textures and props "even though I downloaded all
+source games". steam_libraries.txt still named the Windows Steam library, which was mounted (a dirty NTFS volume) that
+session, so CS:S resolved there and not to the new Linux install. Two engine faults turned that into silent loss:
+FSVPK_LoadArchive skipped a numbered archive it could not open, but its files stayed in the index, so a lookup said
+"found" and every open failed (no fallback, no colour replacement); and a `steam:Game/dir` line was satisfied by any
+non-empty folder, so one left by an uninstall or library move (cfg/, download/) beat the real install in a later
+library. The warning claimed every game was found and printed a paragraph per state. Also every ahop_coast load
+printed `Error: empty directory name (materials\models\props_wasteland\\bridge_railing.vmt)`.
+
+**Change.** fs_vpk.c: files in an archive that did not open are not installed (FLocate and BuildHash skip them), with
+one line naming the count and first missing part; `0x7fff` (inside the _dir.vpk, P181) no longer counts as an
+archive index, so packs with inline entries stop probing 32768 sibling names at mount. fs.c: a steam: line first asks
+each library for the game's gameinfo.txt (Source) or liblist.gam (GoldSrc); the bare folder is the fallback.
+mod_hl2.c: MDL material paths are slash-fixed as Source's V_FixSlashes/V_FixDoubleSlashes. mod_vbsp.c: the load
+warning lists at most ten, visible first, as "<game>: <name>", then "type hl2_missing"; the per-state essays went to
+developer and hl2_missing; `hl2_unresolved_list` publishes the ten for the banner. The game comes from
+scripts/assetgames.txt (tools/assetgames.py: every game with a file under that materials/ or models/ folder, longest
+prefix, generic top folders skipped). gl_model.c: `mod_unresolved` lists models/ files that failed since the map
+began loading (Quake's maps/b_ item bsps do not restart it). QC cl_gfx.qc: the banner lists models and materials that
+way, ten at most.
+
+**Verified.** Hidden rig, disposable install, fake Steam libraries listed first. CS:S with cstrike_pak_011.vpk missing:
+installed exe `2 material(s) did not resolve`; this build `1 archive part(s) missing or unreadable (first: _011.vpk),
+so 893 of its 18497 files...` and `CS:S/CS:GO: de_train/train_cement_floor_02 (727 world face(s))`; surf_fuchnut's
+banner `1 material and 1 model did not load ... CS:S/CS:GO: models/props/de_tides/truck.mdl` (fz_compare.png).
+A CS:S folder holding only cfg/: installed exe mounted it and lost both surf_ace materials; this build mounted
+~/.local/share/Steam's CS:S, none missing. With every game present: nothing missing, no banner. ahop_coast: the
+empty-directory error 1 -> 0.
+
+**Boundary.** A model that failed on an earlier map is not retried, so it is not listed again. A steam_libraries.txt
+entry holding only copied VPKs (no gameinfo.txt) now loses to a Steam library that has one. One independent review
+(crash/regression lens): no crash or memory finding in P1625. Directory labels
+name every game with that folder (materials/de_dust is "CS:S/CS:GO"), not proof the game has the file.
+
+## Patch 1624 - FTEQCC checked builtins and literal bounds (compiler only)
+
+**Cause/fix.** A checked builtin's internal same-name alias was inserted into the local name table
+without a runtime value; a later source call could resolve that alias instead of the declared builtin.
+Keep the call-only alias non-referable. Track its scoped deprecation exemption separately, respecting
+expired subscopes, so checked calls remain accepted and unchecked calls still warn/error normally.
+The generic jump optimizer also interpreted BOUNDCHECK's literal NULL-typed bounds as branch offsets;
+exclude that instruction in all three live generic control-flow walkers. Bounds enforcement stays on.
+
+**Validation.** Reproducers retain the actual original malformed outputs and first diagnostic-only
+regression. The read-only full32 tool distinguishes the original40-to11 bound mutation and missing
+real builtin call from corrected outputs. The small compiler controls cover checked/unchecked calls,
+separate functions, expired scopes and F326 warnings-as-errors. Exact command/results and independent
+review are recorded in tools/p1624-qcc.md. No new builtin, protocol, recorder/writer/reader or game rule
+is added by this commit. Native tournament/menu-signing experiments are explicitly excluded.
+
+**Boundary.** Source/compiler prerequisite only, not a native-engine or production gameplay release.
+No shared compiler/install copy, fleet stage, upload, restart, pin/tag or native Build change here.
+A rollout must build and identify its own pinned compiler, qualify the resulting progs/cohort and
+retain all existing recorder/reader/content/deployment gates; matching old malformed bytes is not proof.
+
+## Patch 1623 - PowerShell build/deployment tooling on Linux (host tools only)
+
+**Cause/fix.** The script selected only Windows compiler names/paths, and the legacy deployer used a C: task
+root. Added native Unix QC discovery/sibling defaults/no implicit second install; Windows defaults remain.
+Windows-targeting native Engine/Full flags refuse on Unix (use existing Linux wrapper). Installed official
+checksum-verified portable PowerShell7.7.0 per-user on Lex's workstation, no system/SSH/sudo-policy change.
+The Pi does not need PowerShell. Unix legacy apply requires an ordinary explicit owned WorkRoot; its ancestors/
+owner marker and mount mappings fail closed, including hidden-origin subtree aliases. Full staging command
+quotes parent/stage/ownership text with POSIX apostrophe escaping. PlanOnly remains inert. The entire official
+Pi block's45statements are unchanged; this is not a new deployment framework or a qualified caller substitute.
+
+**Verified.** Focused Linux7/7; existing offline deployer26/26. Actual synthetic compiler/NoDeploy controls,
+quoted/injected shell payloads, ancestor sentinel, visible/hidden mount aliases and legitimate Btrfs subvolumes
+act. A reused nested collector cache initially failed24assertions; fixed its maintained caller to existing
+per-test TemporaryDirectory with freshness assertion, assertions unchanged. Same outer output then passes,
+old2,201-file failed cohort fingerprint unchanged. Independent review found/fixed two P1s; final verdict no
+issues/merge OK, not deployment approval. Real PowerShell NoDeploy compiles all3VMs with zero warnings and
+matches the canonical Linux-wrapper bytes; installed files unchanged. Actual PowerShell SSH UTF8 round-trip
+passes (remote print only). Real Windows/-Run and kernel bind-mount operations not exercised.
+
+**Limits/delivery.** Source-bound fleet/backend qualification and normal owner Root authentication remain.
+Earlier P1619–P1622 missing-shell/general-sudo conclusion was overbroad: shell now installed, Pi only needs its
+normal Linux tools, and per-command sudo differs from unrestricted root. No public fleet/backend/catalogue,
+updater/release, permission change, native code/binary, recording/schema, engine pin/tag or QC Build change.
+Compile-byte agreement is not gameplay/compiler/runtime certification. Clean implementation409b01c5 repeated
+real3VM/focused7 successfully with original measured compiler6eef0cb4... and installed bytes unchanged. Retained
+historical caller still needs fresh reviewed Linux-local bindings with its actual deployment packet; no fresh live
+transaction constructed here. Record: game tools/p1623-linux-deploy.md; workspace SETUP-NOTES.md. Useful failed
+logs, controls and reviews retained privately, not relabelled successes.
+
+## Patch 1622 - Real group targets and new Story/Event courses (surfd/data; no engine change)
+
+**Request.** Bronze should mean finishing; silver should be G4 and gold G2, not arbitrary WR multipliers.
+Add fuchnut, despair, centipedes, shape, remeanian, autumn_fix (the confirmed KSF build), ferros and highlands
+in Story; autosave, gary_barlow and Nightingale B4/B5 in Events. Lex will zone the two Nightingale bonuses.
+
+**Change.** All 73 occupied ordinary Story slots now award bronze for a full finish. The 71 courses with actual
+imported group cuts use static G4/G2 milliseconds; a strict-under cutoff adds 1 ms so the exact group boundary
+qualifies. surf_aircontrol/surf_rookie have no cuts and remain finish-only. Seven sparse ladders have equal G2/G4 cuts;
+no distinction is invented. `tools/story-groups.json` preserves aggregate source/count/cut provenance, with an
+explicit refresh tool and `tools/story-catalogue-audit.md`. Exact fixed-map identities are retained. Occupied
+slots, reserved Story59 and explicit gates stay put; eight empty Story slots and four empty Event slots are filled.
+Only mixed-tier chapter headings become neutral Chapter N. New Events are finish-only. `course zones` on the two
+Nightingale slots requires valid start/end regions for that bonus in the effective server zone file, preserving
+player-local, curated (game/Momentum), shipped local (game/Momentum), online (game/Momentum) priority and failing
+closed on missing/malformed/unreadable data. Existing credit is independent
+of availability. The existing Story TTL/worker refresh picks up new zones; stale-while-revalidate is not instantaneous.
+
+**Verified.** Parent rerun: Story 54 tests, Groups 10, offline/source regression 4, all pass. Story tests cover
+snapshot/cutoff ties, exact requested slots, missing/only B4/both bonuses, override precedence, unreadable/malformed
+zones (including excessive JSON depth and overflowing integers), cache refresh and preserved credit. Parent's
+extended seven-position test fails on the first three-directory candidate at a game-online override; corrected
+gate passes all 54 Story tests. Worker QC compiles server/client/menu: zero warnings. Independent reviewer did not start: local `/usr/bin/node` lacks
+libsimdjson.so.36; parent reviewed the source and added the numeric/depth fail-closed tests. Not independent review.
+
+**Delivery/limits.** Catalogue and backend remain pending the next guarded surfd generation: deploy the parser/course
+gate code before publishing this catalogue. Do not run story_push against the old parser. B4/B5 still need Lex's
+zones; no bonus geometry or times were invented. Existing occupied Event route/duplicate issues and historical
+Halloween/fog semantics are explicitly audited but not silently rewritten or revoked. No native binary, schema,
+recording grammar or QC Build-number change. Final parent verification (19 Nov 05:47Z): clean implementation
+4cd92390 builds all three VMs with zero warnings, and the canonical Linux wrapper installs identical hashes.
+Story54/Groups10/focused4 and catalogue check pass. Server/client frame scans have zero hits; menu's same three
+hits are reproduced on exact baseline 163ef4ed (no new hits). Baseline also reproduces the navigation/social
+failures. Native headless console smoke passes, not rendered acceptance. Fleet entrypoint needs PowerShell
+(unavailable locally/Pi); read-only SSH works but general sudo root is unavailable. No alternative deployment
+path was invented. Actual artifacts and limits: game `tools/p1619-1622-delivery.md`.
+
+## Patch 1621 - Stage completion belongs to editable Splits (QC only; no engine change)
+
+**Change.** The rounded fixed stage-time/rank pill becomes plain mono HUD text below Splits. It follows Splits
+position, size and visibility and contributes to the same hud_edit drag bounds/preview. The Splits editor exposes
+Stage result and Stage result duration; the result cvar still permits hiding the line separately. No timer/rank/
+recording semantics change. Worker client compile: zero warnings; offline source guards pass. Rendering, drag,
+font sizes, overlap and actual finish rank are owner checks in lextest; headless command checks are not pixels.
+
+**Delivery.** Final parent clean build and local Linux install pass (identical artifact hashes); headless command
+smoke passes but does not run CSQC_UpdateView. Fleet/release not performed. No engine code or binary change.
+See game `tools/p1619-1622-delivery.md` for artifact hashes and the concrete deployment-environment blocker.
+
+## Patch 1620 - Global-chat origin is the sender's map and course (QC only; no engine change)
+
+**Change.** `Social_RoomTag(entity)` freezes `[map S#]` or `[map B#]` in the posted message at send time, instead
+of the lobby number; spectating says so, and an unavailable timer course leaves the map only. The menu continues
+reading stored text, never reconstructing it from the receiving lobby/map. Older stored tags remain readable;
+wire fields, backend storage and the one-second gate are unchanged. Worker server compile: zero warnings.
+The new social transport regression passes. Full social suite: 86 pass, two existing configured-verifier errors
+under Flask 2.2.5/Python 3.14 (not claimed green).
+
+**Delivery.** Needs server QC in the lobbies for newly sent game-chat lines; no backend change is required for this
+feature. Fleet/release not performed. No engine code or binary change. Owner checks and final artifact status in
+game `lextest.md` and `tools/p1619-1622-delivery.md`.
+
+## Patch 1619 - Toggle-to-Normal boards, stable game selector and menu parity (QC only)
+
+**Change.** No optional mode selected visibly means Normal. A selected optional mode toggles off to Normal;
+other modes dim. P1590 exclusive Segmented/TAS semantics are preserved. The redundant Filter switch is removed:
+WOS/Momentum/KSF are direct source stops and the Fetch slot stays reserved so it cannot move them. The menu uses
+the same controls/order (rank/time/gap/player, optional date on wide panels), defaults to WOS and requests the
+current player's vicinity; a missing player still leaves the returned first page visible. Profile-specific seeks
+remain explicit. The map Download/Wrong build two-line label is vertically centered as a block.
+
+**Verified/limits.** Worker menu/client compiles: zero warnings; three new navigation seams pass. Parent rerun:
+11/12 navigation tests pass, the existing PF_CF4 assertion against untouched PF_CF5 fails. Shared native/legacy
+controls were inspected; real cursor interactions, narrow rendered layout and text centering remain owner checks.
+An agent's overbroad cl_scores comment replacement was caught by compilation and restored from exact recorded UI
+edits; subsequent compiles pass. Its failed log and recovery proof are retained, not treated as feature evidence.
+No independent reviewer result (Node runtime failure described above). No engine code/binary/QC Build change.
+Local final verification/install and fleet/release status: game `tools/p1619-1622-delivery.md`.
+
+## Patch 1618 - Map downloads via the Cloudflare-cached maps.proto.bar; no Pi windows after mirror runs (r2gateway only)
+
+**Problem.** Players reported 5-10 minute map downloads (Markbeaton54, 18 Nov: "32 kbps peaks at 1mbs"). The Pi's nginx
+access log (Lex's sudo) showed his surf_pride (215 MB) served by the Pi's own 1 MiB/s fallback, 17:46-17:52Z, 84 MB in
+6 min; the retry at 17:56 got a 302 to R2 and finished in 30 s. Every Pi-served map on 18 Nov (9, 478 MB) started
+between :05 and :17 or :35 and :47. r2mirror (cron :05/:35 since 17 Nov) keeps its ledger in WAL mode and its last
+close deletes -wal/-shm; r2gateway runs under ProtectSystem=strict and cannot recreate them, so its read-only open
+failed ("attempt to write a readonly database") and nginx served every map and zone from disk until r2gzip (:17/:47),
+which reads the ledger with write access, left the side files behind. Agents reading the ledger as proto did the same,
+which hid the fault from spot checks.
+
+**Change.** tools/r2gateway.py: read_row opens a ledger read-only and, when that fails with no -wal beside it (the last
+writer checkpointed and closed, so the main file is whole), immutable. With gateway.json `public_base`
+(https://maps.proto.bar: Lex connected that custom domain to the ftesurf-public bucket and added a cache rule, 19 Nov)
+the 302 names `<public_base>/<key>`, unsigned, so Cloudflare caches the immutable content-addressed objects near the
+player; gzip companions keep Content-Encoding for gzip clients (Cloudflare decompresses for others), CORS * and ranges
+work. One failed R2 probe no longer sends requests to disk: PROBE_FAILURES (3) in a row, 2 s apart, do, and a new
+gateway assumes R2 instead of disk while its first probe is in flight. Each disk answer writes "disk for <alias>: <why>"
+to stderr (the journal), never an address, query or signature.
+
+**Verified.** tools/test_r2gateway.py: 26 tests; the four new ones (WAL ledger without side files in a read-only
+directory, public_base, first probe in flight, three-failure rule) all fail on the previous gateway. A copy of the live
+ledger reproduced the fault (WAL, no side files, read-only directory: the plain open fails; with side files: reads).
+New code against the live config before install: maps (plain and gzip) and zones 302 to maps.proto.bar. Installed
+23:08Z (Lex's sudo; the script's own loopback check saw the maps.proto.bar redirect). At 23:12:58Z, with the ledger's
+side files gone after r2mirror's 23:05:03 run -- the state that used to mean disk -- surf_pride, surf_vitamin_e,
+surf_pantheon and bhop_marathon all answered 302 to maps.proto.bar; a full surf_vitamin_e (103 MB) followed the
+redirect in 9.3 s (this PC's line), twice; objects show cf-cache MISS then HIT.
+
+**Limits.** The first download of a map in each Cloudflare region still comes from R2 in Oceania over one connection
+(slow for distant players); parallel ranged downloads in the engine would help that. tools/r2mirror.py still sets WAL:
+the gateway now copes, but r2gzip-style DELETE mode would remove the trap. Also delivered: the lobby logs (16 GB) were
+archived to /srv/nvme/ftesurf-server/logs-archive (489 MB gz) and /etc/logrotate.d/ftesurf-lobbies rotates them daily
+(copytruncate, 30 days).
+
+## Patch 1616 - The look and the knife follow the Steam account (QC only; no engine change)
+
+**Problem.** Lex: "belt and body colour doesn't save ... check the player trail, knife, and paint options and ensure
+they are tied to the players steam account and the info loads every time they connect to a server". Body, belt,
+trail and paint lived only in each install's ftesurf.cfg (P1177's archived cl_lobby* mirrors, paint_*), so each
+install had its own look: this PC's config (since 17 Nov) held only a belt, the Windows desktop's a full look. The
+knife had an account store (P970, surfd account_viewmodels) but sv_viewmodel.qc posted to cvar `lobby_url`, which
+nothing sets (the Pi's lobby_local.cfg has `lobby_master`), so no knife setup ever reached it: 0 rows on 19 Nov.
+
+**Change.** QC (server): the knife posts to `lobby_master` like every other social call. The look -- the seven
+hud_player keys, paint_color/size/alpha/rate and cl_trailself, one comma-separated line -- is kept per account by the
+lobbies in their shared gamedir, data/looks/<who>.txt (`who` = *ahash, set only by Social_Set for a proven, unbanned
+account), with P970's handshake: the client sends `look_setup "<packed>"` on change (and every 5 s); at bind the
+lobby reads the file as a stream (FS_FILE_READSTREAM: FILE_READ consults the name cache built at the server's last map
+load, so another lobby's new file is invisible), sends `look_profile load <gen> "<packed>"` and saves nothing until
+the client's `look_profile ack` (a timeout saves nothing; a late ack still counts). A change settles 2 s before it is
+written; one still settling is flushed in SV_Shutdown (every map change) and at disconnect before Account_Disconnect
+empties *ahash. Each write is answered `look_profile saved`. The lobby checks every field (version 1, 13 fields,
+digits/space/dot/minus or "random", 16 chars each). No file: the install's look becomes the account's; a file that
+is there but unreadable is kept, never seeded over. QC (client): cl_look_synced (archived) is the look this install
+last knew its account to have. A load is applied through Av_Put (userinfo + archived cvar, so the install's config
+follows) when the worn look equals it (or it is unset); a look that differs was changed here since -- offline, or on
+a map the account never bound -- and wins and is saved. Unlinked players: as before.
+
+**Verified.** tools/p1616look.py on the PC (i9-9900K, RTX 2080 SUPER): two dedicated servers on loopback sharing one
+gamedir, a mock of the social routes, GL clients in a hidden headless labwc (the headless renderer never runs
+CSQC_UpdateView, so no poll), a fixture-only `look_fixture` that calls the real Social_Set. Review round 1 found the
+cache, the dead disconnect flush and the per-map "since joining"; the extended arm failed 6 of 8 checks on that build.
+Fixed: 8/8 -- client A's saves 5, 7, 9 (the map-end flush), the change made on an unbound map (10) kept at the next
+bind, 11 flushed at an immediate quit; client B on lobby 2 (cache older than the file) got 11, printed it, saved
+nothing back; knife get and set reached the backend. Control (origin/main progs): no look file, no knife post. Mutant
+without the SV_Shutdown flush: the flush checks fail. fteqcc: 0 warnings. Not driven: the ack timeout, a late ack, a
+token-refresh rebind (reasoned from the code).
+
+**Limits.** Kept by the lobbies, not surfd: it follows the account on our lobbies only, and a local game keeps the
+install's own look (the last one loaded is in its config). A palette body colour another player wears is still not
+granted on that lobby (unchanged). The real Steam round trip and the look on screen are owner checks (lextest).
+
+## Patch 1615 - Segment count on segmented runs, on hover (surfd + QC; no engine change)
+
+**Problem.** Lex: "report how many segments a segmented run uses, maybe display it on a hover tool tip hovering over
+the run on the leaderboard". Nothing counted them. Every kept load writes `resume <slot> <ticks>` into the run's
+recording, and a load rewinds the recorder to the save's mark first (sv_timer.qc grammar), so the finished file holds
+exactly the loads the run kept.
+
+**Change.** surfd: `rec_segments` counts `\nresume ` after the `begin` line in 1 MiB chunks (an 8-byte tail carries a
+record across a chunk edge; no `begin` in the first chunk, or a file past the 64 MiB cap, = unknown), and `row_segments` caches it by
+replay id, path, size and mtime (2048 entries), as P1569's row_helpers does. board_rows adds `segs` = 1 + that count
+on segmented rows with a recording only (not TAS), after `ver`, so every other row keeps its bytes; /board/api/map
+reuses it. No schema object, QC post or recorder change, and old runs get counts at once. QC: the TAB board keeps
+`segs` per online row (cl_online.qc, memalloc'd like the other columns) and puts "N segments" first in the name's
+tooltip (Scores_OnlineTip); the menu leaderboard (m_board.qc) shows it over the name and the time. Website: the time
+cell's title, dotted underline.
+
+**Verified.** surfd/test_segs.py on the Pi (Flask 2.2.2): 14 checks (header resume not counted, CRLF, none = 1, no
+begin = 0, every split of a record across a 64-byte chunk, past the cap = 0, exactly the cap counted, the row key order, no key on clean rows or rows
+with no recording, a changed file re-read); two mutants (no chunk tail; counting from the file start) each fail
+their check; test_helped and test_replays unchanged. One review (three lenses): the cap returned a partial count
+as exact (fixed); nothing else in P1615. Live data read-only: 87 segmented rows with recordings, 2 to 56
+segments (Proto's surf_joutsenlaulu 56), 90 MB counted in 0.49 s. fteqcc: 0 warnings (csprogs, menu.dat).
+
+**Limits.** Live only after the next guarded surfd generation (tools/backend-pending.md); the lobby csprogs and this
+PC's menu.dat are harmless before it (no `segs`, no tooltip line). Stage rows and rows without a recording have no
+count; a save-lock hold with no load reads 1 segment. The tooltips are not yet seen on screen (lextest).
+
+## Patch 1614 - No per-map cap on lobby prederror reports (QC only; no engine change)
+
+**Problem.** Lex wants every prediction error report players send ("we can just filter them ourselves"). The lobby
+(sv_prederr.qc, P1195) refused a connection's 4th report on a map (`three-this-map`) and a lobby's 13th on a map
+(`lobby-busy`), so a player with a bad connection on a long map stopped being heard after three.
+
+**Change.** QC (server): both per-map counts removed. The spacing stays: 20 s between one connection's reports and
+10 s between any two on a lobby (the client itself offers at most one report a minute, cl_prederr.qc pe_cool). The
+store cap rises from 600 to 2000 files in data/prederr/, now the limit that bites; on 19 Nov the Pi held 118 lobby
+files in 13 MB, and a report is at most 400 x 1 KB. reportd's HTTP half (P1554) had no per-map limit.
+
+**Verified.** fteqcc: 0 warnings. No runtime arm: Lex was playing on the PC, and the change only deletes two refusal
+branches. Owner check in lextest.md (a 4th report on one map after the lobby deploy).
+
+**Limits.** Fetch-and-clear (tools/prederr_triage.py --fetch) still matters: at 2000 files the lobby refuses with
+`store-full`.
+
+## Patch 1612 - Graphics > Tool brushes: Shown lasts one session (QC only; no engine change)
+
+**Problem.** Players (18 Nov, surf_ferros and surf_centipedes) saw pink PLAYER CLIP walls over ramps; Lex never did.
+Both maps cover their ramps with a packed "invisible clip" material: surf_ferros tools/paintclip (175 world faces),
+surf_centipedes rampcollision/rampcollision (165), each `UnlitGeneric { $basetexture "tools/toolsplayerclip" $alpha 0 }`
+with texinfo flags 0x410 (no SURF_NODRAW). mat_vmt.c turns $alpha 0 into nodraw only while hl2_hidetools is 1, and
+Graphics > Tool brushes: Shown sets hl2_hidetools 0 with `seta`, so one visit to that row drew the clips opaque,
+z-fighting with the rock, on every map and launch after. Reproduced headless (setpos A/B screenshots): Shown draws them
+in the same striped pink as the players' screenshot, Hidden draws nothing.
+
+**Change.** QC: m_init (the first QC on a launch, after the config, before any map) puts a saved hl2_hidetools 0 back
+to 1 with cvar_set (the cvar is map-latched; with no map loaded the set applies at once) and says so in the console.
+The Graphics row says Shown lasts until the game restarts. Shown still works for the session it is chosen in.
+
+**Verified.** Fixture config with `seta hl2_hidetools "0"`, surf_ferros on a dedicated server: the P1612 menu.dat
+printed the reset, then "808 of 28186 faces hidden" and "tools/paintclip: $alpha 0 -- hidden", `hl2_hidetools` read 1;
+the installed menu.dat (control) left it at 0 and hid nothing. Same result on a normal launch with `connect` typed
+after the menu was up. fteqcc: 0 warnings for menu and csprogs.
+
+**Limits.** A player who wants clips shown every session must choose Shown each time (or put `hl2_hidetools 0` in a
+cfg that runs after the menu starts). Players get it with the next release (menu.dat ships with the client).
+
+## Patch 1611 - Wayland: F11 / Alt+Enter / vid_toggle change fullscreen on the live window; windowed maximizes
+
+**Problem.** Lex (18 Nov, first days on CachyOS + labwc) asked that fullscreen, Alt+Enter and F11 use "proper" fullscreen
+on Wayland rather than borderless, for the best performance out of the box. Measured in a headless nested labwc 0.20.3
+(wlroots 0.20.2, NVIDIA 620.70.06), the protocol side already was proper: Wayland has no exclusive mode, and both
+vid_fullscreen 1 (borderless) and 2 (exclusive) send xdg_toplevel.set_fullscreen. The compositor's configure carries the
+fullscreen state, the buffers are opaque XRGB8888 at the output's 2560x1600 pixels (fractional scale 1.25), and
+labwc's scene took the window as the only thing on the output: it tried direct scan-out every frame, held off only
+while grim's screencopy locked the output. What was wrong was around that:
+- Every toggle rebuilt the renderer: the window destroyed and recreated, every texture reloaded, shader warm-up lost.
+  On surf_beginner (a dedicated server, one client) the frame stream stopped for 1.73 and 1.75 s per toggle.
+- Toggling to windowed gave a 640x480 window (vid_winmaximize was a Windows-only rule): Patch 268's "postage stamp".
+- The new window came back titled "FTE Quake", alt-tab's label, until the client's state next changed.
+- Without server decorations (GNOME), the engine drew its own caption across the top of fullscreen menus.
+- The opaque region was set once, at the 640x480 creation size, and never followed the window.
+
+**Change.** engine/gl/gl_vidwayland.c, engine/client/renderer.c:
+- renderer.c: a hook, VID_SetFullscreenLive, that R_SetFullscreenMode (fullscreen_toggle, vid_toggle, Alt+Enter)
+  tries before R_RestartRenderer, unless the latches it applies first changed a video/renderer cvar.
+- Wayland sets the hook once the renderer is up (cleared in WL_DeInit). OpenGL only: the Vulkan path here never rebuilds
+  its swapchain on a resize, so it keeps the restart. Fullscreen = set_fullscreen; windowed = unset_fullscreen plus
+  set_maximized when VID_WindowMaximizePolicy says 2 (the default), else the exact vid_width/vid_height (in WL_Init's
+  units, held in winwidth apart from truewidth so a configure already in flight cannot overwrite it).
+  The compositor's configure resizes the buffer through WL_ApplySize, as a dragged window edge does.
+- The configure's states array is read: w.fullscreen, which turns the client-side caption off, and currentrendererstate
+  follows a fullscreen the compositor made or ended on its own (labwc's ToggleFullscreen keybind), so F11 next goes
+  the other way.
+- A windowed OpenGL start maximizes by the same policy (not Vulkan). The first swap re-reads the fullscreen state once,
+  since R_ApplyRenderer copies the request over currentrendererstate after an init-time configure. WL_ApplySize resets the opaque region on each resize and destroys the
+  region object (the creation-time one leaked). The window title survives WL_DeInit (wl_caption) for the next window.
+
+**Verified.** Headless nested labwc (artifacts in FTESurf-worktrees/wlfs-20261118-c5), surf_beginner on a dedicated
+server, WAYLAND_DEBUG=1: fullscreen -> windowed sends unset_fullscreen + set_maximized, configure 2048x1254 (states
+maximized, activated) 2 ms later, buffers 2560x1568; windowed -> fullscreen configure 2048x1280, buffers 2560x1600. No
+xdg_toplevel.destroy, longest frame gap after load 77 ms (1.73-1.75 s before). labwc's ToggleFullscreen (Super+F via
+wtype) ended fullscreen and the next fullscreen_toggle sent set_fullscreen. Title "World of Surf: 127.0.0.1:27611"
+kept. vid_fullscreen 0 start: set_maximized before the first commit, configure 2048x1254; vid_toggle from there went
+fullscreen live. Caption: a diagnostic build forcing hasssd false (never shipped) drew no caption in fullscreen and its
+caption when windowed. Vulkan: a Wayland vkCreateSwapchainKHR fails with VK_ERROR_SURFACE_LOST_KHR in the headless
+compositor on the unpatched exe too, so the live path stays off for it. One independent review: four findings, all
+fixed and rerun (the exact size's units, its in-flight overwrite, Vulkan maximizing, the init-time state). Exact size
+(vid_winmaximize 0, 1600x1000): labwc's 0x0 answer applied 1600x1000, then labwc resized it to 2046x1252 itself (its
+geometry for a window born fullscreen).
+
+**Real display (18 Nov, Lex's OK).** Installed exe on the live labwc session, surf_beginner, vid_vsync 0, cl_maxfps 300:
+labwc fullscreened it on DP-2 (1920x1200, scale 1) and 0.26 s later sent a dmabuf scan-out tranche (tranche_flags 1:
+the surface is its direct scan-out candidate), withdrawn while windowed and sent again 0.15 s after re-fullscreen. The
+buffers' modifier (NVIDIA block-linear 0x300000000606014) did not change. Commits ran 299.9/s in both modes, interval
+p99 3.41-3.42 ms (max 4.5 / 7.4 / 5.6 ms fullscreen / windowed / fullscreen).
+
+**Limits.** The hardware flip itself (the plane holding the game's buffer) is not visible to a client; the kernel's
+DRM debug state (root) would show it. X11/GLX sessions keep the restart and their own fullscreen.
+A latched video cvar (changed but not yet applied) still makes the next toggle a full restart, as before. The video menu
+still offers borderless and exclusive; on Wayland both are this one fullscreen.
+
+## Patch 1608 - Board cache saves at map end only; Milk_Supported re-reads the renderer once a second (QC only; no engine change)
+
+**Problem.** Two client costs every map shares. The online board cache (Patch 781, data/boards/<map>.txt) was written
+5 s after each board landed, so a frame early in the run and one after each finish held the file write: OBC_Save's
+own time 3.14 ms on surf_andromeda (r_spikes 2, Lex's settings, cl_maxfps 300: a 5.8 ms frame). And Milk_Supported
+(three temp strings a call, several calls a frame) was ~8% of csprogs' temp strings (lows5 census), so of its
+collections.
+
+**Change.** QC: Online_Prefetch no longer saves mid-map; CSQC_Shutdown, which already saved a dirty cache, runs at every
+serverdata (cl_parse.c), disconnect and quit. Milk_Supported keeps its answer for a second of real time
+(vid_renderer changes only at a vid_restart).
+
+**Verified.** Linux rig, surf_andromeda replay with the P1608 csprogs: no OBC_Save in either pass's r_spikes 2 rows
+(it was 3.14 ms), data/boards/surf_andromeda.txt (deleted first) rewritten at the quit, 42,307 bytes, same header. Temp
+census on surf_beginner: Milk_Supported in 0 of the 100000-temp reports (66 before). fteqcc: 0 warnings for all three
+progs. Not deployed: main's QC also carries P1603, whose surfd goes first (tools/backend-pending.md).
+
+**Limits.** A crash loses that map's fresh boards from the cache; they are asked again on the next visit anyway (a copy
+read from disk always is).
+
+## Patch 1607 - Linux: sys_framepacing (predictive present pacing) -- capped frame rates present on an even grid
+
+**Problem.** Patch 1413's sys_framepacing (default 5: start each frame its predicted render time before a grid slot and
+hold the swap to that slot) lives in sys_win.c, so on Linux a capped game paced frame STARTS and every bit of render-
+time variance reached the present and the frame-time graph. Lex (18 Nov), surf_andromeda: "frame time stays low but
+also jumps up for bits". At his settings (cl_maxfps 300, refraction off) every view along the route costs 1.1-1.7 ms
+(paused probe each second), yet frames ran p99 3.6-4.0 ms, p99.9 ~4.5 ms.
+
+**Change.**
+- client/sys_linux.c: the sys_win.c functions with the same names and logic -- Sys_FramePacedWait (nanosleep to 0.3 ms
+  short, then a pause-instruction spin: sched_yield can give up a ~3 ms EEVDF slice on a shared core),
+  Sys_FramePacingActive/Anchor/AnchorDelay, the mode 4 hold, mode 5's PredictDelay, the swap hold, the swap-block
+  detector and Sys_FramePace_RecordPresent; the cvars sys_framepacing (5), sys_framepacing_quantile,
+  sys_framepacing_drain with Windows' mode-change reset; sys_framepacing_stats. The main loop waits through
+  Sys_FramePacedWait (Sys_Sleep at mode 0).
+- cl_main.c, gl_screen.c, cl_screen.c: the Windows-only guards include native Linux (not Android or SDL), so the GL
+  drain, the hold and r_frametime's sample right after the swap (Patch 1413) run there too.
+
+**Verified.** Linux 7.3, NVIDIA 620.70.06, labwc Wayland; surf_andromeda replay at Lex's own config (cl_maxfps 300,
+MSAA 4, glare/sprites/skyroom on) in a 2000x1250-logical window (2500x1563 px), warm pass. Same binary, 3 alternating
+runs a side, sys_framepacing 0 / 5: p99 3.97 / 3.37 ms, p99.9 4.47 / 4.24, 1% 240 / 283 fps, 0.1% 218 / 224, max 5.8 /
+5.7; mode 5 reports a present interval of 3.333 ms avg, stddev 0.09-0.14 ms, swap blocking p50 0.06 ms. Against the
+P1605 install: p99 3.61 / 3.36. 30-55 ms swap stalls came in one run of each build, both while Firefox was busy: the
+desktop, not the pacing. Builds: no new warnings. Review (one round): no serious findings; the sched_yield spin, the
+missing mode-change reset and a stepped-back clock in the spin were fixed.
+
+**Limits.** The tail left is frame work, not pacing: a late frame presents at once and its successor aims one slot on
+(Patch 1413's design), CSQC frames of 1.4-1.5 ms, and ~1 ms waits for a back buffer the compositor still holds (the
+"resolve, effects, bloom" bucket). With vid_vsync "" (empty) mode 5 still runs, as on Windows. macOS/BSD builds that
+compile sys_linux.c get the accurate wait but not the hold.
+
+## Patch 1605 - Linux: tempstring collections copy only the QC pages written since the last (userfaultfd + PAGEMAP_SCAN)
+
+**Problem.** Patch 1481's incremental collector copy is Windows-only (MEM_WRITE_WATCH), so on Linux every collection's
+start still copied all of the VM's scanned memory and slot table on the main thread: 13.5 MB on surf_beginner's CSQC
+(start ~1.0 ms, finish ~0.4 ms; fairy 2.0-2.4 ms), one collection every ~1.5 s at ~1000 fps. Those frames are the 0.1%
+tail of a light map. Found by the first Linux survey (lows5, the PC: i9-9900K / RTX 2080 SUPER, CachyOS, labwc Wayland).
+
+**Change.**
+- qclib initlib.c/progsint.h: on Linux (THREADEDGC) the hunk and the slot table are anonymous mmaps registered with a
+  userfaultfd in write-protect mode with WP_ASYNC (kernel 6.7+; UFFD_USER_MODE_ONLY, so no privilege with
+  vm.unprivileged_userfaultfd 0). The kernel lifts a page's protection on its first write (one minor fault, ~0.7 us);
+  QCWW_GetWriteWatch lists the pages written since the last call through the PAGEMAP_SCAN ioctl and protects them
+  again in the same call -- GetWriteWatch(WRITE_WATCH_FLAG_RESET). Patch 1481's mirror code, its budget trigger
+  (every 65536 new temps past the 131072-slot floor) and pr_gc_writewatch 0/1/2 now run on both platforms
+  (QCGC_WATCHABLE); Windows code is unchanged. Unpopulated pages read as unwritten, so no initial protect is needed;
+  huge pages split only where written (4 KB tracking). The PAGEMAP_SCAN UAPI is spelt locally (linux/fs.h clashes with
+  sys/mount.h; old build hosts lack it).
+- Fallback: any failure (older kernel, a seccomp sandbox, no /proc) leaves malloc and the full copy, as before.
+- The non-Windows hunk relocation (SSQC's addressablerelocated) allocated the new block and relocated pointers into
+  it without copying the data; it now copies first.
+
+**Verified.** Linux 7.3, NVIDIA 620.70.06, lows5 rig (dedicated server + client, surf_beginner board replay, Survey 5
+settings, 1920x1200 pixels):
+- pr_gc_writewatch 2: 162 client hunk + 161 table checks and 2 server checks, 0 differing bytes or slots (after the
+  review fixes: 123 + 122 client, 1 + 1 server, 0); a start copies a median 0.43 MB of CSQC's 95 MB hunk (31 segments)
+  plus the table's written pages (was 13.5 MB). A mutant that drops the reported pages differs in 112 of 117 hunk and
+  108 of 116 table checks.
+- userfaultfd refused by a seccomp filter (artifacts/nouffd.py): no userfaultfd descriptor in either process (1 each
+  normally), no write-watch checks, the game plays (fallback).
+- Warm pass, 3 alternating runs a side on a quiet desktop, live P1604 / P1605: slowest collector phase 1.25 / 0.24 ms,
+  start 1.04 / 0.19, finish 0.41 / 0.19, slowest frame holding one 2.44 / 2.03 ms; 0.1% 428 (376-458) / 463 (457-467)
+  fps, 1% 625 / 654, avg 1065 / 1076; CSQC avg 0.65 / 0.64 ms (the write faults do not show). Collections run ~4x as
+  often (the budget trigger: CSQC's table grows to 260,096 slots at load), each far cheaper.
+- Builds: client, server, no new warnings; initlib.c syntax-checked for win64 (mingw) with THREADEDGC.
+- Review (one round, kernel and lifetime lenses): in 6.7/6.8 PAGEMAP_SCAN's written-only fast path tests pte_uffd_wp on
+  swap and migration entries, so a written page swapped out (zram) or migrating could be skipped -- the return mask now
+  adds PAGE_IS_PRESENT, which takes the general path (fixed upstream in 6.9). Both descriptors act on the address space
+  that opened them, and Sys_ForkServer's child keeps running: QCWW_* refuse in another pid. QCWW_Init probes the whole
+  cycle on one page (a sandbox that filters the ioctl would cost a full copy every collection) and needs 4 KB pages.
+  Allocation/free pairing, relocation, the Windows macro expansion and the thread rules were read and found sound.
+
+**Limits.** Kernels before 6.7 (Debian 12 ships 6.1) keep the full copy. The finish still clears the dead
+slots on the main thread (~0.19 ms per 65536). CSQC makes ~123 temp strings a frame (lows5 census: the replay path
+labels, Timer_DrawSplits, Milk_Supported, Time_MsString ...); fewer temps mean fewer collections on every platform.
+
+## Patch 1604 - The lobby records the solid static props whose model file it lacks (hl2_sprpmiss, `propstatic`)
+
+**Problem.** A solid static prop whose model the server cannot load gets no collision ("has no collision info and must
+not be used as a solid static prop"), so the lobby has a hole where Source has a wall. Patch 1581's `propmiss` named
+only entity props, so pm_verify's "may be content skew" never covered these. The 12 lobby logs hold 531 map/model
+pairs on 55 maps over their life (most before the Pi had HL2 content); surf_1969's TF2 props are still current.
+
+**Change.**
+- hl2 plugin, VBSP_BuildBIHMain: each solid static prop with no collision whose model FILE is absent (LocateFile; a
+  present file that will not load is another fault) is noted once per file, case-insensitively. After the BIH build
+  it publishes `hl2_sprpmiss` = "<world model> <n> <names>" (up to 512 names; bytes <= space, the quote and a leading
+  '/' as '_'), "" while hl2_propcollision is 0, with one console warning when n > 0.
+- common/plugin.c: PLUG_CVAR_FLAGS passes CVAR_NOSET (Patch 460's rule: flags that can only refuse; no plugin passed
+  it before), so hl2_sprpmiss is read-only: `set` answers "variable hl2_sprpmiss is readonly".
+- FTESurf QC (P1604): reads it only when cvar_type says read-only and it names this world (`.gz`/`.xz` accepted);
+  static names are checked against the entity props' lower-case keys without joining them; new header
+  `propstatic 0 | 1 <k>` (k: the static files missing, each also in n); the props line says "static props checked (k
+  missing)" or "not checked". reccheck knows the key and prints both with -v.
+
+**Verified.** ahop_coast on a local dedicated server and a headless listen server (`vid_renderer headless`), no Steam
+content unless noted (HOME emptied: Linux Steam's default library has HL2):
+- 154 static files listed; propmiss 215 (65 entity props + 150 statics no entity prop named), `propstatic 1 154`.
+  With Steam: 0, checked. An empty .mdl planted for one model takes it out (153/214). Pre-P1604 engine with the new
+  QC: 65, "not checked", `propstatic 0`.
+- `set hl2_sprpmiss ...` is refused and a same-map reload keeps 215; on the old engine a console-made value and
+  `restart` change nothing (65, not checked). hl2_propcollision 0: "" and not checked. ahop_coast.bsp.gz: checked.
+- A real run's streamed .rec: `propmiss 215 ...` and `propstatic 1 154` (old engine: `propmiss 65`, `propstatic 0`).
+- The 145 models the Pi's own logs named for ahop_coast before it had HL2 content are all in the local list.
+- Engine: no new warnings in the changed files; fteqcc 0 warnings; test_reccheck 1052/0, corpus sweep unchanged.
+- Reviews: round 1 (predicate/control flow; consequences for evidence) found the settable cvar, the overcount and the
+  missing marker; round 2 on the fixes found a reccheck crash on a malformed propmiss and an understated k, both fixed
+  with tests that fail on the old code. Stopped there under the integrity rule: nothing in either round ranks a run.
+
+**Limits.** A model that failed on one map stays failed on the next (gl_model.c keeps failed models), so if a later
+map ships it in its own pak the prop has no collision and is not listed (the file exists). The lobby cannot tell a
+file nobody ships from one only it lacks. Only the first 8 names reach the header, entity props spawned with the map first. The Pi's
+server engine must carry this patch.
+
+## Patch 1603 - Linux runs rank, marked "Linux: Not mouse verified" (QC + surfd + reccheck; no engine change)
+
+**Problem.** Patch 389 (Linux beta, 19 Sep) returned PW_PLATFORM for any input report without IPH_RAW (in_rawinput
+exists only in in_win.c), and the P1573 click guard and P1576 keyguard read cvars that exist only there, so every Linux
+run was TF_NOPROFILE and went to the community board. Lex (17 Nov): Linux runs rank, tagged as Linux; boards show them
+sky blue with "Linux: Not mouse verified"; Linux anti-cheat is deferred. Run-flag bit 21 stays reserved for movement
+styles, and the float flags have no other exact bit.
+
+**Change.**
+- SV_ProfileWhy: a report without IPH_RAW skips only the guard/keyguard block (FS_ProfileWhy's accel/filter/grant,
+  the silence checks, PW_MOVE and PW_CHANGED still apply). `sv_rank_linux` keeps the old PW_PLATFORM verdict while 0;
+  unset, it is 0 on a lobby (lobby_enable) and 1 in a local game; lobby.cfg holds 0 until the surfd below is live.
+- The mark is an integer `plat` (0 verified, 1 Linux), not a flag: run_t_plat, raise-only, set in SV_TimerProfile, so
+  start, finish, park/resume, save/load, stage posts and rewind agree; a kept failed attempt keeps its own
+  (rec_fa_plat). Written as the .rec header key `plat 1`, a finish `plat` record and save/resume/rewind state; posted
+  as `&plat=1` (finish and stage).
+- csprogs counts in_rawinput and the guard cvars only when sys_platform is "Win" (never archived) and the cvar carries
+  the engine's description: a hand-made `set in_rawinput 1` or a Windows config copied to Linux (`seta ... //desc`
+  makes a described cvar) no longer claims IPH_RAW, and a Windows `seta` (which clears TYPEFLAG_ENGINE) still does.
+- surfd: runs/replays.plat via the idempotent ALTER (no schema bump); any positive value clamps to 1; the mark only rises: a post
+  is filed at max(post, stored replay, header, finish record) and keeps its recording; board_rows and the map list emit
+  `plat` only when set. In-game online boards and the website draw marked names #3FC1FF with the tooltip.
+- reccheck knows the key and checks it against `inprof` (notes only; a malformed finish record faults).
+- Deploy order (tools/backend-pending.md): surfd generation, lobby progs with sv_rank_linux 0, then sv_rank_linux 1.
+
+**Verified.** fteqcc 0 warnings for all three progs; tools/test_reccheck.py 1001 checks, 0 failed (22 new); surfd
+test_plat 39 checks, each new one failing with its line reverted; board/helped/web/admin/recplot/schema_compat pass;
+the .rec corpus sweep unchanged. Reviewed in three rounds (lenses: predicate/persistence, evidence/backend, what a cheater gains).
+
+**Limits.** No live Linux client has posted a marked run yet. A determined player can still claim Windows (`set sys_platform Win` plus a
+described cvar), which only gets them judged by Windows rules (the keyguard's IPG_LIVE cannot be forged); a Windows
+client that drops IPH_RAW skips the guards and is marked -- the deferred anti-cheat. Displays without the mark: menu board, profiles, run/watch pages,
+Story/Event ladders and medals, WR/top-10 counts, the native scoreboard (BACKLOG).
+
+## Patch 1602 - Linux: native Wayland by default; HiDPI, decorations, key repeat, clipboard
+
+**Problem.** Lex (17 Nov, his first Linux desktop, labwc, 2560x1600 at scale 1.25 + 1920x1200): the game should
+"just work" on a Wayland desktop. Linux forced `vid_renderer gl` (P386), i.e. GLX through XWayland, and XWayland gives
+X11 clients the output's logical size: DP-1 drew 2048x1280 and labwc upscaled it. Real fullscreen fails under XWayland
+and falls back to "fullscreen windowed" at 640x480 (measured: screenshots 640x480 with vid_width 0 and with an
+explicit 1920x1200). The native backend drew at the logical size as well, had no key repeat, clipboard or server-side
+decorations, capped vsync-off at the refresh (a frame callback per swap gated WL_MayRefresh), and blocked the whole
+host in wl_display_dispatch when a hidden surface got no frame callbacks (wlroots sends them to visible surfaces only):
+a vsync-on client stopped running console commands after the map loaded until killed.
+
+**Change.** gl_vidwayland.c unless noted.
+- HiDPI: wp_fractional_scale_v1 + wp_viewporter (hand-written tables, as for the other protocols). The buffer is
+  round(logical * scale/120), the viewport destination the logical size, wl_egl_window and vid.pixelwidth/height the
+  buffer; vid_dpi_x/y = 96*scale. Fallbacks: wl_surface.preferred_buffer_scale (wl_compositor v6), else the highest
+  wl_output.scale the surface is on, with set_buffer_scale. Absolute pointer positions and the caption hit test map
+  to buffer pixels; relative (raw) deltas are untouched. A scale change (output drag, live rescale) resizes.
+- Server-side decorations through zxdg_decoration_manager_v1 (KDE's protocol is only the fallback).
+- Key repeat from wl_keyboard.repeat_info (wl_seat v4): repeats arrive as further presses, as on X11/Windows; rate 0,
+  release and focus loss stop it.
+- Clipboard: wl_data_device selection read (utf-8 text, text/plain, UTF8_STRING; pipe, 1 s poll, 1 MiB cap) and set
+  (a data source offering the three), wired into Sys_Clipboard_PasteText / Sys_SaveClipboard (gl_vidlinuxglx.c).
+- wp_tearing_control: async with vid_vsync <= 0, vsync otherwise, following live changes.
+- Pacing: under this backend eglSwapInterval is always 0 (gl_videgl.c `egl_backendpacing`); vsync on is paced by one
+  outstanding frame callback, read without blocking (prepare_read/poll/read_events), and after 100 ms without one the
+  frame draws anyway (~10 fps while hidden, host and network keep running). Vsync off reads the socket every swap
+  (WL_PumpEvents(0)) and is not throttled.
+- Binds are capped at the loaded libwayland's interface version (an older libwayland never gets events it cannot
+  decode). Clipboard ownership is read from the selection offer (our sources also offer
+  application/x-ftesurf-self;pid=N), never set at input serial 0; sends are non-blocking (100 ms budget), a paste has
+  one 1 s deadline.
+- `vid_renderer gl`/`opengl` also name the Wayland GL renderer, so the name every Linux config holds resolves by
+  priority: Wayland (2) on a Wayland session, GLX (1) on X11. WL_GetPriority is 2 only with WAYLAND_DISPLAY set;
+  `XDG_SESSION_TYPE=x11` forces GLX.
+- renderer.c R_RestartRenderer: when the requested renderer fails, each other renderer is tried at the requested mode,
+  then once windowed at 640x480 (it used to inherit the failed renderer's 640x480 retry).
+- FTESurf default.cfg's Linux line keeps `set vid_renderer gl` with the new meaning.
+
+**Verified.** This PC (labwc 0.20.3, RTX 2080 SUPER, driver 620). DP-1 at 1.25: a 1600x900 window gives a 2000x1125
+screenshot, fullscreen 2560x1600; DP-2 fullscreen 1920x1200. Nested labwc: scale 1 -> 1.5 -> 2 live (960x540 ->
+1440x810 -> 1920x1080), and the integer and wl_output fallbacks. `vid_renderer gl` -> "OpenGL (Wayland)";
+XDG_SESSION_TYPE=x11 -> GLX; a bogus WAYLAND_DISPLAY falls back to GLX. labwc answers server-side decorations.
+Clipboard copy/paste both ways measured in the nested compositor. vsync off: 991 fps (cl_maxfps 1000; was capped at
+the refresh). Headless labwc at 300/360 Hz: vsync on 288/378 fps (one frame per compositor frame), vsync off 973/991;
+output switched off: 10 fps and `quit` in 0.28 s (swap interval 1: blocked until killed). Nested labwc: clipboard
+own/external/after-external (self offer marked application/x-ftesurf-self;id=<random>), live rescale with vsync off. A bogus WAYLAND_DISPLAY ends on GLX at the requested 1600x900.
+0 new warnings in the touched files. Reviewed in three rounds (round 1: 1 high, 3 medium; round 2: low only; round 3: no new bug, two
+pre-existing lows fixed: dangling surface pointers at deinit, optional <sys/random.h>), plus the vsync-off socket
+read found while retesting.
+
+**Limits.** Human checks pending: key repeat feel, Ctrl+V into console/menus, cursor mapping, title bar on screen,
+dragging between outputs. The hardware cursor is not scaled. The primary (middle-click) selection stays internal.
+Frame-time tails are worse than GLX on this NVIDIA box with the same settings (windowed, vsync off: GLX 1%/0.1%
+604/415 fps, Wayland 308-479/138-235 fps; averages equal) -- NVIDIA's Wayland presentation, not this patch's code
+path; fullscreen cannot be compared because GLX fullscreen is 640x480 under XWayland. Vulkan-on-Wayland untested. A frame callback the compositor never completes on a visible surface
+would hold that window at 10 fps.
+
+**Follow-up (18 Nov, Lex: "mouse cursor likes to disappear").** With no custom cursor image WL_SetHWCursor hid
+the pointer (X11 shows the desktop arrow), and releasing the pointer lock refreshed the cursor only while
+relative mode was off -- it is still on then (a destroyed lock sends no `unlocked`), so after mouselook the cursor
+stayed hidden until the pointer left and re-entered. Now wp_cursor_shape_v1 gives the compositor's default arrow
+when there is no custom image, the unlock always ends relative mode and refreshes the cursor, and WL_DeInit
+destroys the role objects (decoration, tearing, fractional scale, viewport, xdg_toplevel, xdg_surface) before the
+surface (wlroots: "surface was destroyed before its role object" at quit). Verified by WAYLAND_DEBUG traces
+(set_shape(serial, 1) sent; quit error gone); one review, minor items fixed. Owner check: cursor in menus and
+after mouselook.
+
 ## Patch 1598 - movementprofile: the in-game mode picker's switch, for the player only
 
 **Problem.** Lex: a small in-game UI to switch game mode, the modes 1-7, click or press the number. The modes are

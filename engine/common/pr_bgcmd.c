@@ -52,7 +52,7 @@ cvar_t pr_gc_threaded = CVARFD("pr_gc_threaded", "1", CVAR_NOSAVE, "Says whether
 #else
 cvar_t pr_gc_threaded = CVARFD("pr_gc_threaded", "0", CVAR_NOSET|CVAR_NOSAVE, "Says whether to use a separate thread for tempstring garbage collections. This avoids main-thread stalls but at the expense of more memory usage. 2 is a FTESurf DIAGNOSTIC value that disables the collector outright, leaking every tempstring for the life of the VM -- see PR_RunGC.");
 #endif
-cvar_t pr_gc_writewatch = CVARFD("pr_gc_writewatch", "1", CVAR_NOSAVE, "FTESurf Patch 1481 (Windows): a tempstring collection's start copies only the QC memory pages written since the last one, not all of it. 0: copy all (as before); 2: also compare the copy with the memory and report any difference (a check, costs more than 0). Latched when a VM loads.");
+cvar_t pr_gc_writewatch = CVARFD("pr_gc_writewatch", "1", CVAR_NOSAVE, "FTESurf Patch 1481 (Windows; Linux 6.7+ with userfaultfd since Patch 1605): a tempstring collection's start copies only the QC memory pages written since the last one, not all of it. 0: copy all (as before); 2: also compare the copy with the memory and report any difference (a check, costs more than 0). Latched when a VM loads.");
 cvar_t	pr_sourcedir = CVARD("pr_sourcedir", "src", "Subdirectory where your qc source is located. Used by the internal compiler and qc debugging functionality.");
 cvar_t pr_enable_uriget = CVARD("pr_enable_uriget", "1", "Allows gamecode to make direct http requests");
 cvar_t pr_enable_profiling = CVARD("pr_enable_profiling", "0", "Enables profiling support. Will run more slowly. Change the map and then use the profile_ssqc/profile_csqc commands to see the results.");
@@ -2805,7 +2805,8 @@ qboolean QC_MenuTable(const char *name)
 {
 	static const char *const tables[] = {"mapdeps.txt", "mapdeps.net.txt", "mapmeta.txt", "mapmeta.net.txt",
 		"mapmedia.tmp", "mapdl.txt", "mapdl.net.txt", "mapdl.net.tmp", "mapmeta_override.txt",
-		"mapparticles.txt", "mapwr.txt"};
+		"mapparticles.txt", "mapwr.txt",
+		"goldsrc.net.txt", "goldsrc.net.tmp", "wadcolours.net.txt", "wadcolours.net.tmp"};	//FTESurf Patch 1656, 1660
 	const char *s = name, *seg;
 	size_t i;
 	if (!name || !QC_TasprojSeg(&s, "data", false))

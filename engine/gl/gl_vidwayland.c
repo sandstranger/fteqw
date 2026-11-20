@@ -3,9 +3,7 @@
 
 //in no particular order...
 //TODO: leaks on shutdown
-//TODO: proper window decorations - zxdg_decoration_manager_v1
-//TODO: kb autorepeat
-//TODO: system clipboard
+//TODO: primary selection (zwp_primary_selection_device_manager_v1), so CBT_SELECTION stays internal
 //TODO: drag+drop
 
 /*
@@ -25,6 +23,14 @@ kwin unstable protocools:
 #include <fcntl.h>
 #include <unistd.h>
 #include <sys/mman.h>
+#include <poll.h>
+#include <errno.h>
+#if defined(__has_include)
+#if __has_include(<sys/random.h>)
+#include <sys/random.h>	//getrandom: glibc 2.25+, musl 1.1.20+
+#define HAVE_GETRANDOM
+#endif
+#endif
 #include <xkbcommon/xkbcommon.h>
 
 #include "quakedef.h"
@@ -47,8 +53,12 @@ extern cvar_t vid_conautoscale;
 //protocol names...
 #define WP_POINTER_CONSTRAINTS_NAME "zwp_pointer_constraints_v1"
 #define WP_RELATIVE_POINTER_MANAGER_NAME "zwp_relative_pointer_manager_v1"
-#define ORG_KDE_KWIN_SERVER_DECORATION_MANAGER_NAME "org_kde_kwin_server_decoration_manager" //comment out to disable once the XDG version is tested.
-//FIXME: needs testing. #define XDG_DECORATION_MANAGER_NAME "zxdg_decoration_manager_v1"
+#define ORG_KDE_KWIN_SERVER_DECORATION_MANAGER_NAME "org_kde_kwin_server_decoration_manager"	//used only when the XDG one is missing
+#define XDG_DECORATION_MANAGER_NAME "zxdg_decoration_manager_v1"
+#define WP_FRACTIONAL_SCALE_MANAGER_NAME "wp_fractional_scale_manager_v1"
+#define WP_VIEWPORTER_NAME "wp_viewporter"
+#define WP_TEARING_CONTROL_MANAGER_NAME "wp_tearing_control_manager_v1"
+#define WP_CURSOR_SHAPE_MANAGER_NAME "wp_cursor_shape_manager_v1"
 
 //#define XDG_SHELL_UNSTABLE
 #ifdef XDG_SHELL_UNSTABLE
@@ -68,6 +78,11 @@ static void (*pwl_display_disconnect)(struct wl_display *display);
 static int (*pwl_display_dispatch)(struct wl_display *display);
 static int (*pwl_display_dispatch_pending)(struct wl_display *display);
 static int (*pwl_display_roundtrip)(struct wl_display *display);
+static int (*pwl_display_flush)(struct wl_display *display);
+static int (*pwl_display_prepare_read)(struct wl_display *display);
+static int (*pwl_display_read_events)(struct wl_display *display);
+static void (*pwl_display_cancel_read)(struct wl_display *display);
+static int (*pwl_display_get_fd)(struct wl_display *display);
 
 static struct wl_proxy *(*pwl_proxy_marshal_constructor)(struct wl_proxy *proxy, uint32_t opcode, const struct wl_interface *interface, ...);
 static struct wl_proxy *(*pwl_proxy_marshal_constructor_versioned)(struct wl_proxy *proxy, uint32_t opcode, const struct wl_interface *interface, uint32_t version, ...);
@@ -91,6 +106,9 @@ static const struct wl_interface		*pwl_shm_interface;
 static const struct wl_interface		*pwl_shm_pool_interface;
 static const struct wl_interface		*pwl_buffer_interface;
 static const struct wl_interface		*pwl_callback_interface;
+static const struct wl_interface		*pwl_data_device_manager_interface;
+static const struct wl_interface		*pwl_data_device_interface;
+static const struct wl_interface		*pwl_data_source_interface;
 
 static dllfunction_t waylandexports_wl[] =
 {
@@ -99,6 +117,11 @@ static dllfunction_t waylandexports_wl[] =
 	{(void**)&pwl_display_dispatch,						"wl_display_dispatch"},
 	{(void**)&pwl_display_dispatch_pending,				"wl_display_dispatch_pending"},
 	{(void**)&pwl_display_roundtrip,					"wl_display_roundtrip"},
+	{(void**)&pwl_display_flush,						"wl_display_flush"},
+	{(void**)&pwl_display_prepare_read,				"wl_display_prepare_read"},
+	{(void**)&pwl_display_read_events,				"wl_display_read_events"},
+	{(void**)&pwl_display_cancel_read,				"wl_display_cancel_read"},
+	{(void**)&pwl_display_get_fd,					"wl_display_get_fd"},
 	{(void**)&pwl_proxy_marshal_constructor,			"wl_proxy_marshal_constructor"},
 	{(void**)&pwl_proxy_marshal_constructor_versioned,	"wl_proxy_marshal_constructor_versioned"},
 	{(void**)&pwl_proxy_destroy,						"wl_proxy_destroy"},
@@ -120,6 +143,9 @@ static dllfunction_t waylandexports_wl[] =
 	{(void**)&pwl_shm_pool_interface,					"wl_shm_pool_interface"},
 	{(void**)&pwl_buffer_interface,						"wl_buffer_interface"},
 	{(void**)&pwl_callback_interface,					"wl_callback_interface"},
+	{(void**)&pwl_data_device_manager_interface,		"wl_data_device_manager_interface"},
+	{(void**)&pwl_data_device_interface,				"wl_data_device_interface"},
+	{(void**)&pwl_data_source_interface,				"wl_data_source_interface"},
 	{NULL, NULL}
 };
 static dllhandle_t *lib_wayland_wl;
@@ -140,6 +166,8 @@ static uint32_t (*pxkb_keysym_to_utf32)(xkb_keysym_t keysym);
 static void (*pxkb_state_unref)(struct xkb_state *state);
 static void (*pxkb_keymap_unref)(struct xkb_keymap *keymap);
 static enum xkb_state_component (*pxkb_state_update_mask)(struct xkb_state *state, xkb_mod_mask_t depressed_mods, xkb_mod_mask_t latched_mods, xkb_mod_mask_t locked_mods, xkb_layout_index_t depressed_layout, xkb_layout_index_t latched_layout, xkb_layout_index_t locked_layout);
+static struct xkb_keymap *(*pxkb_state_get_keymap)(struct xkb_state *state);
+static int (*pxkb_keymap_key_repeats)(struct xkb_keymap *keymap, xkb_keycode_t key);
 static qboolean WL_InitLibraryXKB(void)
 {
 	static dllfunction_t tab[] =
@@ -152,6 +180,8 @@ static qboolean WL_InitLibraryXKB(void)
 		{(void**)&pxkb_keysym_to_utf32,					"xkb_keysym_to_utf32"},
 		{(void**)&pxkb_state_unref,						"xkb_state_unref"},
 		{(void**)&pxkb_keymap_unref,					"xkb_keymap_unref"},
+		{(void**)&pxkb_state_get_keymap,				"xkb_state_get_keymap"},
+		{(void**)&pxkb_keymap_key_repeats,				"xkb_keymap_key_repeats"},
 		{NULL, NULL}
 	};
 	lib_xkb = Sys_LoadLibrary("libxkbcommon.so.0", tab);
@@ -211,6 +241,7 @@ static inline void pwl_buffer_destroy(struct wl_buffer *wl_buffer)		{ pwl_proxy_
 static inline void pwl_surface_attach(struct wl_surface *wl_surface, struct wl_buffer *buffer, int32_t x, int32_t y)		{ pwl_proxy_marshal((struct wl_proxy *) wl_surface, WL_SURFACE_ATTACH, buffer, x, y); }
 static inline void pwl_surface_damage(struct wl_surface *wl_surface, int32_t x, int32_t y, int32_t width, int32_t height)		{ pwl_proxy_marshal((struct wl_proxy *) wl_surface, WL_SURFACE_DAMAGE, x, y, width, height); }
 static inline void pwl_surface_destroy(struct wl_surface *wl_surface)		{ pwl_proxy_marshal((struct wl_proxy *) wl_surface, WL_SURFACE_DESTROY); pwl_proxy_destroy((struct wl_proxy *) wl_surface); }
+static inline void pwl_surface_set_buffer_scale(struct wl_surface *wl_surface, int32_t scale)		{ pwl_proxy_marshal((struct wl_proxy *) wl_surface, WL_SURFACE_SET_BUFFER_SCALE, scale); }
 
 #else
 #define pwl_keyboard_interface		&wl_keyboard_interface
@@ -226,12 +257,20 @@ static inline void pwl_surface_destroy(struct wl_surface *wl_surface)		{ pwl_pro
 #define pwl_seat_interface			&wl_seat_interface
 #define pwl_output_interface		&wl_output_interface
 #define pwl_shm_interface			&wl_shm_interface
+#define pwl_data_device_manager_interface	&wl_data_device_manager_interface
+#define pwl_data_device_interface	&wl_data_device_interface
+#define pwl_data_source_interface	&wl_data_source_interface
 
 #define pwl_display_connect					wl_display_connect
 #define pwl_display_disconnect				wl_display_disconnect
 #define pwl_display_dispatch				wl_display_dispatch
 #define pwl_display_dispatch_pending		wl_display_dispatch_pending
 #define pwl_display_roundtrip				wl_display_roundtrip
+#define pwl_display_flush					wl_display_flush
+#define pwl_display_prepare_read			wl_display_prepare_read
+#define pwl_display_read_events			wl_display_read_events
+#define pwl_display_cancel_read			wl_display_cancel_read
+#define pwl_display_get_fd					wl_display_get_fd
 
 #define pwl_proxy_marshal					wl_proxy_marshal
 #define pwl_proxy_marshal_constructor		wl_proxy_marshal_constructor
@@ -270,6 +309,7 @@ static inline void pwl_surface_destroy(struct wl_surface *wl_surface)		{ pwl_pro
 #define pwl_surface_attach					wl_surface_attach
 #define pwl_surface_damage					wl_surface_damage
 #define pwl_surface_destroy					wl_surface_destroy
+#define pwl_surface_set_buffer_scale		wl_surface_set_buffer_scale
 
 #define pwl_egl_window_create				wl_egl_window_create
 #define pwl_egl_window_destroy				wl_egl_window_destroy
@@ -283,6 +323,8 @@ static inline void pwl_surface_destroy(struct wl_surface *wl_surface)		{ pwl_pro
 #define pxkb_state_unref					xkb_state_unref
 #define pxkb_keymap_unref					xkb_keymap_unref
 #define pxkb_state_update_mask				xkb_state_update_mask
+#define pxkb_state_get_keymap				xkb_state_get_keymap
+#define pxkb_keymap_key_repeats				xkb_keymap_key_repeats
 
 #endif
 static const struct wl_interface *pzwp_relative_pointer_v1_interface;
@@ -311,6 +353,27 @@ static struct wdisplay_s
 	struct cursorinfo_s *cursor;
 	struct wl_keyboard *keyboard;
 	struct wl_seat *seat;
+	uint32_t inputserial;	//latest key/button/enter serial; set_selection needs one the compositor gave us
+
+	//wl_keyboard.repeat_info: the client repeats keys itself
+	int repeat_rate;	//per second, 0 = off
+	int repeat_delay;	//ms
+	qboolean repeat_held;
+	uint32_t repeat_scancode, repeat_qkey, repeat_ukey;
+	double repeat_next;
+
+	//clipboard (CBT_CLIPBOARD only)
+	struct wl_data_device_manager *data_device_manager;
+	struct wl_data_device *data_device;
+	struct wl_data_offer *newoffer;	//offers announce their mime types before selection/enter names them
+	int newoffer_mime;				//1-based index into wl_textmimes, 0 = no text
+	qboolean newoffer_self;			//it offers WL_SelfMime: this process's own selection
+	struct wl_data_offer *selection_offer;
+	int selection_mime;
+	qboolean selection_self;
+	struct wl_data_offer *dnd_offer;
+	struct wl_data_source *data_source;	//our newest source, until it is cancelled
+	char *cliptext;					//what data_source serves
 
 	//because wayland really doesn't help when it comes to various keymaps
 	struct xkb_context *xkb_context;
@@ -332,6 +395,9 @@ static struct wdisplay_s
 	int csdsize;
 	char *csdcaption;
 	qboolean hasssd;	//probably false on gnome.
+	qboolean fullscreen;	//P1611: the compositor's last xdg_toplevel.configure carried the fullscreen state
+	qboolean statesynced;	//P1611: currentrendererstate.fullscreen re-read from `fullscreen` after the restart's memcpy
+	int winwidth, winheight;	//P1611: an exact windowed size asked for by a live toggle, until a windowed configure
 	int mousex,mousey;
 
 	//window stuff
@@ -339,6 +405,33 @@ static struct wdisplay_s
 	struct wl_egl_window *enwindow;
 #endif
 	struct wl_surface *surface;
+
+	//HiDPI: truewidth/trueheight are surface (logical) units, the buffer and vid.pixel* are device pixels
+	int compositor_version;
+	struct wp_fractional_scale_manager_v1 *fractional_scale_manager;
+	struct wp_fractional_scale_v1 *fractional_scale;
+	int scale120;				//wp_fractional_scale_v1.preferred_scale (scale*120), 0 until sent
+	struct wp_viewporter *viewporter;
+	struct wp_viewport *viewport;
+	int preferred_buffer_scale;	//wl_surface v6, 0 until sent
+	struct wloutput_s
+	{
+		struct wl_output *output;
+		uint32_t id;
+		int scale;
+		qboolean entered;
+	} outputs[8];				//for wl_output.scale, the last fallback
+	int intscale;				//integer scale when there is no fractional scale
+	int bufscale120;			//the scale the buffer was last sized for
+	int bufwidth, bufheight;
+	int destwidth, destheight;	//the logical size they were made for (the viewport destination)
+
+	struct wp_tearing_control_manager_v1 *tearing_control_manager;
+	struct wp_tearing_control_v1 *tearing_control;
+	int tearing_hint;			//last hint sent, -1 = none
+
+	struct wp_cursor_shape_manager_v1 *cursor_shape_manager;
+	struct wp_cursor_shape_device_v1 *cursor_shape_device;	//belongs to w.pointer; dies with it
 
 #ifdef XDG_SHELL_NAME
 	struct xdg_toplevel *xdg_toplevel;
@@ -351,6 +444,8 @@ static struct wdisplay_s
 #endif
 	qboolean wait_for_configure;	//WL is being slow and won't let us redraw yet.
 	qboolean waylandisblocking;
+	struct wl_callback *framecb;	//P1602: at most one outstanding frame callback
+	double frameasked;
 
 	//belated sanity stuff
 #ifdef XDG_DECORATION_MANAGER_NAME
@@ -362,7 +457,331 @@ static struct wdisplay_s
 	struct org_kde_kwin_server_decoration_manager *kwin_decoration_manager;
 #endif
 } w;
+static char wl_caption[256];	//P1611: the last title, kept across WL_DeInit's memset of `w`
 static void WL_SetCaption(const char *text);
+
+//P1602: an interface table from the loaded libwayland-client bounds the version too: an older library cannot decode newer events
+static uint32_t WL_BindVersion(const struct wl_interface *iface, uint32_t advertised, uint32_t ours)
+{
+	return min(min(advertised, ours), (uint32_t)iface->version);
+}
+
+//Patch 1602: HiDPI. The buffer is round(logical size * scale); wp_viewport maps it back onto the logical size.
+#define WP_FRACTIONAL_SCALE_MANAGER_V1_GET_FRACTIONAL_SCALE 1
+#define WP_VIEWPORTER_GET_VIEWPORT 1
+#define WP_VIEWPORT_SET_DESTINATION 2
+#define WP_TEARING_CONTROL_MANAGER_V1_GET_TEARING_CONTROL 1
+#define WP_TEARING_CONTROL_V1_SET_PRESENTATION_HINT 0
+#define WP_TEARING_CONTROL_V1_PRESENTATION_HINT_VSYNC 0
+#define WP_TEARING_CONTROL_V1_PRESENTATION_HINT_ASYNC 1
+static const struct wl_interface *pwp_fractional_scale_v1_interface;
+static const struct wl_interface *pwp_viewport_interface;
+static const struct wl_interface *pwp_tearing_control_v1_interface;
+static const struct wl_interface *pwp_cursor_shape_device_v1_interface;
+#define WP_CURSOR_SHAPE_MANAGER_V1_GET_POINTER 1
+#define WP_CURSOR_SHAPE_DEVICE_V1_DESTROY 0
+#define WP_CURSOR_SHAPE_DEVICE_V1_SET_SHAPE 1
+#define WP_CURSOR_SHAPE_DEVICE_V1_SHAPE_DEFAULT 1
+
+static void WL_BindFractionalScaleManager(struct wl_registry *registry, uint32_t id)
+{
+	static const struct wl_interface *types[3];
+	static const struct wl_message wp_fractional_scale_manager_v1_requests[] = {
+		{ "destroy", "", types + 0 },
+		{ "get_fractional_scale", "no", types + 1 },
+	};
+	static const struct wl_interface wp_fractional_scale_manager_v1_interface = {
+		"wp_fractional_scale_manager_v1", 1,
+		2, wp_fractional_scale_manager_v1_requests,
+		0, NULL,
+	};
+	static const struct wl_message wp_fractional_scale_v1_requests[] = {
+		{ "destroy", "", types + 0 },
+	};
+	static const struct wl_message wp_fractional_scale_v1_events[] = {
+		{ "preferred_scale", "u", types + 0 },
+	};
+	static const struct wl_interface wp_fractional_scale_v1_interface = {
+		"wp_fractional_scale_v1", 1,
+		1, wp_fractional_scale_v1_requests,
+		1, wp_fractional_scale_v1_events,
+	};
+
+	types[1] = &wp_fractional_scale_v1_interface;
+	types[2] = pwl_surface_interface;
+
+	pwp_fractional_scale_v1_interface = &wp_fractional_scale_v1_interface;
+	w.fractional_scale_manager = pwl_registry_bind(registry, id, &wp_fractional_scale_manager_v1_interface, 1);
+}
+static void WL_BindViewporter(struct wl_registry *registry, uint32_t id)
+{
+	static const struct wl_interface *types[6];	//set_source's four fixed args read types[0..3]
+	static const struct wl_message wp_viewporter_requests[] = {
+		{ "destroy", "", types + 0 },
+		{ "get_viewport", "no", types + 4 },
+	};
+	static const struct wl_interface wp_viewporter_interface = {
+		"wp_viewporter", 1,
+		2, wp_viewporter_requests,
+		0, NULL,
+	};
+	static const struct wl_message wp_viewport_requests[] = {
+		{ "destroy", "", types + 0 },
+		{ "set_source", "ffff", types + 0 },
+		{ "set_destination", "ii", types + 0 },
+	};
+	static const struct wl_interface wp_viewport_interface = {
+		"wp_viewport", 1,
+		3, wp_viewport_requests,
+		0, NULL,
+	};
+
+	types[4] = &wp_viewport_interface;
+	types[5] = pwl_surface_interface;
+
+	pwp_viewport_interface = &wp_viewport_interface;
+	w.viewporter = pwl_registry_bind(registry, id, &wp_viewporter_interface, 1);
+}
+static void WL_BindTearingControlManager(struct wl_registry *registry, uint32_t id)
+{
+	static const struct wl_interface *types[3];
+	static const struct wl_message wp_tearing_control_manager_v1_requests[] = {
+		{ "destroy", "", types + 0 },
+		{ "get_tearing_control", "no", types + 1 },
+	};
+	static const struct wl_interface wp_tearing_control_manager_v1_interface = {
+		"wp_tearing_control_manager_v1", 1,
+		2, wp_tearing_control_manager_v1_requests,
+		0, NULL,
+	};
+	static const struct wl_message wp_tearing_control_v1_requests[] = {
+		{ "set_presentation_hint", "u", types + 0 },
+		{ "destroy", "", types + 0 },
+	};
+	static const struct wl_interface wp_tearing_control_v1_interface = {
+		"wp_tearing_control_v1", 1,
+		2, wp_tearing_control_v1_requests,
+		0, NULL,
+	};
+
+	types[1] = &wp_tearing_control_v1_interface;
+	types[2] = pwl_surface_interface;
+
+	pwp_tearing_control_v1_interface = &wp_tearing_control_v1_interface;
+	w.tearing_control_manager = pwl_registry_bind(registry, id, &wp_tearing_control_manager_v1_interface, 1);
+}
+//P1602: wp_cursor_shape_v1 (staging) -- the compositor draws its own arrow, at the output's scale
+static void WL_BindCursorShapeManager(struct wl_registry *registry, uint32_t id)
+{
+	static const struct wl_interface *types[3];
+	static const struct wl_message wp_cursor_shape_manager_v1_requests[] = {
+		{ "destroy", "", types + 0 },
+		{ "get_pointer", "no", types + 1 },
+	};
+	static const struct wl_interface wp_cursor_shape_manager_v1_interface = {
+		"wp_cursor_shape_manager_v1", 1,
+		2, wp_cursor_shape_manager_v1_requests,
+		0, NULL,
+	};
+	static const struct wl_message wp_cursor_shape_device_v1_requests[] = {
+		{ "destroy", "", types + 0 },
+		{ "set_shape", "uu", types + 0 },
+	};
+	static const struct wl_interface wp_cursor_shape_device_v1_interface = {
+		"wp_cursor_shape_device_v1", 1,
+		2, wp_cursor_shape_device_v1_requests,
+		0, NULL,
+	};
+
+	types[1] = &wp_cursor_shape_device_v1_interface;
+	types[2] = pwl_pointer_interface;
+
+	pwp_cursor_shape_device_v1_interface = &wp_cursor_shape_device_v1_interface;
+	w.cursor_shape_manager = pwl_registry_bind(registry, id, &wp_cursor_shape_manager_v1_interface, 1);
+}
+static void WL_DropCursorShapeDevice(void)
+{
+	if (!w.cursor_shape_device)
+		return;
+	pwl_proxy_marshal((struct wl_proxy *) w.cursor_shape_device, WP_CURSOR_SHAPE_DEVICE_V1_DESTROY);
+	pwl_proxy_destroy((struct wl_proxy *) w.cursor_shape_device);
+	w.cursor_shape_device = NULL;
+}
+
+static int WL_Scale120(void)
+{
+	if (w.fractional_scale)
+		return w.scale120?w.scale120:120;	//wl_surface's integer hint is the ceiling, so it is not used meanwhile
+	if (!w.viewport && w.compositor_version < 3)
+		return 120;	//no wl_surface.set_buffer_scale either
+	return 120*max(1, w.intscale);
+}
+//buffer pixels per surface unit, for the buffer on screen now
+static float WL_BufferScale(void)
+{
+	return w.bufscale120?w.bufscale120/120.f:1;
+}
+//(re)size the buffer for the current logical size and scale; called whenever either changes
+static void WL_ApplySize(void)
+{
+	extern cvar_t vid_dpi_x, vid_dpi_y;
+	int scale = WL_Scale120();
+	int bw = (w.truewidth*scale + 60)/120;
+	int bh = (w.trueheight*scale + 60)/120;
+
+	if (!w.surface || !w.truewidth || !w.trueheight)
+		return;
+	if (bw == w.bufwidth && bh == w.bufheight && scale == w.bufscale120 && w.truewidth == w.destwidth && w.trueheight == w.destheight)
+		return;
+
+	if (w.truewidth != w.destwidth || w.trueheight != w.destheight)
+	{	//P1611: the opaque region follows the size. It was set once, at the 640x480 the window was created at, so a
+		//compositor that honours it saw everything past that corner as translucent (only an XRGB buffer hid it).
+		struct wl_region *region = pwl_compositor_create_region(w.compositor);
+		pwl_region_add(region, 0, 0, w.truewidth, w.trueheight);
+		pwl_surface_set_opaque_region(w.surface, region);
+		pwl_proxy_marshal((struct wl_proxy *) region, WL_REGION_DESTROY);	//the surface keeps a copy
+		pwl_proxy_destroy((struct wl_proxy *) region);
+	}
+	if (w.viewport)
+		pwl_proxy_marshal((struct wl_proxy *) w.viewport, WP_VIEWPORT_SET_DESTINATION, w.truewidth, w.trueheight);
+	else if (scale != w.bufscale120 && w.compositor_version >= 3)
+		pwl_surface_set_buffer_scale(w.surface, scale/120);
+	if (scale != w.bufscale120)
+	{	//for the code that sizes things in physical units
+		vid.dpi_x = vid.dpi_y = 96*scale/120.f;
+		Cvar_ForceSetValue(&vid_dpi_x, vid.dpi_x);
+		Cvar_ForceSetValue(&vid_dpi_y, vid.dpi_y);
+	}
+	w.bufwidth = bw;
+	w.bufheight = bh;
+	w.bufscale120 = scale;
+	w.destwidth = w.truewidth;
+	w.destheight = w.trueheight;
+	Con_DPrintf("Wayland: %ix%i logical, scale %g, %ix%i buffer\n", w.truewidth, w.trueheight, scale/120.0, bw, bh);
+
+#if defined(GLQUAKE) && defined(USE_EGL)
+	if (w.enwindow)
+		pwl_egl_window_resize(w.enwindow, bw, bh, 0, 0);
+#endif
+	vid.pixelwidth = bw;
+	vid.pixelheight = bh-w.csdsize;
+	Cvar_ForceCallback(&vid_conautoscale);
+}
+
+static void WL_fractional_scale_handle_preferred_scale(void *data, struct wp_fractional_scale_v1 *fs, uint32_t scale)
+{
+	Con_DPrintf("Wayland: preferred scale %u/120 (%g)\n", scale, scale/120.0);
+	w.scale120 = scale;
+	WL_ApplySize();
+}
+static const struct wp_fractional_scale_v1_listener
+{
+	void (*preferred_scale)(void *data, struct wp_fractional_scale_v1 *fs, uint32_t scale);
+} fractional_scale_listener =
+{
+	WL_fractional_scale_handle_preferred_scale
+};
+
+//without fractional scale: wl_surface.preferred_buffer_scale, else the biggest wl_output.scale the surface is on
+static void WL_UpdateIntScale(void)
+{
+	int i, s = w.preferred_buffer_scale;
+	if (!s)
+	{
+		for (i = 0; i < countof(w.outputs); i++)
+			if (w.outputs[i].output && w.outputs[i].entered)
+				s = max(s, w.outputs[i].scale);
+	}
+	w.intscale = max(1, s);
+	WL_ApplySize();
+}
+static void WL_output_handle_geometry(void *data, struct wl_output *output, int32_t x, int32_t y, int32_t physical_width, int32_t physical_height, int32_t subpixel, const char *make, const char *model, int32_t transform)
+{
+}
+static void WL_output_handle_mode(void *data, struct wl_output *output, uint32_t flags, int32_t width, int32_t height, int32_t refresh)
+{
+}
+static void WL_output_handle_done(void *data, struct wl_output *output)
+{
+}
+static void WL_output_handle_scale(void *data, struct wl_output *output, int32_t factor)
+{
+	struct wloutput_s *o = data;
+	o->scale = factor;
+	if (o->entered)
+		WL_UpdateIntScale();
+}
+static const struct wl_output_listener output_listener =
+{	//bound at version 2 at most, so name and description never arrive
+	WL_output_handle_geometry,
+	WL_output_handle_mode,
+	WL_output_handle_done,
+	WL_output_handle_scale,
+};
+static void WL_BindOutput(struct wl_registry *registry, uint32_t id, uint32_t version)
+{
+	int i;
+	for (i = 0; i < countof(w.outputs); i++)
+	{
+		if (!w.outputs[i].output)
+		{
+			w.outputs[i].id = id;
+			w.outputs[i].scale = 1;
+			w.outputs[i].entered = false;
+			w.outputs[i].output = pwl_registry_bind(registry, id, pwl_output_interface, WL_BindVersion(pwl_output_interface, version, 2));
+			pwl_proxy_add_listener((struct wl_proxy *) w.outputs[i].output, (void (**)(void)) &output_listener, &w.outputs[i]);
+			return;
+		}
+	}
+}
+static void WL_surface_handle_output(struct wl_output *output, qboolean entered)
+{
+	int i;
+	for (i = 0; i < countof(w.outputs); i++)
+		if (output && w.outputs[i].output == output)	//NULL: an output we already destroyed
+			w.outputs[i].entered = entered;
+	WL_UpdateIntScale();
+}
+static void WL_surface_handle_enter(void *data, struct wl_surface *surface, struct wl_output *output)
+{
+	WL_surface_handle_output(output, true);
+}
+static void WL_surface_handle_leave(void *data, struct wl_surface *surface, struct wl_output *output)
+{
+	WL_surface_handle_output(output, false);
+}
+static void WL_surface_handle_preferred_buffer_scale(void *data, struct wl_surface *surface, int32_t factor)
+{
+	Con_DPrintf("Wayland: preferred buffer scale %i\n", factor);
+	w.preferred_buffer_scale = factor;
+	WL_UpdateIntScale();
+}
+static void WL_surface_handle_preferred_buffer_transform(void *data, struct wl_surface *surface, uint32_t transform)
+{
+}
+//Patch 1667: wl_surface events through v6 as a fixed table, not the header's struct. Debian 11's wayland 1.18 header
+//(the release build) has a two-member wl_surface_listener, so a struct initialiser dropped the two v6 handlers while
+//WL_BindVersion still bound v6 from the system library, and libwayland aborted on preferred_buffer_scale.
+static void (*const surface_listener[4])(void) =
+{
+	(void (*)(void))WL_surface_handle_enter,
+	(void (*)(void))WL_surface_handle_leave,
+	(void (*)(void))WL_surface_handle_preferred_buffer_scale,
+	(void (*)(void))WL_surface_handle_preferred_buffer_transform,
+};
+
+//wp_tearing_control_v1: let the compositor tear (when it allows that at all) only while vsync is off
+static void WL_UpdateTearing(void)
+{
+	extern cvar_t vid_vsync;
+	int hint = (*vid_vsync.string && vid_vsync.ival <= 0)?WP_TEARING_CONTROL_V1_PRESENTATION_HINT_ASYNC:WP_TEARING_CONTROL_V1_PRESENTATION_HINT_VSYNC;	//EGL_UpdateSwapInterval's reading
+	if (!w.tearing_control || hint == w.tearing_hint)
+		return;
+	w.tearing_hint = hint;
+	pwl_proxy_marshal((struct wl_proxy *) w.tearing_control, WP_TEARING_CONTROL_V1_SET_PRESENTATION_HINT, hint);
+	Con_DPrintf("Wayland: presentation hint %s\n", (hint==WP_TEARING_CONTROL_V1_PRESENTATION_HINT_ASYNC)?"async":"vsync");
+}
 
 
 
@@ -548,11 +967,16 @@ static inline void xdg_surface_ack_configure(struct xdg_surface *xdg_surface, ui
 #define XDG_TOPLEVEL_SET_MINIMIZED 13
 struct xdg_toplevel_listener;
 static inline void xdg_toplevel_set_title(struct xdg_toplevel *xdg_toplevel, const char *title)		{ pwl_proxy_marshal((struct wl_proxy *) xdg_toplevel, XDG_TOPLEVEL_SET_TITLE, title); }
+static inline void xdg_toplevel_set_app_id(struct xdg_toplevel *xdg_toplevel, const char *app_id)		{ pwl_proxy_marshal((struct wl_proxy *) xdg_toplevel, XDG_TOPLEVEL_SET_APP_ID, app_id); }
 static inline int xdg_toplevel_add_listener(struct xdg_toplevel *xdg_toplevel, const struct xdg_toplevel_listener *listener, void *data)		{ return pwl_proxy_add_listener((struct wl_proxy *) xdg_toplevel, (void (**)(void)) listener, data); }
 static inline void xdg_toplevel_set_min_size(struct xdg_toplevel *xdg_toplevel, int32_t width, int32_t height)		{ pwl_proxy_marshal((struct wl_proxy *) xdg_toplevel, XDG_TOPLEVEL_SET_MIN_SIZE, width, height); }
 static inline void xdg_toplevel_move(struct xdg_toplevel *xdg_toplevel, struct wl_seat *seat, uint32_t serial)		{ pwl_proxy_marshal((struct wl_proxy *) xdg_toplevel, XDG_TOPLEVEL_MOVE, seat, serial); }
 static inline void xdg_toplevel_show_window_menu(struct xdg_toplevel *xdg_toplevel, struct wl_seat *seat, uint32_t serial, int32_t x, int32_t y)		{ pwl_proxy_marshal((struct wl_proxy *) xdg_toplevel, XDG_TOPLEVEL_SHOW_WINDOW_MENU, seat, serial, x, y); }
 static inline void xdg_toplevel_set_fullscreen(struct xdg_toplevel *xdg_toplevel, struct wl_output *output)		{ pwl_proxy_marshal((struct wl_proxy *) xdg_toplevel, XDG_TOPLEVEL_SET_FULLSCREEN, output); }
+static inline void xdg_toplevel_unset_fullscreen(struct xdg_toplevel *xdg_toplevel)		{ pwl_proxy_marshal((struct wl_proxy *) xdg_toplevel, XDG_TOPLEVEL_UNSET_FULLSCREEN); }
+static inline void xdg_toplevel_set_maximized(struct xdg_toplevel *xdg_toplevel)		{ pwl_proxy_marshal((struct wl_proxy *) xdg_toplevel, XDG_TOPLEVEL_SET_MAXIMIZED); }
+static inline void xdg_toplevel_unset_maximized(struct xdg_toplevel *xdg_toplevel)		{ pwl_proxy_marshal((struct wl_proxy *) xdg_toplevel, XDG_TOPLEVEL_UNSET_MAXIMIZED); }
+#define XDG_TOPLEVEL_STATE_FULLSCREEN 2	//xdg_toplevel.state, the same value in zxdg_toplevel_v6
 
 static void xdg_wm_base_handle_ping(void *data, struct xdg_wm_base *xdg_wm_base, uint32_t serial)
 {
@@ -576,25 +1000,39 @@ static const struct xdg_surface_listener myxdg_surface_listener =
 
 void xdg_toplevel_handle_configure(void *data, struct xdg_toplevel *xdg_toplevel, int32_t width, int32_t height, struct wl_array *states)
 {
+	const uint32_t *st;
+	qboolean fs = false;
+	for (st = states->data; (const char *)(st+1) <= (const char *)states->data + states->size; st++)
+		if (*st == XDG_TOPLEVEL_STATE_FULLSCREEN)
+			fs = true;
+	if (fs != w.fullscreen)
+		Con_DPrintf("Wayland: %s\n", fs?"fullscreen":"not fullscreen");
+	w.fullscreen = fs;
+	//P1611: keep the engine's idea in step when the compositor changes it on its own (labwc's ToggleFullscreen,
+	//GNOME's keybinding), so F11's "fullscreen?windowed:fullscreen" decision reads what is on screen. Wayland has
+	//no exclusive mode: the engine's 1 and 2 are the same window state, so anything fullscreen counts.
+	if (fs && !currentrendererstate.fullscreen)
+		currentrendererstate.fullscreen = 2;	//internal 2 = borderless, what fullscreen_toggle asks for
+	else if (!fs && currentrendererstate.fullscreen)
+		currentrendererstate.fullscreen = 0;
+
+	if ((!width || !height) && !fs && w.winwidth)
+	{	//P1611: the 0x0 answer to an exact-size unset_fullscreen. Kept apart from truewidth, so a configure still
+		//in flight (fullscreen-sized) cannot overwrite it first.
+		width = w.winwidth;
+		height = w.winheight;
+	}
+	if (!fs)
+		w.winwidth = w.winheight = 0;
 	if (!width || !height)
 	{
 		width = w.truewidth;
 		height = w.trueheight;
 	}
 
-#if defined(GLQUAKE) && defined(USE_EGL)
-	if (w.enwindow)
-		pwl_egl_window_resize(w.enwindow, width, height, 0, 0);
-#endif
-
 	w.truewidth = width;
 	w.trueheight = height;
-	if (vid.pixelwidth != width || vid.pixelheight != height-w.csdsize)
-	{
-		vid.pixelwidth = width;
-		vid.pixelheight = w.trueheight-w.csdsize;
-		Cvar_ForceCallback(&vid_conautoscale);
-	}
+	WL_ApplySize();
 }
 void xdg_toplevel_handle_close(void *data, struct xdg_toplevel *xdg_toplevel)
 {
@@ -619,19 +1057,9 @@ static void WL_shell_handle_ping(void *data, struct wl_shell_surface *shell_surf
 }
 static void WL_shell_handle_configure(void *data, struct wl_shell_surface *shell_surface, uint32_t edges, int32_t width, int32_t height)
 {
-#if defined(GLQUAKE) && defined(USE_EGL)
-	if (w.enwindow)
-		pwl_egl_window_resize(w.enwindow, width, height, 0, 0);
-#endif
-
 	w.truewidth = width;
 	w.trueheight = height;
-	if (vid.pixelwidth != width || vid.pixelheight != height-w.csdsize)
-	{
-		vid.pixelwidth = width;
-		vid.pixelheight = height-w.csdsize;
-		Cvar_ForceCallback(&vid_conautoscale);
-	}
+	WL_ApplySize();
 
 	w.wait_for_configure = false; //all good now
 }
@@ -708,6 +1136,12 @@ static void WL_SetHWCursor(void)
 
 		//now actually set it.
 		pwl_pointer_set_cursor(w.pointer, w.cursorserial, c->surf, c->hot_x, c->hot_y);
+	}
+	else if (!w.relative_mouse_active && !w.locked_pointer && w.cursor_shape_manager && w.pointer)
+	{	//P1602: no custom image means the desktop's arrow, as on X11; NULL would hide the pointer in every menu
+		if (!w.cursor_shape_device)
+			w.cursor_shape_device = (struct wp_cursor_shape_device_v1 *)pwl_proxy_marshal_constructor((struct wl_proxy *) w.cursor_shape_manager, WP_CURSOR_SHAPE_MANAGER_V1_GET_POINTER, pwp_cursor_shape_device_v1_interface, NULL, w.pointer);
+		pwl_proxy_marshal((struct wl_proxy *) w.cursor_shape_device, WP_CURSOR_SHAPE_DEVICE_V1_SET_SHAPE, w.cursorserial, WP_CURSOR_SHAPE_DEVICE_V1_SHAPE_DEFAULT);
 	}
 	else
 		pwl_pointer_set_cursor(w.pointer, w.cursorserial, NULL, 0, 0);
@@ -844,6 +1278,7 @@ static void WL_pointer_handle_enter(void *data, struct wl_pointer *pointer, uint
 
 	s->cursorfocus = true;
 	s->cursorserial = serial;
+	s->inputserial = serial;
 	WL_SetHWCursor();
 }
 static void WL_pointer_handle_leave(void *data, struct wl_pointer *pointer, uint32_t serial, struct wl_surface *surface)
@@ -861,14 +1296,17 @@ static void WL_pointer_handle_motion(void *data, struct wl_pointer *pointer, uin
 	//wayland is shite shite shite.
 	//1.4 still has no relative mouse motion.
 
-	//track this for csd
+	//track this for csd (surface units, as xdg_toplevel_show_window_menu wants them)
 	s->mousex = x;
 	s->mousey = y;
-	y -= s->csdsize;
 
-	//and let the game know.
+	//and let the game know, in buffer pixels.
 	if (!s->relative_mouse_active)
-		IN_MouseMove(0, true, x, y, 0, 0);
+		IN_MouseMove(0, true, x*WL_BufferScale(), y*WL_BufferScale() - s->csdsize, 0, 0);
+}
+static qboolean WL_PointerOnCaption(struct wdisplay_s *s)
+{	//csdsize is buffer pixels
+	return s->mousey*WL_BufferScale() < s->csdsize;
 }
 
 static void WL_pointer_handle_button(void *data, struct wl_pointer *wl_pointer, uint32_t serial, uint32_t time, uint32_t button, uint32_t state)
@@ -876,13 +1314,14 @@ static void WL_pointer_handle_button(void *data, struct wl_pointer *wl_pointer, 
 	struct wdisplay_s *s = data;
 	int qkey;
 
+	s->inputserial = serial;
 	switch(button)
 	{
 	default:
 		return;	//blurgh.
 	case BTN_LEFT:
 		qkey = K_MOUSE1;
-		if ((!s->relative_mouse_active||!vid.activeapp) && s->mousey < s->csdsize)
+		if ((!s->relative_mouse_active||!vid.activeapp) && WL_PointerOnCaption(s))
 		{
 #ifdef XDG_SHELL_NAME
 			if (s->xdg_toplevel)
@@ -897,7 +1336,7 @@ static void WL_pointer_handle_button(void *data, struct wl_pointer *wl_pointer, 
 		break;
 	case BTN_RIGHT:
 		qkey = K_MOUSE2;
-		if ((!s->relative_mouse_active||!vid.activeapp) && s->mousey < s->csdsize)
+		if ((!s->relative_mouse_active||!vid.activeapp) && WL_PointerOnCaption(s))
 		{
 #ifdef XDG_SHELL_NAME
 			if (s->xdg_toplevel)
@@ -1118,13 +1557,59 @@ static void WL_keyboard_handle_keymap(void *data, struct wl_keyboard *keyboard, 
 
 static void WL_keyboard_handle_enter(void *data, struct wl_keyboard *keyboard, uint32_t serial, struct wl_surface *surface, struct wl_array *keys)
 {
+	struct wdisplay_s *d = data;
+	Con_DPrintf("Wayland: keyboard focus in\n");
+	d->inputserial = serial;
 	vid.activeapp = true;
 }
 
 static void WL_keyboard_handle_leave(void *data, struct wl_keyboard *keyboard, uint32_t serial, struct wl_surface *surface)
 {
+	struct wdisplay_s *d = data;
+	Con_DPrintf("Wayland: keyboard focus out\n");
+	d->repeat_held = false;
 	vid.activeapp = false;
 	IN_KeyEvent(0, false, -1, 0);	//aka: release all, so we're not left with alt held, etc.
+}
+
+static qboolean WL_KeyRepeats(struct wdisplay_s *d, uint32_t key, uint32_t qkey)
+{
+	if (d->xkb_state)
+		return pxkb_keymap_key_repeats(pxkb_state_get_keymap(d->xkb_state), key+8);
+	switch(qkey)
+	{	//no keymap: everything but the modifiers and locks
+	case 0:
+	case K_LSHIFT: case K_RSHIFT: case K_LCTRL: case K_RCTRL: case K_LALT: case K_RALT:
+	case K_LWIN: case K_RWIN: case K_CAPSLOCK: case K_KP_NUMLOCK: case K_SCRLCK:
+		return false;
+	default:
+		return true;
+	}
+}
+//the compositor sends no repeats: a held key repeats as further presses with no release between, like X11's autorepeat
+static void WL_KeyRepeat(void)
+{
+	double now;
+	int n;
+	if (!w.repeat_held || w.repeat_rate <= 0)
+		return;
+	now = Sys_DoubleTime();
+	for (n = 0; now >= w.repeat_next && n < 8; n++)
+	{
+		IN_KeyEvent(0, 1, w.repeat_qkey, w.repeat_ukey);
+		w.repeat_next += 1.0/w.repeat_rate;
+	}
+	if (now >= w.repeat_next)
+		w.repeat_next = now + 1.0/w.repeat_rate;	//we stalled (no frames while hidden): don't burst
+}
+static void WL_keyboard_handle_repeat_info(void *data, struct wl_keyboard *keyboard, int32_t rate, int32_t delay)
+{
+	struct wdisplay_s *d = data;
+	Con_DPrintf("Wayland: key repeat %i/s after %ims\n", rate, delay);
+	d->repeat_rate = rate;
+	d->repeat_delay = delay;
+	if (rate <= 0)
+		d->repeat_held = false;
 }
 
 static void WL_keyboard_handle_key(void *data, struct wl_keyboard *keyboard, uint32_t serial, uint32_t time, uint32_t key, uint32_t state)
@@ -1167,7 +1652,22 @@ static void WL_keyboard_handle_key(void *data, struct wl_keyboard *keyboard, uin
 			ukey = 0;
 	}
 
+	d->inputserial = serial;
 	IN_KeyEvent(0, (state==WL_KEYBOARD_KEY_STATE_PRESSED)?1:0, qkey, ukey);
+
+	if (state == WL_KEYBOARD_KEY_STATE_PRESSED)
+	{
+		if (d->repeat_rate > 0 && (qkey || ukey) && WL_KeyRepeats(d, key, qkey))
+		{	//a newer press takes over; a modifier press leaves the repeat running
+			d->repeat_held = true;
+			d->repeat_scancode = key;
+			d->repeat_qkey = qkey;
+			d->repeat_ukey = ukey;
+			d->repeat_next = Sys_DoubleTime() + d->repeat_delay/1000.0;
+		}
+	}
+	else if (key == d->repeat_scancode)
+		d->repeat_held = false;
 }
 
 static void WL_keyboard_handle_modifiers(void *data, struct wl_keyboard *keyboard, uint32_t serial, uint32_t mods_depressed, uint32_t mods_latched, uint32_t mods_locked, uint32_t group)
@@ -1182,7 +1682,8 @@ static const struct wl_keyboard_listener keyboard_listener =
 	WL_keyboard_handle_enter,
 	WL_keyboard_handle_leave,
 	WL_keyboard_handle_key,
-	WL_keyboard_handle_modifiers
+	WL_keyboard_handle_modifiers,
+	WL_keyboard_handle_repeat_info	//wl_seat v4
 };
 /*Patch 387: Wayland's grant (in_generic.c Patch 301/326). 1 = relative-pointer and pointer-constraints
   exist, so a LOCKED pointer reads unaccelerated deltas. Unlocked (menus, in_windowed_mouse 0, a refused
@@ -1221,6 +1722,8 @@ static void WL_seat_handle_capabilities(void *data, struct wl_seat *seat, enum w
 	}
 	else if (!(caps & WL_SEAT_CAPABILITY_POINTER) && s->pointer)
 	{
+		WL_DropCursorShapeDevice();
+		s->cursorfocus = false;
 		pwl_pointer_destroy(s->pointer);
 		s->pointer = NULL;
 
@@ -1241,13 +1744,220 @@ static void WL_seat_handle_capabilities(void *data, struct wl_seat *seat, enum w
 	{
 		pwl_keyboard_destroy(s->keyboard);
 		s->keyboard = NULL;
+		s->repeat_held = false;
 	}
 	WL_PublishGrant();	//Patch 387
 }
+static void WL_seat_handle_name(void *data, struct wl_seat *seat, const char *name)
+{
+}
 static const struct wl_seat_listener seat_listener =
 {
-	WL_seat_handle_capabilities
+	WL_seat_handle_capabilities,
+	WL_seat_handle_name	//wl_seat v2
 };
+
+//clipboard: wl_data_device's selection, CBT_CLIPBOARD only (gl_vidlinuxglx.c's Sys_Clipboard_PasteText/Sys_SaveClipboard call in)
+static const char *wl_textmimes[] = {"text/plain;charset=utf-8", "text/plain", "UTF8_STRING"};	//best first
+static const char *WL_SelfMime(void)
+{	//our sources also offer this, so a selection is known to be ours (not another copy of the game's) by its offer alone.
+	//A random id, not the pid: PID namespaces (Flatpak) repeat pids, and clipboard managers keep a dead instance's offer.
+	static char mime[64];
+	if (!*mime)
+	{
+		unsigned int id[2];
+#ifdef HAVE_GETRANDOM
+		if (getrandom(id, sizeof(id), GRND_NONBLOCK) != sizeof(id))
+#endif
+		{
+			id[0] = (unsigned int)time(NULL) ^ (unsigned int)getpid();
+			id[1] = (unsigned int)(Sys_DoubleTime()*1000000);
+		}
+		Q_snprintfz(mime, sizeof(mime), "application/x-ftesurf-self;id=%08x%08x", id[0], id[1]);
+	}
+	return mime;
+}
+static void WL_DestroyOffer(struct wl_data_offer **offer)
+{
+	if (!*offer)
+		return;
+	if (*offer == w.newoffer)
+		w.newoffer = NULL;
+	pwl_proxy_marshal((struct wl_proxy *) *offer, WL_DATA_OFFER_DESTROY);
+	pwl_proxy_destroy((struct wl_proxy *) *offer);
+	*offer = NULL;
+}
+static void WL_data_offer_handle_offer(void *data, struct wl_data_offer *offer, const char *mime)
+{
+	int i;
+	if (offer != w.newoffer)
+		return;
+	if (!strcmp(mime, WL_SelfMime()))
+		w.newoffer_self = true;
+	for (i = 0; i < countof(wl_textmimes); i++)
+		if (!strcmp(mime, wl_textmimes[i]) && (!w.newoffer_mime || i+1 < w.newoffer_mime))
+			w.newoffer_mime = i+1;
+}
+static const struct wl_data_offer_listener data_offer_listener =
+{	//wl_data_device_manager is bound at version 1
+	WL_data_offer_handle_offer,
+};
+static void WL_data_device_handle_data_offer(void *data, struct wl_data_device *device, struct wl_data_offer *offer)
+{
+	w.newoffer = offer;
+	w.newoffer_mime = 0;
+	w.newoffer_self = false;
+	pwl_proxy_add_listener((struct wl_proxy *) offer, (void (**)(void)) &data_offer_listener, &w);
+}
+static void WL_data_device_handle_enter(void *data, struct wl_data_device *device, uint32_t serial, struct wl_surface *surface, wl_fixed_t x, wl_fixed_t y, struct wl_data_offer *offer)
+{	//we take no drops; the offer is only kept to be destroyed
+	WL_DestroyOffer(&w.dnd_offer);
+	w.dnd_offer = offer;
+}
+static void WL_data_device_handle_leave(void *data, struct wl_data_device *device)
+{
+	WL_DestroyOffer(&w.dnd_offer);
+}
+static void WL_data_device_handle_motion(void *data, struct wl_data_device *device, uint32_t time, wl_fixed_t x, wl_fixed_t y)
+{
+}
+static void WL_data_device_handle_selection(void *data, struct wl_data_device *device, struct wl_data_offer *offer)
+{
+	if (w.selection_offer != offer)
+		WL_DestroyOffer(&w.selection_offer);
+	w.selection_offer = offer;
+	w.selection_mime = (offer && offer == w.newoffer)?w.newoffer_mime:0;
+	w.selection_self = (offer && offer == w.newoffer)?w.newoffer_self:false;
+}
+static const struct wl_data_device_listener data_device_listener =
+{
+	WL_data_device_handle_data_offer,
+	WL_data_device_handle_enter,
+	WL_data_device_handle_leave,
+	WL_data_device_handle_motion,
+	WL_data_device_handle_leave,	//drop: no leave follows it
+	WL_data_device_handle_selection,
+};
+static void WL_data_source_handle_target(void *data, struct wl_data_source *source, const char *mime)
+{
+}
+static void WL_data_source_handle_send(void *data, struct wl_data_source *source, const char *mime, int32_t fd)
+{	//non-blocking with 100 ms in all: a reader that stops reading must not stall the game
+	const char *t = w.cliptext?w.cliptext:"";
+	size_t len = strcmp(mime, WL_SelfMime())?strlen(t):0;
+	double deadline = Sys_DoubleTime() + 0.1;
+	struct pollfd p;
+	fcntl(fd, F_SETFL, fcntl(fd, F_GETFL) | O_NONBLOCK);
+	while (len)
+	{
+		ssize_t r = write(fd, t, len);
+		int ms = (deadline - Sys_DoubleTime())*1000;
+		if (r > 0)
+		{
+			t += r;
+			len -= r;
+			continue;
+		}
+		if (ms <= 0)
+		{
+			Con_DPrintf("Wayland: clipboard send cut short by its 100 ms budget, %u bytes unsent\n", (unsigned int)len);
+			break;
+		}
+		if (r < 0 && errno == EINTR)
+			continue;
+		p.fd = fd;
+		p.events = POLLOUT;
+		if (r < 0 && errno == EAGAIN && (poll(&p, 1, ms) >= 0 || errno == EINTR))
+			continue;	//writable, interrupted, or timed out (and the next pass says so)
+		break;	//an error, such as the reader closing
+	}
+	close(fd);
+}
+static void WL_data_source_handle_cancelled(void *data, struct wl_data_source *source)
+{	//someone else took the selection (or our replacement did)
+	if (source == w.data_source)
+	{
+		w.data_source = NULL;
+		Z_Free(w.cliptext);
+		w.cliptext = NULL;
+	}
+	pwl_proxy_marshal((struct wl_proxy *) source, WL_DATA_SOURCE_DESTROY);
+	pwl_proxy_destroy((struct wl_proxy *) source);
+}
+static const struct wl_data_source_listener data_source_listener =
+{
+	WL_data_source_handle_target,
+	WL_data_source_handle_send,
+	WL_data_source_handle_cancelled,
+};
+//false: not ours to answer (no Wayland clipboard, the primary selection, or the selection is this process's), so the caller uses its own copy
+qboolean WL_Clipboard_PasteText(clipboardtype_t cbt, void (*callback)(void *ctx, const char *utf8), void *ctx)
+{
+	int fds[2];
+	char *text = NULL;
+	size_t len = 0, cap = 0;
+	ssize_t r;
+	struct pollfd p;
+	double deadline;
+	int ms;
+
+	if (!w.display || cbt != CBT_CLIPBOARD || !w.data_device || w.selection_self)
+		return false;	//(reading our own source would wait on ourselves)
+	if (!w.selection_offer || !w.selection_mime || pipe(fds) < 0)
+	{
+		callback(ctx, NULL);
+		return true;
+	}
+	pwl_proxy_marshal((struct wl_proxy *) w.selection_offer, WL_DATA_OFFER_RECEIVE, wl_textmimes[w.selection_mime-1], fds[1]);
+	close(fds[1]);	//the request carries its own dup
+	pwl_display_flush(w.display);
+
+	p.fd = fds[0];
+	p.events = POLLIN;
+	deadline = Sys_DoubleTime() + 1;	//a source that never finishes costs a second in all, not a hang
+	while (len < (1u<<20) && (ms = (deadline - Sys_DoubleTime())*1000) > 0)
+	{
+		int n = poll(&p, 1, ms);
+		if (n < 0 && errno == EINTR)
+			continue;
+		if (n <= 0)
+			break;
+		if (len+4096 >= cap)
+		{
+			char *grown = realloc(text, cap = len+4096+1);
+			if (!grown)
+				break;
+			text = grown;
+		}
+		r = read(fds[0], text+len, 4096);
+		if (r < 0 && errno == EINTR)
+			continue;
+		if (r <= 0)
+			break;
+		len += r;
+	}
+	close(fds[0]);
+	if (text)
+		text[len] = 0;
+	callback(ctx, text);
+	free(text);
+	return true;
+}
+void WL_SaveClipboard(clipboardtype_t cbt, const char *text)
+{
+	int i;
+	struct wl_data_source *source;
+	if (!w.display || cbt != CBT_CLIPBOARD || !w.data_device || !w.inputserial)
+		return;	//no input serial yet: set_selection would be refused, so only the caller's own copy changes
+	Z_StrDupPtr(&w.cliptext, text);
+	source = (struct wl_data_source *) pwl_proxy_marshal_constructor((struct wl_proxy *) w.data_device_manager, WL_DATA_DEVICE_MANAGER_CREATE_DATA_SOURCE, pwl_data_source_interface, NULL);
+	for (i = 0; i < countof(wl_textmimes); i++)
+		pwl_proxy_marshal((struct wl_proxy *) source, WL_DATA_SOURCE_OFFER, wl_textmimes[i]);
+	pwl_proxy_marshal((struct wl_proxy *) source, WL_DATA_SOURCE_OFFER, WL_SelfMime());
+	pwl_proxy_add_listener((struct wl_proxy *) source, (void (**)(void)) &data_source_listener, &w);
+	pwl_proxy_marshal((struct wl_proxy *) w.data_device, WL_DATA_DEVICE_SET_SELECTION, source, w.inputserial);
+	w.data_source = source;	//the previous one, if any, is told 'cancelled'
+}
 
 
 #ifdef XDG_DECORATION_MANAGER_NAME
@@ -1303,6 +2013,7 @@ static inline int zxdg_toplevel_decoration_v1_add_listener(struct zxdg_toplevel_
 static void xdg_decoration_mode(void *data, struct zxdg_toplevel_decoration_v1 *xdg_decoration, uint32_t mode)
 {
 	struct wdisplay_s *d = data;
+	Con_DPrintf("Wayland: xdg-decoration mode %s\n", (mode == ZXDG_TOPLEVEL_DECORATION_V1_MODE_SERVER_SIDE)?"server-side":"client-side");
 	d->hasssd = (mode != ZXDG_TOPLEVEL_DECORATION_V1_MODE_CLIENT_SIDE);
 }
 static const struct zxdg_toplevel_decoration_v1_listener myxdg_decoration_listener =
@@ -1378,22 +2089,37 @@ static void WL_handle_global(void *data, struct wl_registry *registry, uint32_t 
 	struct wdisplay_s *d = data;
 Con_DLPrintf(0, "Wayland Interface %s id %u version %u\n", interface, id, version);
 	if (strcmp(interface, "wl_compositor") == 0)
-		d->compositor = pwl_registry_bind(registry, id, pwl_compositor_interface, 1);
+	{	//v3: wl_surface.set_buffer_scale, v6: wl_surface.preferred_buffer_scale
+		d->compositor_version = WL_BindVersion(pwl_compositor_interface, version, 6);
+		d->compositor = pwl_registry_bind(registry, id, pwl_compositor_interface, d->compositor_version);
+	}
 	else if (strcmp(interface, "wl_shm") == 0)
-		d->shm = pwl_registry_bind(registry, id, pwl_shm_interface, 1);
+		d->shm = pwl_registry_bind(registry, id, pwl_shm_interface, WL_BindVersion(pwl_shm_interface, version, 1));
 #ifdef WL_SHELL_NAME
 	else if (strcmp(interface, WL_SHELL_NAME) == 0)
-		d->shell = pwl_registry_bind(registry, id, pwl_shell_interface, 1);
+		d->shell = pwl_registry_bind(registry, id, pwl_shell_interface, WL_BindVersion(pwl_shell_interface, version, 1));
 #endif
 #ifdef XDG_SHELL_NAME
 	else if (strcmp(interface, XDG_SHELL_NAME) == 0 && version > 1)	//old versions of kwin are buggy, sidestep it.
 		d->xdg_wm_base = pwl_registry_bind(registry, id, pxdg_wm_base_interface, 2);
 #endif
 	else if (strcmp(interface, "wl_seat") == 0 && !d->seat)
-	{
-		d->seat = pwl_registry_bind(registry, id, pwl_seat_interface, 1);
+	{	//v4 for wl_keyboard.repeat_info; v5 would add wl_pointer events the listener lacks
+		d->seat = pwl_registry_bind(registry, id, pwl_seat_interface, WL_BindVersion(pwl_seat_interface, version, 4));
 		pwl_seat_add_listener(d->seat, &seat_listener, d);
 	}
+	else if (strcmp(interface, "wl_output") == 0)
+		WL_BindOutput(registry, id, version);
+	else if (strcmp(interface, "wl_data_device_manager") == 0)
+		d->data_device_manager = pwl_registry_bind(registry, id, pwl_data_device_manager_interface, WL_BindVersion(pwl_data_device_manager_interface, version, 1));
+	else if (strcmp(interface, WP_FRACTIONAL_SCALE_MANAGER_NAME) == 0)
+		WL_BindFractionalScaleManager(registry, id);
+	else if (strcmp(interface, WP_VIEWPORTER_NAME) == 0)
+		WL_BindViewporter(registry, id);
+	else if (strcmp(interface, WP_TEARING_CONTROL_MANAGER_NAME) == 0)
+		WL_BindTearingControlManager(registry, id);
+	else if (strcmp(interface, WP_CURSOR_SHAPE_MANAGER_NAME) == 0)
+		WL_BindCursorShapeManager(registry, id);
 #ifdef XDG_DECORATION_MANAGER_NAME
 	else if (strcmp(interface, XDG_DECORATION_MANAGER_NAME) == 0)
 		WL_BindDecorationManager(registry, id);
@@ -1402,8 +2128,6 @@ Con_DLPrintf(0, "Wayland Interface %s id %u version %u\n", interface, id, versio
 	else if (strcmp(interface, ORG_KDE_KWIN_SERVER_DECORATION_MANAGER_NAME) == 0)
 		WL_BindKWinDecorationManager(registry, id);
 #endif
-//	else if (strcmp(interface, "zxdg_decoration_manager_v1") == 0)
-//		WL_BindDecorationManager(registry, id);
 #ifdef WP_RELATIVE_POINTER_MANAGER_NAME
 	else if (strcmp(interface, WP_RELATIVE_POINTER_MANAGER_NAME) == 0)
 		WL_BindRelativePointerManager(registry, id);
@@ -1419,6 +2143,17 @@ Con_DLPrintf(0, "Wayland Interface %s id %u version %u\n", interface, id, versio
 
 static void WL_handle_global_remove(void *data, struct wl_registry *wl_registry, uint32_t id)
 {
+	int i;
+	for (i = 0; i < countof(w.outputs); i++)
+	{
+		if (w.outputs[i].output && w.outputs[i].id == id)
+		{	//a monitor went away
+			pwl_proxy_destroy((struct wl_proxy *) w.outputs[i].output);
+			memset(&w.outputs[i], 0, sizeof(w.outputs[i]));
+			WL_UpdateIntScale();
+			return;
+		}
+	}
 	Con_Printf("WL_handle_global_remove: %u\n", id);
 }
 
@@ -1427,23 +2162,50 @@ static const struct wl_registry_listener WL_registry_listener = {
 	WL_handle_global_remove
 };
 
+//P1602: dispatch what arrives within timeoutms. wl_display_dispatch blocks until an event comes, which stalled
+//the whole host (network included) while a hidden surface got no frame callbacks.
+static qboolean WL_PumpEvents(int timeoutms)
+{
+	struct pollfd pfd;
+	while (pwl_display_prepare_read(w.display) != 0)
+		if (pwl_display_dispatch_pending(w.display) < 0)
+			return false;
+	pwl_display_flush(w.display);
+	pfd.fd = pwl_display_get_fd(w.display);
+	pfd.events = POLLIN;
+	pfd.revents = 0;
+	if (poll(&pfd, 1, timeoutms) > 0)
+	{
+		if (pwl_display_read_events(w.display) < 0)
+			return false;
+	}
+	else
+		pwl_display_cancel_read(w.display);
+	return pwl_display_dispatch_pending(w.display) >= 0;
+}
 qboolean WL_MayRefresh(void)
 {
 	if (w.wait_for_configure || w.waylandisblocking)
 	{
-		if (pwl_display_dispatch(w.display) == -1)
+		if (!WL_PumpEvents(1))
 		{
 			Sys_Sleep(2);
 			Con_Printf(CON_ERROR "wayland connection was lost. Restarting video\n");
 			Cbuf_InsertText("vid_restart", RESTRICT_LOCAL, true);
+			return false;
 		}
-		return false;
+		//wlroots sends frame callbacks only to visible surfaces: past 100 ms draw anyway (~10 fps while hidden)
+		if (w.waylandisblocking && Sys_DoubleTime() - w.frameasked > 0.1)
+			w.waylandisblocking = false;
+		return !w.wait_for_configure && !w.waylandisblocking;
 	}
 	return true;
 }
 static void frame_handle_done(void *data, struct wl_callback *callback, uint32_t time)
 {
 	pwl_proxy_destroy((struct wl_proxy *)callback);
+	if (w.framecb == callback)
+		w.framecb = NULL;
 	w.waylandisblocking = false;
 }
 static const struct wl_callback_listener frame_listener = {
@@ -1452,9 +2214,18 @@ static const struct wl_callback_listener frame_listener = {
 
 static void WL_SwapBuffers(void)
 {
+	extern cvar_t vid_vsync;
 	qboolean wantabs;
 	TRACE(("WL_SwapBuffers\n"));
 
+	WL_UpdateTearing();	//rides on the swap's commit
+	if (!w.statesynced && w.xdg_toplevel)
+	{	//P1611: R_ApplyRenderer copies the requested state over currentrendererstate after WL_Init, wiping what an
+		//init-time configure said (a window rule forcing fullscreen); read it back once, at the first swap.
+		w.statesynced = true;
+		if (w.fullscreen != !!currentrendererstate.fullscreen)
+			currentrendererstate.fullscreen = w.fullscreen?2:0;
+	}
 	switch(qrenderer)
 	{
 #if defined(GLQUAKE) && defined(USE_EGL)
@@ -1483,16 +2254,21 @@ static void WL_SwapBuffers(void)
 		if (R2D_Flush)
 			R2D_Flush();
 
+		if (!*vid_vsync.string || vid_vsync.ival > 0)	//P1602: vsync off draws unthrottled, as GLX does; the frame callback capped it at the refresh
 		{
-			// Register a frame callback to know when we need to draw the next frame
-			struct wl_callback *callback = pwl_surface_frame(w.surface);
+			if (!w.framecb)	//a hidden surface would otherwise queue one per frame
+			{
+				// Register a frame callback to know when we need to draw the next frame
+				w.framecb = pwl_surface_frame(w.surface);
+				pwl_callback_add_listener(w.framecb, &frame_listener, NULL);
+			}
 			w.waylandisblocking = true;
-			pwl_callback_add_listener(callback, &frame_listener, NULL);
+			w.frameasked = Sys_DoubleTime();
 		}
 
 		EGL_SwapBuffers();
 		//wl_surface_damage(w.surface, 0, 0, vid.pixelwidth, vid.pixelheight);
-		if (pwl_display_dispatch_pending(w.display) < 0)
+		if (!WL_PumpEvents(0))	//read too: with vsync off WL_MayRefresh never waits, so nothing else reads the socket
 		{
 			Con_Printf(CON_ERROR "wayland connection was lost. Restarting video\n");
 			Cbuf_InsertText("vid_restart", RESTRICT_LOCAL, true);
@@ -1500,20 +2276,22 @@ static void WL_SwapBuffers(void)
 		}
 		if (w.hasssd)
 			w.csdsize = 0;	//kde's implementation-specific/legacy extension doesn't need us to draw crappy lame CSD junk
+		else if (w.fullscreen)
+			w.csdsize = 0;	//P1611: a fullscreen window has no title bar (GNOME drew ours across the top of the menus)
 		else if (vid.activeapp && w.relative_mouse_active)
 			w.csdsize = 0;	//kill the csd while using relative mouse coords.
 		else
 			w.csdsize = Font_CharPHeight(font_default)+8;
 
-		if (vid.pixelheight != w.trueheight-w.csdsize)
+		if (w.bufheight && vid.pixelheight != w.bufheight-w.csdsize)
 		{
-			vid.pixelheight = w.trueheight-w.csdsize;
+			vid.pixelheight = w.bufheight-w.csdsize;
 			Cvar_ForceCallback(&vid_conautoscale);
 		}
 		break;
 #endif
 	case QR_VULKAN:
-		if (pwl_display_dispatch_pending(w.display) < 0)
+		if (!WL_PumpEvents(0))
 		{
 			Con_Printf(CON_ERROR "wayland connection was lost. Restarting video\n");
 			Cbuf_InsertText("vid_restart", RESTRICT_LOCAL, true);
@@ -1523,6 +2301,7 @@ static void WL_SwapBuffers(void)
 	default:
 		break;
 	}
+	WL_KeyRepeat();
 
 	//if the game wants absolute mouse positions...
 	wantabs = !vid.activeapp || (!vrui.enabled && Key_MouseShouldBeFree()) || !in_windowed_mouse.value;
@@ -1538,11 +2317,10 @@ static void WL_SwapBuffers(void)
 		pwl_proxy_marshal((struct wl_proxy *) w.locked_pointer, ZWP_LOCKED_POINTER_V1_DESTROY);
 		pwl_proxy_destroy((struct wl_proxy *) w.locked_pointer);
 		w.locked_pointer = NULL;
-		if (!w.relative_mouse_active)
-		{
-			w.relative_mouse_active = false;
-			WL_SetHWCursor();
-		}
+		//P1602: destroying the lock sends no `unlocked`, so this is the only place relative mode ends; the old
+		//test here was inverted and the cursor stayed hidden after mouselook until the pointer left and re-entered.
+		w.relative_mouse_active = false;
+		WL_SetHWCursor();
 	}
 }
 
@@ -1560,8 +2338,41 @@ static qboolean WLVK_SetupSurface(void)
 }
 #endif
 
+extern qboolean (*VID_SetFullscreenLive)(int fullscreen, int width, int height);	//renderer.c, P1611
+extern int VID_WindowMaximizePolicy(void);
+//P1611: F11 / Alt+Enter / vid_toggle on the live window: Wayland fullscreen is a window state, not a video mode,
+//so the compositor's configure resizes us (WL_ApplySize) and nothing restarts. OpenGL only: the Vulkan path never
+//rebuilds its swapchain on a resize. Why and measurements: ENGINE_PATCHES.md Patch 1611.
+static qboolean WL_SetFullscreenLive(int fullscreen, int width, int height)
+{
+#ifdef XDG_SHELL_NAME
+	if (!w.xdg_toplevel || qrenderer != QR_OPENGL)
+		return false;
+	w.winwidth = w.winheight = 0;
+	if (fullscreen)
+		xdg_toplevel_set_fullscreen(w.xdg_toplevel, NULL);
+	else
+	{
+		xdg_toplevel_unset_fullscreen(w.xdg_toplevel);
+		if (VID_WindowMaximizePolicy() == 2)
+			xdg_toplevel_set_maximized(w.xdg_toplevel);	//windowed means maximized, as on Windows (Patch 268)
+		else
+		{	//exact size, in the same units WL_Init takes info->width in
+			xdg_toplevel_unset_maximized(w.xdg_toplevel);
+			w.winwidth = width;
+			w.winheight = height;
+		}
+	}
+	pwl_display_flush(w.display);
+	return true;
+#else
+	return false;
+#endif
+}
+
 static qboolean WL_NameAndShame(void)
 {
+	VID_SetFullscreenLive = WL_SetFullscreenLive;	//P1611: the renderer is up; WL_DeInit takes it away again
 	WL_PublishGrant();	//Patch 387
 	//called after the renderer has been initialised, so these messages should be more prominant.
 	if (!w.relative_pointer)
@@ -1634,6 +2445,7 @@ static qboolean WL_Init (rendererstate_t *info, unsigned char *palette)
 	}
 
 	memset(&w, 0, sizeof(w));
+	w.tearing_hint = -1;
 
 #ifdef DYNAMIC_WAYLAND
 	if (WL_InitLibraryXKB())
@@ -1663,6 +2475,21 @@ static qboolean WL_Init (rendererstate_t *info, unsigned char *palette)
 		Con_Printf("no compositor running, apparently\n");
 		return false;
 	}
+	pwl_proxy_add_listener((struct wl_proxy *) w.surface, (void (**)(void)) surface_listener, &w);
+	if (w.fractional_scale_manager && w.viewporter)
+	{	//preferred_scale only works with a viewport to scale the buffer back down
+		w.fractional_scale = (struct wp_fractional_scale_v1 *) pwl_proxy_marshal_constructor((struct wl_proxy *) w.fractional_scale_manager, WP_FRACTIONAL_SCALE_MANAGER_V1_GET_FRACTIONAL_SCALE, pwp_fractional_scale_v1_interface, NULL, w.surface);
+		pwl_proxy_add_listener((struct wl_proxy *) w.fractional_scale, (void (**)(void)) &fractional_scale_listener, &w);
+	}
+	if (w.viewporter)
+		w.viewport = (struct wp_viewport *) pwl_proxy_marshal_constructor((struct wl_proxy *) w.viewporter, WP_VIEWPORTER_GET_VIEWPORT, pwp_viewport_interface, NULL, w.surface);
+	if (w.tearing_control_manager)
+		w.tearing_control = (struct wp_tearing_control_v1 *) pwl_proxy_marshal_constructor((struct wl_proxy *) w.tearing_control_manager, WP_TEARING_CONTROL_MANAGER_V1_GET_TEARING_CONTROL, pwp_tearing_control_v1_interface, NULL, w.surface);
+	if (w.data_device_manager && w.seat)
+	{
+		w.data_device = (struct wl_data_device *) pwl_proxy_marshal_constructor((struct wl_proxy *) w.data_device_manager, WL_DATA_DEVICE_MANAGER_GET_DATA_DEVICE, pwl_data_device_interface, NULL, w.seat);
+		pwl_proxy_add_listener((struct wl_proxy *) w.data_device, (void (**)(void)) &data_device_listener, &w);
+	}
 
 	if (0)
 		;
@@ -1678,6 +2505,9 @@ static qboolean WL_Init (rendererstate_t *info, unsigned char *palette)
 		if (!w.xdg_toplevel)
 			return false;
 		xdg_toplevel_add_listener(w.xdg_toplevel, &myxdg_toplevel_listener, &w);
+		//FTESurf Patch 1633: taskbars find the icon through the .desktop file named by app_id (ftesurf.sh writes
+		//worldofsurf.desktop); unset, labwc and KWin show a generic one. Set before the first commit.
+		xdg_toplevel_set_app_id(w.xdg_toplevel, "worldofsurf");
 		xdg_toplevel_set_min_size(w.xdg_toplevel, 320, 200);
 	}
 #endif
@@ -1695,10 +2525,15 @@ static qboolean WL_Init (rendererstate_t *info, unsigned char *palette)
 		return false;	//no way to make it fullscreen/top-level means it'll probably stay hidden, so make this fatal.
 	}
 
-	WL_SetCaption("FTE Quake");
+	{	//P1611: a restart keeps the title it had. It used to come back as "FTE Quake" (alt-tab's label) until the
+		//client's state next changed.
+		char cap[sizeof(wl_caption)];
+		Q_strncpyz(cap, *wl_caption?wl_caption:(*fs_gamename.string?fs_gamename.string:"FTE Quake"), sizeof(cap));
+		WL_SetCaption(cap);
+	}
 #ifdef XDG_DECORATION_MANAGER_NAME
-	if (w.xdg_decoration_manager)
-	{	//decorate it!
+	if (w.xdg_decoration_manager && w.xdg_toplevel)
+	{	//decorate it! (before the first commit, as the protocol requires)
 		w.xdg_decoration = zxdg_decoration_manager_v1_get_toplevel_decoration(w.xdg_decoration_manager, w.xdg_toplevel);
 		if (w.xdg_decoration)
 		{
@@ -1727,6 +2562,8 @@ static qboolean WL_Init (rendererstate_t *info, unsigned char *palette)
 	{
 		if (info->fullscreen)
 			xdg_toplevel_set_fullscreen(w.xdg_toplevel, NULL);
+		else if (qrenderer == QR_OPENGL && VID_WindowMaximizePolicy() == 2)
+			xdg_toplevel_set_maximized(w.xdg_toplevel);	//P1611: vid_winmaximize, as Windows does (it opened at 640x480); not Vulkan, which cannot resize
 	}
 #endif
 #ifdef WL_SHELL_NAME
@@ -1742,17 +2579,7 @@ static qboolean WL_Init (rendererstate_t *info, unsigned char *palette)
 	w.truewidth = info->width?info->width:640;
 	w.trueheight = info->height?info->height:480;
 pwl_display_roundtrip(w.display);
-
-	{
-		struct wl_region *region = pwl_compositor_create_region(w.compositor);
-		pwl_region_add(region, 0, 0, w.truewidth, w.trueheight);
-		pwl_surface_set_opaque_region(w.surface, region);
-		//FIXME: leaks region...
-		//pwl_region_destroy(region);
-	}
-pwl_display_roundtrip(w.display);
-	vid.pixelwidth = w.truewidth;
-	vid.pixelheight = w.trueheight-w.csdsize;
+	WL_ApplySize();	//sets vid.pixelwidth/pixelheight, and (P1611) the opaque region, on every resize from here on
 
 	vid.activeapp = true;
 
@@ -1778,7 +2605,7 @@ pwl_display_roundtrip(w.display);
 	case QR_OPENGL:
 		{
 			EGLConfig cfg;
-			w.enwindow = pwl_egl_window_create(w.surface, w.truewidth, w.trueheight);
+			w.enwindow = pwl_egl_window_create(w.surface, w.bufwidth, w.bufheight);
 			if (!EGL_InitDisplay(info, EGL_PLATFORM_WAYLAND_KHR, w.display, (EGLNativeDisplayType)w.display, &cfg))
 			{
 				Con_Printf("couldn't find suitable EGL config\n");
@@ -1791,8 +2618,10 @@ pwl_display_roundtrip(w.display);
 					pwl_surface_commit(w.surface);
 				}
 			#endif
+			egl_backendpacing = true;	//WL_SwapBuffers' frame callback paces vsync; EGL must not block on its own
 			if (!EGL_InitWindow(info, EGL_PLATFORM_WAYLAND_KHR, w.enwindow, (EGLNativeWindowType)w.enwindow, cfg))
 			{
+				egl_backendpacing = false;
 				Con_Printf("couldn't initialise EGL context\n");
 				return false;
 			}
@@ -1808,29 +2637,56 @@ pwl_display_roundtrip(w.display);
 	}
 	return true;
 }
+//destructor request (opcode) then the proxy; NULL is fine
+static void WL_DestroyObject(void *obj, uint32_t destroyop)
+{
+	if (!obj)
+		return;
+	pwl_proxy_marshal((struct wl_proxy *) obj, destroyop);
+	pwl_proxy_destroy((struct wl_proxy *) obj);
+}
 static void WL_DeInit(void)
 {
+	VID_SetFullscreenLive = NULL;	//P1611
+	w.cursorfocus = false;	//a pointer.enter the final roundtrip delivers must not set a cursor again
 #if defined(GLQUAKE) && defined(USE_EGL)
 	EGL_Shutdown();
 	if (w.enwindow)
 		pwl_egl_window_destroy(w.enwindow);
+	w.enwindow = NULL;	//the roundtrip below can still dispatch a configure/scale into WL_ApplySize
 	EGL_UnloadLibrary();
 	GL_ForgetPointers();
 #endif
 #ifdef WL_SHELL_NAME
 	if (w.ssurface)		pwl_proxy_destroy((struct wl_proxy *) w.ssurface);
 #endif
+	//P1602: role objects before their surface, or wlroots answers "surface was destroyed before its role object"
+	WL_DropCursorShapeDevice();
+#ifdef XDG_DECORATION_MANAGER_NAME
+	WL_DestroyObject(w.xdg_decoration, 0);	//zxdg_toplevel_decoration_v1.destroy, before its toplevel
+#endif
+#ifdef ORG_KDE_KWIN_SERVER_DECORATION_MANAGER_NAME
+	WL_DestroyObject(w.kwin_decoration, 0);	//release
+#endif
+	WL_DestroyObject(w.tearing_control, 1);	//wp_tearing_control_v1.destroy is opcode 1
+	WL_DestroyObject(w.fractional_scale, 0);
+	WL_DestroyObject(w.viewport, 0);
+#ifdef XDG_SHELL_NAME
+	WL_DestroyObject(w.xdg_toplevel, 0);
+	WL_DestroyObject(w.xdg_surface, 0);
+#endif
 	if (w.surface)		pwl_proxy_marshal((struct wl_proxy *) w.surface, WL_SURFACE_DESTROY);
 	if (w.surface)		pwl_proxy_destroy((struct wl_proxy *) w.surface);
+	w.surface = NULL;
 	if (w.compositor)	pwl_proxy_destroy((struct wl_proxy *) w.compositor);
 	if (w.registry)		pwl_proxy_destroy((struct wl_proxy *) w.registry);
 	if (w.display)
-	{	//let the server know everything before shutting it off
-		pwl_display_dispatch(w.display);
+	{	//let the server know everything before shutting it off (a roundtrip: a dispatch could wait forever for an event)
 		pwl_display_roundtrip(w.display);
 		pwl_display_disconnect(w.display);
 	}
 	Z_Free(w.csdcaption);
+	Z_Free(w.cliptext);
 	memset(&w, 0, sizeof(w));
 	in_rawmice_live = 0;	//Patch 387: the grant dies with the display
 	in_rawkbd_live = 0;
@@ -1842,6 +2698,8 @@ static qboolean WL_ApplyGammaRamps(unsigned int gammarampsize, unsigned short *r
 }
 static void WL_SetCaption(const char *text)
 {
+	if (text != wl_caption)
+		Q_strncpyz(wl_caption, text, sizeof(wl_caption));	//P1611: outlives `w`, for the next WL_Init
 #ifdef XDG_SHELL_NAME
 	if (w.xdg_toplevel)
 		xdg_toplevel_set_title(w.xdg_toplevel, text);
@@ -1858,7 +2716,9 @@ static int WL_GetPriority(void)
 {
 	//2 = above x11, 0 = below x11.
 	char *stype = getenv("XDG_SESSION_TYPE");
-	char *dpyname;
+	char *dpyname = getenv("WAYLAND_DISPLAY");
+	if (!dpyname || !*dpyname)
+		return 0;	//P1602: no compositor to talk to (a tty, su), so GLX takes "gl"
 	if (stype)
 	{
 		if (!strcmp(stype, "wayland"))
@@ -1872,19 +2732,18 @@ static int WL_GetPriority(void)
 	//otherwise if both WAYLAND_DISPLAY and DISPLAY are defined, then we assume that we were started from xwayland wrapper thing, and that the native/preferred windowing system is wayland.
 	//(lets just hope our wayland support is comparable)
 
-	dpyname = getenv("WAYLAND_DISPLAY");
-	if (dpyname && *dpyname)
-		return 2;	//something above X11.
-	return 0;	//default.
+	return 2;	//something above X11.
 }
 
 #if defined(GLQUAKE) && defined(USE_EGL)
 rendererinfo_t rendererinfo_wayland_gl =
 {
 	"OpenGL (Wayland)",
-	{
+	{	//Patch 1602: gl/opengl too, so a saved `vid_renderer gl` takes this on a Wayland session (WL_GetPriority 2 beats GLX's 1) and GLX elsewhere (0)
 		"wlgl",
 		"wayland",
+		"gl",
+		"opengl",
 	},
 	QR_OPENGL,
 

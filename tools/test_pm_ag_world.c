@@ -42,6 +42,7 @@ int PM_PointContents(vec3_t point)
 	if (ladder && point[0]>-20 && point[0]<20) result|=FTECONTENTS_LADDER;
 	return result;
 }
+int PM_LadderEntPlane(vec3_t origin, vec3_t normal) { (void)origin; (void)normal; return 0; } // Patch 1655: no brush ladder here
 int PM_ExtraBoxContents(vec3_t point)
 {
 	(void)point; extraboxcalls++;
@@ -304,4 +305,51 @@ static void Autohop(void)
 	NEAR(apex[0],45,0.5f); CHECK(apex[1]>20 && apex[1]<apex[0]*0.9f); NEAR(pmove.velocity[0],240,1);
 	printf("PASS CS16 autohop: %d jumps, apex %.2f then %.2f (fuser2), speed %.2f after the 400 cap\n",hops,apex[0],apex[1],pmove.velocity[0]);
 }
-int main(void) {Dry();Clock();CollisionAndNoEquipment();CS16();Autohop();Duck();WaterLadder();ReviewedControls();puts("PASS AG world solver fixtures (not BSP/socket/oracle acceptance)");return 0;}
+/* Patch 1665: the server's pm_viewheight is the eye (17 on a Counter-Strike map under ag-250); 0 and Source's 64 are not
+   AG eyes and leave the profile's. The duck still ends at 12 and its blend starts from the published eye. */
+static void ServerEye(void)
+{
+	int i;
+	Reset(); movevars.viewheight=17; PMAg_PlayerMove(1); NEAR(pmove.viewheight,17,0.0001f);
+	pmove.cmd.buttons=BUTTON_DUCK; PMAg_PlayerMove(1); CHECK(pmove.ducking);
+	for(i=0;i<20;i++) PMAg_PlayerMove(1);
+	NEAR(pmove.viewheight,5.5f,0.0001f);
+	for(i=0;i<20;i++) PMAg_PlayerMove(1);
+	CHECK(pmove.ducked); NEAR(pmove.viewheight,12,0.001f);
+	ceilingz=10000; pmove.cmd.buttons=0; PMAg_PlayerMove(1); CHECK(!pmove.ducked); NEAR(pmove.viewheight,17,0.0001f);
+	/* the water test keeps the profile's eye: a surface between the shown 17 and the own 28 is waist deep (2), not 3,
+	   standing and at half duck (shown 5.5, own 11) */
+	Reset(); movevars.viewheight=17; waterz=60; PMAg_PlayerMove(1); NEAR(pmove.viewheight,17,0.0001f); CHECK(pmove.waterlevel==2);
+	waterz=50; PMAg_PlayerMove(1); CHECK(pmove.waterlevel==2);
+	waterz=66; PMAg_PlayerMove(1); CHECK(pmove.waterlevel==3);
+	Reset(); movevars.viewheight=17; waterz=45; pmove.cmd.buttons=BUTTON_DUCK; PMAg_PlayerMove(1);
+	for(i=0;i<20;i++) PMAg_PlayerMove(1);
+	NEAR(pmove.viewheight,5.5f,0.0001f); CHECK(pmove.ducking && pmove.waterlevel==2);
+	Reset(); movevars.viewheight=64; PMAg_PlayerMove(1); NEAR(pmove.viewheight,28,0.0001f);
+	Reset(); movevars.viewheight=64; movevars.profilekind=PMPROFILE_CS16; PMAg_PlayerMove(1); NEAR(pmove.viewheight,17,0.0001f);
+	Reset(); movevars.viewheight=28; movevars.profilekind=PMPROFILE_CS16; PMAg_PlayerMove(1); NEAR(pmove.viewheight,28,0.0001f);
+}
+/* Patch 1687: noclip (PM_SPECTATOR) flies like Source's. No input holds still (the swim wish sank 60 u/s), the speed is
+   pm_noclipspeed x sv_maxspeed (the swim wish capped it at sv_maxspeed: 250 under cs16), +speed doubles it, and a held
+   jump does not climb while +moveup does. */
+static void Noclip(void)
+{
+	int i;
+	Reset(); pmove.pm_type=PM_SPECTATOR; pmove.origin[2]=500; movevars.noclipspeed=4;
+	for(i=0;i<100;i++) PMAg_PlayerMove(1);
+	NEAR(pmove.origin[2],500,0.0001f); NEAR(pmove.origin[0],0,0.0001f);
+	Reset(); pmove.pm_type=PM_SPECTATOR; pmove.origin[2]=500; movevars.noclipspeed=4; movevars.maxspeed=250;
+	movevars.profilekind=PMPROFILE_CS16; pmove.cmd.forwardmove=400; pmove.cmd.buttons=BUTTON_DUCK;
+	for(i=0;i<100;i++) PMAg_PlayerMove(1);
+	NEAR(pmove.origin[0],1000,0.01f); NEAR(pmove.origin[2],500,0.0001f);
+	Reset(); pmove.pm_type=PM_SPECTATOR; pmove.origin[2]=500; movevars.noclipspeed=4; pmove.cmd.forwardmove=400;
+	pmove.cmd.buttons=BUTTON_SPEED; for(i=0;i<50;i++) PMAg_PlayerMove(1);
+	NEAR(pmove.origin[0],1280,0.01f); NEAR(pmove.velocity[0],2560,0.01f);	/* not the 2000 maxvelocity clamp */
+	Reset(); pmove.pm_type=PM_SPECTATOR; pmove.origin[2]=500; movevars.noclipspeed=4; pmove.cmd.upmove=200;
+	pmove.cmd.buttons=BUTTON_JUMP; for(i=0;i<50;i++) PMAg_PlayerMove(1);
+	NEAR(pmove.origin[2],500,0.0001f);
+	pmove.cmd.buttons=0; for(i=0;i<50;i++) PMAg_PlayerMove(1);
+	NEAR(pmove.origin[2],1140,0.01f);
+	printf("PASS noclip: still holds z, cs16 1000 u/s (ducked too), +speed 2560, held jump stays, +moveup climbs\n");
+}
+int main(void) {Dry();Clock();CollisionAndNoEquipment();CS16();Autohop();Duck();ServerEye();Noclip();WaterLadder();ReviewedControls();puts("PASS AG world solver fixtures (not BSP/socket/oracle acceptance)");return 0;}

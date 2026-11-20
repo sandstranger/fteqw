@@ -200,6 +200,7 @@ static struct
 	int	 (*pXResizeWindow)(Display *display, Window w, unsigned width, unsigned height);
 	int	 (*pXSelectInput)(Display *display, Window w, long event_mask);
 	Status 	 (*pXSendEvent)(Display *display, Window w, Bool propagate, long event_mask, XEvent *event_send);
+	int	 (*pXSetClassHint)(Display *display, Window w, XClassHint *class_hints);
 	int	 (*pXSetIconName)(Display *display, Window w, char *icon_name);
 	int	 (*pXSetInputFocus)(Display *display, Window focus, int revert_to, Time time);
 	int 	 (*pXSetSelectionOwner)(Display *display, Atom selection, Window owner, Time time);
@@ -307,6 +308,7 @@ static qboolean x11_initlib(void)
 		{(void**)&x11.pXResizeWindow,		"XResizeWindow"},
 		{(void**)&x11.pXSelectInput,		"XSelectInput"},
 		{(void**)&x11.pXSendEvent,		"XSendEvent"},
+		{(void**)&x11.pXSetClassHint,		"XSetClassHint"},
 		{(void**)&x11.pXSetIconName,		"XSetIconName"},
 		{(void**)&x11.pXSetInputFocus,		"XSetInputFocus"},
 		{(void**)&x11.pXSetSelectionOwner,	"XSetSelectionOwner"},
@@ -3955,6 +3957,8 @@ static void X_StoreIcon(Window wnd)
 	size_t filesize = 0;
 	qbyte *filedata = NULL;
 #ifdef IMAGEFMT_PNG
+	if (!filedata)	//FTESurf Patch 1633: the shipped icon; a gamedir-root icon.png is outside the updater's allowlist (qkupdate.c)
+		filedata = FS_LoadMallocFile("gfx/icons/worldofsurf-256.png", &filesize);
 	if (!filedata)
 		filedata = FS_LoadMallocFile("icon.png", &filesize);
 #endif
@@ -4219,6 +4223,11 @@ static Window X_CreateWindow(rendererstate_t *info, qboolean override, XVisualIn
 	/*set caption*/
 	x11.pXStoreName(vid_dpy, wnd, "FTE QuakeWorld");
 	x11.pXSetIconName(vid_dpy, wnd, "FTEQW");
+	{	//FTESurf Patch 1633: WM_CLASS names the .desktop file (StartupWMClass=worldofsurf, ftesurf.sh); before mapping
+		static char resname[] = "worldofsurf", resclass[] = "WorldofSurf";
+		XClassHint hint = {resname, resclass};
+		x11.pXSetClassHint(vid_dpy, wnd, &hint);
+	}
 	X_StoreIcon(wnd);
 	X_StorePID(wnd);
 	/*make it visible*/
@@ -4840,6 +4849,11 @@ static struct {
 	Atom prop;
 	Atom owner;
 } x11paste;
+#ifdef WAYLANDQUAKE
+//Patch 1602, gl_vidwayland.c: the paste returns false unless Wayland answered it; the save does nothing off Wayland
+qboolean WL_Clipboard_PasteText(clipboardtype_t cbt, void (*callback)(void *ctx, const char *utf8), void *ctx);
+void WL_SaveClipboard(clipboardtype_t cbt, const char *text);
+#endif
 void Sys_Clipboard_PasteText(clipboardtype_t clipboardtype, void (*callback)(void *ctx, const char *utf8), void *ctx)
 {
 	//if there's a paste already pending, cancel the callback to ensure it always gets called.
@@ -4849,6 +4863,10 @@ void Sys_Clipboard_PasteText(clipboardtype_t clipboardtype, void (*callback)(voi
 	paste_callback = NULL;
 	pastectx = NULL;
 
+#ifdef WAYLANDQUAKE
+	if (WL_Clipboard_PasteText(clipboardtype, callback, ctx))
+		return;
+#endif
 	if(vid_dpy)
 	{
 		Window clipboardowner;
@@ -4930,6 +4948,9 @@ void Sys_SaveClipboard(clipboardtype_t clipboardtype, const char *text)
 {
 	free(clipboard_buffer[clipboardtype]);
 	clipboard_buffer[clipboardtype] = strdup(text);
+#ifdef WAYLANDQUAKE
+	WL_SaveClipboard(clipboardtype, text);
+#endif
 	if(vid_dpy)
 	{
 		Atom xa_clipboard;

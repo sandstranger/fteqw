@@ -37,6 +37,8 @@
 #else
 #include <sys/stat.h>
 #include <sys/file.h>
+#include <sys/wait.h>	//Patch 1666: the launcher's test run
+#include <signal.h>
 #include <errno.h>
 #include <fcntl.h>
 #include <unistd.h>
@@ -120,6 +122,11 @@ typedef struct
 	quint64_t		totalbytes;
 	char			**removed;		//install-relative paths the manifest retired
 	size_t			numremoved;
+	char			launcherhash[QKU_HEXLEN+1];	//Patch 1666: the signed feed's launcher for this platform
+	quint64_t		launchersize;
+	unsigned		launcherstale;	//bit 0: WOS-Launcher on disk differs, bit 1: the pre-P1209 ftesurf-launcher
+	qboolean		launcherfloor;	//the feed passed the installed release's version floor (review: no-state and
+									//verify-only checks never refresh, so a replayed older feed cannot roll it back)
 } qku_plan_t;
 
 static struct
@@ -176,6 +183,8 @@ static cvar_t update_rate			= CVARFD("update_rate",			"0",	QKU_ROFLAGS, "Read-on
 static cvar_t update_current		= CVARFD("update_current",		"",		QKU_ROFLAGS, "Read-only: the file currently downloading.");
 static cvar_t update_version		= CVARFD("update_version",		"",		QKU_ROFLAGS, "Read-only: the manifest version last seen.");
 static cvar_t update_error			= CVARFD("update_error",		"",		QKU_ROFLAGS, "Read-only: why the last check or apply failed.");
+static cvar_t update_launcher		= CVARFD("update_launcher",		"1",	CVAR_ARCHIVE|CVAR_NOTFROMSERVER, "Patch 1666: after an update check, replace an installed WOS-Launcher whose bytes differ from the signed release's (verified, old copy kept in .ftesurf-updater/launcher-previous). 0 leaves it alone.");
+static cvar_t update_launcher_state	= CVARFD("update_launcher_state","",	QKU_ROFLAGS, "Read-only: the last launcher refresh: current, downloading, updated <names>, or failed: <why>.");
 
 static void QKU_StartDownloads(void);
 static void QKU_ConfigureProfile(void);
@@ -1234,10 +1243,52 @@ struct qku_checkargs_s
 };
 
 static void QKU_Main_AdoptPlan(int iarg, void *data);
+static void QKU_LauncherBegin(const qku_plan_t *plan);
 
 static void QKU_PostPlan(qku_plan_t *plan)
 {
 	Cmd_AddTimer(0, QKU_Main_AdoptPlan, 0, &plan, sizeof(qku_plan_t *));
+}
+
+//Patch 1666: the launcher is not a feed file (an old launcher refuses an unknown path), so the signed
+//payload names it in "launcher": {"<platform>": {"path", "hash", "size"}}, which old readers ignore. An
+//installed launcher whose bytes differ is replaced after the check. Worker thread: hashing only.
+static const char *const qku_launchernames[2] = {
+#ifdef _WIN32
+	"WOS-Launcher.exe", "ftesurf-launcher.exe"
+#else
+	"WOS-Launcher", "ftesurf-launcher"
+#endif
+};
+static void QKU_FSLauncherPlan(json_t *root, qku_plan_t *plan)
+{
+	json_t *l = JSON_FindChild(root, "launcher"), *d = l && l->type == json_type_object ? JSON_FindChild(l, QKU_PLATFORM) : NULL, *s;
+	char path[MAX_OSPATH], hash[QKU_HEXLEN+16], abs[MAX_OSPATH], have[QKU_HEXLEN+1];
+	quint64_t size = 0, sz;
+	const char *c;
+	unsigned i;
+	if (!d || d->type != json_type_object || !*QKU_PLATFORM) return;
+	JSON_GetString(d, "path", path, sizeof(path), "");
+	JSON_GetString(d, "hash", hash, sizeof(hash), "");
+	s = JSON_FindChild(d, "size");
+	if (strcmp(path, qku_launchernames[0]) || !QKU_ValidHash(hash) || !s || s->type != json_type_number || s->bodyend == s->bodystart)
+	{ Con_DPrintf(CON_WARNING "update: ignoring an invalid launcher descriptor\n"); return; }
+	for (c = s->bodystart; c < s->bodyend; c++)
+	{
+		if (*c < '0' || *c > '9' || (size = size*10u + (*c-'0')) > 32*1024*1024)
+		{ Con_DPrintf(CON_WARNING "update: ignoring an invalid launcher descriptor\n"); return; }
+	}
+	if (!size) return;
+	QKU_InstallPath(abs, sizeof(abs), ".git");
+	if (QKU_FSRegular(abs) != 0) return;	//a source checkout (a .git file or folder) is never repaired to the release
+	memcpy(plan->launcherhash, hash, QKU_HEXLEN+1);
+	plan->launchersize = size;
+	for (i = 0; i < countof(qku_launchernames); i++)
+	{	//only a regular file reached without a link is ever replaced; a missing one is never created
+		QKU_InstallPath(abs, sizeof(abs), qku_launchernames[i]);
+		if (!QKU_FSNoLinks(qku_launchernames[i]) || QKU_FSRegular(abs) != 1) continue;
+		if (!QKU_HashFile(abs, &sz, have) || sz != size || strcmp(have, hash)) plan->launcherstale |= 1u << i;
+	}
 }
 
 static void QKU_Work_Check(void *ctx, void *data, size_t a, size_t b)
@@ -1287,6 +1338,7 @@ static void QKU_Work_Check(void *ctx, void *data, size_t a, size_t b)
 		JSON_ReadBody(JSON_GetIndexed(JSON_FindChild(root, "mirrors"), 0), plan->objectbase, sizeof(plan->objectbase));
 		if (strncmp(plan->objectbase, "https://", 8) && !(update_allow_insecure.ival && (!strncmp(plan->objectbase, "http://127.0.0.1:", 17) || !strncmp(plan->objectbase, "http://localhost:", 17))))
 		{ Q_strncpyz(plan->reason, "update object mirror must use HTTPS", sizeof(plan->reason)); goto done; }
+		QKU_FSLauncherPlan(root, plan);
 	}
 
 	if (JSON_GetInteger(root, "schema", 0) != 2)
@@ -1336,6 +1388,7 @@ static void QKU_Work_Check(void *ctx, void *data, size_t a, size_t b)
 
 	if (qku_ftesurf && *st.version && QKU_FSVersionOlder(plan->version, st.version))
 	{ Q_strncpyz(plan->reason, "refusing an older signed release", sizeof(plan->reason)); goto done; }
+	plan->launcherfloor = qku_ftesurf && *st.version && !args->verifyonly;
 	if (!qku_ftesurf && !args->force && !args->verifyonly && *st.version && !strcmp(st.version, plan->version))
 	{	//the O(1) fast path, and the case that runs 99% of the time
 		plan->verdict = QKUS_UPTODATE;
@@ -1718,6 +1771,9 @@ static void QKU_Main_AdoptPlan(int iarg, void *data)
 		break;
 	}
 
+	if (plan->verdict == QKUS_UPTODATE || plan->verdict == QKUS_AVAILABLE || plan->verdict == QKUS_LAUNCHER)
+		QKU_LauncherBegin(plan);
+
 	QKU_FreePlanFiles(plan->files, plan->numfiles);
 	QKU_FreeStrings(plan->removed, plan->numremoved);
 	if (plan->envelope) Z_Free(plan->envelope);
@@ -1910,6 +1966,405 @@ static void QKU_Main_ObjectGot(int iarg, void *data)
 
 	QKU_PublishCounts();
 	QKU_StartDownloads();
+}
+
+// ---------------------------------------------------------------------------------------
+// Patch 1666: launcher refresh
+// ---------------------------------------------------------------------------------------
+
+static struct
+{
+	unsigned int	seq;
+	qboolean		active;		//a download is in flight
+	char			hash[QKU_HEXLEN+1];
+	quint64_t		size;
+	unsigned		stale;
+} qku_launcher;
+
+struct qku_launcherresult_s { unsigned int seq; qboolean ok; unsigned int replycode; };
+
+static void QKU_Main_LauncherGot(int iarg, void *data);
+static void QKU_LauncherFinish(void);
+
+//Cancel, a withdrawn permission and shutdown drop an in-flight refresh: its result no longer matches seq.
+static void QKU_LauncherAbandon(void)
+{
+	qku_launcher.seq++;
+	qku_launcher.active = false;
+}
+
+static qboolean QKU_LauncherAllowed(void)
+{
+	return qku_ftesurf && update_launcher.ival && update_enabled.ival && update_consent.ival == 1;
+}
+
+//DOWNLOAD WORKER THREAD. As QKU_ObjectNotify: closing the hash-validating file is the verification.
+static void QKU_LauncherNotify(struct dl_download *dl)
+{
+	struct qku_launcherresult_s *r = Z_Malloc(sizeof(*r));
+	r->seq = dl->user_num;
+	r->replycode = dl->replycode;
+	r->ok = dl->status == DL_FINISHED;
+	if (dl->file)
+	{
+		if (!VFS_CLOSE(dl->file)) r->ok = false;
+		dl->file = NULL;
+	}
+	else
+		r->ok = false;
+	Cmd_AddTimer(0, QKU_Main_LauncherGot, 0, &r, sizeof(struct qku_launcherresult_s *));
+}
+
+static void QKU_LauncherState(const char *fmt, ...)
+{
+	va_list ap;
+	char msg[256];
+	va_start(ap, fmt);
+	Q_vsnprintfz(msg, sizeof(msg), fmt, ap);
+	va_end(ap);
+	Cvar_ForceSet(&update_launcher_state, msg);
+	if (strcmp(msg, "current") && strcmp(msg, "downloading")) Con_Printf("update: launcher %s\n", msg);
+}
+
+//Only the current hash's object and partial download are kept in ingame/launcher/.
+static int QDECL QKU_LauncherSweep_Enum(const char *fname, qofs_t fsize, time_t mtime, void *parm, searchpathfuncs_t *spath)
+{
+	char full[MAX_OSPATH];
+	(void)fsize; (void)mtime; (void)spath;
+	if (strncmp(fname, qku_launcher.hash, QKU_HEXLEN) || (fname[QKU_HEXLEN] && strcmp(fname+QKU_HEXLEN, ".part") && strcmp(fname+QKU_HEXLEN, ".failed") && strcmp(fname+QKU_HEXLEN, ".slow") && strcmp(fname+QKU_HEXLEN, ".ran")))
+	{
+		Q_snprintfz(full, sizeof(full), "%s%s", (const char*)parm, fname);
+		FS_Remove(full, FS_SYSTEM);
+	}
+	return true;
+}
+
+//The staged object must be this platform's executable kind (review): a PE x86-64 image on Windows, an ELF64
+//x86-64 file elsewhere. A wrong build signed by mistake then fails here instead of replacing every launcher.
+//1 right kind, 0 wrong kind, -1 unreadable just now (not a verdict on the bytes).
+static int QKU_LauncherKind(const char *staged)
+{
+	qbyte h[512];
+	int n;
+	quint64_t len;
+	vfsfile_t *f = FS_OpenVFS(staged, "rb", FS_SYSTEM);
+	if (!f) return -1;
+	len = VFS_GETLEN(f);
+	n = VFS_READ(f, h, sizeof(h));
+	VFS_CLOSE(f);
+	if (n < 0 || (quint64_t)n < (len < sizeof(h) ? len : sizeof(h))) return -1;
+#ifdef _WIN32
+	{
+		int pe = n >= 64 ? h[60] | (h[61]<<8) | (h[62]<<16) | (h[63]<<24) : -1;
+		return n >= 64 && h[0] == 'M' && h[1] == 'Z' && pe >= 64 && pe + 6 <= n &&
+			h[pe] == 'P' && h[pe+1] == 'E' && !h[pe+2] && !h[pe+3] && h[pe+4] == 0x64 && h[pe+5] == 0x86;
+	}
+#else
+	return n >= 20 && h[0] == 0x7f && h[1] == 'E' && h[2] == 'L' && h[3] == 'F' && h[4] == 2 && h[5] == 1 && h[18] == 62 && !h[19];
+#endif
+}
+
+//Data on the disk before the rename that publishes it (review: after a power cut the swapped name could
+//otherwise point at zeroes, with a backup written the same unflushed way).
+static qboolean QKU_FSFlush(const char *sys)
+{
+#ifdef _WIN32
+	wchar_t wide[MAX_OSPATH];
+	HANDLE h;
+	BOOL ok;
+	if (!MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, sys, -1, wide, countof(wide))) return false;
+	h = CreateFileW(wide, GENERIC_WRITE, FILE_SHARE_READ|FILE_SHARE_WRITE|FILE_SHARE_DELETE, NULL, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, NULL);
+	if (h == INVALID_HANDLE_VALUE) return false;
+	ok = FlushFileBuffers(h);
+	CloseHandle(h);
+	return ok;
+#else
+	int fd = open(sys, O_RDONLY), r;
+	if (fd < 0) return false;
+	r = fsync(fd);
+	close(fd);
+	return !r;
+#endif
+}
+
+//The new launcher must start on THIS machine before it replaces one that does (review: a Linux build can need
+//a newer glibc than the engine). --ui-preview prints a sample screen and exits 0 before any lock, network or
+//install access in every launcher since 8de1339; a launcher that drops it stops being installable here.
+//1 runs, 0 does not (its hash is then skipped until the feed names another), 2 timed out, -1 could not test
+//(retry later). Main thread: a hung launcher costs one ~5-6 s pause and a second marks it (QKU_LauncherFinish),
+//unless those bytes already started here (.ran): then each later start may pause again until the feed changes.
+static int QKU_LauncherRuns(const char *sys)
+{
+#ifdef _WIN32
+	wchar_t wide[MAX_OSPATH], cmd[MAX_OSPATH+32];
+	STARTUPINFOW si;
+	PROCESS_INFORMATION pi;
+	DWORD code = 1;
+	if (!MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, sys, -1, wide, countof(wide))) return -1;
+	_snwprintf(cmd, countof(cmd), L"\"%ls\" --ui-preview", wide);
+	cmd[countof(cmd)-1] = 0;
+	memset(&si, 0, sizeof(si)); si.cb = sizeof(si);
+	memset(&pi, 0, sizeof(pi));
+	if (!CreateProcessW(wide, cmd, NULL, NULL, FALSE, CREATE_NO_WINDOW, NULL, NULL, &si, &pi))
+		return GetLastError() == ERROR_BAD_EXE_FORMAT ? 0 : -1;
+	if (WaitForSingleObject(pi.hProcess, 4500) != WAIT_OBJECT_0)
+	{	//let the image unmap, or the .new beside the launcher cannot be removed
+		TerminateProcess(pi.hProcess, 1);
+		WaitForSingleObject(pi.hProcess, 1000);
+		code = STILL_ACTIVE;
+	}
+	else GetExitCodeProcess(pi.hProcess, &code);
+	CloseHandle(pi.hThread); CloseHandle(pi.hProcess);
+	return code == STILL_ACTIVE ? 2 : code == 0;
+#else
+	//sys_linux.c's SigChld reaps every child with wait3, which would take this one's status first: the default
+	//disposition for the test, then the handler back and one SIGCHLD so it reaps anything else that ended meanwhile.
+	struct sigaction dfl, old;
+	int status = 0, i, result = -1;
+	pid_t pid;
+	memset(&dfl, 0, sizeof(dfl));
+	dfl.sa_handler = SIG_DFL;
+	sigemptyset(&dfl.sa_mask);
+	if (sigaction(SIGCHLD, &dfl, &old)) return -1;
+	pid = fork();
+	if (!pid)
+	{
+		int null = open("/dev/null", O_RDWR);
+		if (qku_fslock >= 0) close(qku_fslock);	//as QKU_Restart_f: the install lock stays the engine's
+		if (null >= 0) { dup2(null, 0); dup2(null, 1); dup2(null, 2); }
+		execl(sys, sys, "--ui-preview", (char *)NULL);
+		_exit(127);
+	}
+	for (i = 0; pid > 0 && i < 500; i++)
+	{
+		pid_t r = waitpid(pid, &status, WNOHANG);
+		if (r == pid) { result = WIFEXITED(status) && !WEXITSTATUS(status); pid = 0; break; }
+		if (r < 0) { pid = 0; break; }	//reaped elsewhere (a handler already running on another thread): retry later
+		usleep(10000);
+	}
+	if (pid > 0)
+	{	//hung: killed and counted as not starting; never an unbounded wait (a child stuck in the kernel)
+		kill(pid, SIGKILL);
+		for (i = 0; i < 100 && !waitpid(pid, &status, WNOHANG); i++) usleep(10000);
+		result = 2;
+	}
+	sigaction(SIGCHLD, &old, NULL);
+	if (old.sa_handler != SIG_DFL && old.sa_handler != SIG_IGN) raise(SIGCHLD);
+	return result;
+#endif
+}
+
+static void QKU_LauncherBegin(const qku_plan_t *plan)
+{
+	char part[MAX_OSPATH], full[MAX_OSPATH], url[MAX_OSPATH*2], have[QKU_HEXLEN+1];
+	quint64_t sz;
+	struct dl_download *dl;
+	vfsfile_t *out;
+	if (!*plan->launcherhash || !plan->launcherfloor || qku_launcher.active || !QKU_LauncherAllowed()) return;
+#ifdef HAVE_SERVER
+	if (isDedicated) return;
+#endif
+	memcpy(qku_launcher.hash, plan->launcherhash, QKU_HEXLEN+1);
+	qku_launcher.size = plan->launchersize;
+	qku_launcher.stale = plan->launcherstale;
+	if (!QKU_FSStageNoLinks("launcher/%s.part", plan->launcherhash) || !QKU_FSStageNoLinks("launcher/%s", plan->launcherhash))
+	{ QKU_LauncherState("failed: linked staging path"); return; }
+	QKU_StagePath(full, sizeof(full), "launcher/%s", "");
+	Sys_EnumerateFiles(full, "*", QKU_LauncherSweep_Enum, full, NULL);
+	QKU_StagePath(full, sizeof(full), "launcher/%s", plan->launcherhash);
+	if (!plan->launcherstale) { FS_Remove(full, FS_SYSTEM); QKU_LauncherState("current"); return; }
+	QKU_StagePath(part, sizeof(part), "launcher/%s.failed", plan->launcherhash);
+	if (QKU_FSStageNoLinks("launcher/%s.failed", plan->launcherhash) && QKU_FSRegular(part) == 1)
+	{ QKU_LauncherState("skipped: this release's launcher failed here at an earlier start"); return; }
+	if (QKU_FSRegular(full) == 1 && QKU_HashFile(full, &sz, have) && sz == plan->launchersize && !strcmp(have, plan->launcherhash))
+	{ QKU_LauncherFinish(); return; }	//verified at an earlier check; never downloaded twice
+	if (!*qku.objectbase) return;
+	QKU_StagePath(part, sizeof(part), "launcher/%s.part", plan->launcherhash);
+	FS_CreatePath(part, FS_SYSTEM);
+	FS_Remove(part, FS_SYSTEM);	//never write through a planted hard link
+	out = FS_OpenVFS(part, "wb", FS_SYSTEM);
+	if (out) out = FS_Hash_ValidateWrites(out, qku_launchernames[0], plan->launchersize, &hash_blake2b_256, plan->launcherhash);
+	if (!out) { QKU_LauncherState("failed: cannot write %s", part); return; }
+	Q_snprintfz(url, sizeof(url), "%s/objects/%c%c/%s", qku.objectbase, plan->launcherhash[0], plan->launcherhash[1], plan->launcherhash);
+	dl = HTTP_CL_Get(url, NULL, QKU_LauncherNotify);
+	if (!dl) { VFS_CLOSE(out); FS_Remove(part, FS_SYSTEM); QKU_LauncherState("failed: cannot reach the object mirror"); return; }
+	qku_launcher.active = true;
+	dl->user_num = ++qku_launcher.seq;
+	dl->file = out;
+	dl->isquery = true;
+	dl->sizelimit = plan->launchersize;
+	QKU_LauncherState("downloading");
+	DL_CreateThread(dl, NULL, NULL);
+}
+
+//Notes beside the current hash's object: .slow (one test run timed out), .ran (these bytes started here once, so
+//a later failure with them is transient and never marks them), .failed (QKU_LauncherMarkBad).
+static qboolean QKU_LauncherNote(const char *ext, int set)	//set: 1 create, 0 remove, -1 query
+{
+	char path[MAX_OSPATH], leaf[QKU_HEXLEN+16];
+	vfsfile_t *f;
+	Q_snprintfz(leaf, sizeof(leaf), "%s%s", qku_launcher.hash, ext);
+	if (!QKU_FSStageNoLinks("launcher/%s", leaf)) return false;
+	QKU_StagePath(path, sizeof(path), "launcher/%s", leaf);
+	if (set < 0) return QKU_FSRegular(path) == 1;
+	FS_Remove(path, FS_SYSTEM);
+	if (set && (f = FS_OpenVFS(path, "wb", FS_SYSTEM))) VFS_CLOSE(f);
+	return true;
+}
+
+//Verified backup of the old bytes (and mode) -> verified copy beside it -> flushed -> it starts here ->
+//one-step swap: rename(2), or MoveFileExW(REPLACE_EXISTING), which refuses while that launcher runs.
+static qboolean QKU_LauncherInstall(const char *staged, const char *name, char *why, size_t whysize, qboolean *bad, qboolean *slow)
+{
+	char rel[MAX_OSPATH], keeprel[MAX_OSPATH], dest[MAX_OSPATH], next[MAX_OSPATH], keep[MAX_OSPATH], sysnext[MAX_OSPATH], sysdest[MAX_OSPATH], syskeep[MAX_OSPATH];
+	char oldhash[QKU_HEXLEN+1], keephash[QKU_HEXLEN+1];
+	quint64_t oldsize, keepsize;
+	qbyte block[65536];
+	int r = 0;
+	qboolean ok = true;
+	vfsfile_t *in, *out;
+#ifndef _WIN32
+	struct stat st;
+	mode_t mode = 0755;
+#endif
+	Q_snprintfz(rel, sizeof(rel), "%s.new", name);
+	Q_snprintfz(keeprel, sizeof(keeprel), ".ftesurf-updater/launcher-previous/%s", name);
+	if (!QKU_FSNoLinks(name) || !QKU_FSNoLinks(rel) || !QKU_FSNoLinks(keeprel)) { Q_strncpyz(why, "linked path", whysize); return false; }
+	QKU_InstallPath(dest, sizeof(dest), name);
+	QKU_InstallPath(next, sizeof(next), rel);
+	QKU_InstallPath(keep, sizeof(keep), keeprel);
+	if (QKU_FSRegular(dest) != 1 || !QKU_HashFile(dest, &oldsize, oldhash)) { Q_strncpyz(why, "not a readable regular file", whysize); return false; }
+	if (!FS_SystemPath(next, FS_SYSTEM, sysnext, sizeof(sysnext)) || !FS_SystemPath(dest, FS_SYSTEM, sysdest, sizeof(sysdest)) ||
+		!FS_SystemPath(keep, FS_SYSTEM, syskeep, sizeof(syskeep)))
+	{ Q_strncpyz(why, "bad path", whysize); return false; }
+#ifndef _WIN32
+	if (!stat(sysdest, &st)) mode = (st.st_mode & 0777) | S_IXUSR;	//its own mode, never wider (review)
+#endif
+	FS_CreatePath(keep, FS_SYSTEM);
+	FS_Remove(keep, FS_SYSTEM);
+	if (!FS_Copy(dest, keep, FS_SYSTEM, FS_SYSTEM) || !QKU_HashFile(keep, &keepsize, keephash) || keepsize != oldsize ||
+		strcmp(keephash, oldhash) || !QKU_FSFlush(syskeep))
+	{ FS_Remove(keep, FS_SYSTEM); Q_strncpyz(why, "cannot keep a verified old copy", whysize); return false; }
+#ifndef _WIN32
+	chmod(syskeep, mode);
+#endif
+	in = FS_OpenVFS(staged, "rb", FS_SYSTEM);
+	if (!in) { Q_strncpyz(why, "staged copy vanished", whysize); return false; }
+	FS_Remove(next, FS_SYSTEM);
+	out = FS_OpenVFS(next, "wb", FS_SYSTEM);
+	if (out) out = FS_Hash_ValidateWrites(out, name, qku_launcher.size, &hash_blake2b_256, qku_launcher.hash);
+	if (!out) { VFS_CLOSE(in); Q_strncpyz(why, "cannot write beside it", whysize); return false; }
+	while ((r = VFS_READ(in, block, sizeof(block))) > 0)
+		if (VFS_WRITE(out, block, r) != r) { ok = false; break; }
+	VFS_CLOSE(in);
+	if (!VFS_CLOSE(out) || r < 0) ok = false;
+#ifndef _WIN32
+	if (ok && chmod(sysnext, mode)) ok = false;
+#endif
+	if (!ok || !QKU_FSFlush(sysnext)) { FS_Remove(next, FS_SYSTEM); Q_strncpyz(why, "copy did not verify", whysize); return false; }
+	switch (QKU_LauncherRuns(sysnext))
+	{
+	case 1: QKU_LauncherNote(".slow", 0); QKU_LauncherNote(".ran", 1); break;
+	case 0: FS_Remove(next, FS_SYSTEM); *bad = true; Q_strncpyz(why, "does not start on this system (kept the old one)", whysize); return false;
+	case 2: FS_Remove(next, FS_SYSTEM); *slow = true; Q_strncpyz(why, "did not finish its test run in time (kept the old one)", whysize); return false;
+	default: FS_Remove(next, FS_SYSTEM); Q_strncpyz(why, "could not be test-run (retries at a later start)", whysize); return false;
+	}
+#ifdef _WIN32
+	{
+		wchar_t wnext[MAX_OSPATH], wdest[MAX_OSPATH];
+		if (!MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, sysnext, -1, wnext, countof(wnext)) ||
+			!MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, sysdest, -1, wdest, countof(wdest)) ||
+			!MoveFileExW(wnext, wdest, MOVEFILE_REPLACE_EXISTING|MOVEFILE_WRITE_THROUGH))
+			ok = false;
+	}
+#else
+	if (rename(sysnext, sysdest)) ok = false;
+	else
+	{	//and the directory entry itself
+		char dir[MAX_OSPATH], *slash;
+		int fd;
+		Q_strncpyz(dir, sysdest, sizeof(dir));
+		slash = strrchr(dir, '/');
+		if (slash) { *slash = 0; if ((fd = open(*dir ? dir : "/", O_RDONLY)) >= 0) { fsync(fd); close(fd); } }
+	}
+#endif
+	if (!ok) { FS_Remove(next, FS_SYSTEM); Q_strncpyz(why, "in use (it updates at a later start)", whysize); return false; }
+	return true;
+}
+
+//Never while on a server (review: two launcher-sized copies and a test run on the main thread would hitch a run);
+//the verified object stays staged and the next check (the menu's, once a start) installs it.
+//A hash that is the wrong kind or does not start here is remembered beside its object (<hash>.failed) and not
+//fetched or tried again until the feed names another launcher (review: no repeated download or test every start).
+static void QKU_LauncherMarkBad(const char *full)
+{
+	char mark[MAX_OSPATH];
+	vfsfile_t *f;
+	FS_Remove(full, FS_SYSTEM);
+	if (!QKU_FSStageNoLinks("launcher/%s.failed", qku_launcher.hash)) return;
+	QKU_StagePath(mark, sizeof(mark), "launcher/%s.failed", qku_launcher.hash);
+	FS_Remove(mark, FS_SYSTEM);
+	if ((f = FS_OpenVFS(mark, "wb", FS_SYSTEM))) VFS_CLOSE(f);
+}
+
+static void QKU_LauncherFinish(void)
+{
+	char full[MAX_OSPATH], done[128] = "", why[96];
+	unsigned i;
+	qboolean bad = false, slow = false;
+	if (!QKU_LauncherAllowed()) return;
+	if (cls.state != ca_disconnected) { QKU_LauncherState("waiting: installs at a later start, off a server"); return; }
+	QKU_StagePath(full, sizeof(full), "launcher/%s", qku_launcher.hash);
+	if (!QKU_FSStageNoLinks("launcher/%s", qku_launcher.hash)) { QKU_LauncherState("failed: linked staging path"); return; }
+	switch (QKU_LauncherKind(full))
+	{
+	case 1: break;
+	case 0: QKU_LauncherMarkBad(full); QKU_LauncherState("failed: the signed launcher is not this platform's executable"); return;
+	default: QKU_LauncherState("failed: cannot read the staged launcher (retries at a later start)"); return;
+	}
+	for (i = 0; i < countof(qku_launchernames); i++)
+	{
+		if (!(qku_launcher.stale & (1u << i))) continue;
+		if (!QKU_LauncherInstall(full, qku_launchernames[i], why, sizeof(why), &bad, &slow))
+		{	//the verified object stays for the next check, unless it can never install here. Once these bytes started
+			//here (*done) a later failure is transient; one timeout is a slow first start, a second marks it.
+			qboolean ran = *done || QKU_LauncherNote(".ran", -1);	//across starts too (review)
+			if (slow && !ran)
+			{
+				if (QKU_LauncherNote(".slow", -1)) bad = true;
+				else QKU_LauncherNote(".slow", 1);
+			}
+			if (bad && !ran) QKU_LauncherMarkBad(full);
+			QKU_LauncherState("failed: %s %s%s%s", qku_launchernames[i], why, *done ? "; updated " : "", done);
+			return;
+		}
+		Q_strncatz(done, va("%s%s", *done ? ", " : "", qku_launchernames[i]), sizeof(done));
+		qku_launcher.stale &= ~(1u << i);
+	}
+	FS_Remove(full, FS_SYSTEM);
+	QKU_LauncherState("updated %s", done);
+}
+
+static void QKU_Main_LauncherGot(int iarg, void *data)
+{
+	struct qku_launcherresult_s *r = *(struct qku_launcherresult_s **)data;
+	char part[MAX_OSPATH], full[MAX_OSPATH];
+	(void)iarg;
+	if (r->seq != qku_launcher.seq || !qku_launcher.active) { Z_Free(r); return; }
+	qku_launcher.active = false;
+	QKU_StagePath(part, sizeof(part), "launcher/%s.part", qku_launcher.hash);
+	QKU_StagePath(full, sizeof(full), "launcher/%s", qku_launcher.hash);
+	if (!r->ok || !QKU_FSStageNoLinks("launcher/%s.part", qku_launcher.hash) || !QKU_FSStageNoLinks("launcher/%s", qku_launcher.hash))
+	{
+		FS_Remove(part, FS_SYSTEM);
+		QKU_LauncherState("failed: download did not verify (http %u)", r->replycode);
+		Z_Free(r);
+		return;
+	}
+	Z_Free(r);
+	FS_Remove(full, FS_SYSTEM);	//Sys_Rename does not replace
+	if (!FS_Rename(part, full, FS_SYSTEM)) { FS_Remove(part, FS_SYSTEM); QKU_LauncherState("failed: cannot stage the download"); return; }
+	QKU_LauncherFinish();
 }
 
 // ---------------------------------------------------------------------------------------
@@ -2845,6 +3300,7 @@ static void QKU_Apply_f(void)
 static void QKU_Cancel_f(void)
 {
 	if (qku_ftesurf && Cmd_IsInsecure() && !qku_menuaction) return;
+	QKU_LauncherAbandon();	//Patch 1666: also a withdrawn permission (QKU_Permission "0" lands here)
 	if (qku.state != QKUS_DOWNLOADING && qku.state != QKUS_CHECKING && qku.state != QKUS_AVAILABLE)
 	{
 		Con_Printf("update: nothing in progress\n");
@@ -3041,6 +3497,8 @@ void QKU_Init(void)
 	Cvar_Register(&update_current,			"Updates");
 	Cvar_Register(&update_version,			"Updates");
 	Cvar_Register(&update_error,			"Updates");
+	Cvar_Register(&update_launcher,			"Updates");
+	Cvar_Register(&update_launcher_state,	"Updates");
 
 	//"update_info", not "update_status": a command and a cvar of the same name collide in
 	//Cmd_ExecuteString, and the cvar would win.
@@ -3066,6 +3524,7 @@ void QKU_Init(void)
 
 void QKU_Shutdown(void)
 {
+	QKU_LauncherAbandon();
 #ifdef _WIN32
 	if (qku_fslock != INVALID_HANDLE_VALUE) { CloseHandle(qku_fslock); qku_fslock = INVALID_HANDLE_VALUE; }
 #else

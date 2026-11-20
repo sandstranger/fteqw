@@ -14,7 +14,22 @@ static void PMAg_Hull(void)
 }
 
 // CS 1.6 eyes sit 17 above the centre (VEC_VIEW), HL/AG's 28; both duck to 12.
-static float PMAg_StandView(void) { return movevars.profilekind == PMPROFILE_CS16 ? 17 : 28; }
+// Patch 1665/1687: the server publishes the eye as pm_viewheight (the mode's, or sv_goldsrcview's, sv_phys.c); anything
+// outside 12..28 (a bare harness's 0, Source's 64) is not an AG eye and the profile's own applies.
+static float PMAg_OwnStandView(void) { return movevars.profilekind == PMPROFILE_CS16 ? 17 : 28; }
+static float PMAg_StandView(void)
+{
+	if (movevars.viewheight >= 12 && movevars.viewheight <= 28) return movevars.viewheight;
+	return PMAg_OwnStandView();
+}
+// The water test keeps the profile's own eye: a published CS eye moves the camera (and what reads view_ofs), never
+// physics. Same posture, same duck fraction: stand maps to stand, the blend to the profile's blend, ducked is 12 in both.
+static float PMAg_WaterEye(void)
+{
+	float shown = PMAg_StandView(), own = PMAg_OwnStandView();
+	if (shown == own || pmove.ducked) return pmove.viewheight;
+	return own - (own + 6) * (shown - pmove.viewheight) / (shown + 6);
+}
 static float PMAg_DuckingView(float fraction) { return PMAg_StandView() - (PMAg_StandView() + 6) * fraction; }
 
 static void PMAg_Posture(void)
@@ -59,7 +74,7 @@ static void PMAg_Water(void)
 	pmove.watertype = contents; pmove.waterlevel = 1;
 	sample[2] = pmove.origin[2];
 	if (!(PM_PointContents(sample) & (FTECONTENTS_WATER|FTECONTENTS_SLIME|FTECONTENTS_LAVA))) return;
-	pmove.waterlevel = 2; sample[2] = pmove.origin[2] + pmove.viewheight;
+	pmove.waterlevel = 2; sample[2] = pmove.origin[2] + PMAg_WaterEye();	//Patch 1665: never the shown eye
 	if (PM_PointContents(sample) & (FTECONTENTS_WATER|FTECONTENTS_SLIME|FTECONTENTS_LAVA)) pmove.waterlevel = 3;
 }
 
@@ -297,8 +312,17 @@ static qboolean PMAg_Ladder(void)
 	AngleVectors(pmove.angles, forward, right, up);
 	VectorMA(pmove.origin, 24, forward, end);
 	contact = PM_PlayerTrace(pmove.origin, end, MASK_PLAYERSOLID|FTECONTENTS_LADDER);
-	if (contact.fraction == 1 || fabsf(contact.plane.normal[2]) >= 0.999f) return false;
-	VectorCopy(contact.plane.normal, normal);
+	if (contact.fraction == 1 || fabsf(contact.plane.normal[2]) >= 0.999f)
+	{	/* Patch 1655: on a Half-Life BSP a ladder is a brush entity, often with no wall behind it. Its own
+		 * face is the plane then; inside it the last plane is kept. Other worlds return here as before. */
+		int found;
+		if (!pmove.physents[0].model || pmove.physents[0].model->fromgame != fg_halflife) return false;
+		found = PM_LadderEntPlane(pmove.origin, normal);
+		if (found == 2 && pmove.srcladder) VectorCopy(pmove.srcladdernormal, normal);
+		else if (found != 1) return false;
+		if (fabsf(normal[2]) >= 0.999f) return false;
+	}
+	else VectorCopy(contact.plane.normal, normal);
 	pmove.srcladder = true; VectorCopy(normal, pmove.srcladdernormal);
 	if (pmove.cmd.buttons & BUTTON_JUMP) { VectorScale(normal, 270, pmove.velocity); pmove.srcladder = pmove.onladder = false; pmove.onground = false; pmove.jump_held = true; PMAg_Slide(); return true; }
 	speed = min(200, movevars.maxspeed); VectorClear(intent);
@@ -358,9 +382,21 @@ static void PMAg_Tick(void)
 	VectorMA(pmove.basevelocity, 50 * pmove.waterlevel, current, pmove.basevelocity);
 	pmove.waterjumptime = pmove.waterjumpremaining;
 	if (pmove.pm_type == PM_SPECTATOR || pmove.pm_type == PM_OLD_SPECTATOR)
-	{
-		wishspeed = PMAg_Wish(direction, true, forwardmove, sidemove, upmove) / 0.8f;
-		VectorScale(direction, wishspeed, pmove.velocity); VectorMA(pmove.origin, PMAg_Duration(), pmove.velocity, pmove.origin);
+	{	// Patch 1687: Source's noclip (PMSrc_NoClipMove), not the swim wish's 60 u/s sink and sv_maxspeed cap (250 under cs16)
+		vec3_t forward, right, up;
+		AngleVectors(pmove.angles, forward, right, up);
+		for (axis = 0; axis < 3; axis++)
+			direction[axis] = forward[axis] * command.forwardmove + right[axis] * command.sidemove;
+		if (!((command.buttons & BUTTON_JUMP) && command.upmove > 0))	// P154: a held jump does not climb
+			direction[2] += command.upmove;
+		wishspeed = (movevars.maxspeed > 0 ? movevars.maxspeed : 250) * (movevars.noclipspeed > 0 ? movevars.noclipspeed : 4);
+		if (command.buttons & BUTTON_SPEED)
+			wishspeed *= 2;
+		if (VectorNormalize(direction) > 0)
+			VectorScale(direction, wishspeed, pmove.velocity);
+		else
+			VectorClear(pmove.velocity);
+		VectorMA(pmove.origin, PMAg_Duration(), pmove.velocity, pmove.origin);
 	}
 	else if (pmove.pm_type != PM_NONE && pmove.pm_type != PM_FREEZE && !PMAg_Ladder())
 	{
@@ -397,7 +433,8 @@ static void PMAg_Tick(void)
 	for (axis = 0; axis < 3; axis++)
 	{
 		if (!isfinite(pmove.velocity[axis])) pmove.velocity[axis] = 0;
-		if (movevars.maxvelocity > 0) pmove.velocity[axis] = bound(-movevars.maxvelocity, pmove.velocity[axis], movevars.maxvelocity);
+		if (movevars.maxvelocity > 0 && pmove.pm_type != PM_SPECTATOR && pmove.pm_type != PM_OLD_SPECTATOR)	// noclip: as Source's
+			pmove.velocity[axis] = bound(-movevars.maxvelocity, pmove.velocity[axis], movevars.maxvelocity);
 	}
 	pmove.waterjumptime = pmove.waterjumpremaining;
 	pmove.oldbuttons = command.buttons;

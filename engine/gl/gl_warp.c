@@ -39,7 +39,9 @@ cvar_t r_fastsky							= CVARF ("r_fastsky", "0",	CVAR_ARCHIVE);
 static cvar_t r_fastskycolour						= CVARF ("r_fastskycolour", "0",	CVAR_RENDERERCALLBACK|CVAR_SHADERSYSTEM);
 static cvar_t gl_skyboxdist						= CVARD  ("gl_skyboxdist", "0", "The distance of the skybox. If 0, the engine will determine it based upon the far clip plane distance.");	//0 = guess.
 static cvar_t r_skycloudalpha						= CVARFD ("r_skycloudalpha", "1", CVAR_RENDERERLATCH, "Controls how opaque the front layer of legacy scrolling skies should be.");
-cvar_t r_skyboxname							= CVARFC ("r_skybox", "", CVAR_RENDERERCALLBACK | CVAR_SHADERSYSTEM, R_SkyBox_Changed);
+//FTESurf Patch 1683: no CVAR_SHADERSYSTEM on either sky name: R_SkyBox_Changed reloads the sky itself, and the flag
+//re-parsed every shader on each change (the Settings sky switch hitched the menu, a map or not).
+cvar_t r_skyboxname							= CVARFC ("r_skybox", "", CVAR_RENDERERCALLBACK, R_SkyBox_Changed);
 /*
 FTESurf Patch 211: a sky for a map that declares none.
 
@@ -60,7 +62,7 @@ overriding anything -- r_skybox still wins over both, which is the ordering
 below and is the whole design.  Empty by default so nothing outside FTESurf's
 own cfg changes.
 */
-cvar_t r_skybox_default						= CVARFCD("r_skybox_default", "", CVAR_ARCHIVE | CVAR_RENDERERCALLBACK | CVAR_SHADERSYSTEM, R_SkyBox_Changed, "Skybox to use on a map that declares no sky of its own. Empty (the default) leaves such a map drawing whatever its own sky surfaces carry. r_skybox overrides this, and also overrides a map that DOES declare a sky.");
+cvar_t r_skybox_default						= CVARFCD("r_skybox_default", "", CVAR_ARCHIVE | CVAR_RENDERERCALLBACK, R_SkyBox_Changed, "Skybox to use on a map that declares no sky of its own. Empty (the default) leaves such a map drawing whatever its own sky surfaces carry. r_skybox overrides this, and also overrides a map that DOES declare a sky.");
 cvar_t r_skybox_orientation					= CVARFD ("r_glsl_skybox_orientation", "0 0 0 0", CVAR_SHADERSYSTEM, "Defines the axis around which skyboxes will rotate (the first three values). The fourth value defines the speed the skybox rotates at, in degrees per second.");
 cvar_t r_skybox_autorotate					= CVARFD ("r_glsl_skybox_autorotate", "1", CVAR_SHADERSYSTEM, "Defines the axis around which skyboxes will rotate (the first three values). The fourth value defines the speed the skybox rotates at, in degrees per second.");
 cvar_t r_skyfog								= CVARD  ("r_skyfog", "0.5", "This controls an alpha-blend value for fog on skyboxes, cumulative with regular fog alpha.");
@@ -199,6 +201,13 @@ void R_SetSky(const char *sky)
 	{
 		Con_DPrintf("sky %s: no face found; drawing r_skybox_default %s\n", sky, r_skybox_default.string);
 		R_LoadSky(r_skybox_default.string);
+	}
+	//FTESurf Patch 1627: r_skybox_default (sky_cape_hill) is loose files in Momentum's folder only; without them a map
+	//naming no sky (surf_colin_blaster_69000) drew six black faces. HL2's stock sky is in every HL2 and Momentum mount.
+	if (R_ForcedSkyEmpty() && *sky && Q_strcasecmp(sky, "sky_day01_01") && !*r_skyboxname.string)
+	{
+		Con_DPrintf("sky %s: no face found; drawing sky_day01_01\n", sky);
+		R_LoadSky("sky_day01_01");
 	}
 }
 static void R_LoadSky(const char *sky)
@@ -381,7 +390,9 @@ static void R_ForceSky_f(void)
 			Con_Printf("Current per-map skybox is %s%s\n", cl.skyname,
 				(forcedsky && Q_strcasecmp(forcedsky->name+7, cl.skyname)) ? " (not found; drawing r_skybox_default)" : "");	//+7: "skybox_"
 		else if (*r_skybox_default.string)
-			Con_Printf("Map declares no sky; using r_skybox_default %s (loaded: %s)\n", r_skybox_default.string, forcedsky?"yes":"no");
+			Con_Printf("Map declares no sky; using r_skybox_default %s (loaded: %s)\n", r_skybox_default.string,
+				!forcedsky ? "no" : Q_strcasecmp(forcedsky->name+7, r_skybox_default.string) ? va("no; drawing %s", forcedsky->name+7) :	//P1627
+				R_ForcedSkyEmpty() ? "no faces found" : "yes");
 		else
 			Con_Printf("no skybox forced.\n");
 	}

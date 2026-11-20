@@ -60,9 +60,11 @@ cvar_t	sv_airaccelerate	 = CVAR( "sv_airaccelerate", "0.7");
 cvar_t	sv_wateraccelerate	 = CVAR( "sv_wateraccelerate", "10");
 static int sv_agprofile; //map-spawn authority, never derived from raw pm_physicsmode
 static int sv_profilekind; //Patch 1589: PMPROFILE_* applied at map spawn
-static cvar_t sv_movementprofile = CVARFD("sv_movementprofile", "", CVAR_NOTFROMSERVER|CVAR_MAPLATCH, "Experimental unranked movement, applied only on map spawn: default (or empty); ag-100, ag-250, ag-1000 and cs16 (GoldSrc-style, CS 1.6 with its jump stamina and bhop cap); hl2-pre and hl2-post (Source mover with HL2 settings and its jump boost before/after the limiter; +speed sprints). Every profile autohops under pm_autobunny. Ladder intent uses analog signs; no longjump equipment.");
+static cvar_t sv_movementprofile = CVARFD("sv_movementprofile", "", CVAR_NOTFROMSERVER|CVAR_MAPLATCH, "Experimental unranked movement, applied only on map spawn: default (or empty); ag-100, ag-250, ag-1000 and cs16 (GoldSrc-style, CS 1.6 with its jump stamina and bhop cap); hl2-pre and hl2-post (Source mover with HL2 settings and its jump boost before/after the limiter; +speed sprints). Every profile but cs16 autohops under pm_autobunny (Patch 1687). Ladder intent uses analog signs; no longjump equipment.");
+static cvar_t sv_goldsrcprofile = CVARFD("sv_goldsrcprofile", "ag-250", CVAR_NOTFROMSERVER|CVAR_MAPLATCH, "Patch 1659: the movement a GoldSrc (BSP 30) map runs while sv_movementprofile is default: ag-100, ag-250, ag-1000 or cs16 (anything else: ag-250). Never applied on a tournament server.");
+static cvar_t sv_goldsrcview = CVARFD("sv_goldsrcview", "auto", CVAR_NOTFROMSERVER|CVAR_MAPLATCH, "Patch 1665/1687: the eye height on a GoldSrc (BSP 30) map. auto: the mode's own, Counter-Strike's (17 above the body's centre) under cs16 and Half-Life's (28) under ag-*; hl: always 28; cs: always 17. The camera and what aims from the eye (+use) move; movement and the water test keep the profile's eye.");
 
-static cvar_t pm_sourceversion = CVARFD("pm_sourceversion", STRINGIFY(PMSRC_VERSION), CVAR_SERVERINFO|CVAR_NOSET, "Source mover version used by this server (read-only). 3 adds swimming; 4 linked portals; 5 keeps a linked portal landing exact; 6 keeps moving as the hull clears a linked door; 7 traces a static prop's collision hull as its convex pieces; 8 recovers a surfer pinned to the face it is sliding along; 9 traces a prop hull whose indices overflowed as it really is; 10 honours Momentum's limitmovement and slide triggers; 11 adds Source's ceiling eye clearance and water-lip assist; 12 meets a prop hull's pieces where they really are, so a crease between two pieces no longer snags a surfer. Old clients need updating to predict them correctly.");
+static cvar_t pm_sourceversion = CVARFD("pm_sourceversion", STRINGIFY(PMSRC_VERSION), CVAR_SERVERINFO|CVAR_NOSET, "Source mover version used by this server (read-only). 3 adds swimming; 4 linked portals; 5 keeps a linked portal landing exact; 6 keeps moving as the hull clears a linked door; 7 traces a static prop's collision hull as its convex pieces; 8 recovers a surfer pinned to the face it is sliding along; 9 traces a prop hull whose indices overflowed as it really is; 10 honours Momentum's limitmovement and slide triggers; 11 adds Source's ceiling eye clearance and water-lip assist; 12 meets a prop hull's pieces where they really are, so a crease between two pieces no longer snags a surfer; 13 collides the displacements Patch 256 re-wound on their visible side, not four units in front of it. Old clients need updating to predict them correctly.");
 cvar_t	sv_friction			 = CVAR( "sv_friction", "4");
 cvar_t	sv_waterfriction	 = CVAR( "sv_waterfriction", "4");
 cvar_t	sv_wallfriction		 = CVARD( "sv_wallfriction", "1", "Additional friction when running into walls");
@@ -201,6 +203,8 @@ void WPhys_Init(void)
 	Cvar_Register (&sv_airaccelerate,					cvargroup_serverphysics);
 	Cvar_Register (&sv_wateraccelerate,					cvargroup_serverphysics);
 	Cvar_Register (&sv_movementprofile, cvargroup_serverphysics);
+	Cvar_Register (&sv_goldsrcprofile, cvargroup_serverphysics);
+	Cvar_Register (&sv_goldsrcview, cvargroup_serverphysics);
 	Cmd_AddCommandD ("movementprofile", SV_MovementProfile_f, "Patch 1598: set sv_movementprofile for a game you host and reload the map (the hud_gamemode picker). Not hosting: refused.");
 	Cvar_Register (&pm_sourceversion,					cvargroup_serverphysics);
 	//Early +set survives registration even for NOSET cvars. Never advertise
@@ -3855,7 +3859,7 @@ static qboolean SV_ReadEditorRuleset(const char *mapname, sv_editorrules_t *out,
 	static const char *names[] = {"sv_maxvelocity", "sv_gravity", "sv_airaccelerate",
 		"sv_accelerate", "sv_maxspeed", "sv_friction", "gamemode"};
 	static const double mins[] = {1, 1, 0, 0, 1, 0, 1};
-	static const double maxs[] = {100000, 10000, 10000, 10000, 10000, 100, 2};
+	static const double maxs[] = {100000, 10000, 10000, 10000, 10000, 100, 9};
 	char path[MAX_OSPATH], *file, *l, *e, *p, *end;
 	size_t sz;
 	int i;
@@ -3883,7 +3887,7 @@ static qboolean SV_ReadEditorRuleset(const char *mapname, sv_editorrules_t *out,
 		if (*end || end == com_token || !(v >= mins[i] && v <= maxs[i])) { valid = false; break; }
 		if (i == 6)
 		{
-			if (v != 1 && v != 2) { valid = false; break; }
+			if (v != 1 && v != 2 && v != 9) { valid = false; break; }	//P1637: 9 ahop
 			out->mode = (int)v;
 		}
 		else
@@ -3968,7 +3972,7 @@ static qboolean SV_ZoneAnyRegion(json_t *t, int depth)
 	return false;
 }
 
-//The file's maxVelocity, 0 if none, and P1371 gamemode: 0 none, 1/2, or -1 for anything else.
+//The file's maxVelocity, 0 if none, and P1371 gamemode: 0 none, 1/2/9, or -1 for anything else.
 //FALSE when this path is not a zone file at all.
 static qboolean SV_ZoneRulesetFile(const char *path, char *found, size_t foundsz, double *maxvel, int *mode)
 {
@@ -4000,15 +4004,15 @@ static qboolean SV_ZoneRulesetFile(const char *path, char *found, size_t foundsz
 	}
 	mv = zones ? SV_JsonChild(root, "maxVelocity") : NULL;
 	*maxvel = (mv && mv->type == json_type_number) ? JSON_ReadFloat(mv, 0) : 0;
-	//zone_edit offers Surf and Bhop only (Momentum ids 1, 2), so a published file may name
-	//nothing else (review: a hand-made upload could reach rj/defrag). sh_zones.qc agrees.
+	//zone_edit offers Surf, Bhop and (P1637) Ahop only (Momentum ids 1, 2, 9), so a published file
+	//may name nothing else (review: a hand-made upload could reach rj/defrag). sh_zones.qc agrees.
 	gm = zones ? SV_JsonChild(root, "gamemode") : NULL;
 	*mode = 0;
 	if (gm)
 	{
 		g = (gm->type == json_type_number) ? JSON_ReadFloat(gm, 0) : 0;
 		g = (float)g;	//as QC's json_get_float sees it, so 2.0000001 is 2 on both sides
-		*mode = (g == 1 || g == 2) ? (int)g : -1;
+		*mode = (g == 1 || g == 2 || g == 9) ? (int)g : -1;
 	}
 	JSON_Destroy(root);
 	FS_FreeFile(file);
@@ -4223,7 +4227,7 @@ static void SV_ApplyGamemodeModes(const char *mapname)
 		int zmode = 0;
 
 		if (SV_FindZoneFile(mapname, zfile, sizeof(zfile), &zmv, &zmode) && zmode < 0)
-			Con_Printf(CON_WARNING"movement: %s \"gamemode\" is not 1 (surf) or 2 (bhop) - ignored\n", zfile);
+			Con_Printf(CON_WARNING"movement: %s \"gamemode\" is not 1 (surf), 2 (bhop) or 9 (ahop) - ignored\n", zfile);
 		else if (zmode > 0)
 		{
 			mode = zmode;
@@ -4304,20 +4308,51 @@ static void SV_AGOverride(const char *name, const char *value)
 	Cvar_ForceSet(var, value);
 }
 
-static void SV_ApplyMovementProfile(void)
+//Patch 1659: is the map about to load a GoldSrc BSP? Its package is mounted by now (SV_Map_f's automount).
+static qboolean SV_MapIsGoldSrc(const char *name)
+{
+	extern char sv_mappreferhint[];
+	int ver = 0;
+	vfsfile_t *f;
+	FS_SetPreferHint(sv_mappreferhint);	//the copy an "@spec/name" load will use (consumed later, sv_init.c)
+	f = FS_OpenVFS(va("maps/%s.bsp", name), "rb", FS_GAME);
+	FS_ClearPreferHint();
+	if (!f)
+		return false;
+	if (VFS_READ(f, &ver, sizeof(ver)) != sizeof(ver))
+		ver = 0;
+	VFS_CLOSE(f);
+	return LittleLong(ver) == 30;	//bspfile.h BSPVERSIONHL
+}
+static void SV_ApplyMovementProfile(const char *mapname)
 {
 	const pmprofile_t *p;
+	const char *sel = sv_movementprofile.string;
 	char tick[16];
 	sv_agprofile = 0;
 	sv_profilekind = 0;
 	InfoBuf_SetValueForStarKey(&svs.info, "*movementprofile", "");
 	InfoBuf_SetValueForKey(&svs.info, "pm_agversion", "");
 	InfoBuf_SetValueForKey(&svs.info, "pm_agautohop", "");
-	if (!*sv_movementprofile.string || !strcmp(sv_movementprofile.string, "default")) return;
-	p = PM_ProfileBySelector(sv_movementprofile.string);
+	if (!*sel || !strcmp(sel, "default"))
+	{	//Patch 1659: the style follows the map. A tournament server keeps its pinned movement (its maps are Source).
+		cvar_t *te = Cvar_FindVar("tournament_enable"), *tr = Cvar_FindVar("tournament_reserved");
+		if ((te && te->value) || (tr && *tr->string) || !SV_MapIsGoldSrc(mapname))
+			return;
+		//a BSP-30 map always runs a GoldSrc movement (unranked, its runs filed apart), never this game's own (review)
+		sel = sv_goldsrcprofile.string;
+		p = PM_ProfileBySelector(sel);
+		if (!p || PM_ProfileHL2(p->kind))
+		{
+			Con_Printf(CON_WARNING"sv_goldsrcprofile \"%s\" is not a GoldSrc movement; %s runs ag-250\n", sel, mapname);
+			p = PM_ProfileBySelector("ag-250");
+		}
+	}
+	else
+		p = PM_ProfileBySelector(sel);
 	if (!p)
 	{
-		Host_Error("Refusing map: unknown sv_movementprofile %s", sv_movementprofile.string);
+		Host_Error("Refusing map: unknown sv_movementprofile %s", sel);
 		return;
 	}
 	Q_snprintfz(tick, sizeof(tick), "%g", p->tick);
@@ -4343,13 +4378,18 @@ static void SV_ApplyMovementProfile(void)
 	}
 	else
 	{
-		qboolean cs = p->kind == PMPROFILE_CS16;
+		//Patch 1687: the eye follows the mode (CS 1.6 17, Half-Life/AG 28), not the map as P1665 had it
+		qboolean cs = p->kind == PMPROFILE_CS16, cseye = cs;
+		if (SV_MapIsGoldSrc(mapname) && (!strcmp(sv_goldsrcview.string, "cs") || !strcmp(sv_goldsrcview.string, "hl")))
+			cseye = !strcmp(sv_goldsrcview.string, "cs");
+		if (cs)
+			SV_AGOverride("pm_autobunny", "0");	//Patch 1687: CS 1.6 has no autohop (Lex)
 		SV_AGOverride("pm_physicsmode", "2"); SV_AGOverride("sv_gravity", "800");
 		SV_AGOverride("sv_stopspeed", cs ? "75" : "100"); SV_AGOverride("sv_accelerate", cs ? "5" : "10");
 		SV_AGOverride("pm_edgefriction", "2"); SV_AGOverride("sv_maxspeed", cs ? "250" : "320");
 		SV_AGOverride("sv_maxvelocity", "2000"); SV_AGOverride("pm_maxvelocity", "2000");
 		SV_AGOverride("pm_standheight", "72"); SV_AGOverride("pm_duckheight", "36");
-		SV_AGOverride("pm_viewheight", cs ? "17" : "28"); SV_AGOverride("pm_duckviewheight", "12");
+		SV_AGOverride("pm_viewheight", cseye ? "17" : "28"); SV_AGOverride("pm_duckviewheight", "12");
 		InfoBuf_SetValueForKey(&svs.info, "pm_agversion", "1");
 		InfoBuf_SetValueForKey(&svs.info, "pm_agautohop", "1");	// Patch 1591: this AG mover honours pm_autobunny
 	}
@@ -4369,7 +4409,7 @@ void SV_ApplyGamemode(const char *mapname)
 		return;
 	SV_BareMapName(mapname, name, sizeof(name));
 	SV_LoadMapRuleset(name);
-	SV_ApplyMovementProfile();
+	SV_ApplyMovementProfile(name);
 
 	if (pms_mapover)
 		Con_Printf("^5movement^7: %s adds %i cvar%s from %s\n",
