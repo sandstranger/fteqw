@@ -2057,6 +2057,7 @@ void CLDK_AddScene(void);
 qboolean CLDK_InCinematic(void);	//its cinematics letterbox the view (the escape key skips them)
 qboolean CLDK_OpenMenu(void);		//its own menus, as FTE's while it's the game
 qboolean CLDK_OpenMenuAt(int button);
+char *CLDK_DefaultConfig(void);		//its default.cfg (Z_Malloced), from its daikatana.cfg
 #endif
 void Media_NumberedTrack(unsigned int initialtrack, unsigned int looptrack);				//legacy cd interface for protocols that only support numbered tracks.
 void Media_EndedTrack(void);	//cd is no longer running, media code needs to pick a new track (cd track or faketrack)

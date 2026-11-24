@@ -1189,6 +1189,10 @@ static void Cmd_Exec_f (void)
 #if defined(HAVE_LEGACY) && defined(HAVE_CLIENT)
 	else if (!strcmp(name, "default.cfg"))	//the q1 rerelease lacks a default.cfg (which I suppose is kinda handy, but oh well)
 	{
+#if defined(Q2CLIENT) && defined(DAIKATANA)
+		f = CLDK_DefaultConfig();	//daikatana's its own daikatana.cfg
+		if (!f)
+#endif
         f = Z_StrDup(replacementq1binds);
 		untrusted = false;
 		l = 0;
@@ -1270,6 +1274,11 @@ static void Cmd_Exec_f (void)
         RemoveLine("seta sensitivity",s);
         RemoveLine("alias zoom_in",s);
         RemoveLine("alias zoom_out",s);
+#if defined(Q2CLIENT) && defined(DAIKATANA)
+		if (CLDK_IsDaikatana())
+			;	//its own (CLDK_DefaultConfig), not quake's
+		else
+#endif
         if (activeGame == MGT_QUAKE1 || (l == 1914 && CalcHashInt(&hash_md4, f, l) == 0x2d7b72b9)) {
             s = (char*) replacementq1binds;
 		}

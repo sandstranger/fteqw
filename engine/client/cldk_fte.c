@@ -18,6 +18,10 @@ static struct
 } cldkarea = {0, 0, 1, 640, 480};
 
 static void CLDK_MenuForce_f(void);
+static void CLDK_ToggleQuickConsole_f(void)
+{	//its small console (default_keys.cfg's `), FTE's
+	Cbuf_InsertText("toggleconsole\n", Cmd_ExecLevel, false);
+}
 qboolean CLDK_IsDaikatana(void)
 {
 	static qboolean commands;
@@ -28,8 +32,58 @@ qboolean CLDK_IsDaikatana(void)
 		commands = true;
 		if (!Cmd_Exists("menu_main_force"))
 			Cmd_AddCommand("menu_main_force", CLDK_MenuForce_f);
+		if (!Cmd_Exists("togglequickconsole"))
+			Cmd_AddCommand("togglequickconsole", CLDK_ToggleQuickConsole_f);
 	}
 	return true;
+}
+
+/*
+Its default.cfg, which it hasn't: its engine's daikatana.cfg (exec default_keys.cfg's binds, then its settings), less
+what was of its own engine's video, sound, input and network drivers, which FTE's own defaults are better at.
+*/
+static qboolean CLDK_DefaultSkipped(const char *name)
+{
+	static const char *skip[] = {"gl_", "vid_", "s_", "scr_", "in_", "win_", "r_", "cl_stereo", "AudioEngDLL", "rate",
+		"dedicated", "developer", "hostname", "log_server", "LogFilePath", "LogOutput", "viewsize", NULL};
+	int i;
+	for (i = 0; skip[i]; i++)
+		if (!Q_strncasecmp(name, skip[i], strlen(skip[i])))
+			return true;
+	return false;
+}
+char *CLDK_DefaultConfig(void)
+{
+	size_t len, o;
+	char *file, *out, *line, *next, name[64];
+	const char *s;
+	if (!CLDK_IsDaikatana())
+		return NULL;
+	file = FS_LoadMallocFile("daikatana.cfg", &len);
+	if (!file)
+		return NULL;
+	out = Z_Malloc(len + 64);
+	o = strlen(strcpy(out, "unbindall\n"));
+	for (line = file; line && *line; line = next)
+	{
+		next = strchr(line, '\n');
+		if (next)
+			*next++ = 0;
+		s = line;
+		while (*s == ' ' || *s == '\t')
+			s++;
+		if (!Q_strncasecmp(s, "set ", 4) || !Q_strncasecmp(s, "seta ", 5))
+		{
+			s = COM_ParseOut(strchr(s, ' '), name, sizeof(name));
+			if (!s || CLDK_DefaultSkipped(name))
+				continue;
+		}
+		o += strlen(strcpy(out + o, line));
+		out[o++] = '\n';
+		out[o] = 0;
+	}
+	BZ_Free(file);
+	return out;
 }
 
 void *CLDKF_RegisterPic(const char *name, int *width, int *height)
