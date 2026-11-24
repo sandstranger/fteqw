@@ -1417,6 +1417,11 @@ void M_Init_Internal (void)
 #if defined(CL_MASTER) && defined(HAVE_PACKET)
 	Cmd_AddCommand ("quickconnect", M_QuickConnect_f);
 #endif
+
+#ifdef Q2CLIENT
+	if (M_GameType() == MGT_QUAKE2)
+		CLQ2_InitMenus();	//yquake2's menus, over the commands above that they share names with
+#endif
 }
 
 void M_DeInit_Internal (void)

@@ -749,6 +749,12 @@ SET(FTE_CLIENT_FILES
 	engine/client/q2fx/rand.c
 	engine/client/q2fx/q2fx_shared.c
 	engine/client/q2fx/q2fx_bridge.c
+	engine/client/clq2_menu.c
+	engine/client/q2menu/q2menu.c
+	engine/client/q2menu/qmenu.c
+	engine/client/q2menu/videomenu.c
+	engine/client/q2menu/q2m_shared.c
+	engine/client/q2menu/q2menu_bridge.c
 	engine/client/console.c
 	engine/client/fragstats.c
 	engine/client/image.c

@@ -1860,6 +1860,8 @@ float CLQ2_MenuScale(void);	//yquake2's r_menuscale, for the whole screen (in pi
 void CLQ2_GetPicSize(const char *name, int *w, int *h);	//yquake2's pic naming: name, or /path/name.ext
 void CLQ2_DrawPicScaled(float x, float y, const char *name, float scale);	//screen pixels
 void CLQ2_DrawCharScaled(float x, float y, int num, float scale);			//screen pixels, Quake 2 charset
+void CLQ2_InitMenus(void);					//yquake2's menus (clq2_menu.c) take over the menu commands
+qboolean CLQ2_OpenMenu(const char *command);	//menu_main etc.; false when Quake 2 is not the game
 
 //clq2_fx.c: yquake2's effects (engine/client/q2fx): particles, trails, temp entities, muzzle flashes, dlights
 void CLQ2FX_Init(void);

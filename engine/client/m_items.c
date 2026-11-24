@@ -2517,6 +2517,11 @@ void M_Menu_Main_f (void)
 	}
 */
 
+#ifdef Q2CLIENT
+	if (CLQ2_OpenMenu("menu_main"))	//yquake2's menus (clq2_menu.c), with its own sounds
+		return;
+#endif
+
 	S_LocalSound ("misc/menu2.wav");
 
 #ifdef Q2CLIENT
