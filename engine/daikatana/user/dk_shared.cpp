@@ -757,7 +757,7 @@ char *Info_ValueForKey( char *s, char *key )
 		while (*s != '\\')
 		{
 			if (!*s)
-				return "";
+				return (value[valueindex][0] = 0, value[valueindex]);
 			*o++ = *s++;
 		}
 		*o = 0;
@@ -768,7 +768,7 @@ char *Info_ValueForKey( char *s, char *key )
 		while (*s != '\\' && *s)
 		{
 			if (!*s)
-				return "";
+				return (value[valueindex][0] = 0, value[valueindex]);
 			*o++ = *s++;
 		}
 		*o = 0;
@@ -780,7 +780,7 @@ char *Info_ValueForKey( char *s, char *key )
 
 		if (!*s)
 		{
-			return "";
+			return (value[valueindex][0] = 0, value[valueindex]);
 		}
 		s++;
 	}

@@ -89,6 +89,11 @@ void *SVQ2_GetGameAPI (void *parms)
 	void *ret;
 #endif
 
+#ifdef DAIKATANA
+	if (SVDK_IsDaikatana())	//not a library: Daikatana's game is in the engine
+		return SVDK_GetGameAPI(parms);
+#endif
+
 	iterator = NULL;
 	while(COM_IteratePaths(&iterator, syspath, sizeof(syspath), gamepath, sizeof(gamepath)))
 	{

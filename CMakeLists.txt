@@ -728,6 +728,47 @@ SET(FTE_SERVER_FILES
 	engine/server/sv_held_session.c
 )
 
+#Daikatana's game code (engine/daikatana: physics, world, weapons, IonCommon, and what puts it on FTE's server),
+#C++ written for MSVC 6, built on its own with its own headers and flags.
+SET(FTE_GAME_DAIKATANA true CACHE BOOL "Include Daikatana's game code (C++).")
+IF(FTE_GAME_DAIKATANA)
+	ENABLE_LANGUAGE(CXX)
+	FILE(STRINGS engine/daikatana/sources.txt DK_SOURCES)
+	SET(DK_FILES)
+	FOREACH(dksrc ${DK_SOURCES})
+		STRING(STRIP "${dksrc}" dksrc)
+		IF(dksrc)
+			STRING(REGEX REPLACE "/.*" "" dkmodule "${dksrc}")
+			STRING(TOUPPER "${dkmodule}" dkmodule)
+			SET(dksrc engine/daikatana/${dksrc})
+			GET_FILENAME_COMPONENT(dkdir ${dksrc} DIRECTORY)
+			SET_SOURCE_FILES_PROPERTIES(${dksrc} PROPERTIES
+				COMPILE_DEFINITIONS "DK_MODULE_${dkmodule}"
+				INCLUDE_DIRECTORIES "${CMAKE_CURRENT_SOURCE_DIR}/${dkdir}")
+			LIST(APPEND DK_FILES ${dksrc})
+		ENDIF()
+	ENDFOREACH()
+	ADD_LIBRARY(dkgame STATIC ${DK_FILES})
+	TARGET_COMPILE_DEFINITIONS(dkgame PRIVATE TONGUE_ENGLISH C_ONLY)
+	TARGET_INCLUDE_DIRECTORIES(dkgame BEFORE PRIVATE
+		engine/daikatana/user
+		engine/daikatana/include
+		engine/daikatana/physics
+		engine/daikatana/world
+		engine/daikatana/weapons
+		engine/daikatana/fte)
+	IF(MSVC)
+		TARGET_COMPILE_OPTIONS(dkgame PRIVATE /FI${CMAKE_CURRENT_SOURCE_DIR}/engine/daikatana/include/dk_fte_compat.h /w)
+	ELSE()
+		TARGET_COMPILE_OPTIONS(dkgame PRIVATE -include ${CMAKE_CURRENT_SOURCE_DIR}/engine/daikatana/include/dk_fte_compat.h -std=gnu++11 -fpermissive -w -fno-strict-aliasing)
+	ENDIF()
+	SET_TARGET_PROPERTIES(dkgame PROPERTIES POSITION_INDEPENDENT_CODE ON)
+	SET(FTE_SERVER_FILES ${FTE_SERVER_FILES} engine/server/svdk_fte.c)
+	SET(FTE_LIB_DEFINES ${FTE_LIB_DEFINES};DAIKATANA)
+	SET(FTE_LIBS ${FTE_LIBS} dkgame)
+	SET(FTESV_LIBS ${FTESV_LIBS} dkgame)
+ENDIF()
+
 #these files are only in the client
 SET(FTE_CLIENT_FILES
 	engine/client/cl_cam.c

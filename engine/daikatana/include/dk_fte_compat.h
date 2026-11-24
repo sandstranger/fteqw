@@ -50,11 +50,17 @@ template<class A, class B> static inline A dk_max(A a, B b) {return (a > b)?a:(A
 
 #endif	//!_MSC_VER
 
-//the DLLs are linked together: what more than one defined is renamed in all but world (mkstatic.py)
+//the DLLs are linked together, and into FTE: what would meet another's names is renamed (mkstatic.py)
 #if defined(DK_MODULE_PHYSICS)
 #include "dk_rename_physics.h"
+#elif defined(DK_MODULE_WORLD)
+#include "dk_rename_world.h"
 #elif defined(DK_MODULE_WEAPONS)
 #include "dk_rename_weapons.h"
+#elif defined(DK_MODULE_USER)
+#include "dk_rename_user.h"
+#elif defined(DK_MODULE_FTE)
+#include "dk_rename_fte.h"
 #endif
 
 #endif

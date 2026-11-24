@@ -1408,6 +1408,13 @@ void SVQ2RR_ExtendedPmove(struct q2edict_s *ent, q2expmove_state_t *out);
 void SVQ2RR_EntityExtras(struct q2edict_s *ent, q2entityex_t *out);
 int SVQ2_TickRate(void);
 #endif
+//svdk_fte.c, daikatana/fte/svdk_game.cpp: Daikatana's game (C++, linked in) as a game API 3 one
+#if defined(Q2SERVER) && defined(DAIKATANA)
+qboolean SVDK_IsDaikatana(void);
+void *SVDK_GetGameAPI(void *fteimport);
+int SVDK_Active(void);
+void SVDK_PrepFrame(void);
+#endif
 
 //svq2_ents.c
 void SVQ2_BuildClientFrame (client_t *client);

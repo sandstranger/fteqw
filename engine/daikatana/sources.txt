@@ -197,3 +197,5 @@ weapons/w_attribute.cpp
 weapons/weapon_funcs.cpp
 physics/dk_static.cpp
 fte/dk_exports.cpp
+fte/dk_pmove.cpp
+fte/svdk_game.cpp

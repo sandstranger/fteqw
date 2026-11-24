@@ -5445,6 +5445,13 @@ void SVQ2_ClearEvents(void)
 	q2edict_t	*ent;
 	int		i;
 
+#ifdef DAIKATANA
+	if (SVDK_Active())
+	{	//Daikatana's game's edicts are its own
+		SVDK_PrepFrame();
+		return;
+	}
+#endif
 	if (SVQ2RR_Active())
 	{	//the rerelease's game clears its own (and more), in its PrepFrame
 		SVQ2RR_PrepFrame();
