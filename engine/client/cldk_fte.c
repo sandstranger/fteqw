@@ -186,6 +186,28 @@ const char *CLDKF_ImageName(int index)
 		return cl.image_name[index];
 	return NULL;
 }
+//its fog (its renderer's GL_LINEAR, from start to end), as FTE's under r_fog_linear (the gamemode's set it):
+//density's the end, depthbias the start
+void CLDKF_SetFog(int active, float r, float g, float b, float start, float end)
+{
+	fogstate_t *f = &cl.fog[FOGTYPE_AIR];
+	if (!active || end <= 0)
+	{
+		if (f->density)
+			CL_ResetFog(FOGTYPE_AIR);
+		return;
+	}
+	if (f->density == end && f->depthbias == start && f->alpha == 1 &&
+		f->colour[0] == SRGBf(r) && f->colour[1] == SRGBf(g) && f->colour[2] == SRGBf(b))
+		return;
+	CL_ResetFog(FOGTYPE_AIR);
+	f->density = end;
+	f->depthbias = start;
+	f->colour[0] = SRGBf(r);
+	f->colour[1] = SRGBf(g);
+	f->colour[2] = SRGBf(b);
+	f->alpha = 1;
+}
 const char *CLDKF_PlayerSkinString(int player)
 {	//(cl_parse.c keeps them at the start of the general ones)
 	if (player >= 0 && player < Q2MAX_CLIENTS && player < countof(cl.configstring_general) && cl.configstring_general[player])

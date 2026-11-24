@@ -85,7 +85,7 @@ static char *vidfilenames[] =	//list of filenames to check to see if graphics st
 
 #define HLCFG "plug_load ffmpeg\n"
 #define HL2CFG "plug_load ode;plug_load hl2\n"
-#define DKCFG Q2CFG "set com_gamedirnativecode 0\nset r_imageextensions \"tga png jpg pcx wal bmp\"\n"	/*its models' skins are WALs named .bmp*/
+#define DKCFG Q2CFG "set com_gamedirnativecode 0\nset r_imageextensions \"tga png jpg pcx wal bmp\"\nset r_fog_linear 1\n"	/*its models' skins are WALs named .bmp; its fog's linear, start to end*/
 
 #ifndef UPDATEURL
 	#ifdef HAVE_SSL

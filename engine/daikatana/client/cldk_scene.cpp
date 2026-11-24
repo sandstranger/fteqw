@@ -317,6 +317,7 @@ static int		dkscene_initialised;
 static int		dkscene_registered;
 static char		dkimagenames[MAX_IMAGES][MAX_QPATH];	//the configstrings CLDK_ConfigStrings had last
 static char		dkclientinfos[MAX_CLIENTS][256];
+static foginfo_t	dkpushedfog;		//what CLDKF_SetFog had last
 
 void CLDK_SceneReset(void)
 {
@@ -334,6 +335,7 @@ void CLDK_SceneReset(void)
 	memset(dkclientinfos, 0, sizeof(dkclientinfos));
 	memset(cl.image_precache, 0, sizeof(cl.image_precache));
 	memset(cl.clientinfo, 0, sizeof(cl.clientinfo));
+	memset(&dkpushedfog, 0, sizeof(dkpushedfog));	//(FTE's cleared its own with the serverdata)
 	dkscene_registered = false;
 }
 
@@ -398,6 +400,14 @@ static void CLDK_SceneFrame(void)
 	float org[3], ang[3];
 	int serverframe = CLDKF_ServerFrame();
 	CLDK_ConfigStrings();
+
+	//its fog (the server's ET_FOG, fading by its increment), as FTE's, as it changes
+	CL_RunFog();
+	if (memcmp(&r_foginfo, &dkpushedfog, sizeof(r_foginfo)))
+	{
+		dkpushedfog = r_foginfo;
+		CLDKF_SetFog(r_foginfo.active, r_foginfo.r, r_foginfo.g, r_foginfo.b, r_foginfo.start, r_foginfo.end);
+	}
 
 	cl.frame.serverframe = serverframe;
 	cl.frame.valid = true;
