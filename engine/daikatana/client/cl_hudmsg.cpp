@@ -189,7 +189,7 @@ void CL_ParseWeaponIcons(void)
 		if (modelIndex != 0)
 		{
 			inventoryIcons[i].model = cl.model_draw[modelIndex];
-			strncpy( inventoryIcons[i].modelname, cl.configstrings[CS_MODELS+modelIndex], MAX_QPATH );
+			strncpy( inventoryIcons[i].modelname, CL_ConfigModelName(modelIndex), MAX_QPATH );	//FTE: (FTE's client has the configstrings)
 		}
 		else
 		{

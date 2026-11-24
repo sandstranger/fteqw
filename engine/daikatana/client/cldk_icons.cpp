@@ -63,7 +63,8 @@ static void CLDK_DrawInventoryIcons(void)
 	for (i = 0; i < numInventoryIcons && i < CL_MAX_INVENTORY_ICONS; i++, y += h)
 	{
 		cldk_icon_t *ic = &icons[n];
-		ic->model = IconModel(inventoryIcons[i].model, inventoryIcons[i].modelindex);
+		ic->model = inventoryIcons[i].modelname[0]?CLDKF_RegisterModel(inventoryIcons[i].modelname)	//(by its name: its index can be the last level's)
+			:IconModel(inventoryIcons[i].model, inventoryIcons[i].modelindex);
 		if (!ic->model)
 			continue;
 		ic->x = x;
