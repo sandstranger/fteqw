@@ -23,6 +23,13 @@ hands it over each frame (client/cldk_fte.c), what Quake II's has no room for (f
 modelindex2..4...) comes reliably as it changes (svcdk_fte_entstate), and cl_ents.cpp draws and animates them as
 its client did (cldk_ents.cpp builds its frame). cldk_fte.h is all it has of FTE.
 
+Also its client's: menu/ (its menus, as FTE's menu while it's the game), its crosshair, scoreboard
+(dk_scoreboard.cpp), fog (FTE's linear fog: the gamemode sets r_fog_linear), skins (an image on every surface of
+a dkm but its SRF_STATICSKIN ones, its players' from their CS_PLAYERSKINS strings), looping sounds' volumes and
+distances, and player movement for prediction (cldk_pred.cpp). With no default.cfg, its daikatana.cfg is the
+default config (its binds and settings, less its engine's video, sound and network drivers'), and its userinfo
+cvars (modelname, character...) are FTE's.
+
 Building (CMakeLists.txt, FTE_GAME_DAIKATANA, the dkgame library): sources.txt lists what's compiled, each with
 -include include/dk_fte_compat.h (what MSVC and its CRT had, elsewhere), -DDK_MODULE_<directory> (physics,
 world, weapons, user, fte), -DTONGUE_ENGLISH -DC_ONLY, the directories user, include, physics, world, weapons, fte
