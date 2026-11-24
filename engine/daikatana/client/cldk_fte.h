@@ -59,6 +59,7 @@ void		CLDKF_AddTriangles(void *shader, int numverts, const float *xyz, const flo
 void		*CLDKF_RegisterParticleShader(void);
 void		*CLDKF_RegisterBeamShader(const char *texture);	//blended, vertex colours, both sides; null: untextured
 void		*CLDKF_RegisterDecalShader(const char *texture);	//as a beam's, offset onto the surface under it
+void		*CLDKF_RegisterGlowShader(void);			//untextured, added to the scene (its spotlights' volumes)
 int			CLDKF_PlaneNormal(int planeindex, float *normal);	//the map's; false if there's no such plane
 void		CLDKF_LightPoint(const float *point, float *rgb);	//the map's light there (0 to 1ish)
 void		*CLDKF_RegisterSound(const char *name);

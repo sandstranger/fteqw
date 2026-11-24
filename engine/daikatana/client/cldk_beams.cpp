@@ -21,6 +21,7 @@ static const char *beamtexnames[BEAM_TEX_NUMTEXTURES] =
 };
 static void		*beamshaders[BEAM_TEX_NUMTEXTURES];
 static void		*beamwhite;		//BEAM_TEX_NONE: its colour alone
+static void		*glowshader;	//its spotlights' volumes
 
 void CLDK_RegisterBeams(void)
 {
@@ -28,6 +29,7 @@ void CLDK_RegisterBeams(void)
 	for (i = 0; i < BEAM_TEX_NUMTEXTURES; i++)
 		beamshaders[i] = CLDKF_RegisterBeamShader(beamtexnames[i]);
 	beamwhite = CLDKF_RegisterBeamShader(NULL);
+	glowshader = CLDKF_RegisterGlowShader();
 }
 
 #define MAX_BEAMVERTS (BEAM_MAX_SEGMENTS*6)
@@ -170,4 +172,43 @@ void CLDK_DrawEntityBeam(entity_t *e)
 	p1 = e->origin - right;
 	BeamQuad(p0, p1, p2, p3, rgb, alpha, alpha);
 	BeamFlush(BEAM_TEX_LASER);
+}
+
+//R_DrawSpotlight: a spotlight's volume, two tubes from it to where it shines (render_scale), widening, fading, added
+#define SPOT_START_ALPHA	0.25f
+#define SPOT_END_ALPHA		0.05f
+void CLDK_DrawSpotlight(entity_t *e)
+{
+	CVector forward, right, up, length = e->render_scale - e->origin;
+	CVector s[16], en[16], black(0, 0, 0);
+	float radius1 = (float)e->frame, radius2;
+	int light, i;
+	if (!glowshader)
+		return;
+	AngleToVectors(e->angles, forward, right, up);
+	for (light = 0; light < 2; light++)
+	{
+		radius2 = radius1 + length.Length() * 0.2f;
+		for (i = 0; i < 16; i++)
+		{
+			float a = i * (float)(M_PI * 2 / 16), c = cos(a), sn = sin(a);
+			s[i] = e->origin + forward * radius1 + right * (c * radius1) + up * (sn * radius1);
+			en[i] = e->render_scale + forward * radius2 + right * (c * radius2) + up * (sn * radius2);
+		}
+		for (i = 0; i < 16; i++)
+		{
+			int j = (i + 1) & 15;
+			BeamVert(s[i], 0, 0, e->color, SPOT_START_ALPHA);
+			BeamVert(s[j], 0, 0, e->color, SPOT_START_ALPHA);
+			BeamVert(en[j], 0, 0, black, SPOT_END_ALPHA);
+			BeamVert(s[i], 0, 0, e->color, SPOT_START_ALPHA);
+			BeamVert(en[j], 0, 0, black, SPOT_END_ALPHA);
+			BeamVert(en[i], 0, 0, black, SPOT_END_ALPHA);
+		}
+		length = length * (2.0f/3);
+		radius1 *= 2.0f/3;
+	}
+	if (bnum)
+		CLDKF_AddTriangles(glowshader, bnum, bxyz, bst, brgba);
+	bnum = 0;
 }

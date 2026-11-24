@@ -33,6 +33,7 @@ void CLDK_AddEntities(void);
 void CLDK_RegisterBeams(void);	//cldk_beams.cpp's
 void CLDK_DrawBeams(void);
 void CLDK_DrawEntityBeam(entity_t *e);
+void CLDK_DrawSpotlight(entity_t *e);
 void CLDK_DrawSurfaceSprites(void);	//cldk_surfsprites.cpp's
 
 /*
@@ -159,6 +160,11 @@ void V_AddEntity(entity_t *ent)
 	if (ent->flags & RF_BEAM_MOVING)
 	{	//its renderer drew these as beams
 		CLDK_DrawEntityBeam(ent);
+		return;
+	}
+	if (ent->flags & RF_SPOTLIGHT)
+	{	//and these as volumes of light
+		CLDK_DrawSpotlight(ent);
 		return;
 	}
 	float o[3] = {ent->origin.x, ent->origin.y, ent->origin.z};

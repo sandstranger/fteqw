@@ -352,6 +352,19 @@ void *CLDKF_RegisterDecalShader(const char *texture)
 			"}\n"
 		"}\n", texture));
 }
+void *CLDKF_RegisterGlowShader(void)
+{	//its spotlights' volumes (R_DrawSpotlight): vertex coloured, GL_SRC_ALPHA GL_ONE
+	return R_RegisterShader("dkglow", SUF_NONE,
+		"{\n"
+			"cull disable\n"
+			"{\n"
+				"map $whiteimage\n"
+				"blendfunc GL_SRC_ALPHA GL_ONE\n"
+				"rgbgen vertex\n"
+				"alphagen vertex\n"
+			"}\n"
+		"}\n");
+}
 int CLDKF_PlaneNormal(int planeindex, float *normal)
 {
 	if (!cl.worldmodel || planeindex < 0 || planeindex >= cl.worldmodel->numplanes || !cl.worldmodel->planes)
