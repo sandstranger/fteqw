@@ -4,7 +4,7 @@ MSVC's debug CRT header, for Daikatana's game code elsewhere: its checks do noth
 #ifndef DK_CRTDBG_H
 #define DK_CRTDBG_H
 #ifdef _MSC_VER
-#include_next <crtdbg.h>
+#include <../ucrt/crtdbg.h>	//the real one (this directory's ahead of it on the include path)
 #else
 #define _ASSERT(x)				((void)0)
 #define _ASSERTE(x)				((void)0)
