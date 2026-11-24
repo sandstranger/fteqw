@@ -835,6 +835,9 @@ void SV_WipeServerState(void)
 #endif
 	memset (&sv, 0, sizeof(sv));
 	sv.logindatabase = -1;
+#ifdef HEXEN2
+	SVH2FX_Clear();	//hexen2's effects go with the level
+#endif
 }
 
 /*

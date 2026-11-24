@@ -716,6 +716,7 @@ SET(FTE_SERVER_FILES
 #	engine/server/svhl_world.c
 	engine/server/svq2_ents.c
 	engine/server/svq2_game.c
+	engine/server/sv_h2fx.c
 	engine/server/sv_held_coverage.c
 	engine/server/sv_held_clock.c
 	engine/server/sv_held_ledger.c
@@ -742,6 +743,7 @@ SET(FTE_CLIENT_FILES
 	engine/client/clq2_ents.c
 	engine/client/clq2_hud.c
 	engine/client/clh2_hud.c
+	engine/client/clh2_fx.c
 	engine/client/clq2_fx.c
 	engine/client/q2fx/cl_effects.c
 	engine/client/q2fx/cl_tempentities.c

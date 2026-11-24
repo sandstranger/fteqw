@@ -3937,6 +3937,8 @@ void SV_Snapshot_BuildStateQ1(entity_state_t *state, edict_t *ent, client_t *cli
 					}
 					if (h2effects & (1<<4))	//EF_DARKLIGHT
 						state->effects |= EF_H2DARKLIGHT;
+					if (h2effects & (1<<5))	//EF_DARKFIELD
+						state->effects |= EF_H2DARKFIELD;
 				}
 			}
 			else if (progstype == PROG_TENEBRAE)

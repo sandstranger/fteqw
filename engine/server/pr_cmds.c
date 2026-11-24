@@ -3783,26 +3783,36 @@ static void QCBUILTIN PF_particle4 (pubprogfuncs_t *prinst, globalvars_t *pr_glo
 	SV_MulticastProtExt (org, MULTICAST_PVS, pr_global_struct->dimension_send, PEXT_HEXEN2, 0);
 }
 
+struct h2particleexplosion_s
+{
+	float *org;
+	int radius, color, count;
+};
+static void PF_h2particleexplosion_Legacy(sizebuf_t *msg, void *vctx)
+{	//FTE's own message for it, for clients without PEXT2_H2EFFECTS: an effect 255 svcfte_particle4
+	struct h2particleexplosion_s *ctx = vctx;
+	if (msg->cursize + 7 + 3*4 > msg->maxsize)
+		return;
+	MSG_WriteByte (msg, svcfte_particle4);
+	MSG_WriteCoord (msg, ctx->org[0]);
+	MSG_WriteCoord (msg, ctx->org[1]);
+	MSG_WriteCoord (msg, ctx->org[2]);
+	MSG_WriteByte (msg, bound(0, ctx->radius, 255));
+
+	MSG_WriteShort (msg, ctx->color);
+	MSG_WriteByte (msg, ctx->count);
+	MSG_WriteByte (msg, 255);	//special explosion thing
+}
 static void QCBUILTIN PF_h2particleexplosion(pubprogfuncs_t *prinst, struct globalvars_s *pr_globals)
 {
 	//used by the (regular) ice staff, and multiple other things.
-	VM_VECTORARG(org, OFS_PARM0);
-	int radius = G_FLOAT(OFS_PARM1);
-	int color = G_FLOAT(OFS_PARM2);
-	int effect = 255;	//special explosion thing
-	int count = G_FLOAT(OFS_PARM3);
-
-	MSG_WriteByte (&sv.multicast, svcfte_particle4);
-	MSG_WriteCoord (&sv.multicast, org[0]);
-	MSG_WriteCoord (&sv.multicast, org[1]);
-	MSG_WriteCoord (&sv.multicast, org[2]);
-	MSG_WriteByte (&sv.multicast, bound(0, radius, 255));
-
-	MSG_WriteShort (&sv.multicast, color);
-	MSG_WriteByte (&sv.multicast, count);
-	MSG_WriteByte (&sv.multicast, effect);
-
-	SV_MulticastProtExt (org, MULTICAST_PVS, pr_global_struct->dimension_send, PEXT_HEXEN2, 0);
+	//particleexplosion(org, color, radius, counter): uHexen2's own message for PEXT2_H2EFFECTS clients (sv_h2fx.c)
+	struct h2particleexplosion_s ctx;
+	ctx.org = G_VECTOR(OFS_PARM0);
+	ctx.radius = G_FLOAT(OFS_PARM1);	//FTE's message has these the other way about. keep it, it is what its clients expect.
+	ctx.color = G_FLOAT(OFS_PARM2);
+	ctx.count = G_FLOAT(OFS_PARM3);
+	SVH2FX_ParticleExplosion(ctx.org, G_FLOAT(OFS_PARM1), G_FLOAT(OFS_PARM2), G_FLOAT(OFS_PARM3), PF_h2particleexplosion_Legacy, &ctx);
 }
 #endif
 
@@ -8894,7 +8904,7 @@ void SV_RegisterH2CustomTents(void)
 		h2customtents[ce_chunk_24]	= SV_CustomTEnt_Register("h2part.ce_chunk_bone",			CTE_CUSTOMVELOCITY|CTE_CUSTOMCOUNT, NULL, 0, NULL, 0, 0, NULL);
 	}
 }
-static void QCBUILTIN PF_h2starteffect(pubprogfuncs_t *prinst, struct globalvars_s *pr_globals)
+static void PF_h2starteffect_CTE(pubprogfuncs_t *prinst, struct globalvars_s *pr_globals)
 {
 	float *min, *max;//, *size;
 //	float *angle;
@@ -9160,50 +9170,80 @@ static void QCBUILTIN PF_h2starteffect(pubprogfuncs_t *prinst, struct globalvars
 	Con_Printf("FTE-H2 FIXME: Effect %i doesn't have an effect registered\nTell Spike!\n", efnum);
 }
 
+static void QCBUILTIN PF_h2starteffect(pubprogfuncs_t *prinst, struct globalvars_s *pr_globals)
+{
+	//uHexen2's list of them, for clients that draw them as uHexen2 (sv_h2fx.c), and the particle-script version of
+	//the effect for the others. The index is uHexen2's, for endeffect.
+	int idx = SVH2FX_StartEffect(prinst, pr_globals);
+	PF_h2starteffect_CTE(prinst, pr_globals);
+	if (idx >= 0)
+		G_FLOAT(OFS_RETURN) = idx;
+}
+
 static void QCBUILTIN PF_h2endeffect(pubprogfuncs_t *prinst, struct globalvars_s *pr_globals)
 {
 //	int ign = G_FLOAT(OFS_PARM0);
 	int index = G_FLOAT(OFS_PARM1);
 
-	Con_DPrintf("Stop effect %i\n", index);
+	SVH2FX_EndEffect(index);	//the particle-script ones can't be stopped
 }
 
+struct h2rain_s
+{
+	float *min, *max, *dir;
+	float colour, count;
+};
+static void PF_h2rain_go_Legacy(sizebuf_t *msg, void *vctx)
+{	//this is some hacky alternative, for clients without PEXT2_H2EFFECTS.
+	//fixme: the effect isn't bounded to the box
+	struct h2rain_s *ctx = vctx;
+	if (msg->cursize + 7 + 9*4 > msg->maxsize)
+		return;
+	MSG_WriteByte(msg, svc_temp_entity);
+	MSG_WriteByte(msg, TEDP_PARTICLERAIN);
+	// min
+	MSG_WriteCoord(msg, ctx->min[0]);
+	MSG_WriteCoord(msg, ctx->min[1]);
+	MSG_WriteCoord(msg, ctx->max[2]);
+	// max
+	MSG_WriteCoord(msg, ctx->max[0]);
+	MSG_WriteCoord(msg, ctx->max[1]);
+	MSG_WriteCoord(msg, ctx->max[2]);
+	// velocity
+	MSG_WriteCoord(msg, ctx->dir[0]);
+	MSG_WriteCoord(msg, ctx->dir[1]);
+	MSG_WriteCoord(msg, -(frandom()*700+256));	//dir not valid. fill in a default downwards direction
+	// count
+	MSG_WriteShort(msg, min(ctx->count, 65535));
+	// colour
+	MSG_WriteByte(msg, (int)ctx->colour&0xff);
+}
 static void QCBUILTIN PF_h2rain_go(pubprogfuncs_t *prinst, struct globalvars_s *pr_globals)
 {
-	//used by (tomed) icemace.hc 
-	float *min = G_VECTOR(OFS_PARM0);
-	float *max = G_VECTOR(OFS_PARM1);
-//unused	float *size = G_VECTOR(OFS_PARM2);
-	float *dir = G_VECTOR(OFS_PARM3);
-	float colour = G_FLOAT(OFS_PARM4);
-	float count = G_FLOAT(OFS_PARM5);
-
-	//this is some hacky alternative.
-	//fixme: the effect isn't bounded to the box
-	MSG_WriteByte(&sv.multicast, svc_temp_entity);
-	MSG_WriteByte(&sv.multicast, TEDP_PARTICLERAIN);
-	// min
-	MSG_WriteCoord(&sv.multicast, min[0]);
-	MSG_WriteCoord(&sv.multicast, min[1]);
-	MSG_WriteCoord(&sv.multicast, max[2]);
-	// max
-	MSG_WriteCoord(&sv.multicast, max[0]);
-	MSG_WriteCoord(&sv.multicast, max[1]);
-	MSG_WriteCoord(&sv.multicast, max[2]);
-	// velocity
-	MSG_WriteCoord(&sv.multicast, dir[0]);
-	MSG_WriteCoord(&sv.multicast, dir[1]);
-	MSG_WriteCoord(&sv.multicast, -(frandom()*700+256));	//dir not valid. fill in a default downwards direction
-	// count
-	MSG_WriteShort(&sv.multicast, min(count, 65535));
-	// colour
-	MSG_WriteByte(&sv.multicast, (int)colour&0xff);
-	SV_MulticastProtExt (NULL, MULTICAST_ALL, pr_global_struct->dimension_send, 0, 0);
+	//used by (tomed) icemace.hc
+	//rain_go(min, max, size, dir, colour, count): uHexen2's svc_raineffect for PEXT2_H2EFFECTS clients (sv_h2fx.c)
+	struct h2rain_s ctx;
+	ctx.min = G_VECTOR(OFS_PARM0);
+	ctx.max = G_VECTOR(OFS_PARM1);
+	ctx.dir = G_VECTOR(OFS_PARM3);
+	ctx.colour = G_FLOAT(OFS_PARM4);
+	ctx.count = G_FLOAT(OFS_PARM5);
+	SVH2FX_RainGo(ctx.min, ctx.max, G_VECTOR(OFS_PARM2), ctx.dir, ctx.colour, ctx.count, PF_h2rain_go_Legacy, &ctx);
 }
 
 static void QCBUILTIN PF_h2updatesoundpos(pubprogfuncs_t *prinst, struct globalvars_s *pr_globals)
 {
-	Con_DPrintf("FTE-H2 FIXME: updatesoundpos not implemented\n");
+	//updatesoundpos(entity, channel): the sound playing on that channel of the entity moves to where it is now
+	//(the mission pack's projectiles and cube of force), for PEXT2_H2EFFECTS clients (sv_h2fx.c).
+	edict_t *ent = G_EDICT(prinst, OFS_PARM0);
+	int channel = G_FLOAT(OFS_PARM1);
+
+	if (channel < 0 || channel > 7)
+	{
+		PR_BIError (prinst, "PF_h2updatesoundpos: channel = %i", channel);
+		return;
+	}
+	SVH2FX_UpdateSoundPos(prinst, ent, channel);
 }
 
 static void QCBUILTIN PF_h2whiteflash(pubprogfuncs_t *prinst, struct globalvars_s *pr_globals)

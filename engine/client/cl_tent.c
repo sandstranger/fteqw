@@ -228,6 +228,9 @@ struct beam_s {
 //	int		particlecolour;	//some effects have specific colours. which is weird.
 	trailkey_t trailstate;
 	trailkey_t emitstate;
+#ifdef HEXEN2
+	float	h2trailtime;	//the sun staff's trail, as uHexen2's (clh2_fx.c)
+#endif
 };
 
 beam_t		*cl_beams;
@@ -1102,6 +1105,92 @@ void CL_ParseStream (int type)
 	}
 }
 
+#ifdef HEXEN2
+/*
+uHexen2's CL_ParseTEnt, for the ones that are particles: its splashes, explosion and sounds (clh2_fx.c). False for
+the others (the streams are FTE's beams).
+*/
+static qboolean CLH2_ParseTEnt(int type)
+{
+	vec3_t pos;
+	dlight_t *dl;
+	int rnd, cnt;
+
+	switch (type)
+	{
+	case TE_WIZSPIKE:	// spike hitting wall
+	case TE_KNIGHTSPIKE:
+	case TE_SPIKE:
+	case TE_SUPERSPIKE:
+	case TEQW_NQEXPLOSION:	// rocket explosion
+	case TEQW_QWEXPLOSION:
+	case TE_LAVASPLASH:
+	case TE_TELEPORT:
+		cnt = 1;
+		break;
+	case TEQW_QWGUNSHOT:	// bullet hitting wall
+		cnt = MSG_ReadByte ();
+		break;
+	case TEQW_NQGUNSHOT:
+		cnt = 1;
+		break;
+	default:
+		return false;
+	}
+	pos[0] = MSG_ReadCoord ();
+	pos[1] = MSG_ReadCoord ();
+	pos[2] = MSG_ReadCoord ();
+
+	switch (type)
+	{
+	case TE_WIZSPIKE:
+		CLH2FX_RunParticleEffect (pos, vec3_origin, 20, 30);
+		break;
+	case TE_KNIGHTSPIKE:
+		CLH2FX_RunParticleEffect (pos, vec3_origin, 226, 20);
+		break;
+	case TE_SPIKE:
+	case TE_SUPERSPIKE:
+		CLH2FX_RunParticleEffect (pos, vec3_origin, 0, (type == TE_SPIKE)?10:20);
+		if (rand() % 5)
+			S_StartSound (0, 0, cl_sfx_tink1, pos, NULL, 1, 1, 0, 0, 0);
+		else
+		{
+			rnd = rand() & 3;
+			if (rnd == 1)
+				S_StartSound (0, 0, cl_sfx_ric1, pos, NULL, 1, 1, 0, 0, 0);
+			else if (rnd == 2)
+				S_StartSound (0, 0, cl_sfx_ric2, pos, NULL, 1, 1, 0, 0, 0);
+			else
+				S_StartSound (0, 0, cl_sfx_ric3, pos, NULL, 1, 1, 0, 0, 0);
+		}
+		break;
+	case TEQW_QWGUNSHOT:
+	case TEQW_NQGUNSHOT:
+		CLH2FX_RunParticleEffect (pos, vec3_origin, 0, 20*cnt);
+		break;
+	case TEQW_NQEXPLOSION:
+	case TEQW_QWEXPLOSION:
+		CLH2FX_ParticleExplosion (pos);
+		dl = CL_AllocDlight (0);
+		VectorCopy (pos, dl->origin);
+		dl->radius = 350;
+		dl->die = cl.time + 0.5;
+		dl->decay = 300;
+		VectorSet(dl->color, 1.6, 0.4, 0.4);	//uHexen2's coloured lights: red
+		S_StartSound (0, 0, cl_sfx_r_exp3, pos, NULL, 1, 1, 0, 0, 0);
+		break;
+	case TE_LAVASPLASH:
+		CLH2FX_LavaSplash (pos);
+		break;
+	case TE_TELEPORT:
+		CLH2FX_TeleportSplash (pos);
+		break;
+	}
+	return true;
+}
+#endif
+
 /*
 =================
 CL_ParseTEnt
@@ -1204,6 +1293,11 @@ void CL_ParseTEnt (void)
 		else
 			Con_Printf("  te_unknown_%i\n", type);
 	}
+
+#ifdef HEXEN2
+	if (CLH2FX_Enabled() && CLH2_ParseTEnt(type))
+		return;	//as uHexen2's
+#endif
 
 	switch (type)
 	{
@@ -2247,6 +2341,11 @@ void CL_ParseCustomTEnt(void)
 			VectorClear(info.dir);
 	}
 
+#ifdef HEXEN2
+	if (!strncmp(t->name, "h2part.ce_", 10) && CLH2FX_Native())
+		return;	//the server's particle-script version of a hexen2 effect, which it sends us as uHexen2's too
+#endif
+
 	if (t->netstyle & CTE_PERSISTANT)
 	{
 		if (info.id & 0x8000)
@@ -2428,6 +2527,13 @@ void CLNQ_ParseParticleEffect (void)
 	msgcount = MSG_ReadByte ();
 	color = MSG_ReadByte ();
 
+#ifdef HEXEN2
+	if (CLH2FX_Enabled())
+	{	//uHexen2's R_ParseParticleEffect (its blood ignores the colour)
+		CLH2FX_RunParticleEffect(org, dir, color, (msgcount == 255)?1024:msgcount);
+		return;
+	}
+#endif
 	if (msgcount == 255)
 	{
 		// treat as spriteless explosion (qtest/some mods require this)
@@ -2452,6 +2558,11 @@ void CL_ParseParticleEffect2 (void)
 	msgcount = MSG_ReadByte ();
 	effect = MSG_ReadByte ();
 
+#ifdef HEXEN2
+	if (CLH2FX_Enabled())
+		CLH2FX_RunParticleEffect2 (org, dmin, dmax, color, effect, msgcount);
+	else
+#endif
 	P_RunParticleEffect2 (org, dmin, dmax, color, effect, msgcount);
 }
 void CL_ParseParticleEffect3 (void)
@@ -2467,6 +2578,11 @@ void CL_ParseParticleEffect3 (void)
 	msgcount = MSG_ReadByte ();
 	effect = MSG_ReadByte ();
 
+#ifdef HEXEN2
+	if (CLH2FX_Enabled())
+		CLH2FX_RunParticleEffect3 (org, box, color, effect, msgcount);
+	else
+#endif
 	P_RunParticleEffect3 (org, box, color, effect, msgcount);
 }
 void CL_ParseParticleEffect4 (void)
@@ -2482,6 +2598,16 @@ void CL_ParseParticleEffect4 (void)
 	msgcount = MSG_ReadByte ();
 	effect = MSG_ReadByte ();
 
+#ifdef HEXEN2
+	if (CLH2FX_Enabled())
+	{
+		if (effect == 255)	//FTE's particleexplosion, from a server without PEXT2_H2EFFECTS: its colour and radius swapped
+			CLH2FX_ColoredParticleExplosion (org, radius, color, msgcount);
+		else
+			CLH2FX_RunParticleEffect4 (org, radius, color, effect, msgcount);
+	}
+	else
+#endif
 	P_RunParticleEffect4 (org, radius, color, effect, msgcount);
 }
 
@@ -3117,6 +3243,17 @@ void CL_UpdateBeams (float frametime)
 				pitch += 360;
 		}
 
+#ifdef HEXEN2
+		if ((type == &beamtypes[BT_H2SUNSTAFF1] || type == &beamtypes[BT_H2SUNSTAFF2]) && CLH2FX_Enabled())
+		{	//uHexen2: the sun staff's stream leaves particles along it every 0.2 seconds (and no scripted ones)
+			if (b->h2trailtime + 0.2 < cl.time || b->h2trailtime > cl.time)
+			{
+				b->h2trailtime = cl.time;
+				CLH2FX_SunStaffTrail(org, b->end);
+			}
+		}
+		else
+#endif
 		if (ruleset_allow_particle_lightning.ival || !type->modelname)
 			if (type->ef_beam >= 0 && !P_ParticleTrail(org, b->end, type->ef_beam, frametime, b->entity, NULL, &b->trailstate))
 				continue;
@@ -3369,4 +3506,7 @@ void CL_UpdateTEnts (void)
 	CL_UpdateBeams (frametime);
 	CL_UpdateExplosions (frametime);
 	CL_RunPCustomTEnts ();
+#ifdef HEXEN2
+	CLH2FX_AddEntities ();	//uHexen2's effects and particles
+#endif
 }

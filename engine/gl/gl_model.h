@@ -229,6 +229,7 @@ m*_t structures are in-memory
 #define	DPEF_STARDUST			(1<<11)	//'showering sparks'
 #define	EF_NOSHADOW		 		(1<<12)	//doesn't cast a shadow
 #define	EF_NODEPTHTEST			(1<<13)	//shows through walls.
+#define	EF_H2DARKFIELD			(1<<14)	//hexen2's EF_DARKFIELD (32, additive here): particles about it (DP's unused 'selectable'). Set by the server for hexen2's progs.
 #define		DPEF_SELECTABLE_		(1<<14)	//highlights when prydoncursored
 #define		DPEF_DOUBLESIDED_		(1<<15)	//disables culling
 #define		DPEF_NOSELFSHADOW_		(1<<16)	//doesn't cast shadows on any noselfshadow entities.

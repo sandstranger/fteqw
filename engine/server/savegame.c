@@ -202,6 +202,13 @@ pbool PDECL SV_ExtendedSaveData(pubprogfuncs_t *progfuncs, void *loadctx, const 
 			loadinfo->players[0].parm[idx-1].f = atof(token);
 		}
 	}
+#ifdef HEXEN2
+	else if (!strcmp(token, "h2effect"))
+	{	//h2effect idx type expiretime parms... (a hexen2 effect still running, as uHexen2 saves them)
+		if (!SVH2FX_LoadEffect(&l))
+			return false;
+	}
+#endif
 	//strbuffer+hashtable+etc junk
 	else if (PR_Common_LoadGame(svprogfuncs, token, &l))
 		;
@@ -1238,6 +1245,10 @@ void SV_SaveLevelCache(const char *savedir, qboolean dontharmgame)
 #endif
 
 			PR_Common_SaveGame(f, svprogfuncs, false);//, version >= CACHEGAME_VERSION_BINARY);
+#ifdef HEXEN2
+			if (progstype == PROG_H2)
+				SVH2FX_SaveEffects(f);	//rain, fountains etc are started by the map's entities when it loads, and not again
+#endif
 
 			//FIXME: string buffers
 			//FIXME: hash tables

@@ -6499,6 +6499,23 @@ void COM_DestroyWorkerThread(void)
 	while(COM_DoWork(WG_MAIN, false))
 		;
 
+	/*
+	Workers started again just before this (COM_WorkerUnlock, as the filesystem shut down) may not have counted
+	themselves live yet, nor even locked the condition, so the sync above didn't wait for them: they'd then lock the
+	condition after it's gone (a crash on quit, now and then). Each sees WR_DIE before it would sleep, and posts its
+	own clean-up to the main thread as it stops: wait for all of them.
+	*/
+	for (;;)
+	{
+		for (i = 0; i < WORKERTHREADS; i++)
+			if (com_worker[i].thread)
+				break;
+		if (i == WORKERTHREADS)
+			break;
+		if (!COM_DoWork(WG_MAIN, false))
+			Sys_Sleep(0.001);
+	}
+
 	for (i = 0; i < WG_COUNT; i++)
 	{
 		if (com_workercondition[i])

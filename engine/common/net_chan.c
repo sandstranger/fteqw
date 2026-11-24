@@ -292,6 +292,10 @@ unsigned int Net_PextMask(unsigned int protover, qboolean fornq)
 
 		mask |= PEXT2_STUNAWARE;
 
+#ifdef HEXEN2
+		mask |= PEXT2_H2EFFECTS;	//uHexen2's effects. not for nq (the bit is masked out just below)
+#endif
+
 		if (fornq)
 		{
 			//only ones that are tested

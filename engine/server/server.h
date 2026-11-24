@@ -1418,6 +1418,19 @@ void VARGS SV_Multicast (vec3_t origin, multicast_t to);
 void SV_MulticastProtExt(vec3_t origin, multicast_t to, int dimension_mask, int with, int without);
 void SV_MulticastCB(vec3_t origin, multicast_t to, const char *reliableinfokey, int dimension_mask, void (*callback)(client_t *cl, sizebuf_t *msg, void *ctx), void *ctx);
 
+#ifdef HEXEN2
+//sv_h2fx.c: uHexen2's effects list, updatesoundpos, particleexplosion and rain_go, for PEXT2_H2EFFECTS clients
+void SVH2FX_Clear(void);
+int SVH2FX_StartEffect(pubprogfuncs_t *pf, struct globalvars_s *globals);
+void SVH2FX_EndEffect(int idx);
+void SVH2FX_SendEffects(client_t *cl);
+void SVH2FX_SaveEffects(vfsfile_t *f);
+qboolean SVH2FX_LoadEffect(const char **line);
+void SVH2FX_UpdateSoundPos(pubprogfuncs_t *pf, edict_t *ent, int channel);
+void SVH2FX_ParticleExplosion(float *org, int color, int radius, int count, void (*legacy)(sizebuf_t *msg, void *ctx), void *legacyctx);
+void SVH2FX_RainGo(float *min, float *max, float *size, float *dir, int color, int count, void (*legacy)(sizebuf_t *msg, void *ctx), void *legacyctx);
+#endif
+
 void SV_StartSound (int ent, vec3_t origin, float *velocity, int seenmask, int channel, const char *sample, int volume, float attenuation, float pitchadj, float timeofs, unsigned int flags);
 void QDECL SVQ1_StartSound (vec_t *origin, wedict_t *entity, int channel, const char *sample, int volume, float attenuation, float pitchadj, float timeofs, unsigned int chflags);
 void SV_PrintToClient(client_t *cl, int level, const char *string);

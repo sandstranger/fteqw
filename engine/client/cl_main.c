@@ -2412,6 +2412,7 @@ void CL_ClearState (qboolean gamestart)
 #ifdef HEXEN2
 	CLH2_ResetHUD();			//no inventory picked up yet
 	CLH2_ClearCenterString();	//nor the last map's plaque
+	CLH2FX_ClearState();		//nor effects or particles
 #endif
 
 	/*FTESurf Patch 202: throw away any open input journal, WITHOUT writing it.  This
@@ -6190,6 +6191,9 @@ void CL_Init (void)
 
 	CL_InitInput ();
 	CL_InitTEnts ();
+#ifdef HEXEN2
+	CLH2FX_Init ();
+#endif
 	CL_InitPrediction ();
 	CL_InitCam ();
 	CL_InitDlights();

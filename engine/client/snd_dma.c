@@ -3274,6 +3274,32 @@ void S_StopSound(int entnum, int entchannel)
 	S_UnlockMixer();
 }
 
+//hexen2's updatesoundpos (uHexen2's S_UpdateSoundPos): the sound playing on the entity's channel is now there
+void S_UpdateSoundPos(int entnum, int entchannel, vec3_t origin)
+{
+	soundcardinfo_t *sc;
+	int i;
+	S_LockMixer();
+	for (sc = sndcardinfo; sc; sc = sc->next)
+	{
+		for (i = DYNAMIC_FIRST; i < sc->total_chans; i++)
+		{
+			channel_t *ch = &sc->channel[i];
+			if (ch->sfx && ch->entnum == entnum && ch->entchannel == entchannel)
+			{
+				VectorCopy(origin, ch->origin);
+				if (sc->ChannelUpdate)
+				{	//the mixer itself spatialises every channel each update
+					SND_Spatialize(sc, ch);
+					sc->ChannelUpdate(sc, ch, CUR_SPACIALISEONLY);
+				}
+				break;
+			}
+		}
+	}
+	S_UnlockMixer();
+}
+
 void S_StopAllSounds(qboolean clear)
 {
 	int		i;

@@ -6779,6 +6779,10 @@ void CL_LinkPacketEntities (void)
 			dl->flags |= LFLAG_LIGHTMAP;
 			dl->corona = 0;
 		}
+#ifdef HEXEN2
+		if (!(r_refdef.flags & RDF_WORLDONLY) && (state->effects & EF_H2DARKFIELD) && CLH2FX_Enabled())
+			CLH2FX_DarkField(ent->origin);	//hexen2's dark field: particles, as uHexen2's
+#endif
 		if (!(r_refdef.flags & RDF_WORLDONLY) && (state->lightpflags & (PFLAGS_FULLDYNAMIC|PFLAGS_CORONA)) && ((state->lightpflags&PFLAGS_FULLDYNAMIC)||state->light[3]))
 		{
 			vec3_t colour;
@@ -7246,6 +7250,11 @@ void CL_LinkPacketEntities (void)
 				break;
 			}
 		}
+
+#ifdef HEXEN2
+		if (!state->u.q1.traileffectnum && CLH2FX_Enabled() && CLH2FX_ModelTrail(state->number, modelflags, old_origin, ent->origin))
+			continue;	//hexen2's trails (and lights) as uHexen2's
+#endif
 
 		//and emit it
 //		if (lasttime != cl.currentpacktime)
@@ -8169,6 +8178,17 @@ void CL_LinkPlayers (void)
 			dl->flags |= LFLAG_LIGHTMAP;
 			dl->corona = 0;
 		}
+#ifdef HEXEN2
+		if ((state->effects & EF_H2DARKFIELD) && CLH2FX_Enabled())
+		{	//hexen2's dark field: particles, as uHexen2's
+			vec3_t org;
+			VectorCopy(state->origin, org);
+			for (pnum = 0; pnum < cl.splitclients; pnum++)
+				if (cl.playerview[pnum].playernum == j)
+					VectorCopy(cl.playerview[pnum].simorg, org);
+			CLH2FX_DarkField(org);
+		}
+#endif
 
 		if (state->modelindex < 1)
 			continue;

@@ -3090,6 +3090,10 @@ void SV_Begin_f (void)
 	{	//tell the gamecode they're ready
 		SV_Begin_Core(split);
 	}
+#ifdef HEXEN2
+	if (progstype == PROG_H2)
+		SVH2FX_SendEffects(host_client);	//hexen2's effects still running (rain, fountains...), as uHexen2's spawn
+#endif
 
 	// clear the net statistics, because connecting gives a bogus picture
 	host_client->netchan.frame_latency = 0;

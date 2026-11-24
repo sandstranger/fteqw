@@ -181,11 +181,11 @@ static const char *svc_qwstrings[] =
 	"svcfte_csqcentities_sized",	//92
 	"NEW PROTOCOL(93)",
 	"NEW PROTOCOL(94)",
-	"NEW PROTOCOL(95)",
-	"NEW PROTOCOL(96)",
-	"NEW PROTOCOL(97)",
-	"NEW PROTOCOL(98)",
-	"NEW PROTOCOL(99)",
+	"svcfte_h2starteffect",		//95
+	"svcfte_h2endeffect",		//96
+	"svcfte_h2soundpos",		//97
+	"svcfte_h2particleexplosion",	//98
+	"svcfte_h2raineffect",		//99
 	"NEW PROTOCOL(100)",
 	"NEW PROTOCOL(101)",
 	"NEW PROTOCOL(102)",
@@ -8880,6 +8880,23 @@ void CLQW_ParseServerMessage (void)
 		case svcfte_particle4:
 			CL_ParseParticleEffect4 ();
 			break;
+#ifdef HEXEN2
+		case svcfte_h2starteffect:	//PEXT2_H2EFFECTS: uHexen2's messages
+			CLH2FX_ParseStartEffect(true);
+			break;
+		case svcfte_h2endeffect:
+			CLH2FX_ParseEndEffect();
+			break;
+		case svcfte_h2soundpos:
+			CLH2FX_ParseSoundPos();
+			break;
+		case svcfte_h2particleexplosion:
+			CLH2FX_ParseParticleExplosion();
+			break;
+		case svcfte_h2raineffect:
+			CLH2FX_ParseRainEffect();
+			break;
+#endif
 
 		case svc_killedmonster:
 			//fixme: update all player stats
@@ -10032,110 +10049,11 @@ static qboolean CLH2_ParseServerSubMessage (int cmd)
 	case svch2_particle4:
 		CL_ParseParticleEffect4 ();
 		break;
-	case svch2_starteffect:
-		i = MSG_ReadByte(); //handle
-		j = MSG_ReadByte();	//type
-		switch(j)
-		{
-		case 1 /*ce_rain*/:
-			MSG_ReadCoord();
-			MSG_ReadCoord();
-			MSG_ReadCoord();
-			MSG_ReadCoord();
-			MSG_ReadCoord();
-			MSG_ReadCoord();
-			MSG_ReadCoord();
-			MSG_ReadCoord();
-			MSG_ReadCoord();
-			MSG_ReadCoord();
-			MSG_ReadCoord();
-			MSG_ReadCoord();
-			MSG_ReadShort();
-			MSG_ReadShort();
-			MSG_ReadFloat();
-			break;
-		case 4/*ce_white_smoke*/:
-			MSG_ReadCoord();
-			MSG_ReadCoord();
-			MSG_ReadCoord();
-			MSG_ReadFloat();
-			MSG_ReadFloat();
-			MSG_ReadFloat();
-			MSG_ReadFloat();
-			MSG_ReadFloat();
-			break;
-		case 5/*ce_bluespark*/:
-		case 6/*ce_yellowspark*/:
-		case 9/*ce_sm_white_flash*/:
-		case 13/*ce_sm_blue_flash*/:
-		case 15/*ce_sm_explosion*/:
-		case 16/*ce_lg_explosion*/:
-		case 17/*ce_floor_explosion*/:
-		case 19/*ce_blue_explosion*/:
-		case 32/*ce_xbow_explosion*/:
-		case 33/*ce_new_explosion*/:
-		case 34/*ce_magic_missile_explosion*/:
-		case 38/*ce_teleporterpuffs*/:
-			MSG_ReadCoord();
-			MSG_ReadCoord();
-			MSG_ReadCoord();
-			break;
-		case 39/*ce_teleporterbody*/:
-			MSG_ReadCoord();
-			MSG_ReadCoord();
-			MSG_ReadCoord();
-			MSG_ReadFloat();
-			MSG_ReadFloat();
-			MSG_ReadFloat();
-			MSG_ReadFloat();
-			break;
-		case 40/*ce_boneshard*/:
-			MSG_ReadCoord();
-			MSG_ReadCoord();
-			MSG_ReadCoord();
-
-			MSG_ReadFloat();
-			MSG_ReadFloat();
-			MSG_ReadFloat();
-
-			MSG_ReadFloat();
-			MSG_ReadFloat();
-			MSG_ReadFloat();
-
-			MSG_ReadFloat();
-			MSG_ReadFloat();
-			MSG_ReadFloat();
-			break;
-		case 43/*ce_snow*/:
-			MSG_ReadCoord();
-			MSG_ReadCoord();
-			MSG_ReadCoord();
-			MSG_ReadCoord();
-			MSG_ReadCoord();
-			MSG_ReadCoord();
-			MSG_ReadByte();
-			MSG_ReadCoord();
-			MSG_ReadCoord();
-			MSG_ReadCoord();
-			MSG_ReadByte();
-			break;
-		case 55/*ce_chunk*/:
-			MSG_ReadCoord();
-			MSG_ReadCoord();
-			MSG_ReadCoord();
-			MSG_ReadByte();
-			MSG_ReadCoord();
-			MSG_ReadCoord();
-			MSG_ReadCoord();
-			MSG_ReadByte();
-			break;
-		default:
-			Host_EndGame ("svch2_starteffect: unknown type %i", j);
-			return false;
-		}
+	case svch2_starteffect:	//uHexen2's own effects (clh2_fx.c), the mission pack's protocol (with the smoke frame)
+		CLH2FX_ParseStartEffect(true);
 		break;
 	case svch2_endeffect:
-		MSG_ReadByte();	//handle
+		CLH2FX_ParseEndEffect();
 		break;
 	case svch2_updateclass:
 		u = MSG_ReadPlayer();
@@ -10237,14 +10155,25 @@ static qboolean CLH2_ParseServerSubMessage (int cmd)
 		MSG_ReadAngle();
 		MSG_ReadAngle();
 		break;
+	case svch2_particleexplosion:	//the same as FTE's svcfte_h2particleexplosion
+		CLH2FX_ParseParticleExplosion();
+		break;
+	case svch2_soundpos:
+		{	//[short] ent<<3|channel [coord3] origin
+			vec3_t pos;
+			u = MSG_ReadShort() & 0xffff;
+			pos[0] = MSG_ReadCoord();
+			pos[1] = MSG_ReadCoord();
+			pos[2] = MSG_ReadCoord();
+			S_UpdateSoundPos(u>>3, u&7, pos);
+		}
+		break;
 	case svch2_cutscene:
 	case svch2_setviewflags:
 	case svch2_clearviewflags:
 	case svch2_plaque:
-	case svch2_particleexplosion:
 	case svch2_setviewtint:
 	case svch2_updatekoth:
-	case svch2_soundpos:
 		//we're only aiming for demo compat, so we ignore this tat.
 		Host_EndGame ("CLH2_ParseServerMessage: Unimplemented server message (%i@%i)", cmd, MSG_GetReadCount()-1);
 		return false;

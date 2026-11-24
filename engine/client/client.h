@@ -1868,6 +1868,29 @@ void CLH2_DrawHUD(playerview_t *pv);
 qboolean CLH2_CenterPrint(int pnum, const char *str);		//Hexen II's centerprints, plaques, intermissions
 void CLH2_DrawCenterString(vrect_t *rect);
 void CLH2_ClearCenterString(void);
+
+//uHexen2's effects and particles (clh2_fx.c)
+void CLH2FX_Init(void);
+qboolean CLH2FX_Enabled(void);								//Hexen II's particles and trails are uHexen2's
+qboolean CLH2FX_Native(void);								//and so are the server's effects: its particle-script versions are left be
+void CLH2FX_ClearState(void);
+void CLH2FX_ParseStartEffect(qboolean hasframe);
+void CLH2FX_ParseEndEffect(void);
+void CLH2FX_ParseParticleExplosion(void);
+void CLH2FX_ParseRainEffect(void);
+void CLH2FX_ParseSoundPos(void);
+void CLH2FX_RunParticleEffect(vec3_t org, vec3_t dir, int color, int count);
+void CLH2FX_RunParticleEffect2(vec3_t org, vec3_t dmin, vec3_t dmax, int color, int effect, int count);
+void CLH2FX_RunParticleEffect3(vec3_t org, vec3_t box, int color, int effect, int count);
+void CLH2FX_RunParticleEffect4(vec3_t org, float radius, int color, int effect, int count);
+void CLH2FX_ColoredParticleExplosion(vec3_t org, int color, int radius, int count);
+void CLH2FX_ParticleExplosion(vec3_t org);
+void CLH2FX_LavaSplash(vec3_t org);
+void CLH2FX_TeleportSplash(vec3_t org);
+void CLH2FX_SunStaffTrail(vec3_t source, vec3_t dest);
+void CLH2FX_DarkField(vec3_t org);
+qboolean CLH2FX_ModelTrail(int entnum, unsigned int modelflags, vec3_t oldorg, vec3_t origin);
+void CLH2FX_AddEntities(void);
 #endif
 void CLQ2_InitMenus(void);					//yquake2's menus (clq2_menu.c) take over the menu commands
 qboolean CLQ2_OpenMenu(const char *command);	//menu_main etc.; false when Quake 2 is not the game

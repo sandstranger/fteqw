@@ -149,8 +149,14 @@ Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
 //The encoder ALSO saturates now, so a client or demo without this bit degrades to
 //a clamp at 4095.875 instead of inverting.
 #define PEXT2_BIGVELOCITY			0x00004000	//32-bit 1/8-unit velocity instead of 16-bit
+//Hexen II's own effects, as uHexen2 sends and draws them: the server's list of starteffect/endeffect effects (in
+//svcfte_h2starteffect/svcfte_h2endeffect, uHexen2's svc_start_effect/svc_end_effect), updatesoundpos
+//(svcfte_h2soundpos), particleexplosion (svcfte_h2particleexplosion) and rain_go (svcfte_h2raineffect). The server
+//still sends its particle-script versions of the effects (custom temp entities) too, which such a client leaves be.
+//QW protocol only.
+#define PEXT2_H2EFFECTS				0x00008000
 #define PEXT2_SERVERADVERTISE		~0u
-#define PEXT2_CLIENTSUPPORT			(PEXT2_PRYDONCURSOR|PEXT2_VOICECHAT|PEXT2_SETANGLEDELTA|PEXT2_REPLACEMENTDELTAS|PEXT2_MAXPLAYERS|PEXT2_PREDINFO|PEXT2_NEWSIZEENCODING|PEXT2_INFOBLOBS|PEXT2_STUNAWARE|PEXT2_VRINPUTS|PEXT2_LERPTIME|PEXT2_BONECONTROLS|PEXT2_BODYGROUP|PEXT2_FRAMERATE|PEXT2_BIGVELOCITY) //warn if we see bits not listed here.
+#define PEXT2_CLIENTSUPPORT			(PEXT2_PRYDONCURSOR|PEXT2_VOICECHAT|PEXT2_SETANGLEDELTA|PEXT2_REPLACEMENTDELTAS|PEXT2_MAXPLAYERS|PEXT2_PREDINFO|PEXT2_NEWSIZEENCODING|PEXT2_INFOBLOBS|PEXT2_STUNAWARE|PEXT2_VRINPUTS|PEXT2_LERPTIME|PEXT2_BONECONTROLS|PEXT2_BODYGROUP|PEXT2_FRAMERATE|PEXT2_BIGVELOCITY|PEXT2_H2EFFECTS) //warn if we see bits not listed here.
 #define PEXT2_DEPRECATEDORNEW		(PEXT2_INFOBLOBS|PEXT2_VRINPUTS|PEXT2_LERPTIME) //extensions that are outdated
 #define PEXT2_MVDSUPPORT			(PEXT2_CLIENTSUPPORT&~PEXT2_DEPRECATED&~PEXT2_STUNAWARE)	//pext2 extensions to use when recording mvds.
 
@@ -428,6 +434,12 @@ Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
 #define svcfte_csqcentities_sized	92	//entity lump for csqc (with size info)
 #define svcfte_setanglebase			93	//updates the base angle (and optionally locks the view, otherwise nudging it without race conditions.)
 #define svcfte_spawnstaticsound2	94	//*sigh*
+//PEXT2_H2EFFECTS, uHexen2's own messages:
+#define svcfte_h2starteffect		95	// [byte] index [byte] CE_ type, then the effect's fields (uHexen2's svc_start_effect, with the mission pack's smoke frame)
+#define svcfte_h2endeffect			96	// [byte] index
+#define svcfte_h2soundpos			97	// [short] entnum [byte] channel [coord3] origin: moves a playing sound (uHexen2's svc_sound_update_pos)
+#define svcfte_h2particleexplosion	98	// [coord3] origin [short] colour [short] radius [short] count
+#define svcfte_h2raineffect			99	// [coord3] origin [coord3] size [angle] x dir [angle] y dir [short] colour [short] count
 
 //fitz svcs
 #define svcfitz_skybox				37

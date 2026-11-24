@@ -201,6 +201,7 @@ void S_StartSound (int entnum, int entchannel, sfx_t *sfx, vec3_t origin, vec3_t
 float S_UpdateSound(int entnum, int entchannel, sfx_t *sfx, vec3_t origin, vec3_t velocity, float fvol, float attenuation, float timeofs, float pitchadj, unsigned int flags);
 void S_StaticSound (sfx_t *sfx, vec3_t origin, float vol, float attenuation);
 void S_StopSound (int entnum, int entchannel);
+void S_UpdateSoundPos(int entnum, int entchannel, vec3_t origin);	//a sound playing on an entity's channel moves there (hexen2's updatesoundpos)
 void S_StopAllSounds(qboolean clear);
 void S_UpdateListener(int seat, int entnum, vec3_t origin, vec3_t forward, vec3_t right, vec3_t up, size_t reverbtype, vec3_t velocity);
 qboolean S_UpdateReverb(size_t reverbtype, void *reverb, size_t reverbsize);

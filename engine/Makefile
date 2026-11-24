@@ -782,6 +782,7 @@ CLIENT_OBJS = \
 	clq2_ents.o	\
 	clq2_hud.o	\
 	clh2_hud.o	\
+	clh2_fx.o	\
 	clq2_fx.o	\
 	cl_effects.o	\
 	cl_tempentities.o	\
@@ -954,6 +955,7 @@ SERVER_OBJS = 		\
 	savegame.o		\
 	svq2_ents.o 	\
 	svq2_game.o 	\
+	sv_h2fx.o		\
 	webgen.o		\
 	ftpserver.o		\
 	httpserver.o
