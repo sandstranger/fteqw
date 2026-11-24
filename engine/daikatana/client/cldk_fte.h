@@ -66,6 +66,9 @@ void		*CLDKF_RegisterSound(const char *name);
 void		CLDKF_StartSound(void *sfx, const float *origin, int entnum, int channel, float volume, float attenuation, float timeofs);
 float		CLDKF_Trace(const float *start, const float *end, int passent, int mask, float *endpos, float *normal, int *entnum, int *contents);
 int			CLDKF_PointContents(const float *point);
+//the world and the frame's solid entities but passent's (its crosshair's aim); entnum: -1 nothing, 0 the world
+float		CLDKF_TraceShot(const float *start, const float *mins, const float *maxs, const float *end, int passent, float *endpos, int *entnum, int *startsolid);
+void		CLDKF_ViewFov(float *fov_x, float *fov_y);	//the view's
 int			CLDKF_EntityState(int entnum, float *origin, float *angles, float *lerporigin, int *modelindex, int *frame);
 //the last frame's entities: what Quake II's entity state has of Daikatana's (its server's as they are)
 typedef struct

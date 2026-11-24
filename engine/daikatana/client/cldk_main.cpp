@@ -641,10 +641,118 @@ extern "C" void CLDK_ParseMessage(const unsigned char *data, int length)
 	}
 }
 
+/*
+=====================================================================
+its crosshair (cl_view.cpp's SCR_DrawCrosshair): crosshair's pics (cldk_menu_sys.cpp's crosshairList), the one for
+what's aimed at (V_CheckAutoAim), at the middle of the view (the HUD's units, its pixels at 640x480)
+=====================================================================
+*/
+autoAim_t	autoAim;
+static int	crosshairregistered;
+
+static void V_CheckAutoAim(void)
+{
+	CVector end, shootpos, v;
+	float s[3], e[3], mn[3], mx[3], endpos[3], fovx, fovy, z, box;
+	int entnum, startsolid, i;
+	centity_t *cent;
+
+	autoAim.item = 0;
+	autoAim.xofs = autoAim.yofs = 0;
+	autoAim.ent = NULL;
+
+	box = CLDKF_CvarValue("autoaim", "0")?10:0;
+	VectorMA(cl.refdef.vieworg, cl.v_forward, 2000, end);
+	for (i = 0; i < 3; i++)
+	{
+		mn[i] = -box;
+		mx[i] = box;
+	}
+	s[0] = cl.refdef.vieworg.x;	s[1] = cl.refdef.vieworg.y;	s[2] = cl.refdef.vieworg.z;
+	e[0] = end.x;				e[1] = end.y;				e[2] = end.z;
+	CLDKF_TraceShot(s, mn, mx, e, cl.playernum+1, endpos, &entnum, &startsolid);
+	if (entnum <= 0 || entnum >= MAX_EDICTS || startsolid)
+		return;
+	cent = &cl_entities[entnum];
+	if (!(cent->current.flags & SFL_TARGETABLE))
+		return;
+	autoAim.ent = &cent->current;
+
+	if (box)
+	{	//only alter its position if autoaim's on: onto what it'd aim at
+		shootpos = cent->lerp_origin;
+		shootpos.z += cent->current.maxs.z * 0.25;
+		v = shootpos - cl.refdef.vieworg;
+		z = DotProduct(v, cl.v_forward);
+		CLDKF_ViewFov(&fovx, &fovy);
+		if (z < 1 || fovx <= 0 || fovy <= 0)
+			return;
+		autoAim.xofs = DotProduct(v, cl.v_right) / (z * tan(fovx * M_PI / 360)) * viddef.width / 2;
+		autoAim.yofs = -DotProduct(v, cl.v_up) / (z * tan(fovy * M_PI / 360)) * viddef.height / 2;
+	}
+}
+
+static void SCR_DrawCrosshair(void)
+{
+	crosshair_t *ch1, *ch2 = NULL;
+	DRAWSTRUCT ds;
+	int cnum = (int)CLDKF_CvarValue("crosshair", "2"), i;
+
+	//its cinematics, cameras (letterboxed): none
+	if (cl.refdef.rdflags & RDF_LETTERBOX)
+		return;
+	//only certain weapons have one (its server's svc_crosshair)
+	if (!CLDKF_CvarValue("cv_crosshair_enabled", "1") || cnum <= 0)
+		return;
+	if (cl.frame.playerstate.stats[STAT_HEALTH] <= 0)
+		return;
+	if (cnum > MAX_CROSSHAIRS)
+		cnum = MAX_CROSSHAIRS;
+	if (cnum != crosshairregistered)
+	{	//SCR_RegisterCrosshair
+		crosshairregistered = cnum;
+		for (i = 0; i < MAX_CROSSHAIR_TYPES; i++)
+		{
+			crosshair_t *c = &crosshairList[cnum-1][i];
+			if (c->pic[0])
+				re.RegisterPic(c->pic, &c->width, &c->height, RESOURCE_GLOBAL);
+		}
+	}
+
+	V_CheckAutoAim();
+	cnum--;
+	if (autoAim.ent)
+	{
+		ch2 = &crosshairList[cnum][CROSSHAIR_TARGET];
+		ch1 = &crosshairList[cnum][CROSSHAIR_CENTER];
+	}
+	else if (autoAim.item)
+		ch1 = &crosshairList[cnum][CROSSHAIR_ITEM];
+	else
+		ch1 = &crosshairList[cnum][CROSSHAIR_NOTARGET];
+	if (!ch1->pic[0] || !ch1->width)
+		return;
+
+	memset(&ds, 0, sizeof(ds));
+	ds.nFlags = DSFLAG_BLEND | DSFLAG_NO_N64FILTER;
+	ds.pImage = re.RegisterPic(ch1->pic, NULL, NULL, RESOURCE_GLOBAL);
+	ds.nXPos = ((viddef.width - ch1->width) >> 1) + (int)autoAim.xofs;
+	ds.nYPos = ((viddef.height - ch1->height) >> 1) + (int)autoAim.yofs;
+	re.DrawPic(ds);
+	if (ch2 && ch2->pic[0] && ch2->width)
+	{
+		ds.pImage = re.RegisterPic(ch2->pic, NULL, NULL, RESOURCE_GLOBAL);
+		ds.nXPos = (viddef.width - ch2->width) >> 1;
+		ds.nYPos = (viddef.height - ch2->height) >> 1;
+		re.DrawPic(ds);
+	}
+}
+
 void CLDK_DrawHUDModels(void);	//cldk_icons.cpp
 extern "C" void CLDK_DrawHUD(void)
 {
 	CLDK_Frame();
+	SCR_DrawCrosshair();
 	CLDK_DrawHUDModels();	//(its renderer drew them with the scene, under the HUD)
 	SCR_DrawStats();
 	CL_Boost_Icons_Think();

@@ -698,6 +698,40 @@ static int CLDK_PMPointContents(const float *p)
 	VectorCopy(p, o);
 	return CLQ2_PMpointcontents(o);
 }
+//its client's CL_TraceBox with MASK_SHOT, as its crosshair aimed: the world and the frame's solid entities but passent
+float CLDKF_TraceShot(const float *start, const float *mins, const float *maxs, const float *end, int passent, float *endpos, int *entnum, int *startsolid)
+{
+	vec3_t s, mn, mx, e;
+	trace_t t;
+	int oldignore = predignoreentitynum;
+	VectorCopy(start, s);
+	VectorCopy(mins, mn);
+	VectorCopy(maxs, mx);
+	VectorCopy(end, e);
+	*entnum = -1;
+	*startsolid = false;
+	VectorCopy(end, endpos);
+	if (!cl.worldmodel)
+		return 1;
+	cl.worldmodel->funcs.NativeTrace(cl.worldmodel, 0, NULLFRAMESTATE, NULL, s, e, mn, mx, false, FTECONTENTS_SOLID|FTECONTENTS_WINDOW, &t);
+	if (t.fraction < 1)
+		t.ent = (struct edict_s *)1;
+	predignoreentitynum = passent;
+	CLQ2_ClipMoveToEntities(s, mn, mx, e, &t);
+	predignoreentitynum = oldignore;
+	VectorCopy(t.endpos, endpos);
+	*startsolid = t.startsolid;
+	if (t.ent == (struct edict_s *)1)
+		*entnum = 0;
+	else if (t.ent)
+		*entnum = ((entity_state_t *)t.ent)->number;
+	return t.fraction;
+}
+void CLDKF_ViewFov(float *fov_x, float *fov_y)
+{
+	*fov_x = r_refdef.fov_x;
+	*fov_y = r_refdef.fov_y;
+}
 static void CLDK_RunCommand(cldk_pmove_t *pm, const usercmd_t *cmd)
 {
 	int i;
