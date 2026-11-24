@@ -53,7 +53,7 @@ void		*CLDKF_RegisterModel(const char *name);
 void		*CLDKF_ModelForIndex(int modelindex);
 const char	*CLDKF_ModelPath(void *model);				//its file's
 void		CLDKF_AddEntity(void *model, const float *origin, const float *oldorigin, const float *angles, int frame, int oldframe,
-				float backlerp, int skinnum, float alpha, float scale, const float *rgb, unsigned int dkrenderfx);
+				float backlerp, int skinnum, void *skin, float alpha, float scale, const float *rgb, unsigned int dkrenderfx);	//skin: CLDKF_RegisterSkin's
 void		CLDKF_AddLight(const float *origin, float radius, float r, float g, float b);
 void		CLDKF_AddTriangles(void *shader, int numverts, const float *xyz, const float *st, const float *rgba);
 void		*CLDKF_RegisterParticleShader(void);
@@ -109,7 +109,9 @@ typedef struct
 } cldk_rentity_t;
 void		CLDKF_RenderView(float x, float y, float w, float h, float fov_x, float fov_y, const float *vieworg,
 				const float *viewangles, int num, const cldk_rentity_t *ents);
-void		*CLDKF_RegisterSkin(const char *image);		//an image as a model's skin
+void		*CLDKF_RegisterSkin(const char *image);		//an image as a model's skin (but its SRF_STATICSKIN surfaces')
+const char	*CLDKF_ImageName(int index);				//the server's image (configstring), or null
+const char	*CLDKF_PlayerSkinString(int player);		//its CS_PLAYERSKINS one ("name\model\skin\character"), or null
 
 //its player movement (the game's own pmove, dk_pmove.cpp), for FTE's client's prediction (cl_pred.c)
 typedef struct

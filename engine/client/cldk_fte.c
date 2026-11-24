@@ -18,6 +18,7 @@ static struct
 } cldkarea = {0, 0, 1, 640, 480};
 
 static void CLDK_MenuForce_f(void);
+static skinid_t CLDK_ModelSkin(model_t *mod, void *skin);
 static void CLDK_ToggleQuickConsole_f(void)
 {	//its small console (default_keys.cfg's `), FTE's
 	Cbuf_InsertText("toggleconsole\n", Cmd_ExecLevel, false);
@@ -179,6 +180,18 @@ const char *CLDKF_ModelName(int modelindex)
 		return cl.model_name[modelindex];
 	return "";
 }
+const char *CLDKF_ImageName(int index)
+{
+	if (index > 0 && index < countof(cl.image_name) && cl.image_name[index] && *cl.image_name[index])
+		return cl.image_name[index];
+	return NULL;
+}
+const char *CLDKF_PlayerSkinString(int player)
+{	//(cl_parse.c keeps them at the start of the general ones)
+	if (player >= 0 && player < Q2MAX_CLIENTS && player < countof(cl.configstring_general) && cl.configstring_general[player])
+		return cl.configstring_general[player];
+	return NULL;
+}
 void *CLDKF_LoadFile(const char *name, int *length)
 {
 	size_t len;
@@ -250,7 +263,7 @@ const char *CLDKF_ModelPath(void *model)
 #define DKRF_NODRAW			0x00080000
 #define DKRF_PARTICLEVOLUME	0x04000000
 void CLDKF_AddEntity(void *model, const float *origin, const float *oldorigin, const float *angles, int frame, int oldframe,
-	float backlerp, int skinnum, float alpha, float scale, const float *rgb, unsigned int dkrenderfx)
+	float backlerp, int skinnum, void *skin, float alpha, float scale, const float *rgb, unsigned int dkrenderfx)
 {
 	entity_t *ent;
 	if (!model || (dkrenderfx & (DKRF_NODRAW|DKRF_SPOTLIGHT|DKRF_PARTICLEVOLUME)))
@@ -272,6 +285,8 @@ void CLDKF_AddEntity(void *model, const float *origin, const float *oldorigin, c
 	ent->framestate.g[FS_REG].lerpweight[0] = 1-backlerp;
 	ent->framestate.g[FS_REG].lerpweight[1] = backlerp;
 	ent->skinnum = skinnum;
+	if (skin)
+		ent->customskin = CLDK_ModelSkin(model, skin);
 	ent->scale = (scale > 0)?scale:1;
 	if (rgb && (rgb[0] || rgb[1] || rgb[2]))
 		VectorCopy(rgb, ent->shaderRGBAf);
@@ -843,22 +858,71 @@ static void CLDK_DrawLetterbox(const vrect_t *area)
 	R2D_ImageColours(1, 1, 1, 1);
 }
 
-//an image as a model's skin (its menus' buttons'): a skin file replacing every surface's
+/*
+An image as a model's skin (its entities' with EF2_IMAGESKIN, its players', its menus' buttons'): its renderer put it
+on every surface of the model but those with SRF_STATICSKIN. The handle's the image's; the skin file's the model's
+with it (CLDK_ModelSkin), made from the dkm's surfaces as the model's drawn.
+*/
+#define DKSRF_STATICSKIN	0x00000080
+static char cldkskinimages[512][MAX_QPATH];
+static int cldknumskinimages;
 void *CLDKF_RegisterSkin(const char *image)
 {
-	static struct {char name[MAX_QPATH]; skinid_t id;} skins[64];
-	static int numskins;
 	int i;
 	if (!image || !*image)
 		return NULL;
-	for (i = 0; i < numskins; i++)
-		if (!strcmp(skins[i].name, image))
-			return (void *)(size_t)skins[i].id;
-	if (numskins == countof(skins))
+	for (i = 0; i < cldknumskinimages; i++)
+		if (!strcmp(cldkskinimages[i], image))
+			return (void *)(size_t)(i+1);
+	if (cldknumskinimages == countof(cldkskinimages))
 		return NULL;
-	Q_strncpyz(skins[numskins].name, image, sizeof(skins[numskins].name));
-	skins[numskins].id = Mod_ReadSkinFile(va("dkskin_%i.skin", numskins), va("replace \"\" \"%s\"", image));
-	return (void *)(size_t)skins[numskins++].id;
+	Q_strncpyz(cldkskinimages[cldknumskinimages], image, sizeof(cldkskinimages[0]));
+	return (void *)(size_t)++cldknumskinimages;
+}
+static const char *CLDK_SkinText(model_t *mod, const char *image)
+{
+	static char text[8192];
+	size_t len, o = 0;
+	qbyte *f = FS_LoadMallocFile(mod->name, &len);
+	int i, num, ofs;
+	Q_snprintfz(text, sizeof(text), "replace \"\" \"%s\"\n", image);	//(what's not a dkm: all of it)
+	if (f && len >= 4*22 && !memcmp(f, "DKMD", 4))
+	{	//dkmheader_t's num_surfaces, ofs_surfaces; dkmsurface_t's name[32], flags
+		num = LittleLong(((int *)f)[12]);
+		ofs = LittleLong(((int *)f)[18]);
+		*text = 0;
+		for (i = 0; i < num && ofs >= 0 && ofs + (i+1)*52 <= (int)len; i++)
+		{
+			const qbyte *s = f + ofs + i*52;
+			char name[33];
+			memcpy(name, s, 32);
+			name[32] = 0;
+			if (LittleLong(*(const int *)(s+32)) & DKSRF_STATICSKIN)
+				continue;
+			Q_snprintfz(text+o, sizeof(text)-o, "replace \"%s\" \"%s\"\n", name, image);
+			o += strlen(text+o);
+		}
+	}
+	if (f)
+		BZ_Free(f);
+	return text;
+}
+static skinid_t CLDK_ModelSkin(model_t *mod, void *skin)
+{
+	static struct {model_t *mod; int image; skinid_t id;} skins[512];
+	static int numskins;
+	int image = (int)(size_t)skin - 1, i;
+	if (!mod || image < 0 || image >= cldknumskinimages)
+		return 0;
+	for (i = 0; i < numskins; i++)
+		if (skins[i].mod == mod && skins[i].image == image)
+			return skins[i].id;
+	if (numskins == countof(skins))
+		return 0;
+	skins[numskins].mod = mod;
+	skins[numskins].image = image;
+	skins[numskins].id = Mod_ReadSkinFile(va("%s_dk%i.skin", mod->name, image), CLDK_SkinText(mod, cldkskinimages[image]));
+	return skins[numskins++].id;
 }
 //its re.RenderFrame with no world (its menus'), as clq2_menu.c's player preview
 void CLDKF_RenderView(float x, float y, float w, float h, float fov_x, float fov_y, const float *vieworg,
@@ -892,7 +956,7 @@ void CLDKF_RenderView(float x, float y, float w, float h, float fov_x, float fov
 		ent.framestate.g[FS_REG].frame[1] = e->oldframe;
 		ent.framestate.g[FS_REG].lerpweight[0] = 1 - e->backlerp;
 		ent.framestate.g[FS_REG].lerpweight[1] = e->backlerp;
-		ent.customskin = (skinid_t)(size_t)e->skin;
+		ent.customskin = CLDK_ModelSkin(e->model, e->skin);
 		ent.flags = RF_NOSHADOW | (e->fullbright?RF_FULLBRIGHT:0);
 		Vector4Set(ent.shaderRGBAf, e->rgb[0], e->rgb[1], e->rgb[2], bound(0, e->alpha, 1));
 		if (e->alpha < 1)

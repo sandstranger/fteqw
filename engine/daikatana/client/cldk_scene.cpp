@@ -172,7 +172,7 @@ void V_AddEntity(entity_t *ent)
 	float a[3] = {ent->angles.x, ent->angles.y, ent->angles.z};
 	float rgb[3] = {ent->color.x, ent->color.y, ent->color.z};
 	float scale = ent->render_scale.x;	//(FTE's are uniform)
-	CLDKF_AddEntity(ent->model, o, oo, a, ent->frame, ent->oldframe, ent->backlerp, ent->skinnum, ent->alpha, scale, rgb, ent->flags);
+	CLDKF_AddEntity(ent->model, o, oo, a, ent->frame, ent->oldframe, ent->backlerp, ent->skinnum, ent->skin, ent->alpha, scale, rgb, ent->flags);
 }
 void V_AddLight(CVector &org, float intensity, float r, float g, float b)
 {
@@ -315,6 +315,8 @@ each frame
 */
 static int		dkscene_initialised;
 static int		dkscene_registered;
+static char		dkimagenames[MAX_IMAGES][MAX_QPATH];	//the configstrings CLDK_ConfigStrings had last
+static char		dkclientinfos[MAX_CLIENTS][256];
 
 void CLDK_SceneReset(void)
 {
@@ -328,7 +330,65 @@ void CLDK_SceneReset(void)
 	CL_ClearTEnts();
 	memset(cl_entities, 0, sizeof(cl_entities));
 	CLDK_EntitiesReset();
+	memset(dkimagenames, 0, sizeof(dkimagenames));
+	memset(dkclientinfos, 0, sizeof(dkclientinfos));
+	memset(cl.image_precache, 0, sizeof(cl.image_precache));
+	memset(cl.clientinfo, 0, sizeof(cl.clientinfo));
 	dkscene_registered = false;
+}
+
+//cl_parse.cpp's CL_LoadClientinfo: "name\model\skin\character"
+static void CL_LoadClientinfo(clientinfo_t *ci, const char *s)
+{
+	char buf[512], *field[4] = {NULL, NULL, NULL, NULL}, *p;
+	int n = 0;
+	snprintf(buf, sizeof(buf), "%s", s);
+	for (p = buf, field[n++] = p; *p && n < 4; p++)
+		if (*p == '\\')
+		{
+			*p = 0;
+			field[n++] = p+1;
+		}
+	memset(ci, 0, sizeof(*ci));
+	snprintf(ci->name, sizeof(ci->name), "%s", field[0]);
+	if (!field[1] || !*field[1])
+		return;	//no skin specified
+	ci->model = re.RegisterModel(field[1], RESOURCE_EPISODE);
+	if (field[2] && *field[2])
+		ci->skin = re.RegisterSkin(field[2], RESOURCE_EPISODE);
+	ci->character = field[3]?atoi(field[3]):0;
+	if (ci->character < 0 || ci->character > 2)
+		ci->character = 0;	//Hiro
+}
+
+//what the server's configstrings were to its client: the images entities have as skins (EF2_IMAGESKIN), the
+//players' models and skins (CHARACTER_MODEL_SKINNUM's), as they change
+static void CLDK_ConfigStrings(void)
+{
+	int i;
+	for (i = 1; i < MAX_IMAGES; i++)
+	{
+		const char *name = CLDKF_ImageName(i);
+		if (!name)
+			name = "";
+		if (!strcmp(name, dkimagenames[i]))
+			continue;
+		snprintf(dkimagenames[i], sizeof(dkimagenames[i]), "%s", name);
+		cl.image_precache[i] = *name?re.RegisterSkin(dkimagenames[i], RESOURCE_LEVEL):NULL;
+	}
+	for (i = 0; i < MAX_CLIENTS; i++)
+	{
+		const char *s = CLDKF_PlayerSkinString(i);
+		if (!s)
+			s = "";
+		if (!strcmp(s, dkclientinfos[i]))
+			continue;
+		snprintf(dkclientinfos[i], sizeof(dkclientinfos[i]), "%s", s);
+		if (*s)
+			CL_LoadClientinfo(&cl.clientinfo[i], s);
+		else
+			memset(&cl.clientinfo[i], 0, sizeof(cl.clientinfo[i]));
+	}
 }
 
 //its client's frame state, from FTE's (cldk_ents.cpp has the entities)
@@ -337,6 +397,7 @@ static void CLDK_SceneFrame(void)
 	int i;
 	float org[3], ang[3];
 	int serverframe = CLDKF_ServerFrame();
+	CLDK_ConfigStrings();
 
 	cl.frame.serverframe = serverframe;
 	cl.frame.valid = true;

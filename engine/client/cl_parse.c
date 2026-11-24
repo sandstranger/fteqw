@@ -5580,6 +5580,11 @@ static void CLQ2_ParseClientinfo(int i, char *s)
 	InfoBuf_SetValueForKey(&player->userinfo, "model", model);
 	InfoBuf_SetValueForKey(&player->userinfo, "skin", skin);
 #else
+#if defined(Q2CLIENT) && defined(DAIKATANA)
+	if (CLDK_IsDaikatana())
+		;	//"name\model\skin\character": its own client has its models and skins (daikatana/client)
+	else
+#endif
 	InfoBuf_SetValueForKey(&player->userinfo, "skin", model);
 #endif
 	InfoBuf_SetValueForKey(&player->userinfo, "name", name);
@@ -5733,7 +5738,7 @@ parsemodelindex:
 		else if (cl.contentstage)
 			cl.model_precache[i] = Mod_ForName (cl.model_name[i], MLV_WARN);
 	}
-	else if (i >= Q2EXCS_SOUNDS && i < Q2EXCS_SOUNDS+Q2MAX_SOUNDS)
+	else if (i >= Q2EXCS_SOUNDS && i < Q2EXCS_SOUNDS+Q2EXMAX_SOUNDS)
 	{
 		i-= Q2EXCS_SOUNDS;
 parsesoundindex:
@@ -5745,7 +5750,7 @@ parsesoundindex:
 		if (cl.contentstage)
 			cl.sound_precache[i] = S_PrecacheSound (s);
 	}
-	else if (i >= Q2EXCS_IMAGES && i < Q2EXCS_IMAGES+Q2MAX_IMAGES)
+	else if (i >= Q2EXCS_IMAGES && i < Q2EXCS_IMAGES+Q2EXMAX_IMAGES)
 	{
 		i -= Q2EXCS_IMAGES;
 		if ((unsigned int)i >= countof(cl.image_name))
@@ -6486,6 +6491,15 @@ void CL_NewTranslation (int slot)
 
 	player = &cl.players[slot];
 
+#if defined(Q2CLIENT) && defined(DAIKATANA)
+	if (cls.protocol == CP_QUAKE2 && CLDK_IsDaikatana())
+	{	//its own client has its players' models and skins (daikatana/client)
+		player->qwskin = NULL;
+		player->skinid = 0;
+		player->model = NULL;
+		return;
+	}
+#endif
 	if (cls.protocol == CP_QUAKE2)
 	{
 		char *mod, *skin, *dogtag;
