@@ -29,6 +29,7 @@ cvar_t	cl_lerp_smooth = CVARD("cl_lerp_smooth", "2", "If 2, will act as 1 when p
 static cvar_t	cl_lerp_driftbias = CVARD("cl_lerp_driftbias", "0", "Additional bias, can be set to a negative value to hold interpolation in the past.");
 static cvar_t	cl_lerp_driftfrac = CVARD("cl_lerp_driftfrac", "0", "Proportion of the latest time vs the older time to favour drifting towards.");
 cvar_t	cl_nopred = CVARD("cl_nopred","0", "Disables clientside movement prediction.");
+static cvar_t	cl_showmiss = CVARD("cl_showmiss","0", "Quake II: print where the server's player position differs from what was predicted for it.");
 static cvar_t cl_source_practice_lerp = CVARD("cl_source_practice_lerp", "1", "Blend the slow-practice camera across completed authoritative Source poses, with one scaled physics tick of presentation delay. Leaves shared body state, physics, timers and eligibility unchanged. 0 restores the classic view.");
 /*FTESurf Patch 269.  The instrument that found the standing-still velocity
   flicker.  CSQC's hud_veltrace can see that pmove_vel moves between rendered
@@ -189,6 +190,7 @@ extern float	pm_airaccelerate;
 extern usercmd_t cl_pendingcmd[MAX_SPLITS];
 
 #ifdef Q2CLIENT
+#include "../server/q2rr_api.h"
 #define	MAX_PARSE_ENTITIES	1024
 extern entity_state_t	clq2_parse_entities[MAX_PARSE_ENTITIES];
 
@@ -218,9 +220,9 @@ CL_CheckPredictionError
 void CLQ2_CheckPredictionError (void)
 {
 	int		frame;
-	int		delta[3];
+	vec3_t	delta, org;
 	int		i;
-	int		len;
+	float	len;
 	int		seat;
 	q2player_state_t *ps;
 	playerview_t *pv;
@@ -241,21 +243,24 @@ void CLQ2_CheckPredictionError (void)
 			continue;
 
 		// compare what the server returned with what we had predicted it to be
-		VectorSubtract (ps->pmove.origin, cl_predictions[seat][frame].origin, delta);
+		if (cl.q2frame.seat[seat].expmove.valid)
+			VectorScale(cl.q2frame.seat[seat].expmove.origin, 8, org);	//Q2EX's, unrounded
+		else
+			VectorCopy(ps->pmove.origin, org);
+		VectorSubtract (org, cl_predictions[seat][frame].origin, delta);
 
 		// save the prediction error for interpolation
-		len = abs(delta[0]) + abs(delta[1]) + abs(delta[2]);
+		len = fabs(delta[0]) + fabs(delta[1]) + fabs(delta[2]);
 		if (len > 640)	// 80 world units
 		{	// a teleport or something
 			VectorClear (pv->prediction_error);
 		}
 		else
 		{
-//			if (/*cl_showmiss->value && */(delta[0] || delta[1] || delta[2]) )
-//				Con_Printf ("prediction miss on %i: %i\n", cl.q2frame.serverframe,
-//				delta[0] + delta[1] + delta[2]);
+			if (cl_showmiss.ival && (delta[0] || delta[1] || delta[2]))
+				Con_Printf ("prediction miss on %i: %g (%g %g %g)\n", cl.q2frame.serverframe, len*0.125, delta[0]*0.125, delta[1]*0.125, delta[2]*0.125);
 
-			VectorCopy (ps->pmove.origin, cl_predictions[seat][frame].origin);
+			VectorCopy (org, cl_predictions[seat][frame].origin);
 
 			// save for error itnerpolation
 			for (i=0 ; i<3 ; i++)
@@ -404,6 +409,262 @@ static void CLQ2_UserCmdToQ2(q2usercmd_t *out, const usercmd_t *cmd)
 	out->impulse = cmd->impulse;
 	out->lightlevel = cmd->lightlevel;
 }
+
+/*
+=====================================================================
+The Quake II rerelease's own player movement (its cgame's Pmove), to predict with when its game is the server's:
+the original's pmove (Q2_Pmove) moves differently (crouching, ladders, steps, trick jumps...), and the view jitters.
+After Q2REPRO's predict.c. Its traces take the rerelease's content masks (Quake II's, with players and projectiles).
+=====================================================================
+*/
+#define RRCONTENTS_PLAYER	(1u<<30)
+#define RRPMF_ON_GROUND		(1<<2)
+#define RRPMF_NO_ANGULAR_PREDICTION	(1<<8)
+#define RRPM_GRAPPLE		1
+#define RRPM_SPECTATOR		3
+
+static qbyte clq2rr_entmarker[RR_MAX_EDICTS];	//pmove's opaque edict pointers: the world, or which entity a trace hit
+
+//pmove holds on to surfaces (the ground's) for the whole move: one each, for as long as the map's
+static struct
+{
+	const q2csurface_t *fte;
+	rr_csurface_t rr;
+} clq2rr_surfaces[1024];
+static model_t *clq2rr_surfacesmodel;
+static rr_csurface_t *CLQ2RR_Surface(const q2csurface_t *s)
+{
+	size_t h, i, n;
+	if (!s)
+		return NULL;
+	if (clq2rr_surfacesmodel != cl.worldmodel)
+	{
+		memset(clq2rr_surfaces, 0, sizeof(clq2rr_surfaces));
+		clq2rr_surfacesmodel = cl.worldmodel;
+	}
+	h = ((size_t)s >> 4);
+	for (i = 0; i < countof(clq2rr_surfaces); i++)
+	{
+		n = (h + i) % countof(clq2rr_surfaces);
+		if (clq2rr_surfaces[n].fte == s)
+			return &clq2rr_surfaces[n].rr;
+		if (!clq2rr_surfaces[n].fte)
+			break;
+	}
+	if (i == countof(clq2rr_surfaces))
+		n = h % countof(clq2rr_surfaces);	//full (a lot of textures): it's that one's, now
+	clq2rr_surfaces[n].fte = s;
+	memset(&clq2rr_surfaces[n].rr, 0, sizeof(clq2rr_surfaces[n].rr));
+	Q_strncpyz(clq2rr_surfaces[n].rr.name, s->name, sizeof(clq2rr_surfaces[n].rr.name));
+	clq2rr_surfaces[n].rr.flags = s->flags;
+	clq2rr_surfaces[n].rr.value = s->value;
+	return &clq2rr_surfaces[n].rr;
+}
+
+static rr_trace_t CLQ2RR_TraceResult(const trace_t *t, int entnum)
+{
+	rr_trace_t r;
+	int i;
+	memset(&r, 0, sizeof(r));
+	r.allsolid = !!t->allsolid;
+	r.startsolid = !!t->startsolid;
+	r.fraction = t->fraction;
+	VectorCopy(t->endpos, r.endpos);
+	VectorCopy(t->plane.normal, r.plane.normal);
+	r.plane.dist = t->plane.dist;
+	r.plane.type = 3;
+	for (i = 0; i < 3; i++)
+	{
+		if (r.plane.normal[i] == 1 || r.plane.normal[i] == -1)
+			r.plane.type = i;
+		if (r.plane.normal[i] < 0)
+			r.plane.signbits |= 1<<i;
+	}
+	r.surface = CLQ2RR_Surface(t->surface);
+	r.contents = t->contents;
+	r.ent = (struct rr_edict_s *)&clq2rr_entmarker[entnum];	//the world's too: pmove takes no entity as no ground
+	r.plane2 = r.plane;		//as the server's proxy has it
+	return r;
+}
+
+static rr_trace_t CLQ2RR_PMTrace(const float *start, const float *mins, const float *maxs, const float *end, const struct rr_edict_s *passent, uint32_t mask)
+{
+	trace_t t, et;
+	int i, num, entnum = 0, maxclients = cl.allocated_client_slots?cl.allocated_client_slots:MAX_CLIENTS;
+	entity_state_t *ent;
+	model_t *cmodel;
+	float *angles;
+	vec3_t bmins, bmaxs;
+
+	if (!mins)
+		mins = vec3_origin;
+	if (!maxs)
+		maxs = vec3_origin;
+
+	cl.worldmodel->funcs.NativeTrace(cl.worldmodel, 0, NULLFRAMESTATE, NULL, (float*)start, (float*)end, (float*)mins, (float*)maxs, false, mask, &t);
+
+	for (i = 0; i < cl.q2frame.num_entities && t.fraction > 0; i++)
+	{
+		num = (cl.q2frame.parse_entities + i)&(MAX_PARSE_ENTITIES-1);
+		ent = &clq2_parse_entities[num];
+
+		if (ent->solidsize == ES_SOLID_NOT)
+			continue;
+		if (ent->number == predignoreentitynum)
+			continue;
+		if (ent->number <= maxclients && !(mask & RRCONTENTS_PLAYER))
+			continue;	//other players, when they don't count
+
+		if (ent->solidsize == ES_SOLID_BSP)
+		{
+			cmodel = cl.model_precache[ent->modelindex];
+			if (!cmodel)
+				continue;
+			angles = ent->angles;
+		}
+		else
+		{
+			COM_DecodeSize(ent->solidsize, bmins, bmaxs);
+			cmodel = CM_TempBoxModel (bmins, bmaxs);
+			angles = vec3_origin;
+		}
+
+		if (t.allsolid)
+			break;
+
+		World_TransformedTrace (cmodel, 0, 0, (float*)start, (float*)end, (float*)mins, (float*)maxs, false, &et, ent->origin, angles, mask);
+		if (et.allsolid || et.startsolid || et.fraction < t.fraction)
+		{
+			qboolean startsolid = t.startsolid;
+			t = et;
+			if (startsolid)
+				t.startsolid = true;
+			entnum = ent->number;
+		}
+	}
+	return CLQ2RR_TraceResult(&t, bound(0, entnum, RR_MAX_EDICTS-1));
+}
+static rr_trace_t CLQ2RR_PMClip(const float *start, const float *mins, const float *maxs, const float *end, uint32_t mask)
+{	//the world alone
+	trace_t t;
+	cl.worldmodel->funcs.NativeTrace(cl.worldmodel, 0, NULLFRAMESTATE, NULL, (float*)start, (float*)end, (float*)(mins?mins:vec3_origin), (float*)(maxs?maxs:vec3_origin), false, mask, &t);
+	return CLQ2RR_TraceResult(&t, 0);
+}
+static uint32_t CLQ2RR_PMPointContents(const float *point)
+{
+	return CLQ2_PMpointcontents((float*)point);
+}
+
+//what the server's proxy gives the game for a usercmd (svq2_rerelease.c's RRGE_ClientThink)
+static void CLQ2RR_UserCmd(rr_usercmd_t *out, const usercmd_t *cmd)
+{
+	q2usercmd_t q;
+	int i;
+	CLQ2_UserCmdToQ2(&q, cmd);
+	memset(out, 0, sizeof(*out));
+	out->msec = q.msec;
+	out->buttons = q.buttons & (RR_BUTTON_ATTACK|RR_BUTTON_USE|RR_BUTTON_HOLSTER|RR_BUTTON_JUMP|RR_BUTTON_CROUCH|RR_BUTTON_ANY);
+	if (q.upmove > 0)
+		out->buttons |= RR_BUTTON_JUMP;
+	else if (q.upmove < 0)
+		out->buttons |= RR_BUTTON_CROUCH;
+	for (i = 0; i < 3; i++)
+		out->angles[i] = SHORT2ANGLE(q.angles[i]);
+	out->forwardmove = q.forwardmove;
+	out->sidemove = q.sidemove;
+}
+
+#define RR_STEP_TIME		0.1		//as FTE's view smooths steps out (clq2_ents.c)
+#define RR_MAX_STEP_CHANGE	32
+static struct
+{
+	rr_cplane_t plane;
+	void *ent;
+} clq2rr_lastground[MAX_SPLITS];
+
+//true when the rerelease's cgame predicted the seat's movement
+static qboolean CLQ2RR_PredictMovement(int seat)
+{
+	const q2expmove_state_t *ex = &cl.q2frame.seat[seat].expmove;
+	q2player_state_t *ps = &cl.q2frame.seat[seat].playerstate;
+	playerview_t *pv = &cl.playerview[seat];
+	int ack = cl.ackedmovesequence, current = cl.movesequence, frame, i;
+	rr_pmove_t pm;
+	float step;
+
+	if (!ex->valid || !CLQ2CG_CanPmove())
+		return false;
+	if (current - ack >= UPDATE_MASK)
+		return true;	//too far out of date: freeze
+
+	memset(&pm, 0, sizeof(pm));
+	pm.trace = CLQ2RR_PMTrace;
+	pm.clip = CLQ2RR_PMClip;
+	pm.pointcontents = CLQ2RR_PMPointContents;
+	pm.s.pm_type = ex->pm_type;
+	VectorCopy(ex->origin, pm.s.origin);
+	VectorCopy(ex->velocity, pm.s.velocity);
+	pm.s.pm_flags = ex->pm_flags;
+	pm.s.pm_time = ex->pm_time;
+	pm.s.gravity = ex->gravity;
+	VectorCopy(ex->delta_angles, pm.s.delta_angles);
+	pm.s.viewheight = ex->viewheight;
+	VectorCopy(ps->viewoffset, pm.viewoffset);
+	pm.viewoffset[2] -= ex->viewheight;	//(ours has it in)
+	pm.snapinitial = true;
+
+	predignoreentitynum = cl.q2frame.seat[seat].clientnum+1;
+	pm.player = (struct rr_edict_s *)&clq2rr_entmarker[bound(0, predignoreentitynum, RR_MAX_EDICTS-1)];
+
+	while (++ack < current)
+	{
+		frame = ack & UPDATE_MASK;
+		if (!cl.outframes[frame].cmd[seat].msec)
+			continue;	//null entries move nothing
+		CLQ2RR_UserCmd(&pm.cmd, &cl.outframes[frame].cmd[seat]);
+		CLQ2CG_Pmove(&pm);
+		pm.snapinitial = false;
+
+		VectorScale(pm.s.origin, 8, cl_predictions[seat][frame].origin);
+		cl_predictions[seat][frame].seq = ack;
+	}
+	if (cl_pendingcmd[seat].msec)
+	{
+		CLQ2RR_UserCmd(&pm.cmd, &cl_pendingcmd[seat]);
+		CLQ2CG_Pmove(&pm);
+	}
+
+	//steps, as Q2REPRO finds them: small changes in height, on the ground before and after, onto another plane/entity
+	step = pm.s.origin[2] - pv->predicted_origin[2];
+	if (pm.s.pm_type != RRPM_SPECTATOR && fabs(step) > 1 && fabs(step) < 20
+		&& ((ex->pm_flags & RRPMF_ON_GROUND) || pm.step_clip)
+		&& (pm.s.pm_flags & RRPMF_ON_GROUND) && pm.s.pm_type <= RRPM_GRAPPLE
+		&& (memcmp(&clq2rr_lastground[seat].plane, &pm.groundplane, sizeof(pm.groundplane)) || clq2rr_lastground[seat].ent != pm.groundentity))
+	{
+		float delta = realtime - pv->predicted_step_time, old_step;
+		if (delta < RR_STEP_TIME)
+			old_step = pv->predicted_step * (RR_STEP_TIME - delta) / RR_STEP_TIME;
+		else
+			old_step = 0;
+		pv->predicted_step = bound(-RR_MAX_STEP_CHANGE, old_step + step, RR_MAX_STEP_CHANGE);
+		pv->predicted_step_time = realtime;
+	}
+	clq2rr_lastground[seat].plane = pm.groundplane;
+	clq2rr_lastground[seat].ent = pm.groundentity;
+
+	pv->onground = !!(pm.s.pm_flags & RRPMF_ON_GROUND);
+	VectorCopy(pm.s.origin, pv->predicted_origin);
+	VectorCopy(pm.s.velocity, pv->simvel);
+	if (ex->pm_flags & RRPMF_NO_ANGULAR_PREDICTION)
+	{
+		for (i = 0; i < 3; i++)
+			pv->predicted_angles[i] = pv->viewangles[i] + ex->delta_angles[i];
+	}
+	else
+		VectorCopy(pm.viewangles, pv->predicted_angles);
+	return true;
+}
+
 static void CLQ2_PredictMovement (int seat)	//q2 doesn't support split clients.
 {
 	int			ack, current;
@@ -428,6 +689,8 @@ static void CLQ2_PredictMovement (int seat)	//q2 doesn't support split clients.
 		}
 		return;
 	}
+	if (CLQ2RR_PredictMovement(seat))
+		return;	//the rerelease's game, with its own pmove
 	ack = cl.ackedmovesequence;	//index was received
 	current = cl.movesequence;	//count generated, [current] is thus invalid.
 
@@ -3080,6 +3343,7 @@ void CL_InitPrediction (void)
 	Cmd_AddCommandD ("prederr_dump", CL_PredErrDump_f, "Writes the last ~7 s of prediction comparisons to data/prederr/<name>.txt (FTESurf Patch 1195).");
 	Cvar_Register (&cl_pushlatency, cl_predictiongroup);
 	Cvar_Register (&cl_nopred,	cl_predictiongroup);
+	Cvar_Register (&cl_showmiss,	cl_predictiongroup);
 	Cvar_Register (&cl_source_practice_lerp, cl_predictiongroup);
 	Cvar_Register (&cl_predtrace,	cl_predictiongroup);	//FTESurf Patch 269
 	Cvar_Register (&cl_predict_velblend,	cl_predictiongroup);	//FTESurf Patch 269

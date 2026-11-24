@@ -404,19 +404,35 @@ static void CG_PlayerState(rr_player_state_t *o, int seat)
 {
 	q2player_state_t *ps = &cl.q2frame.seat[seat].playerstate;
 	int i;
+	const q2expmove_state_t *ex = &cl.q2frame.seat[seat].expmove;
 	memset(o, 0, sizeof(*o));
-	o->pmove.pm_type = ps->pmove.pm_type;
-	for (i = 0; i < 3; i++)
-	{
-		o->pmove.origin[i] = ps->pmove.origin[i] / 8.0f;
-		o->pmove.velocity[i] = ps->pmove.velocity[i] / 8.0f;
-		o->pmove.delta_angles[i] = SHORT2ANGLE(ps->pmove.delta_angles[i]);
+	if (ex->valid)
+	{	//Q2EX's, as it came
+		o->pmove.pm_type = ex->pm_type;
+		VectorCopy(ex->origin, o->pmove.origin);
+		VectorCopy(ex->velocity, o->pmove.velocity);
+		VectorCopy(ex->delta_angles, o->pmove.delta_angles);
+		o->pmove.pm_flags = ex->pm_flags;
+		o->pmove.pm_time = ex->pm_time;
+		o->pmove.gravity = ex->gravity;
+		o->pmove.viewheight = ex->viewheight;
 	}
-	o->pmove.pm_flags = ps->pmove.pm_flags;
-	o->pmove.pm_time = ps->pmove.pm_time * 8;
-	o->pmove.gravity = ps->pmove.gravity;
+	else
+	{
+		o->pmove.pm_type = ps->pmove.pm_type;
+		for (i = 0; i < 3; i++)
+		{
+			o->pmove.origin[i] = ps->pmove.origin[i] / 8.0f;
+			o->pmove.velocity[i] = ps->pmove.velocity[i] / 8.0f;
+			o->pmove.delta_angles[i] = SHORT2ANGLE(ps->pmove.delta_angles[i]);
+		}
+		o->pmove.pm_flags = ps->pmove.pm_flags;
+		o->pmove.pm_time = ps->pmove.pm_time * 8;
+		o->pmove.gravity = ps->pmove.gravity;
+	}
 	VectorCopy(ps->viewangles, o->viewangles);
 	VectorCopy(ps->viewoffset, o->viewoffset);
+	o->viewoffset[2] -= o->pmove.viewheight;
 	VectorCopy(ps->kick_angles, o->kick_angles);
 	VectorCopy(ps->gunangles, o->gunangles);
 	VectorCopy(ps->gunoffset, o->gunoffset);
@@ -469,6 +485,16 @@ qboolean CLQ2CG_HideCrosshair(int seat)
 		return false;
 	CG_PlayerState(&ps, seat);
 	return !!(cge->LayoutFlags(&ps) & (RR_LAYOUTS_HIDE_CROSSHAIR|RR_LAYOUTS_HIDE_HUD|RR_LAYOUTS_INTERMISSION));
+}
+
+//the rerelease's player movement, to predict with (cl_pred.c)
+qboolean CLQ2CG_CanPmove(void)
+{
+	return cge && cge->Pmove && cls.protocol == CP_QUAKE2 && cl.worldmodel;
+}
+void CLQ2CG_Pmove(void *rrpmove)
+{
+	cge->Pmove(rrpmove);
 }
 
 void CLQ2CG_Init(void)

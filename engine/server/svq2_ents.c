@@ -518,6 +518,7 @@ void SVQ2_WritePlayerstateToClient (client_t *client, int seat, int extflags, q2
 	int				pflags;
 	q2player_state_t	*ps, *ops;
 	q2player_state_t	dummy;
+	const q2expmove_state_t *pm, *opm;
 	int				statbits;
 	unsigned int pext = client->fteprotocolextensions;
 	unsigned int q2e = client->protocol == SCP_QUAKE2EX;
@@ -602,6 +603,32 @@ void SVQ2_WritePlayerstateToClient (client_t *client, int seat, int extflags, q2
 	if (ps->gunindex != ops->gunindex)
 		pflags |= Q2PS_WEAPONINDEX;
 
+	if (q2e && to->expmove[seat].valid)
+	{	//the rerelease's game: its pmove as it has it (game API 3's is rounded), which is what Q2EX sends
+		static const q2expmove_state_t nullpm;
+		pm = &to->expmove[seat];
+		opm = (from && from->expmove[seat].valid)?&from->expmove[seat]:&nullpm;
+		pflags &= ~(Q2PS_M_TYPE|Q2PS_M_ORIGIN|Q2PS_M_VELOCITY|Q2PS_M_TIME|Q2PS_M_FLAGS|Q2PS_M_GRAVITY|Q2PS_M_DELTA_ANGLES);
+		if (pm->pm_type != opm->pm_type)
+			pflags |= Q2PS_M_TYPE;
+		if (!VectorEquals(pm->origin, opm->origin))
+			pflags |= Q2PS_M_ORIGIN;
+		if (!VectorEquals(pm->velocity, opm->velocity))
+			pflags |= Q2PS_M_VELOCITY;
+		if (pm->pm_time != opm->pm_time)
+			pflags |= Q2PS_M_TIME;
+		if (pm->pm_flags != opm->pm_flags)
+			pflags |= Q2PS_M_FLAGS;
+		if (pm->gravity != opm->gravity)
+			pflags |= Q2PS_M_GRAVITY;
+		if (!VectorEquals(pm->delta_angles, opm->delta_angles))
+			pflags |= Q2PS_M_DELTA_ANGLES;
+		if (pm->viewheight != opm->viewheight)
+			pflags |= Q2PS_VIEWOFFSET;
+	}
+	else
+		pm = NULL;
+
 	if (pext & PEXT_MODELDBL)
 	{
 		if ((pflags & Q2PS_WEAPONINDEX) && ps->gunindex > 0xff)
@@ -632,7 +659,9 @@ void SVQ2_WritePlayerstateToClient (client_t *client, int seat, int extflags, q2
 	if (pflags & Q2PS_M_TYPE)
 	{
 		i = ps->pmove.pm_type;
-		if (q2e)
+		if (pm)
+			i = pm->pm_type;
+		else if (q2e)
 		{	//sigh... q2e added some extra pmove types that we don't support, and not on the end. :(
 			switch((q2pmtype_t)i)
 			{
@@ -648,7 +677,23 @@ void SVQ2_WritePlayerstateToClient (client_t *client, int seat, int extflags, q2
 		MSG_WriteByte (msg, i);
 	}
 
-	if (q2e)
+	if (pm)
+	{
+		if (pflags & Q2PS_M_ORIGIN)
+		{
+			MSG_WriteFloat (msg, pm->origin[0]);
+			MSG_WriteFloat (msg, pm->origin[1]);
+			MSG_WriteFloat (msg, pm->origin[2]);
+		}
+
+		if (pflags & Q2PS_M_VELOCITY)
+		{
+			MSG_WriteFloat (msg, pm->velocity[0]);
+			MSG_WriteFloat (msg, pm->velocity[1]);
+			MSG_WriteFloat (msg, pm->velocity[2]);
+		}
+	}
+	else if (q2e)
 	{
 		if (pflags & Q2PS_M_ORIGIN)
 		{
@@ -683,26 +728,36 @@ void SVQ2_WritePlayerstateToClient (client_t *client, int seat, int extflags, q2
 
 	if (pflags & Q2PS_M_TIME)
 	{
-		if (q2e)
-			MSG_WriteShort (msg, ps->pmove.pm_time);
+		if (pm)
+			MSG_WriteShort (msg, pm->pm_time);
+		else if (q2e)
+			MSG_WriteShort (msg, ps->pmove.pm_time*8);	//Q2EX's are in ms
 		else
 			MSG_WriteByte (msg, ps->pmove.pm_time);
 	}
 
 	if (pflags & Q2PS_M_FLAGS)
 	{
-		if (q2e)
+		if (pm)
+			MSG_WriteShort (msg, pm->pm_flags);
+		else if (q2e)
 			MSG_WriteShort (msg, ps->pmove.pm_flags);
 		else
 			MSG_WriteByte (msg, ps->pmove.pm_flags);
 	}
 
 	if (pflags & Q2PS_M_GRAVITY)
-		MSG_WriteShort (msg, ps->pmove.gravity);
+		MSG_WriteShort (msg, pm?pm->gravity:ps->pmove.gravity);
 
 	if (pflags & Q2PS_M_DELTA_ANGLES)
 	{
-		if (q2e)
+		if (pm)
+		{
+			MSG_WriteFloat (msg, pm->delta_angles[0]);
+			MSG_WriteFloat (msg, pm->delta_angles[1]);
+			MSG_WriteFloat (msg, pm->delta_angles[2]);
+		}
+		else if (q2e)
 		{
 			MSG_WriteFloat (msg, SHORT2ANGLE(ps->pmove.delta_angles[0]));
 			MSG_WriteFloat (msg, SHORT2ANGLE(ps->pmove.delta_angles[1]));
@@ -725,8 +780,9 @@ void SVQ2_WritePlayerstateToClient (client_t *client, int seat, int extflags, q2
 		{
 			MSG_WriteShort (msg, ps->viewoffset[0]*16);
 			MSG_WriteShort (msg, ps->viewoffset[1]*16);
-			MSG_WriteShort (msg, (ps->viewoffset[2]-DEFAULT_VIEWHEIGHT)*16);
-			MSG_WriteChar (msg, DEFAULT_VIEWHEIGHT/*ps->pmove.viewheight*/);
+			i = pm?pm->viewheight:DEFAULT_VIEWHEIGHT;	//(the rerelease's viewoffset has the view height apart)
+			MSG_WriteShort (msg, (ps->viewoffset[2]-i)*16);
+			MSG_WriteChar (msg, i);
 		}
 		else
 		{
@@ -1025,14 +1081,19 @@ void SVQ2_BuildClientFrame (client_t *client)
 
 		frame->ps[seat] = clent[seat]->client->ps;
 		SVQ2RR_ExtendedStats(clent[seat], frame->exstats[seat]);	//the rerelease's game has 64
+		SVQ2RR_ExtendedPmove(clent[seat], &frame->expmove[seat]);
 		if (sv.paused)
+		{
 			frame->ps[seat].pmove.pm_type = Q2PM_FREEZE;
+			frame->expmove[seat].pm_type = Q2EPM_FREEZE;
+		}
 	}
 	seats = seat;
 	for (; seat < MAX_SPLITS; seat++)
 	{
 		memset(&frame->ps[seat], 0, sizeof(frame->ps[seat]));
 		memset(frame->exstats[seat], 0, sizeof(frame->exstats[seat]));
+		memset(&frame->expmove[seat], 0, sizeof(frame->expmove[seat]));
 		frame->clientnum[seat] = 0xff;	//invalid
 	}
 

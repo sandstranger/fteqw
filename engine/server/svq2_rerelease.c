@@ -963,6 +963,25 @@ void SVQ2RR_ExtendedStats(q2edict_t *ent, short *out32)
 	for (i = 0; i < 32; i++)
 		out32[i] = re->client->ps.stats[32+i];
 }
+//the rerelease's pmove_state_t as it is (game API 3's is rounded), for Q2EX clients to predict with the rerelease's own pmove
+void SVQ2RR_ExtendedPmove(q2edict_t *ent, q2expmove_state_t *out)
+{
+	rr_edict_t *re = (rrge && shadow)?RR_FromShadow(ent):NULL;
+	const rr_pmove_state_t *pm;
+	memset(out, 0, sizeof(*out));
+	if (!re || !re->client)
+		return;
+	pm = &re->client->ps.pmove;
+	out->valid = true;
+	out->pm_type = pm->pm_type;
+	out->viewheight = pm->viewheight;
+	out->pm_flags = pm->pm_flags;
+	out->pm_time = pm->pm_time;
+	out->gravity = pm->gravity;
+	VectorCopy(pm->origin, out->origin);
+	VectorCopy(pm->velocity, out->velocity);
+	VectorCopy(pm->delta_angles, out->delta_angles);
+}
 
 /*
 The rerelease's GetGameAPI, from its library: FTE gets game API 3 exports for it.

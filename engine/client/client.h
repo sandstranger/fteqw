@@ -128,6 +128,19 @@ typedef struct
 } q2pmove_state_t;
 
 typedef struct
+{	//pmove_state_t as Q2EX (the rerelease's protocol) has it: more of it, and more precisely, than game API 3's
+	qboolean	valid;
+	qbyte		pm_type;		//the rerelease's (Q2EPM_*)
+	signed char	viewheight;
+	unsigned short pm_flags;
+	unsigned short pm_time;		//in ms
+	short		gravity;
+	vec3_t		origin;
+	vec3_t		velocity;
+	vec3_t		delta_angles;
+} q2expmove_state_t;
+
+typedef struct
 {	//shared with q2 dll so cannot be changed
 
 	q2pmove_state_t	pmove;		// for prediction
@@ -279,6 +292,7 @@ typedef struct
 		qbyte				areabits[MAX_Q2MAP_AREAS/8];		// portalarea visibility bits
 		q2player_state_t	playerstate;
 		short				exstats[32];	// Q2EX's stats 32-63 (the rerelease's hud, keys, weapon wheel...)
+		q2expmove_state_t	expmove;		// Q2EX's pmove, exactly (for the rerelease's cgame's prediction)
 		int					clientnum;
 	} seat[MAX_SPLITS];
 	int				num_entities;
@@ -1876,6 +1890,8 @@ void CLQ2CG_ConfigString(int q2exindex, const char *s);
 qboolean CLQ2CG_CenterPrint(int seat, const char *str, qboolean instant);
 qboolean CLQ2CG_DrawHUD(int seat, const vrect_t *area);
 qboolean CLQ2CG_HideCrosshair(int seat);
+qboolean CLQ2CG_CanPmove(void);
+void CLQ2CG_Pmove(void *rrpmove);
 #ifdef HEXEN2
 void CLH2_InitHUD(void);									//uHexen2's status bar and its commands (clh2_hud.c)
 void CLH2_ResetHUD(void);									//a new map: no inventory yet

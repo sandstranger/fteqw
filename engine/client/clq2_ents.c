@@ -1437,22 +1437,27 @@ void CLQ2_ParsePlayerstate (int seat, q2frame_t *oldframe, q2frame_t *newframe, 
 	int			i;
 	int			statbits;
 	qboolean q2e = cls.protocol_q2==PROTOCOL_VERSION_Q2EX;
+	q2expmove_state_t *expm;	//Q2EX's pmove as it comes, for the rerelease's cgame
 
 	state = &newframe->seat[seat].playerstate;
+	expm = &newframe->seat[seat].expmove;
 
 	// clear to old value before delta parsing
 	if (oldframe)
 	{
 		*state = oldframe->seat[seat].playerstate;
 		memcpy(newframe->seat[seat].exstats, oldframe->seat[seat].exstats, sizeof(newframe->seat[seat].exstats));
+		*expm = oldframe->seat[seat].expmove;
 		newframe->seat[seat].clientnum = oldframe->seat[seat].clientnum;
 	}
 	else
 	{
 		memset (state, 0, sizeof(*state));
 		memset(newframe->seat[seat].exstats, 0, sizeof(newframe->seat[seat].exstats));
+		memset(expm, 0, sizeof(*expm));
 		newframe->seat[seat].clientnum = cl.playerview[seat].playernum;
 	}
+	expm->valid = q2e;
 
 	flags = MSG_ReadUInt16 ();
 	if (flags & Q2PS_EXTRABITS)
@@ -1466,6 +1471,7 @@ void CLQ2_ParsePlayerstate (int seat, q2frame_t *oldframe, q2frame_t *newframe, 
 		state->pmove.pm_type = MSG_ReadByte ();
 		if (q2e)
 		{	//sigh... q2e added some extra pmove types that we don't support.
+			expm->pm_type = state->pmove.pm_type;
 			switch((int)state->pmove.pm_type)
 			{
 			case Q2EPM_NORMAL: state->pmove.pm_type = Q2PM_NORMAL; break;
@@ -1483,10 +1489,10 @@ void CLQ2_ParsePlayerstate (int seat, q2frame_t *oldframe, q2frame_t *newframe, 
 	{
 		if (q2e)
 		{
-			state->pmove.origin[0] = MSG_ReadFloat ()*8;
-			state->pmove.origin[1] = MSG_ReadFloat ()*8;
+			state->pmove.origin[0] = (expm->origin[0] = MSG_ReadFloat ())*8;
+			state->pmove.origin[1] = (expm->origin[1] = MSG_ReadFloat ())*8;
 			if (extflags & Q2PSX_OLD)
-				state->pmove.origin[2] = MSG_ReadFloat ()*8;
+				state->pmove.origin[2] = (expm->origin[2] = MSG_ReadFloat ())*8;
 		}
 		else
 		{
@@ -1503,10 +1509,10 @@ void CLQ2_ParsePlayerstate (int seat, q2frame_t *oldframe, q2frame_t *newframe, 
 	{
 		if (q2e)
 		{
-			state->pmove.velocity[0] = MSG_ReadFloat ()*8;
-			state->pmove.velocity[1] = MSG_ReadFloat ()*8;
+			state->pmove.velocity[0] = (expm->velocity[0] = MSG_ReadFloat ())*8;
+			state->pmove.velocity[1] = (expm->velocity[1] = MSG_ReadFloat ())*8;
 			if (extflags & Q2PSX_OLD)
-				state->pmove.velocity[2] = MSG_ReadFloat ()*8;
+				state->pmove.velocity[2] = (expm->velocity[2] = MSG_ReadFloat ())*8;
 		}
 		else
 		{
@@ -1520,21 +1526,34 @@ void CLQ2_ParsePlayerstate (int seat, q2frame_t *oldframe, q2frame_t *newframe, 
 		state->pmove.velocity[2] = MSG_ReadShort ();
 
 	if (flags & Q2PS_M_TIME)
-		state->pmove.pm_time = q2e?MSG_ReadUInt16():MSG_ReadByte ();
+	{
+		if (q2e)
+		{	//Q2EX's are in ms, the original's in 8ms units
+			expm->pm_time = MSG_ReadUInt16();
+			state->pmove.pm_time = min(255, expm->pm_time/8);
+		}
+		else
+			state->pmove.pm_time = MSG_ReadByte ();
+	}
 
 	if (flags & Q2PS_M_FLAGS)
-		state->pmove.pm_flags = q2e?MSG_ReadUInt16():MSG_ReadByte ();
+	{
+		if (q2e)
+			state->pmove.pm_flags = expm->pm_flags = MSG_ReadUInt16();
+		else
+			state->pmove.pm_flags = MSG_ReadByte ();
+	}
 
 	if (flags & Q2PS_M_GRAVITY)
-		state->pmove.gravity = MSG_ReadShort ();
+		state->pmove.gravity = expm->gravity = MSG_ReadShort ();
 
 	if (flags & Q2PS_M_DELTA_ANGLES)
 	{
 		if (q2e)
 		{
-			state->pmove.delta_angles[0] = ANGLE2SHORT(MSG_ReadFloat ());
-			state->pmove.delta_angles[1] = ANGLE2SHORT(MSG_ReadFloat ());
-			state->pmove.delta_angles[2] = ANGLE2SHORT(MSG_ReadFloat ());
+			state->pmove.delta_angles[0] = ANGLE2SHORT(expm->delta_angles[0] = MSG_ReadFloat ());
+			state->pmove.delta_angles[1] = ANGLE2SHORT(expm->delta_angles[1] = MSG_ReadFloat ());
+			state->pmove.delta_angles[2] = ANGLE2SHORT(expm->delta_angles[2] = MSG_ReadFloat ());
 		}
 		else
 		{
@@ -1557,7 +1576,8 @@ void CLQ2_ParsePlayerstate (int seat, q2frame_t *oldframe, q2frame_t *newframe, 
 			state->viewoffset[0] = MSG_ReadShort () * (1/16.f);
 			state->viewoffset[1] = MSG_ReadShort () * (1/16.f);
 			state->viewoffset[2] = MSG_ReadShort () * (1/16.f);
-			state->viewoffset[2] += MSG_ReadChar();
+			expm->viewheight = MSG_ReadChar();
+			state->viewoffset[2] += expm->viewheight;
 		}
 		else
 		{

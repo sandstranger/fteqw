@@ -381,6 +381,7 @@ typedef struct	//merge?
 	qbyte				areabits[MAX_Q2MAP_AREAS/8];		// portalarea visibility bits
 	q2player_state_t	ps[MAX_SPLITS];		//yuck
 	short				exstats[MAX_SPLITS][32];	//Q2EX's stats 32-63 (game API 3 has 32): the rerelease game's
+	q2expmove_state_t	expmove[MAX_SPLITS];		//the rerelease game's pmove_state_t, exactly (game API 3's is rounded)
 	int					clientnum[MAX_SPLITS];
 	int					num_entities;
 	int					first_entity;		// into the circular sv_packet_entities[]
@@ -1403,6 +1404,7 @@ qboolean SVQ2RR_Active(void);
 void SVQ2RR_PrepFrame(void);
 void SVQ2RR_SetLevelTransition(qboolean transition);
 void SVQ2RR_ExtendedStats(struct q2edict_s *ent, short *out32);
+void SVQ2RR_ExtendedPmove(struct q2edict_s *ent, q2expmove_state_t *out);
 #endif
 
 //svq2_ents.c
