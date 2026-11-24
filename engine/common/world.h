@@ -406,6 +406,7 @@ void VARGS WorldQ2_UnlinkEdict(world_t *w, q2edict_t *ent);
 int VARGS WorldQ2_AreaEdicts (world_t *w, const vec3_t mins, const vec3_t maxs, q2edict_t **list,
 	int maxcount, int areatype);
 trace_t WorldQ2_Move (world_t *w, vec3_t start, vec3_t mins, vec3_t maxs, vec3_t end, int hitcontentsmask, q2edict_t *passedict);
+trace_t WorldQ2_ClipToEntity (world_t *w, q2edict_t *ent, vec3_t start, vec3_t mins, vec3_t maxs, vec3_t end, int hitcontentsmask);	//the rerelease's gi.clip
 #endif
 
 

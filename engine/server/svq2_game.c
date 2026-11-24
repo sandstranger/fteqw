@@ -65,6 +65,10 @@ void *SVQ2_GetGameAPI (void *parms)
 #ifdef ARCH_ALTCPU_POSTFIX
 		"game" ARCH_ALTCPU_POSTFIX ARCH_DL_POSTFIX,
 #endif
+		"game_" ARCH_CPU_POSTFIX ARCH_DL_POSTFIX,	//the rerelease's: game_x64.dll
+#ifdef ARCH_ALTCPU_POSTFIX
+		"game_" ARCH_ALTCPU_POSTFIX ARCH_DL_POSTFIX,	//and as its source builds it elsewhere: game_x86_64.so
+#endif
 		"game" ARCH_DL_POSTFIX,
 #if defined(__linux__)	//FTE doesn't provide gamecode. Borrow someone else's. Lets just hope that its installed.
 //		"/usr/lib/yamagi-quake2/%s/game.so",
@@ -136,7 +140,10 @@ void *SVQ2_GetGameAPI (void *parms)
 			q2gamedll = Sys_LoadLibrary(name, funcs);
 			if (q2gamedll)
 			{
-				ret = GetGameAPI(parms);
+				if (Sys_GetAddressForName(q2gamedll, "GetCGameAPI"))	//the rerelease's (KEX) game, API 2023: run through svq2_rerelease.c
+					ret = SVQ2RR_GetGameAPI((void*)GetGameAPI, parms);
+				else
+					ret = GetGameAPI(parms);
 				if (ret)
 				{
 					return ret;
@@ -408,6 +415,53 @@ void VARGS PFQ2_Configstring (int i, const char *val)
 			}
 		}
 	}
+}
+
+/*
+Q2EX configstrings that game API 3 has no room for (the rerelease's weapon wheel, shadow lights...), set by the
+rerelease's game (svq2_rerelease.c). Q2EX clients get them, as they join too.
+*/
+static char *svq2_exconfigstrings[Q2EXMAX_CONFIGSTRINGS];
+void SVQ2_ExtraConfigstring (int i, const char *val)
+{
+	int j;
+	client_t *cl;
+	if (i < 0 || i >= Q2EXMAX_CONFIGSTRINGS)
+		return;
+	if (!val)
+		val = "";
+	Z_Free(svq2_exconfigstrings[i]);
+	svq2_exconfigstrings[i] = *val?Z_StrDup(val):NULL;
+	if (sv.state != ss_loading)
+	{
+		for (j = 0, cl = svs.clients; j < sv.allocated_client_slots; j++, cl++)
+		{
+			if (cl->state != cs_spawned || cl->controller || cl->protocol != SCP_QUAKE2EX)
+				continue;
+			ClientReliableWrite_Begin(cl, svcq2_configstring, 3+strlen(val)+1);
+			ClientReliableWrite_Short(cl, i);
+			ClientReliableWrite_String(cl, val);
+		}
+	}
+}
+void SVQ2_ExtraConfigstringsClear (void)
+{
+	size_t i;
+	for (i = 0; i < countof(svq2_exconfigstrings); i++)
+	{
+		Z_Free(svq2_exconfigstrings[i]);
+		svq2_exconfigstrings[i] = NULL;
+	}
+}
+const char *SVQ2_GetExtraConfigstring (int i)
+{
+	if (i >= Q2EXCS_MODELS+Q2MAX_MODELS && i < Q2EXCS_MODELS+(int)countof(sv.strings.q2_extramodels) && i < Q2EXCS_SOUNDS)
+		return sv.strings.q2_extramodels[i-Q2EXCS_MODELS];	//models beyond game API 3's 256
+	if (i >= Q2EXCS_SOUNDS+Q2MAX_SOUNDS && i < Q2EXCS_SOUNDS+(int)countof(sv.strings.q2_extrasounds) && i < Q2EXCS_IMAGES)
+		return sv.strings.q2_extrasounds[i-Q2EXCS_SOUNDS];
+	if (i >= 0 && i < Q2EXMAX_CONFIGSTRINGS)
+		return svq2_exconfigstrings[i];
+	return NULL;
 }
 
 /*

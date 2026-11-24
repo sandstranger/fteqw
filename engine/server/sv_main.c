@@ -5445,6 +5445,11 @@ void SVQ2_ClearEvents(void)
 	q2edict_t	*ent;
 	int		i;
 
+	if (SVQ2RR_Active())
+	{	//the rerelease's game clears its own (and more), in its PrepFrame
+		SVQ2RR_PrepFrame();
+		return;
+	}
 	for (i=0 ; i<ge->num_edicts ; i++, ent++)
 	{
 		ent = Q2EDICT_NUM(i);

@@ -1913,6 +1913,11 @@ void WorldQ2_ClipMoveToEntities (world_t *w, moveclip_t *clip )
 		if (touch->svflags & SVF_DEADMONSTER)
 		if ( !(clip->hitcontentsmask & Q2CONTENTS_DEADMONSTER))
 				continue;
+		//the rerelease's players and projectiles have contents of their own (game API 3 never sets these flags)
+		if ((touch->svflags & (1u<<3)/*SVF_PLAYER*/) && !(clip->hitcontentsmask & (1u<<30)/*CONTENTS_PLAYER*/))
+			continue;
+		if ((touch->svflags & (1u<<7)/*SVF_PROJECTILE*/) && !(clip->hitcontentsmask & (1u<<31)/*CONTENTS_PROJECTILE*/))
+			continue;
 
 		// might intersect, so do an exact clip
 		model = WorldQ2_ModelForEntity (w, touch);
@@ -3857,6 +3862,36 @@ trace_t WorldQ2_Move (world_t *w, vec3_t start, vec3_t mins, vec3_t maxs, vec3_t
 	WorldQ2_ClipMoveToEntities(w, &clip);
 
 	return clip.trace;
+}
+
+/*
+The Quake II rerelease's gi.clip: a move against just the one entity (the world's bsp for the world), a trigger by
+its brushes too.
+*/
+trace_t WorldQ2_ClipToEntity (world_t *w, q2edict_t *ent, vec3_t start, vec3_t mins, vec3_t maxs, vec3_t end, int hitcontentsmask)
+{
+	trace_t trace;
+	model_t *model;
+	float *angles;
+
+	memset(&trace, 0, sizeof(trace));
+	if (!ent || ent == ge->edicts)
+	{
+		w->worldmodel->funcs.NativeTrace(w->worldmodel, 0, NULLFRAMESTATE, NULL, start, end, mins, maxs, false, hitcontentsmask, &trace);
+		trace.ent = ge->edicts;
+		return trace;
+	}
+
+	if (ent->solid == Q2SOLID_TRIGGER && (model = w->Get_CModel(w, ent->s.modelindex)) && model->loadstate == MLS_LOADED && model->type == mod_brush)
+		;
+	else
+		model = WorldQ2_ModelForEntity (w, ent);
+	angles = ent->s.angles;
+	if (ent->solid != Q2SOLID_BSP && ent->solid != Q2SOLID_TRIGGER)
+		angles = vec3_origin;	// boxes don't rotate
+	World_TransformedTrace (model, 0, NULL, start, end, mins, maxs, false, &trace, ent->s.origin, angles, hitcontentsmask);
+	trace.ent = (edict_t *)ent;
+	return trace;
 }
 #endif
 

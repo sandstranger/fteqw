@@ -1390,6 +1390,18 @@ qboolean SV_FilterImpulse(int imp, int level);
 qboolean SVQ2_InitGameProgs(void);
 void VARGS SVQ2_ShutdownGameProgs (void);
 void VARGS PFQ2_Configstring (int i, const char *val); //for engine cheats.
+void SVQ2_ExtraConfigstring (int q2exindex, const char *val);	//Q2EX ones with no game API 3 equivalent
+void SVQ2_ExtraConfigstringsClear (void);
+const char *SVQ2_GetExtraConfigstring (int q2exindex);
+
+//svq2_rerelease.c: the Quake II rerelease's game library (KEX, API 2023) as a game API 3 one
+#ifdef Q2SERVER
+struct game_export_s;
+void *SVQ2RR_GetGameAPI(void *GetGameAPI, void *fteimport);
+qboolean SVQ2RR_Active(void);
+void SVQ2RR_PrepFrame(void);
+void SVQ2RR_SetLevelTransition(qboolean transition);
+#endif
 
 //svq2_ents.c
 void SVQ2_BuildClientFrame (client_t *client);

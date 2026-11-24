@@ -1499,7 +1499,7 @@ static const char *SVQ2_GetQ2EXConfigString(int i)
 	REMAPR(ITEMS, ITEMS)
 	REMAPR(PLAYERSKINS, CLIENTS)
 	REMAPR(GENERAL, GENERAL)
-	return NULL;
+	return SVQ2_GetExtraConfigstring(i);	//models beyond 256, and the rerelease game's own (weapon wheel...)
 }
 
 void SVQ2_ConfigStrings_f (void)

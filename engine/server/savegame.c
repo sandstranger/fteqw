@@ -1049,7 +1049,9 @@ void SV_SaveLevelCache(const char *savedir, qboolean dontharmgame)
 
 		if (!FS_SystemPath(name, FS_GAMEONLY, syspath, sizeof(syspath)))
 			return;
+		SVQ2RR_SetLevelTransition(!savedir);	//the rerelease's game leaves the players out of a level it's leaving
 		ge->WriteLevel(syspath);
+		SVQ2RR_SetLevelTransition(false);
 
 		if (savedir)
 			Q_snprintfz (name, sizeof(name), "saves/%s/%s.lvx", savedir, svs.name);

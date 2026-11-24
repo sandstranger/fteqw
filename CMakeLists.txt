@@ -716,6 +716,7 @@ SET(FTE_SERVER_FILES
 #	engine/server/svhl_world.c
 	engine/server/svq2_ents.c
 	engine/server/svq2_game.c
+	engine/server/svq2_rerelease.c
 	engine/server/sv_h2fx.c
 	engine/server/sv_held_coverage.c
 	engine/server/sv_held_clock.c

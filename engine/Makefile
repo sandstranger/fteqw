@@ -955,6 +955,7 @@ SERVER_OBJS = 		\
 	savegame.o		\
 	svq2_ents.o 	\
 	svq2_game.o 	\
+	svq2_rerelease.o	\
 	sv_h2fx.o		\
 	webgen.o		\
 	ftpserver.o		\
