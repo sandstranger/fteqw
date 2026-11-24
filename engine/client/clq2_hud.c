@@ -574,6 +574,16 @@ qboolean CLQ2_CGPicSize(const char *name, int *w, int *h)
 {
 	return Q2S_FindPic(name, w, h) != NULL;
 }
+//is there such a picture (waiting for it to load, where CLQ2_CGPicSize would say no meanwhile)
+qboolean CLQ2_CGPicExists(const char *name)
+{
+	mpic_t *pic;
+	if (*name == '/' || *name == '\\')
+		pic = R2D_SafeCachePic(name+1);
+	else
+		pic = Sbar_Q2CachePic(name);
+	return pic && R_GetShaderSizes(pic, NULL, NULL, true) > 0;
+}
 void CLQ2_CGPic(float x, float y, float w, float h, const char *name, const float *rgba)
 {
 	int pw, ph;
@@ -606,7 +616,10 @@ void CLQ2_DrawHUD(int seat, const vrect_t *area)
 	int playernum = cl.q2frame.seat[seat].clientnum;
 
 	if (CLQ2CG_DrawHUD(seat, area))
-		return;	//the rerelease's own hud
+	{	//the rerelease's own hud, and KEX's weapon wheel
+		CLQ2CG_WheelDraw(seat, area);
+		return;
+	}
 
 	Q2S_SetArea(area->x, area->y, area->width, area->height);
 	R2D_ImageColours(1, 1, 1, 1);

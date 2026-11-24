@@ -1878,6 +1878,7 @@ void CLQ2_DrawPicScaled(float x, float y, const char *name, float scale);	//scre
 void CLQ2_DrawCharScaled(float x, float y, int num, float scale);			//screen pixels, Quake 2 charset
 qboolean CLQ2_CGBegin(const vrect_t *area, int *w, int *h);				//the rerelease cgame's drawing (clq2_hud.c)
 qboolean CLQ2_CGPicSize(const char *name, int *w, int *h);
+qboolean CLQ2_CGPicExists(const char *name);
 void CLQ2_CGPic(float x, float y, float w, float h, const char *name, const float *rgba);
 float CLQ2_CGChar(float x, float y, float size, unsigned int codepoint, const float *rgba);
 //the Quake II rerelease's cgame (clq2_cgame.c): its hud
@@ -1891,6 +1892,12 @@ qboolean CLQ2CG_CenterPrint(int seat, const char *str, qboolean instant);
 qboolean CLQ2CG_DrawHUD(int seat, const vrect_t *area);
 qboolean CLQ2CG_HideCrosshair(int seat);
 qboolean CLQ2CG_CanPmove(void);
+qboolean CLQ2CG_WheelOpen(qboolean powerup);
+qboolean CLQ2CG_WheelClose(qboolean released);
+qboolean CLQ2CG_WheelCycle(int offset);
+qboolean CLQ2CG_WheelMouse(float x, float y);
+int CLQ2CG_WheelButtons(int buttons);
+void CLQ2CG_WheelDraw(int seat, const vrect_t *area);
 void CLQ2CG_Pmove(void *rrpmove);
 #ifdef HEXEN2
 void CLH2_InitHUD(void);									//uHexen2's status bar and its commands (clh2_hud.c)

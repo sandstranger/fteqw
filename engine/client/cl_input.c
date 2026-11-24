@@ -769,6 +769,10 @@ qboolean IN_WeaponWheelIsShown(void)
 }
 qboolean IN_WeaponWheelAccumulate(int pnum, float x, float y, float threshhold) //either mouse or controller
 {
+#ifdef Q2CLIENT
+	if (cls.protocol == CP_QUAKE2 && pnum == 0 && (!threshhold || x*x+y*y > threshhold*threshhold) && CLQ2CG_WheelMouse(x, y))
+		return true;	//the rerelease's weapon wheel
+#endif
 	if (!(in_wwheel.state[pnum]&1) || !weaponinfo_count)
 		return false;
 
@@ -863,6 +867,10 @@ void IN_WWheelDown (void)
 	if (CSQC_ConsoleCommand(pnum, Cmd_Argv(0)))
 		return;
 #endif
+#ifdef Q2CLIENT
+	if (cls.protocol == CP_QUAKE2 && CLQ2CG_WheelOpen(false))
+		return;	//the rerelease's
+#endif
 	if (!(in_wwheel.state[pnum]&1))
 	{
 		size_t w;
@@ -888,16 +896,28 @@ void IN_WWheelUp (void)
 	if (CSQC_ConsoleCommand(pnum, Cmd_Argv(0)))
 		return;
 #endif
+#ifdef Q2CLIENT
+	if (cls.protocol == CP_QUAKE2 && CLQ2CG_WheelClose(true))
+		return;	//the rerelease's
+#endif
 	if (!KeyUp(&in_wwheel))
 		return;
 	if (wwheelsel[pnum] < weaponinfo_count)
 		CL_QueueImpulse(pnum, weaponinfo[wwheelsel[pnum]].impulse);
 }
 void IN_IWheelDown (void)
-{
+{	//the rerelease's powerup wheel
+#ifdef Q2CLIENT
+	if (cls.protocol == CP_QUAKE2)
+		CLQ2CG_WheelOpen(true);
+#endif
 }
 void IN_IWheelUp (void)
 {
+#ifdef Q2CLIENT
+	if (cls.protocol == CP_QUAKE2)
+		CLQ2CG_WheelClose(true);
+#endif
 }
 #else
 #define IN_DoPostSelect()
@@ -905,13 +925,21 @@ void IN_IWheelUp (void)
 #endif
 
 
-//q2e compat. too lazy to use the wwheel info. let the gamecode do it the old way.
+//q2e compat: the rerelease's weapon carousel, when its cgame is here. else the gamecode does it the old way.
 void IN_WeapNext_f (void)
 {
+#ifdef Q2CLIENT
+	if (cls.protocol == CP_QUAKE2 && CLQ2CG_WheelCycle(1))
+		return;
+#endif
 	CL_SendClientCommand(true, "weapnext");
 }
 void IN_WeapPrev_f (void)
 {
+#ifdef Q2CLIENT
+	if (cls.protocol == CP_QUAKE2 && CLQ2CG_WheelCycle(-1))
+		return;
+#endif
 	CL_SendClientCommand(true, "weapprev");
 }
 
@@ -2812,6 +2840,8 @@ qboolean CLQ2_SendCmd (sizebuf_t *buf)
 				cmd->buttons |= 1<<3;	//jump
 			else if (cmd->upmove <= -100)
 				cmd->buttons |= 1<<4;	//crouch
+			if (seat == 0)
+				cmd->buttons = CLQ2CG_WheelButtons(cmd->buttons);	//holstered while the weapon wheel's open...
 		}
 		else
 		{
