@@ -161,12 +161,14 @@ void *CLDKF_ModelForIndex(int modelindex)
 #define DKRF_GLOW			0x00000200
 #define DKRF_SPOTLIGHT		0x00008000
 #define DKRF_NODRAW			0x00080000
+#define DKRF_PARTICLEVOLUME	0x04000000
 void CLDKF_AddEntity(void *model, const float *origin, const float *oldorigin, const float *angles, int frame, int oldframe,
 	float backlerp, int skinnum, float alpha, float scale, const float *rgb, unsigned int dkrenderfx)
 {
 	entity_t *ent;
-	if (!model || (dkrenderfx & (DKRF_NODRAW|DKRF_SPOTLIGHT)))
-		return;	//(its renderer drew spotlights as volumes, to render_scale: not yet)
+	if (!model || (dkrenderfx & (DKRF_NODRAW|DKRF_SPOTLIGHT|DKRF_PARTICLEVOLUME)))
+		return;	//(its renderer drew spotlights as volumes, to render_scale: not yet; particle volumes are its
+				//client's rain and snow, in their brush model's bounds, not the brushes)
 	ent = CL_NewTempEntity();
 	if (!ent)
 		return;
@@ -289,6 +291,19 @@ void *CLDKF_RegisterParticleShader(void)
 				"alphagen vertex\n"
 			"}\n"
 		"}\n");
+}
+void *CLDKF_RegisterBeamShader(const char *texture)
+{	//its beams' (gl_beams.cpp): blended over the scene, coloured and faded by their vertices
+	return R_RegisterShader(va("dkbeam:%s", texture?texture:"none"), SUF_NONE,
+		va("{\n"
+			"cull disable\n"
+			"{\n"
+				"map %s\n"
+				"blendfunc blend\n"
+				"rgbgen vertex\n"
+				"alphagen vertex\n"
+			"}\n"
+		"}\n", texture?texture:"$whiteimage"));
 }
 void *CLDKF_RegisterSound(const char *name)
 {

@@ -1858,6 +1858,7 @@ void CL_AddPacketEntities (frame_t *frame)
 //			ent.skinnum = 255 << 0 | 255 << 8 | 255 << 16;
 			ent.skinnum = s1->skinnum;
 			ent.model = NULL;
+			ent.mins = s1->mins;	//FTE: its direction (beam_DrawBeam's), which it had from whatever was before
 		}
 		else
 		{

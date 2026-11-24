@@ -30,6 +30,9 @@ void CL_AddDLights(void);
 void CL_AddTrackEnts(void);
 void CLDK_EntitiesReset(void);	//cldk_ents.cpp's
 void CLDK_AddEntities(void);
+void CLDK_RegisterBeams(void);	//cldk_beams.cpp's
+void CLDK_DrawBeams(void);
+void CLDK_DrawEntityBeam(entity_t *e);
 
 /*
 =====================================================================
@@ -82,9 +85,40 @@ trace_t CL_TraceLine(const CVector &start, const CVector &end, int passent_num, 
 	tr.ent = (struct edict_s *)(size_t)ent;	//its client's traces had entity numbers there
 	return tr;
 }
-//cl_pv.cpp's particle volumes (rain, snow...) aren't here yet
-void CL_AddDripSplash(cparticle_t *p)	{}
-void CL_ClearPVolumes(void)				{}
+//cl_view.cpp's: the particle volumes (rain, snow, drips: cl_pv.cpp's) its renderer generated particles in, as
+//they came into view
+int					r_numparticleVolumes;
+particleVolume_t	r_particleVolumes[MAX_PARTICLEVOLUMES];
+static cvar_t		cv_particlevol = {(char *)"cl_particlevol"};
+cvar_t				*cl_particlevol = &cv_particlevol;
+void CL_AddParticleVolumes(void);
+void CL_GenerateVolumeParticles(uintptr_t key, int type, CVector &mins, CVector &maxs, float dist, int flags);
+void CL_RemoveParticleVolume(uintptr_t key);
+
+static void CLDK_ParticleVolumes(void)
+{
+	int i, k;
+	cv_particlevol.value = CLDKF_CvarValue("cl_particlevol", "1");
+	CL_AddParticleVolumes();
+	for (i = 0; i < r_numparticleVolumes; i++)
+	{
+		particleVolume_t *pv = &r_particleVolumes[i];
+		bool infront = false;
+		if (pv->bVisible)
+		{	//its renderer's frustum cull, roughly: any corner of its box in front of the view
+			for (k = 0; k < 8 && !infront; k++)
+			{
+				CVector c((k&1)?pv->maxs.x:pv->mins.x, (k&2)?pv->maxs.y:pv->mins.y, (k&4)?pv->maxs.z:pv->mins.z);
+				c = c - cl.refdef.vieworg;
+				infront = DotProduct(c, cl.v_forward) > 0;
+			}
+		}
+		if (infront)
+			CL_GenerateVolumeParticles((uintptr_t)pv, pv->type, pv->mins, pv->maxs, pv->dist, pv->effects);
+		else
+			CL_RemoveParticleVolume((uintptr_t)pv);
+	}
+}
 
 /*
 =====================================================================
@@ -121,6 +155,11 @@ its refresh
 */
 void V_AddEntity(entity_t *ent)
 {
+	if (ent->flags & RF_BEAM_MOVING)
+	{	//its renderer drew these as beams
+		CLDK_DrawEntityBeam(ent);
+		return;
+	}
 	float o[3] = {ent->origin.x, ent->origin.y, ent->origin.z};
 	float oo[3] = {ent->oldorigin.x, ent->oldorigin.y, ent->oldorigin.z};
 	float a[3] = {ent->angles.x, ent->angles.y, ent->angles.z};
@@ -327,6 +366,7 @@ extern "C" void CLDK_AddScene(void)
 		CL_RegisterTEntModels();
 		CL_RegisterTEntSounds();
 		pshader = CLDKF_RegisterParticleShader();
+		CLDK_RegisterBeams();
 	}
 
 	numparts = 0;
@@ -335,8 +375,10 @@ extern "C" void CLDK_AddScene(void)
 	CL_AddTEnts();
 	CL_AddParticles();
 	CL_AddDLights();
+	CLDK_ParticleVolumes();
 	CL_AddComParticles();
 	CL_AddTrackEnts();
+	CLDK_DrawBeams();
 
 	if (numparts)
 		CLDKF_AddTriangles(pshader, numparts*3, pxyz, pst, prgba);

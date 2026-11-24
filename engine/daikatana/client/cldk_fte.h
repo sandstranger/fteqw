@@ -37,6 +37,7 @@ void		CLDKF_AddEntity(void *model, const float *origin, const float *oldorigin, 
 void		CLDKF_AddLight(const float *origin, float radius, float r, float g, float b);
 void		CLDKF_AddTriangles(void *shader, int numverts, const float *xyz, const float *st, const float *rgba);
 void		*CLDKF_RegisterParticleShader(void);
+void		*CLDKF_RegisterBeamShader(const char *texture);	//blended, vertex colours, both sides; null: untextured
 void		*CLDKF_RegisterSound(const char *name);
 void		CLDKF_StartSound(void *sfx, const float *origin, int entnum, int channel, float volume, float attenuation, float timeofs);
 float		CLDKF_Trace(const float *start, const float *end, int passent, int mask, float *endpos, float *normal, int *entnum, int *contents);

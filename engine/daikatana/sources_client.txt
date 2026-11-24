@@ -5,6 +5,8 @@ client/cl_hudmsg.cpp
 client/cl_tent.cpp
 client/cl_ents.cpp
 client/cldk_ents.cpp
+client/cldk_beams.cpp
+client/cl_pv.cpp
 client/cl_fx.cpp
 client/dk_beams.cpp
 client/dk_cl_curve.cpp

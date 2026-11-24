@@ -53,7 +53,10 @@
 #define cl_mod_surfacemarks dkcl_cl_mod_surfacemarks
 #define cl_numcomparticles dkcl_cl_numcomparticles
 #define cl_numparticles dkcl_cl_numparticles
+#define cl_numpvolumes dkcl_cl_numpvolumes
 #define cl_parse_entities dkcl_cl_parse_entities
+#define cl_particlevol dkcl_cl_particlevol
+#define cl_pvolumes dkcl_cl_pvolumes
 #define cl_savegem_count dkcl_cl_savegem_count
 #define cl_sfx_SWwater dkcl_cl_sfx_SWwater
 #define cl_sfx_SWwhoosh dkcl_cl_sfx_SWwhoosh
@@ -133,6 +136,8 @@
 #define particles dkcl_particles
 #define projectile_fx_funcs dkcl_projectile_fx_funcs
 #define r_foginfo dkcl_r_foginfo
+#define r_numparticleVolumes dkcl_r_numparticleVolumes
+#define r_particleVolumes dkcl_r_particleVolumes
 #define re dkcl_re
 #define right dkcl_right
 #define sb_info dkcl_sb_info

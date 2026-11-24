@@ -29,14 +29,18 @@ void	CL_AddLightFlares(frame_t *frame);
 void	CL_AddWeaponModels(void);
 void	CLDK_SetNextFrame(int entnum, int frame);
 
+void	CL_InitClientSideParticleVolume(entity_state_t *ent);	//cl_pv.cpp's
+
 //each entity's state as its client keeps it: the server's, and its animation's
 static entity_state_t	dkstate[MAX_EDICTS];
 static int				dkfteframe[MAX_EDICTS];	//the frame Quake II's state had last
+static bool				dkpvolume[MAX_EDICTS];	//its particle volume's been set up (CL_ParseDelta did it as the bounds came)
 
 void CLDK_EntitiesReset(void)
 {
 	memset(dkstate, 0, sizeof(dkstate));
 	memset(dkfteframe, 0, sizeof(dkfteframe));
+	memset(dkpvolume, 0, sizeof(dkpvolume));
 	memset(cl_parse_entities, 0, sizeof(cl_parse_entities));
 	memset(backframe, 0, sizeof(backframe));
 	memset(frontframe, 0, sizeof(frontframe));
@@ -173,6 +177,11 @@ static void CLDK_EntitiesFrame(void)
 		cent = &cl_entities[num];
 		s->number = num;
 		SetState(s, &cur);
+		if ((s->renderfx & RF_PARTICLEVOLUME) && !dkpvolume[num] && s->effects2 && s->maxs.z > s->mins.z)
+		{	//rain, snow, drips in its bounds (cl_pv.cpp)
+			dkpvolume[num] = true;
+			CL_InitClientSideParticleVolume(s);
+		}
 
 		//the frame: its animation's, synced to the server's as it was (as it comes into view, as the server
 		//changes the frame of what isn't animated)
