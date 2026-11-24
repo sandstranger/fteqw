@@ -300,6 +300,15 @@ void CLQ2FX_TeleporterParticles(const vec3_t origin)
 {
 	Q2FX_TeleporterParticles(origin);
 }
+qboolean CLQ2FX_FootstepsEnabled(void)
+{
+	return !!cl_footsteps.ival;
+}
+//the rerelease's monster muzzle flashes, past the original's 210
+void Q2FXSYS_MuzzleFlash2Ex(int entnum, int flash_number)
+{
+	CLQ2EX_MuzzleFlash2(entnum, flash_number);
+}
 //the rerelease's effects past bit 31: 0 EF_TELEPORTER2, 1 EF_HOLOGRAM, 2 EF_BARREL_EXPLODING
 void CLQ2FX_RereleaseParticles(int effect, const vec3_t origin)
 {

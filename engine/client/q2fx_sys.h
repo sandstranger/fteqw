@@ -25,7 +25,8 @@ void Q2FX_ParseMuzzleFlash(void);	/* svc_muzzleflash */
 void Q2FX_ParseMuzzleFlash2(void);	/* svc_muzzleflash2 */
 void Q2FX_EntityEvent(int number, int event, const float *origin);	/* footsteps, teleports, item respawns */
 void Q2FX_TeleporterParticles(const float *origin);				/* EF_TELEPORTER */
-void Q2FX_RereleaseParticles(int effect, const float *origin);	/* the rerelease's: 0 EF_TELEPORTER2, 1 EF_HOLOGRAM, 2 EF_BARREL_EXPLODING */
+void Q2FX_RereleaseParticles(int effect, const float *origin);
+void Q2FXSYS_MuzzleFlash2Ex(int entnum, int flash_number);		/* FTE's: the rerelease's MZ2_ past the original's 210 */	/* the rerelease's: 0 EF_TELEPORTER2, 1 EF_HOLOGRAM, 2 EF_BARREL_EXPLODING */
 
 /* an entity (re)appeared, or teleported: its trails start from origin */
 void Q2FX_EntityReset(int entnum, const float *origin);

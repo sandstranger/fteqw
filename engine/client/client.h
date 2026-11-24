@@ -1943,6 +1943,9 @@ void CLQ2FX_EntityEffects(int entnum, int effects, int frame, const vec3_t origi
 void CLQ2FX_EntityEvent(int entnum, int event, const vec3_t origin);
 void CLQ2FX_TeleporterParticles(const vec3_t origin);
 void CLQ2FX_RereleaseParticles(int effect, const vec3_t origin);
+qboolean CLQ2FX_FootstepsEnabled(void);
+void CLQ2EX_MuzzleFlash2(int ent, int flash_number);
+qboolean CLQ2CG_MonsterFlashOffset(int id, float *offset);
 void CLQ2FX_BeginFrame(void);
 void CLQ2FX_AddEntities(void);
 void CLQ2FX_ClearState(void);

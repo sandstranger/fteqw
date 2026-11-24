@@ -3,6 +3,7 @@
 
 #ifdef Q2CLIENT
 #include "shader.h"
+#include "com_bih.h"	//q2mapsurface_t: a surface's full texture name (for the rerelease's step materials)
 
 //q2pro's framerate scaling runs the entire server at a higher rate (including gamecode).
 //this allows lower latency on player movements without breaking things too much
@@ -305,6 +306,255 @@ void CLQ2_WriteDemoBaselines(sizebuf_t *buf)
 	}
 }
 #endif
+
+
+/*
+=====================================================================
+The rerelease's monster muzzle flashes past the original's 210 (and its mods': REBLIVION's Oblivion monsters), as
+KEX and Q2REPRO's CL_MuzzleFlash2 have them: a light, a sound, sometimes particles and smoke. Where is the cgame's
+to say (GetMonsterFlashOffset: a mod's cgame knows its own monsters'), scaled with the entity.
+=====================================================================
+*/
+static const struct
+{
+	unsigned short first, last;
+	float r, g, b;
+	const char *sound;
+	qbyte fx;			//1: particles, 2: smoke and flash
+} q2exmz2[] =
+{
+	{211, 218,	1, 0.5, 0.5,	"weapons/rippfire.wav", 0},		//MZ2_SOLDIER_RIPPER_1-8
+	{219, 226,	0, 0, 1,		"weapons/hyprbf1a.wav", 0},		//MZ2_SOLDIER_HYPERGUN_1-8
+	{227, 227,	1, 1, 0,		"weapons/hyprbf1a.wav", 0},		//MZ2_GUARDIAN_BLASTER
+	{228, 231,	0.5, 0.5, 1,	NULL, 0},						//MZ2_ARACHNID_RAIL*
+	{232, 239,	1, 1, 0,		"infantry/infatck1.wav", 3},	//MZ2_INFANTRY_MACHINEGUN_14-21
+	{240, 241,	0, 0, 1,		"guncmdr/gcdratck2.wav", 0},	//MZ2_GUNCMDR_CHAINGUN_*
+	{242, 250,	1, 0.5, 0,		"guncmdr/gcdratck3.wav", 0},	//MZ2_GUNCMDR_GRENADE_*
+	{251, 251,	1, 1, 0,		"soldier/solatck2.wav", 0},		//MZ2_SOLDIER_BLASTER_9
+	{252, 252,	1, 1, 0,		"soldier/solatck1.wav", 2},		//MZ2_SOLDIER_SHOTGUN_9
+	{253, 253,	1, 1, 0,		"soldier/solatck3.wav", 3},		//MZ2_SOLDIER_MACHINEGUN_9
+	{254, 254,	1, 0.5, 0.5,	"weapons/rippfire.wav", 0},		//MZ2_SOLDIER_RIPPER_9
+	{255, 255,	0, 0, 1,		"weapons/hyprbf1a.wav", 0},		//MZ2_SOLDIER_HYPERGUN_9
+	{256, 259,	1, 0.5, 0,		"gunner/gunatck3.wav", 0},		//MZ2_GUNNER_GRENADE2_*
+	{260, 260,	1, 1, 0,		"infantry/infatck1.wav", 3},	//MZ2_INFANTRY_MACHINEGUN_22
+	{261, 262,	1, 0.5, 0,		"gunner/gunatck3.wav", 0},		//MZ2_SUPERTANK_GRENADE_*
+	{263, 263,	1, 1, 0,		"hover/hovatck1.wav", 0},		//MZ2_HOVER_BLASTER_2
+	{264, 264,	0, 1, 0,		"tank/tnkatck3.wav", 0},		//MZ2_DAEDALUS_BLASTER_2
+	{265, 276,	1, 1, 0,		"medic/medatck1.wav", 0},		//MZ2_MEDIC_HYPERBLASTER1_*
+	{277, 288,	0, 1, 0,		"tank/tnkatck3.wav", 0},		//MZ2_MEDIC_HYPERBLASTER2_*
+	//REBLIVION's (Oblivion's monsters). KEX doesn't know them; the game plays the kigrax's sound itself
+	{289, 289,	0.5, 0.5, 1,	NULL, 0},						//MZ2_KIGRAX_PLASMA
+	{290, 291,	1, 0.5, 0.2,	"tank/rocket.wav", 0},			//MZ2_SPIDER_ROCKET_*
+	{292, 293,	0.5, 1, 0.5,	NULL, 0},						//MZ2_CYBORG_DEATOM_*
+	{294, 295,	1, 0.5, 0.2,	"tank/tnkatck1.wav", 0},		//MZ2_BADASS_ROCKET_*
+};
+void CLQ2EX_MuzzleFlash2(int ent, int flash_number)
+{
+	vec3_t origin, offset = {0,0,0}, forward, right;
+	entity_state_t *es;
+	dlight_t *dl;
+	float scale;
+	size_t i;
+
+	if (ent < 1 || ent >= MAX_Q2EDICTS)
+		return;
+	for (i = 0; i < countof(q2exmz2); i++)
+		if (flash_number >= q2exmz2[i].first && flash_number <= q2exmz2[i].last)
+			break;
+	if (i == countof(q2exmz2))
+		return;	//not one anyone knows
+
+	es = &cl_entities[ent].current;
+	CLQ2CG_MonsterFlashOffset(flash_number, offset);	//(stays zero without the cgame)
+	scale = es->scale?es->scale/16.f:1;
+	VectorScale(offset, scale, offset);
+	AngleVectors(es->angles, forward, right, NULL);
+	origin[0] = es->origin[0] + forward[0] * offset[0] + right[0] * offset[1];
+	origin[1] = es->origin[1] + forward[1] * offset[0] + right[1] * offset[1];
+	origin[2] = es->origin[2] + forward[2] * offset[0] + right[2] * offset[1] + offset[2];
+
+	dl = CL_AllocDlight (ent);
+	VectorCopy (origin, dl->origin);
+	dl->radius = 200 + (rand()&31);
+	dl->die = cl.time + 0.1;
+	dl->color[0] = q2exmz2[i].r;
+	dl->color[1] = q2exmz2[i].g;
+	dl->color[2] = q2exmz2[i].b;
+
+	if (q2exmz2[i].fx & 1)
+		P_RunParticleEffect (origin, vec3_origin, 0, 40);
+	if (q2exmz2[i].fx & 2)
+		CL_SmokeAndFlash(origin);
+	if (q2exmz2[i].sound)
+		Q2S_StartSound (NULL, ent, CHAN_WEAPON, S_PrecacheSound(q2exmz2[i].sound), 1, ATTN_NORM, 0);
+}
+
+/*
+=====================================================================
+The rerelease's footsteps (KEX's, Q2REPRO's tent.c): textures/<texture>.mat names what a texture is made of, and a
+step on it plays player/steps/<material>N.wav (a ladder's player/steps/ladderN.wav); without one, the original's
+player/stepN.wav. Q2EX's servers send monsters' steps and ladder steps too.
+=====================================================================
+*/
+#define Q2STEP_MAXSFX	16
+typedef struct
+{
+	char material[16];		//"": the original's
+	int num;
+	sfx_t *sfx[Q2STEP_MAXSFX];
+} q2stepset_t;
+static struct
+{
+	model_t *world;
+	q2stepset_t *sets;
+	size_t numsets;
+	struct
+	{
+		char texture[32];
+		int set;
+	} *tex;
+	size_t numtex;
+	sfx_t *last;
+} q2steps;
+
+static int CLQ2_StepSet(const char *material)
+{
+	q2stepset_t *s;
+	char name[MAX_QPATH];
+	size_t i;
+	const char *m = material?material:"";
+
+	for (i = 0; i < q2steps.numsets; i++)
+		if (!Q_strcasecmp(q2steps.sets[i].material, m))
+			return i;
+	q2steps.sets = BZ_Realloc(q2steps.sets, sizeof(*q2steps.sets) * (q2steps.numsets+1));
+	s = &q2steps.sets[q2steps.numsets];
+	memset(s, 0, sizeof(*s));
+	Q_strncpyz(s->material, m, sizeof(s->material));
+	for (s->num = 0; s->num < Q2STEP_MAXSFX; s->num++)
+	{
+		if (*m)
+			Q_snprintfz(name, sizeof(name), "player/steps/%s%i.wav", m, s->num+1);
+		else
+			Q_snprintfz(name, sizeof(name), "player/step%i.wav", s->num+1);
+		if (!COM_FCheckExists(va("sound/%s", name)))
+			break;
+		s->sfx[s->num] = S_PrecacheSound(name);
+	}
+	return q2steps.numsets++;
+}
+static void CLQ2_StepsReset(void)
+{
+	BZ_Free(q2steps.sets);
+	BZ_Free(q2steps.tex);
+	memset(&q2steps, 0, sizeof(q2steps));
+	q2steps.world = cl.worldmodel;
+	CLQ2_StepSet(NULL);	//0: the original's, for everything else
+}
+static int CLQ2_TextureStepSet(const char *texture)
+{
+	char material[16], *file, *s;
+	size_t i, size, len;
+	int set = 0;
+
+	for (i = 0; i < q2steps.numtex; i++)
+		if (!Q_strcasecmp(q2steps.tex[i].texture, texture))
+			return q2steps.tex[i].set;
+
+	file = FS_LoadMallocFile(va("textures/%s.mat", texture), &size);
+	if (file)
+	{	//one word: the material
+		for (s = file; s < file+size && (*s == ' ' || *s == '\t' || *s == '\r' || *s == '\n'); s++)
+			;
+		for (len = 0; s+len < file+size && len < sizeof(material)-1 && ((s[len] >= 'a' && s[len] <= 'z') || (s[len] >= 'A' && s[len] <= 'Z') || (s[len] >= '0' && s[len] <= '9') || s[len] == '_' || s[len] == '-'); len++)
+			material[len] = s[len];
+		material[len] = 0;
+		BZ_Free(file);
+		if (*material && Q_strcasecmp(material, "default"))
+			set = CLQ2_StepSet(material);
+		if (!q2steps.sets[set].num)
+			set = 0;	//no sounds for it
+	}
+
+	q2steps.tex = BZ_Realloc(q2steps.tex, sizeof(*q2steps.tex) * (q2steps.numtex+1));
+	Q_strncpyz(q2steps.tex[q2steps.numtex].texture, texture, sizeof(q2steps.tex[q2steps.numtex].texture));
+	q2steps.tex[q2steps.numtex].set = set;
+	q2steps.numtex++;
+	return set;
+}
+//what the entity stands on: half a step down from its feet (as Q2REPRO)
+static int CLQ2_StepSurface(entity_state_t *s1)
+{
+	extern int predignoreentitynum;
+	q2trace_t VARGS CLQ2_PMTrace (vec3_t start, vec3_t mins, vec3_t maxs, vec3_t end);
+	vec3_t start, end, mins = {0,0,0}, maxs = {0,0,0}, bmins, bmaxs;
+	q2trace_t tr;
+	int ignore = predignoreentitynum;
+
+	VectorCopy(s1->origin, start);
+	start[2] += 1;
+	VectorCopy(start, end);
+	end[2] -= 18/2;
+	if (s1->solidsize && s1->solidsize != ES_SOLID_BSP)
+	{
+		COM_DecodeSize(s1->solidsize, bmins, bmaxs);
+		mins[0] = bmins[0];	mins[1] = bmins[1];
+		maxs[0] = bmaxs[0];	maxs[1] = bmaxs[1];
+		end[2] += bmins[2];
+	}
+	else
+		end[2] -= 66;	//as big as the biggest monster
+
+	predignoreentitynum = s1->number;
+	tr = CLQ2_PMTrace(start, mins, maxs, end);
+	predignoreentitynum = ignore;
+	if (tr.fraction == 1 || !tr.surface)
+		return 0;
+	return CLQ2_TextureStepSet(((q2mapsurface_t*)tr.surface)->rname);	//(the full name: game API 3's has 15 characters of it)
+}
+//Q2EX's step events: true when played (or not, by cl_footsteps)
+static qboolean CLQ2_StepEvent(entity_state_t *s1)
+{
+	float vol = 1, attn = ATTN_NORM;
+	q2stepset_t *set;
+	sfx_t *sfx;
+	int n;
+
+	if (cls.protocol_q2 != PROTOCOL_VERSION_Q2EX || !cl.worldmodel || cl.worldmodel->fromgame != fg_quake2)
+		return false;
+	switch (s1->u.q2.event)
+	{
+	case Q2EV_FOOTSTEP:
+		break;
+	case Q2EXEV_OTHER_FOOTSTEP:	//monsters'
+	case Q2EXEV_LADDER_STEP:
+		vol = 0.5;
+		attn = 2;	//ATTN_IDLE
+		break;
+	default:
+		return false;
+	}
+	if (!CLQ2FX_FootstepsEnabled())
+		return true;
+
+	if (q2steps.world != cl.worldmodel)
+		CLQ2_StepsReset();
+	n = (s1->u.q2.event == Q2EXEV_LADDER_STEP)?CLQ2_StepSet("ladder"):CLQ2_StepSurface(s1);	//(may grow q2steps.sets)
+	set = &q2steps.sets[n];
+	if (!set->num)
+		set = &q2steps.sets[0];
+	if (!set->num)
+		return true;
+
+	//not the same one twice in a row
+	n = rand() % set->num;
+	sfx = set->sfx[n];
+	if (sfx == q2steps.last)
+		sfx = set->sfx[(n+1) % set->num];
+	Q2S_StartSound (NULL, s1->number, CHAN_BODY, sfx, vol, attn, 0);
+	q2steps.last = sfx;
+	return true;
+}
 
 void CLQ2_ClearState(void)
 {
@@ -927,7 +1177,10 @@ void CLQ2EX_ParseMuzzleFlash3 (void)
 
 	flash_number = MSG_ReadUInt16 ();
 
-	CLQ2_RunMuzzleFlash2(ent, flash_number);
+	if (flash_number > 210)
+		CLQ2EX_MuzzleFlash2(ent, flash_number);	//the rerelease's
+	else
+		CLQ2_RunMuzzleFlash2(ent, flash_number);
 }
 
 void CLQ2_ParseInventory (int seat)
@@ -1793,7 +2046,7 @@ void CLQ2_FireEntityEvents (q2frame_t *frame)
 		num = (frame->parse_entities + pnum)&(MAX_PARSE_ENTITIES-1);
 		s1 = &clq2_parse_entities[num];
 		//yquake2's (clq2_fx.c): footsteps, falls, teleports, item respawns
-		if (s1->u.q2.event)
+		if (s1->u.q2.event && !CLQ2_StepEvent(s1))	//(the rerelease's steps: on what)
 			CLQ2FX_EntityEvent (s1->number, s1->u.q2.event, s1->origin);
 
 		// EF_TELEPORTER acts like an event, but is not cleared each frame

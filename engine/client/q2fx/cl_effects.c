@@ -347,8 +347,8 @@ CL_AddMuzzleFlash2(void)
 	flash_number = MSG_ReadByte(&net_message);
 
 	if (flash_number > 210)
-	{
-		Com_DPrintf("%s: bad offset\n", __func__);
+	{	/* the rerelease's (and its mods'): FTE's, with the cgame's offsets */
+		Q2FXSYS_MuzzleFlash2Ex(entnum, flash_number);
 		return;
 	}
 

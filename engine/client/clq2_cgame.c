@@ -495,6 +495,15 @@ qboolean CLQ2CG_HideCrosshair(int seat)
 	return !!(cge->LayoutFlags(&ps) & (RR_LAYOUTS_HIDE_CROSSHAIR|RR_LAYOUTS_HIDE_HUD|RR_LAYOUTS_INTERMISSION));
 }
 
+//where a monster's muzzle flash is, from its origin (forward, right, up): the cgame knows its game's (and mod's) monsters
+qboolean CLQ2CG_MonsterFlashOffset(int id, float *offset)
+{
+	if (!cge || !cge->GetMonsterFlashOffset || id < 0 || id > 0xffff)
+		return false;
+	cge->GetMonsterFlashOffset(id, offset);
+	return true;
+}
+
 //the rerelease's player movement, to predict with (cl_pred.c)
 qboolean CLQ2CG_CanPmove(void)
 {
