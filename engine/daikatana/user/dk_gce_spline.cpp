@@ -1,10 +1,11 @@
-#include "ref.h"
+//FTE: the game's (its cinematics' cameras, fte/cin_*.cpp) and its client's (dk_cl_curve.cpp): its client's headers out
+#include "dk_shared.h"
+#include "memmgrcommon.h"
 
 #include "dk_array.h"
 #include "dk_point.h"
 #include "dk_gce_spline.h"
 #include "dk_misc.h"
-#include "dk_beams.h"
 #include "dk_cin_types.h"
 
 CCubicSpline::CCubicSpline() {
@@ -876,8 +877,9 @@ void CSplineSequenceComponent::ComputeSplines(int num_positions, const CVector *
 //to position the laser entities.  max_angle (in degrees) affects the smoothness of the curve by specifying
 //the maximum allowed angle between adjacent entities.  max_length specifies the maximum length of
 //any entity
-int CSplineSequence::MakeCurveEntities(entity_t *reference_entity, entity_t *(*entity_alloc)(), 
-    float max_angle, float max_length) 
+#if 0	//FTE: its editor's (gce.dll), with its client's entity_t
+int CSplineSequence::MakeCurveEntities(entity_t *reference_entity, entity_t *(*entity_alloc)(),
+    float max_angle, float max_length)
 {
     if (reference_entity == NULL) return 0;
     if (entity_alloc == NULL) return 0;
@@ -1020,6 +1022,7 @@ void CSplineSequence::MakeCurveEntity(float time_start, float time_end, int segm
     //store the segment number in the oldframe field
     entity->oldframe = segment_num;
 }
+#endif
 
 CSplineSequenceComponent::CSplineSequenceComponent() {
     num_points = 0;

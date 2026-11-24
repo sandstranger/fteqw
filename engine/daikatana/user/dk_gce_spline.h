@@ -4,6 +4,10 @@
 #define _DK_GCE_SPLINE_H
 
 class CVector;
+//FTE: its client's types, for the editor's (the game's cinematics have splines too, without its client: fte/cin_*.cpp)
+struct entity_s; typedef struct entity_s entity_t;
+struct beam_s; typedef struct beam_s beam_t;
+struct beamSeg_s; typedef struct beamSeg_s beamSeg_t;
 class CCubicSpline;
 class CPointSpline;
 class CSplineSequenceComponent;

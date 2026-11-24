@@ -512,6 +512,24 @@ void CLDKF_DrawIcons(float x, float y, float w, float h, int num, const cldk_ico
 	memcpy(&r_refdef, &saved, sizeof(saved));
 }
 
+//its cinematics (its server's, RDF_LETTERBOX with the player's state): 2:1, the rest black, as its client had them
+#define DKRDF_LETTERBOX	0x0020
+qboolean CLDK_InCinematic(void)
+{
+	return CLDK_IsDaikatana() && cls.state == ca_active && (CLDKF_RDFlags() & DKRDF_LETTERBOX);
+}
+static void CLDK_DrawLetterbox(const vrect_t *area)
+{
+	float h = area->width / 2, bar;
+	if (h >= area->height)
+		return;
+	bar = (area->height - h) / 2;
+	R2D_ImageColours(0, 0, 0, 1);
+	R2D_FillBlock(area->x, area->y, area->width, bar);
+	R2D_FillBlock(area->x, area->y + area->height - bar, area->width, bar);
+	R2D_ImageColours(1, 1, 1, 1);
+}
+
 //the status bar and the rest of its HUD, for the first seat (it had no splitscreen)
 qboolean CLDK_DrawHUDArea(int seat, const vrect_t *area)
 {
@@ -519,6 +537,11 @@ qboolean CLDK_DrawHUDArea(int seat, const vrect_t *area)
 		return false;
 	if (seat)
 		return true;
+	if (CLDK_InCinematic())
+	{	//no HUD in them
+		CLDK_DrawLetterbox(area);
+		return true;
+	}
 	cldkarea.x = area->x;
 	cldkarea.y = area->y;
 	cldkarea.scale = (area->height < 480)?area->height/480.0:1;

@@ -2054,6 +2054,7 @@ qboolean CLDK_DrawHUDArea(int seat, const vrect_t *area);
 void CLDK_ParseServerMessage(void);
 void CLDK_Reset(void);
 void CLDK_AddScene(void);
+qboolean CLDK_InCinematic(void);	//its cinematics letterbox the view (the escape key skips them)
 #endif
 void Media_NumberedTrack(unsigned int initialtrack, unsigned int looptrack);				//legacy cd interface for protocols that only support numbered tracks.
 void Media_EndedTrack(void);	//cd is no longer running, media code needs to pick a new track (cd track or faketrack)

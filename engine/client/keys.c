@@ -4788,6 +4788,10 @@ void Key_Event (unsigned int devid, int key, unsigned int unicode, qboolean down
 				chat_buffer[0] = 0;
 			chat_bufferpos = 0;
 		}
+#if defined(Q2CLIENT) && defined(DAIKATANA)
+		else if (CLDK_InCinematic())
+			Cbuf_AddText("cmd cin_skip\n", RESTRICT_LOCAL);	//Daikatana's escape skips its cinematics
+#endif
 		else
 			M_ToggleMenu_f ();
 		return;

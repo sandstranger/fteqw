@@ -30,6 +30,8 @@ GPL v2 or later.
 #include "vertnormals.h"
 #include "svdk_q2.h"
 #include "dk_fteproto.h"
+#include "dk_cin_types.h"
+#include "dk_cin_playback.h"	//its engine's cinematics (cin_main.cpp)
 
 extern "C" game_export_t *GetGameAPI (game_import_t *import);	//physics' (p_main.cpp)
 extern edict_t *g_edicts;									//physics' too: freed here between levels
@@ -83,6 +85,19 @@ static void DK_Printf(const char *fmt, ...)
 	va_end(argptr);
 	fgi->dprintf("%s", text);
 }
+static cvar_t *DKGI_cvar(const char *name, const char *value, int flags);
+void DKCIN_Printf(const char *fmt, ...)
+{	//(for developers)
+	va_list argptr;
+	char text[2048];
+	cvar_t *dev = DKGI_cvar("developer", "0", 0);
+	if (!dev || !dev->value)
+		return;
+	va_start(argptr, fmt);
+	vsnprintf(text, sizeof(text), fmt, argptr);
+	va_end(argptr);
+	fgi->dprintf("%s", text);
+}
 
 /*
 =====================================================================
@@ -115,6 +130,17 @@ static void DK_PlayerStateToShadow(fq2::player_state_t *o, const player_state_t 
 		o->pmove.velocity[i] = ps->pmove.velocity[i];
 		o->pmove.delta_angles[i] = ps->pmove.delta_angles[i];
 	}
+	if (ps->view_entity > 0 && ps->view_entity < shadowmax && DKEDICT(ps->view_entity)->inuse)
+	{	//its engine's server sent where the view entity (a camera) is as the player's, still (sv_ents.cpp)
+		const edict_t *v = DKEDICT(ps->view_entity);
+		for (i = 0; i < 3; i++)
+		{
+			o->pmove.origin[i] = (short)(v->s.origin[i]*8);
+			o->pmove.velocity[i] = 0;
+		}
+	}
+	if (ps->pmove.pm_flags & PMF_CAMERAMODE)
+		o->pmove.pm_type = fq2::PM_FREEZE;	//the view's the server's (its client didn't predict the angles)
 	//FTE's clients predict with Quake II's pmove, which isn't Daikatana's: not yet
 	o->pmove.pm_flags = (ps->pmove.pm_flags & 0x3f) | PMF_NO_PREDICTION;
 	o->pmove.pm_time = ps->pmove.pm_time;
@@ -135,6 +161,21 @@ static void DK_PlayerStateToShadow(fq2::player_state_t *o, const player_state_t 
 		o->blend[i] = ps->blend[i];
 	o->fov = ps->fov;
 	o->rdflags = ps->rdflags;
+	if (CIN_Running())
+	{	//its cinematics: letterboxed (its client did it), the script's fov and fades
+		o->rdflags |= RDF_LETTERBOX;
+		if (CIN_RunningWithCamera())
+		{
+			o->fov = ScriptFOVCurrent();
+			if (ScriptColorFading())
+			{
+				o->blend[0] = ScriptRCurrent()/SCRIPT_COLOR_MAX;
+				o->blend[1] = ScriptGCurrent()/SCRIPT_COLOR_MAX;
+				o->blend[2] = ScriptBCurrent()/SCRIPT_COLOR_MAX;
+				o->blend[3] = ScriptACurrent()/SCRIPT_COLOR_MAX;
+			}
+		}
+	}
 	for (i = 0; i < fq2::Q2MAX_STATS; i++)
 	{
 		long v = ps->stats[i];
@@ -532,9 +573,49 @@ static void DKGI_StartSound(const CVector &origin, edict_t *ent, int channel, in
 }
 static void DKGI_set_reverb_preset(int preset) {}
 static void DKGI_streamed_sound(const char *name, float vol) {}
-static void DKGI_StartMusic(const char *name, int chan, edict_t *ent) {}
-static void DKGI_StartMP3(const char *name, int chan, float fvol, int play_count, qboolean bRestart, edict_t *ent) {}
-static void DKGI_StopMP3(int chan, edict_t *ent) {}
+//its music and voices, as its engine's server sent them (sv_send.cpp: reliably here, they're not to miss)
+static void DKGI_WriteByte(int c);
+static void DKGI_WriteShort(int c);
+static void DKGI_WriteFloat(float f);
+static void DKGI_WriteString(char *s);
+static void DKGI_multicast(const CVector &origin, multicast_t to);
+static void DKGI_unicast(edict_t *ent, qboolean reliable);
+static void DKGI_StartMusic(const char *name, int chan, edict_t *ent)
+{
+	if (!name)
+		return;
+	DKGI_WriteByte(SVC_START_MUSIC);
+	DKGI_WriteString((char *)name);
+	DKGI_WriteShort(chan);
+	if (ent)
+		DKGI_unicast(ent, true);
+	else
+		DKGI_multicast(CVector(0, 0, 0), MULTICAST_ALL_R);
+}
+static void DKGI_StartMP3(const char *name, int chan, float fvol, int play_count, qboolean bRestart, edict_t *ent)
+{
+	if (!name)
+		return;
+	DKGI_WriteByte(SVC_START_MP3);
+	DKGI_WriteString((char *)name);
+	DKGI_WriteShort(chan);
+	DKGI_WriteFloat(fvol);
+	DKGI_WriteShort(play_count);
+	DKGI_WriteByte(bRestart);
+	if (ent)
+		DKGI_unicast(ent, true);
+	else
+		DKGI_multicast(CVector(0, 0, 0), MULTICAST_ALL_R);
+}
+static void DKGI_StopMP3(int chan, edict_t *ent)
+{
+	DKGI_WriteByte(SVC_STOP_MP3);
+	DKGI_WriteShort(chan);
+	if (ent)
+		DKGI_unicast(ent, true);
+	else
+		DKGI_multicast(CVector(0, 0, 0), MULTICAST_ALL_R);
+}
 
 /*
 =====================================================================
@@ -1594,17 +1675,175 @@ static void DKGI_RemoveDLLCommands(void)
 		free(c);
 	}
 }
-static int DKGI_GetArgc(void)					{return fgi->argc();}
-static char *DKGI_GetArgv(int n)				{return fgi->argv(n);}
-static char *DKGI_GetArgs(void)					{return fgi->args();}
-static void DKGI_CBuf_AddText(const char *text)	{fgi->AddCommandString(text);}
+//a command's args: FTE's, or ours as we run the game's commands ourselves (its engine's console did: what its
+//cinematics stuff, cin_main.cpp)
+static int		dkargc = -1;	//-1: FTE's
+static char		dkargv[8][256], dkargs[1024];
+static void DK_TokenizeArgs(const char *line)
+{
+	const char *s = line;
+	dkargc = 0;
+	dkargs[0] = 0;
+	while (*s && dkargc < 8)
+	{
+		int n = 0;
+		while (*s == ' ' || *s == '\t')
+			s++;
+		if (!*s || *s == '\n' || *s == ';')
+			break;
+		if (dkargc == 1)
+			snprintf(dkargs, sizeof(dkargs), "%s", s);
+		if (*s == '\"')
+		{
+			for (s++; *s && *s != '\"' && *s != '\n'; s++)
+				if (n < 255)
+					dkargv[dkargc][n++] = *s;
+			if (*s == '\"')
+				s++;
+		}
+		else
+			for (; *s && *s != ' ' && *s != '\t' && *s != '\n' && *s != ';'; s++)
+				if (n < 255)
+					dkargv[dkargc][n++] = *s;
+		dkargv[dkargc++][n] = 0;
+	}
+	{	//(the args to the line's end)
+		char *e = strpbrk(dkargs, "\n;");
+		if (e)
+			*e = 0;
+	}
+}
+static int DKGI_GetArgc(void)					{return (dkargc >= 0)?dkargc:fgi->argc();}
+static char *DKGI_GetArgv(int n)				{return (dkargc >= 0)?((n >= 0 && n < dkargc)?dkargv[n]:(char *)""):fgi->argv(n);}
+static char *DKGI_GetArgs(void)					{return (dkargc >= 0)?dkargs:fgi->args();}
+int DKCIN_Argc(void)							{return DKGI_GetArgc();}
+const char *DKCIN_Argv(int i)					{return DKGI_GetArgv(i);}
+static dkcmd_t *DK_FindCommand(const char *name)
+{
+	dkcmd_t *c;
+	for (c = dkcmds; c; c = c->next)
+		if (!strcasecmp(c->name, name))
+			return c;
+	return NULL;
+}
+
+//what the game stuffs: its cinematics' commands are ours (cin_main.cpp), the rest FTE's
+static void DKGI_CBuf_AddText(const char *text)
+{
+	const char *line = text;
+	while (line && *line)
+	{
+		const char *end = strchr(line, '\n');
+		char buf[1024];
+		int len = end?(int)(end - line):(int)strlen(line);
+		if (len >= (int)sizeof(buf))
+			len = sizeof(buf)-1;
+		memcpy(buf, line, len);
+		buf[len] = 0;
+		DK_TokenizeArgs(buf);
+		if (dkargc > 0 && !strncasecmp(dkargv[0], "cin_", 4) && CIN_Command())
+			;
+		else if (len)
+		{
+			strcat(buf, "\n");
+			fgi->AddCommandString(buf);
+		}
+		dkargc = -1;
+		line = end?end+1:NULL;
+	}
+}
 static void DKGI_DebugGraph(float value, int color)	{}
 static int DKGI_EXEGetArgc(void)				{return SVDK_ExeArgc();}
 static char *DKGI_EXEGetArgv(int i)				{return (char *)SVDK_ExeArgv(i);}
 static int DKGI_Sys_Milliseconds(void)			{return SVDK_Milliseconds();}
-static void DKGI_CIN_CamLocation(const CVector &pos, const CVector &angles)	{}
-static void *DKGI_CIN_GCE_Interface(void)		{return NULL;}
-static void DKGI_CIN_WorldPlayback(void *funcs)	{}
+//its cinematics (cin_main.cpp): the camera's where the script has it (the world's camera asks for it into its
+//origin and angles)
+static void DKGI_CIN_CamLocation(const CVector &pos, const CVector &angles)
+{
+	CIN_CamLocation(const_cast<CVector &>(pos), const_cast<CVector &>(angles));
+}
+static void *DKGI_CIN_GCE_Interface(void)		{return NULL;}	//(its editor's)
+static void DKGI_CIN_WorldPlayback(void *funcs)	{CIN_WorldImport(funcs);}
+
+//what the cinematics have of its engine
+static dkcmd_t *DK_FindCommand(const char *name);
+extern "C++" void DKCIN_Command(const char *text)
+{	//its own (cin_*), the game's for the player (cam_toggle cin_on), FTE's
+	char buf[1024];
+	dkcmd_t *c;
+	edict_t *player;
+	if (!text)
+		return;
+	snprintf(buf, sizeof(buf), "%s", text);
+	DK_TokenizeArgs(buf);
+	if (dkargc > 0 && !strncasecmp(dkargv[0], "cin_", 4) && CIN_Command())
+		;
+	else if (dkargc > 0 && (c = DK_FindCommand(dkargv[0])) && dkge && (player = DKEDICT(1))->inuse && player->client)
+	{
+		c->function(player);
+		DK_SyncAll();
+	}
+	else if (dkargc > 0)
+		fgi->AddCommandString(buf);
+	dkargc = -1;
+}
+extern "C++" FILE *DKCIN_OpenFile(const char *path)
+{	//as a FILE it reads with fread: a temporary one with what's in the paks
+	int len;
+	void *buf = SVDK_LoadFile(DK_FilePath(path), &len);
+	FILE *f;
+	if (!buf)
+		return NULL;
+	f = tmpfile();
+	if (f)
+	{
+		if (fwrite(buf, 1, len, f) != (size_t)len)
+		{
+			fclose(f);
+			f = NULL;
+		}
+		else
+			rewind(f);
+	}
+	SVDK_FreeFile(buf);
+	return f;
+}
+extern "C++" void DKCIN_CloseFile(FILE *f)
+{
+	if (f)
+		fclose(f);
+}
+extern "C++" void DKCIN_PlaySound(const char *name, int channel, float volume, bool loop)
+{	//to the player, heard wherever the camera is (its client played them on the player)
+	int idx;
+	if (!name || !*name)
+		return;
+	idx = DKGI_soundindex(name);
+	if (channel < 0 || idx <= 0 || !dkge)
+		return;	//(precached only)
+	fgi->sound(&shadow[1], channel & 7, idx, (volume > 1)?1:((volume < 0)?0:volume), 0/*ATTN_NONE*/, 0);
+}
+extern "C++" void DKCIN_PlayMP3(const char *name, int channel, float volume, bool loop)
+{
+	DKGI_StartMP3(name, channel, volume, loop?0:1, TRUE, NULL);
+}
+extern "C++" void DKCIN_StopMP3(int channel)
+{
+	DKGI_StopMP3(channel, NULL);
+}
+extern "C++" int DKCIN_PlayerNum(void)		{return 0;}
+extern "C++" float DKCIN_CvarValue(const char *name, const char *defaultvalue)
+{
+	cvar_t *v = DKGI_cvar(name, defaultvalue, 0);
+	return v?v->value:atof(defaultvalue);
+}
+extern "C++" void DKCIN_CvarSet(const char *name, float value)
+{
+	char s[64];
+	snprintf(s, sizeof(s), "%g", value);
+	DKGI_cvar_set(name, s);
+}
+extern "C++" int DKCIN_Milliseconds(void)	{return SVDK_Milliseconds();}
 static void DKGI_SV_EmitSyncEntity(edict_t *client, edict_t *ent)	{}
 static short DKGI_IsPlayerLocal(int playernum)	{return SVDK_IsLocalClient(playernum);}
 static void DKGI_AutoSave(void)					{}
@@ -1628,9 +1867,50 @@ static void DK_Free(void)
 	ge3.num_edicts = ge3.max_edicts = 0;
 }
 
+//its engine's server's cvars (sv_main.cpp), which it made before the game's (whose defaults don't count then)
+static const struct
+{
+	const char *name, *value;
+	int flags;
+} dkenginecvars[] =
+{
+	{"sv_demomode",			"0",	0},	//(the game's default is 1: no intro cinematics)
+	{"sv_cinematics",		"1.0",	CVAR_ARCHIVE},
+	{"sv_frictionfactor",	"1.0",	CVAR_ARCHIVE},
+	{"sv_noreload",			"0",	0},
+	{"sv_mapnum",			"1",	0},
+	{"sv_violence",			"0",	CVAR_SERVERINFO|CVAR_LATCH|CVAR_ARCHIVE},
+	{"skill",				"1",	0},
+	{"ctf",					"0",	CVAR_LATCH},
+	{"deathtag",			"0",	CVAR_LATCH},
+	{"dm_skill_level",		"0",	CVAR_SERVERINFO|CVAR_LATCH},
+	{"dm_max_players",		"0",	CVAR_SERVERINFO|CVAR_LATCH},
+	{"dm_weapons_stay",		"0",	CVAR_SERVERINFO|CVAR_LATCH},
+	{"dm_spawn_farthest",	"0",	CVAR_SERVERINFO|CVAR_LATCH},
+	{"dm_allow_exiting",	"0",	CVAR_SERVERINFO|CVAR_LATCH},
+	{"dm_same_map",			"0",	CVAR_SERVERINFO|CVAR_LATCH},
+	{"dm_force_respawn",	"0",	CVAR_SERVERINFO|CVAR_LATCH},
+	{"dm_falling_damage",	"1",	CVAR_SERVERINFO|CVAR_LATCH},
+	{"dm_allow_powerups",	"1",	CVAR_SERVERINFO|CVAR_LATCH},
+	{"dm_allow_health",		"1",	CVAR_SERVERINFO|CVAR_LATCH},
+	{"dm_allow_armor",		"1",	CVAR_SERVERINFO|CVAR_LATCH},
+	{"dm_infinite_ammo",	"0",	CVAR_SERVERINFO|CVAR_LATCH},
+	{"dm_fixed_fov",		"0",	CVAR_SERVERINFO|CVAR_LATCH},
+	{"dm_teamplay",			"0",	CVAR_SERVERINFO|CVAR_LATCH},
+	{"dm_friendly_fire",	"0",	CVAR_SERVERINFO|CVAR_LATCH},
+	{"dm_footsteps",		"1",	CVAR_SERVERINFO|CVAR_LATCH},
+	{"dm_allow_hook",		"1",	CVAR_SERVERINFO|CVAR_LATCH},
+	{"dm_item_respawn",		"1",	CVAR_SERVERINFO|CVAR_LATCH},
+	{"dm_use_skill_system",	"1",	CVAR_SERVERINFO|CVAR_LATCH},
+	{"dm_instagib",			"0",	CVAR_SERVERINFO|CVAR_LATCH},
+};
+
 static void FQ2_VARGS DK3_Init(void)
 {
 	char maxcl[16];
+	size_t i;
+	for (i = 0; i < sizeof(dkenginecvars)/sizeof(dkenginecvars[0]); i++)
+		DKGI_cvar(dkenginecvars[i].name, dkenginecvars[i].value, dkenginecvars[i].flags);
 	dkge->InitDLLs();	//physics' cvars, its edicts (and clients), world's and weapons' init
 
 	dkmaxclients = (int)DKGI_cvar("maxclients", "4", CVAR_SERVERINFO|CVAR_LATCH)->value;
@@ -1651,6 +1931,8 @@ static void FQ2_VARGS DK3_Shutdown(void)
 {
 	if (dkge)
 	{
+		CIN_Stop(NULL);
+		CIN_WorldImport(NULL);
 		if (dklevelloaded)
 			dkge->LevelExit();
 		dkge->UnloadDLLs();
@@ -1670,6 +1952,7 @@ static void FQ2_VARGS DK3_SpawnEntities(const char *mapname, const char *entstri
 	char map[256];
 	char *ents;
 	DK_PreCall();
+	CIN_Stop(NULL);	//(its client's, changing map)
 	if (dklevelloaded)
 	{	//its engine went through these for each level after the first
 		dkge->LevelExit();
@@ -1750,6 +2033,13 @@ static void FQ2_VARGS DK3_ClientCommand(fq2::edict_t *ent)
 	dkcmd_t *c;
 	const char *cmd = fgi->argv(0);
 	DK_PreCall();
+	if (!strcasecmp(cmd, "cin_skip"))
+	{	//its escape key, as a cinematic plays (FTE's client sends it)
+		if (SHADOWNUM(ent) == 1)
+			CIN_Command();
+		DK_SyncAll();
+		return;
+	}
 	for (c = dkcmds; c; c = c->next)
 		if (!strcasecmp(c->name, cmd))
 		{
@@ -1834,6 +2124,7 @@ static void FQ2_VARGS DK3_ClientThink(fq2::edict_t *ent, fq2::usercmd_t *cmd)
 static void FQ2_VARGS DK3_RunFrame(void)
 {
 	DK_PreCall();
+	CIN_Play();		//its cinematics (its engine played them each of its client's frames)
 	dkge->RunFrame();
 	DK_SyncAll();
 	DK_SendStats();

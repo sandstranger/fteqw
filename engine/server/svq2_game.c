@@ -227,7 +227,11 @@ static void VARGS PFQ2_Unicast (q2edict_t *ent, qboolean reliable)
 	}
 
 	if (reliable)
-		SZ_Write (&client->netchan.message, sv.q2multicast[ctype].data, sv.q2multicast[ctype].cursize);
+	{	//through the back buffers, as multicasts: a game that sends much (Daikatana's inventories, cinematics) would
+		//otherwise overflow the client off, or overtake what's waiting in them
+		ClientReliableCheckBlock(client, sv.q2multicast[ctype].cursize);
+		ClientReliableWrite_SZ(client, sv.q2multicast[ctype].data, sv.q2multicast[ctype].cursize);
+	}
 	else
 		SZ_Write (&client->datagram, sv.q2multicast[ctype].data, sv.q2multicast[ctype].cursize);
 

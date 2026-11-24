@@ -11,7 +11,10 @@ it after adding code that defines or uses something new across modules, and buil
 fte/ is what puts it on FTE's Quake II server: svdk_game.cpp gives FTE a game API 3 export table over physics'
 interface (shadow edicts, as server/svq2_rerelease.c does for the Quake II rerelease's game), dk_pmove.cpp is
 Daikatana's engine's player movement. server/svdk_fte.c is FTE's side of it. Daikatana (-daikatana, the
-FTE-Daikatana game) runs it instead of looking for a game library.
+FTE-Daikatana game) runs it instead of looking for a game library. cin_*.cpp are its engine's cinematics' playback
+(dk_gce_main.cpp, dk_cin_playback.cpp, dk_gce_load.cpp, without its editor), here beside the game: the scripts it
+starts play their entities through the world's interface, their camera is the world's cinematic camera, which
+the player's view follows (its server sent the view entity's place as the player's).
 
 client/ is its client's code on FTE's client (the dkclient library, sources_client.txt; its client's headers in
 client/dkinc): the HUD, its own messages (svcq2dk_message, fte/dk_fteproto.h), temp events and effects, and its

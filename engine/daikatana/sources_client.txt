@@ -16,4 +16,3 @@ client/dk_cl_curve.cpp
 client/dk_gce_curve.cpp
 client/Projectile_fx.cpp
 client/Artifact_fx.cpp
-user/dk_gce_spline.cpp

@@ -199,3 +199,10 @@ physics/dk_static.cpp
 fte/dk_exports.cpp
 fte/dk_pmove.cpp
 fte/svdk_game.cpp
+user/dk_gce_spline.cpp
+user/dk_gce_script.cpp
+fte/cin_main.cpp
+fte/cin_load.cpp
+fte/cin_playback.cpp
+user/dk_gce_entities.cpp
+user/dk_gce_headscript.cpp
