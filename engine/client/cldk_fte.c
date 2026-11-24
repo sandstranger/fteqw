@@ -19,6 +19,34 @@ static struct
 
 static void CLDK_MenuForce_f(void);
 static skinid_t CLDK_ModelSkin(model_t *mod, void *skin);
+static void CLDK_SaveShot_f(void)
+{	//its save menu's preview of the game (its re.SaveSavegameScreenShot's shot.tga, in the write dir's saves/), taken
+	//as savegame.c's SV_SaveScreenshot takes a save's: the view rendered again, without the menu. Between frames: its
+	//menu asks as it opens
+	char name[] = "saves/shot.tga";
+	int stride, width = vid.pixelwidth, height = vid.pixelheight;
+	uploadfmt_t format;
+	void *rgb;
+	image_t *img;
+	if (cls.state != ca_active || qrenderer <= QR_NONE || qrenderer == QR_VULKAN)
+	{
+		Con_DPrintf("cldk_saveshot: not in a game\n");
+		return;
+	}
+	rgb = SCR_ScreenShot_Capture(width, height, &stride, &format, false, false);
+	if (!rgb)
+	{
+		Con_DPrintf("cldk_saveshot: no capture\n");
+		return;
+	}
+	FS_CreatePath(name, FS_GAMEONLY);
+	if (!SCR_ScreenShot(name, FS_GAMEONLY, &rgb, 1, stride, width, height, format, false))
+		Con_DPrintf("cldk_saveshot: couldn't write %s\n", name);
+	BZ_Free(rgb);
+	img = Image_FindTexture(name, NULL, 0);
+	if (img && Image_UnloadTexture(img))	//(what its menu has of the last one)
+		Image_GetTexture(name, NULL, 0, NULL, NULL, 0, 0, TF_INVALID);
+}
 static void CLDK_ToggleQuickConsole_f(void)
 {	//its small console (default_keys.cfg's `), FTE's
 	Cbuf_InsertText("toggleconsole\n", Cmd_ExecLevel, false);
@@ -44,6 +72,8 @@ qboolean CLDK_IsDaikatana(void)
 			Cmd_AddCommand("menu_main_force", CLDK_MenuForce_f);
 		if (!Cmd_Exists("togglequickconsole"))
 			Cmd_AddCommand("togglequickconsole", CLDK_ToggleQuickConsole_f);
+		if (!Cmd_Exists("cldk_saveshot"))
+			Cmd_AddCommand("cldk_saveshot", CLDK_SaveShot_f);
 	}
 	return true;
 }

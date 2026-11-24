@@ -312,7 +312,7 @@ static void RE_SetInterfacePalette(const unsigned char *palette)	{}
 static void RE_DrawChar(int x, int y, int c)			{}
 static void RE_GetSavegameScreenShot(void)				{}
 static void RE_ClearSavegameScreenShot(void)			{}
-static void RE_SaveSavegameScreenShot(char *path, char *savename)	{}
+static void RE_SaveSavegameScreenShot(char *path, char *savename)	{CLDKF_AddCommand("cldk_saveshot\n");}	//(shot.tga, in the write dir)
 //a surface's point (its hierarchical models' hardpoints, hr_*): FTE's models don't say yet, so the entity's own
 void CLDK_GetModelHardpoint(char *pSurfName, int curFrame, int lastFrame, entity_t &ent, CVector &hardPt);	//cldk_models.cpp
 void CLDK_ModelsReset(void);

@@ -198,7 +198,7 @@ void CMenuSubSavegame::Exit()
 {
 	// yank the save game temp thingy
 	char shot[MAX_OSPATH];
-	Com_sprintf(shot,sizeof(shot),"%s/shot.tga", FS_SaveGameDir());
+	Com_sprintf(shot,sizeof(shot),"%s/saves/shot.tga", FS_SaveGameDir());	//FTE: in saves/ (cldk_saveshot's)
 	remove(shot);
 }
 
@@ -328,14 +328,21 @@ void CMenuSubSavegame::DrawForeground()
 	drawStruct.nXPos = DKM_MenuScreenX(SCREEN_SHOT_LEFT);
 	drawStruct.nYPos = DKM_MenuScreenY(SCREEN_SHOT_TOP);
 //	drawStruct.pImage = re.RegisterPic( "shot.tga", NULL, NULL, RESOURCE_INTERFACE );
-	Com_sprintf(string,sizeof(string),"%s/",FS_SaveGameDir());
+	Com_sprintf(string,sizeof(string),"%s/saves/",FS_SaveGameDir());	//FTE: in saves/ (cldk_saveshot's)
 
+	int shot_w = 0, shot_h = 0;
 	if (FileExists(string,"shot.tga"))
 	{
-		drawStruct.pImage = re.RegisterPic( "shot.tga", NULL, NULL, RESOURCE_INTERFACE );
+		drawStruct.pImage = re.RegisterPic( "saves/shot.tga", &shot_w, &shot_h, RESOURCE_INTERFACE );
 	}
 	else
-		drawStruct.pImage = re.RegisterPic( "pics/noscreen_avail.tga", NULL, NULL, RESOURCE_INTERFACE );
+		drawStruct.pImage = re.RegisterPic( "pics/noscreen_avail.tga", &shot_w, &shot_h, RESOURCE_INTERFACE );
+	//FTE: its screenshots were 256 square; FTE's are the screen's size
+	if (shot_w > 0 && shot_h > 0)
+	{
+		drawStruct.fScaleX = (SCREEN_SHOT_WIDTH * menu_scale) / shot_w;
+		drawStruct.fScaleY = (SCREEN_SHOT_HEIGHT * menu_scale) / shot_h;
+	}
 
 	re.DrawPic( drawStruct );
 
