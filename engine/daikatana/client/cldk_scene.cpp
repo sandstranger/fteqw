@@ -406,7 +406,7 @@ static void CLDK_SceneFrame(void)
 	if (memcmp(&r_foginfo, &dkpushedfog, sizeof(r_foginfo)))
 	{
 		dkpushedfog = r_foginfo;
-		CLDKF_SetFog(r_foginfo.active, r_foginfo.r, r_foginfo.g, r_foginfo.b, r_foginfo.start, r_foginfo.end);
+		CLDKF_SetFog(r_foginfo.active, r_foginfo.r, r_foginfo.g, r_foginfo.b, r_foginfo.start, r_foginfo.end, r_foginfo.skyend);
 	}
 
 	cl.frame.serverframe = serverframe;

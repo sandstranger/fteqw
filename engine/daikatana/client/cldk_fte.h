@@ -111,7 +111,7 @@ void		CLDKF_RenderView(float x, float y, float w, float h, float fov_x, float fo
 				const float *viewangles, int num, const cldk_rentity_t *ents);
 void		*CLDKF_RegisterSkin(const char *image);		//an image as a model's skin (but its SRF_STATICSKIN surfaces')
 const char	*CLDKF_ImageName(int index);				//the server's image (configstring), or null
-void		CLDKF_SetFog(int active, float r, float g, float b, float start, float end);	//linear, as its renderer's
+void		CLDKF_SetFog(int active, float r, float g, float b, float start, float end, float skyend);	//linear, as its renderer's
 const char	*CLDKF_PlayerSkinString(int player);		//its CS_PLAYERSKINS one ("name\model\skin\character"), or null
 
 //its player movement (the game's own pmove, dk_pmove.cpp), for FTE's client's prediction (cl_pred.c)

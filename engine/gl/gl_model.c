@@ -6866,6 +6866,12 @@ void ModBrush_LoadGLStuff(void *ctx, void *data, size_t a, size_t b)
 	{	//submodels share textures, so only do this if 'a' is 0 (inline index, 0 = world).
 		for (a = 0; a < mod->numfogs; a++)
 		{
+#ifdef DAIKATANA
+			float r, g, b, d;	//gl_q2bsp.c's CModDK_LoadFogVolumes': its fogparms in its name, made here, on this thread
+			if (!strncmp(mod->fogs[a].shadername, "dkfog_", 6) &&
+				sscanf(mod->fogs[a].shadername+6, "%f_%f_%f_%f", &r, &g, &b, &d) == 4)
+				R_RegisterShader(mod->fogs[a].shadername, SUF_NONE, va("{\nfogparms (%f %f %f) %f\n}\n", r, g, b, d));
+#endif
 			mod->fogs[a].shader = R_RegisterShader_Lightmap(mod, mod->fogs[a].shadername);
 			R_BuildDefaultTexnums(NULL, mod->fogs[a].shader, IF_WORLDTEX);
 			if (!mod->fogs[a].shader->fog_dist)

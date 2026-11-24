@@ -1391,6 +1391,120 @@ static void CModDK_LoadSurfaceColours (model_t *mod, qbyte *mod_base, lump_t *l)
 		prv->dksurfcolours[i] = bound(0, f, 255);
 	}
 }
+
+/*
+Daikatana's fog volumes (its renderer's gl_fogsurf.cpp): brushes of CONTENTS_FOG, with a side of SURF_FOGPLANE whose
+surface colour is the fog's and whose texinfo value its depth (128 if none). As FTE's fog volumes (Q3's fogparms,
+mod->fogs and surf->fog, as gl_model.c's Mod_LoadQ1FogVolumes makes them): the brush's box, fogging what's in it.
+*/
+#define DKCONTENTS_FOG		0x00000400
+#define DKSURF_FOGPLANE		0x01000000
+#define DKFOG_MAX			64
+static void CModDK_LoadFogVolumes(model_t *mod)
+{
+	cminfo_t	*prv = (cminfo_t*)mod->meshinfo;
+	mfog_t		tmp[DKFOG_MAX];
+	vec3_t		bmins[DKFOG_MAX], bmaxs[DKFOG_MAX];
+	int			count = 0, b, s, k, i, fi, tagged = 0;
+	if (!prv || !prv->brushes || !prv->dksurfcolours)
+		return;
+	for (b = 0; b < prv->numbrushes && count < DKFOG_MAX; b++)
+	{
+		q2cbrush_t *brush = &prv->brushes[b];
+		q2mapsurface_t *plane = NULL;
+		vec3_t mins = {1e30, 1e30, 1e30}, maxs = {-1e30, -1e30, -1e30}, colour;
+		float dist;
+		mfog_t *f;
+		mplane_t *pl;
+		char sname[64];
+		if (!(brush->contents & DKCONTENTS_FOG) || !brush->brushside)
+			continue;
+		for (s = 0; s < brush->numsides; s++)
+		{
+			q2cbrushside_t *side = &brush->brushside[s];
+			if (side->surface && side->surface != &nullsurface && (side->surface->c.flags & DKSURF_FOGPLANE))
+				plane = side->surface;
+			if (!side->plane)
+				continue;
+			for (k = 0; k < 3; k++)
+			{	//its box, from its axial sides
+				if (side->plane->normal[k] == 1)
+					maxs[k] = side->plane->dist;
+				else if (side->plane->normal[k] == -1)
+					mins[k] = -side->plane->dist;
+			}
+		}
+		if (!plane || mins[0] > maxs[0] || mins[1] > maxs[1] || mins[2] > maxs[2] || maxs[0] >= 1e30 || mins[0] <= -1e30)
+			continue;
+		i = plane - prv->surfaces;
+		for (k = 0; k < 3; k++)
+			colour[k] = prv->dksurfcolours[i*3+k] / 255.0;
+		dist = plane->c.value?plane->c.value:128;
+
+		f = &tmp[count];
+		memset(f, 0, sizeof(*f));
+		pl = ZG_Malloc(&mod->memgroup, 6*sizeof(mplane_t));
+		f->planes = ZG_Malloc(&mod->memgroup, 6*sizeof(mplane_t*));
+		VectorSet(pl[0].normal,  1, 0, 0);	pl[0].dist =  mins[0];
+		VectorSet(pl[1].normal, -1, 0, 0);	pl[1].dist = -maxs[0];
+		VectorSet(pl[2].normal,  0, 1, 0);	pl[2].dist =  mins[1];
+		VectorSet(pl[3].normal,  0,-1, 0);	pl[3].dist = -maxs[1];
+		VectorSet(pl[4].normal,  0, 0, 1);	pl[4].dist =  mins[2];
+		VectorSet(pl[5].normal,  0, 0,-1);	pl[5].dist = -maxs[2];
+		for (k = 0; k < 6; k++)
+		{
+			CategorizePlane(&pl[k]);
+			f->planes[k] = &pl[k];
+		}
+		f->numplanes = 6;
+		f->visibleplane = NULL;	//(fogged by depth: Mod_LoadQ1FogVolumes')
+		//its shader's made on the main thread (shaders can't be on this one), from its name: ModBrush_LoadGLStuff
+		Q_snprintfz(sname, sizeof(sname), "dkfog_%g_%g_%g_%g", colour[0], colour[1], colour[2], dist);
+		Q_strncpyz(f->shadername, sname, sizeof(f->shadername));
+		f->shader = NULL;
+		VectorCopy(mins, bmins[count]);
+		VectorCopy(maxs, bmaxs[count]);
+		count++;
+	}
+	if (!count)
+		return;
+	mod->fogs = ZG_Malloc(&mod->memgroup, count*sizeof(mfog_t));
+	memcpy(mod->fogs, tmp, count*sizeof(mfog_t));
+	mod->numfogs = count;
+
+	//the surfaces in them (by their bounds, as its renderer's R_GetFogVolumeForBBox)
+	for (i = 0; i < mod->numsurfaces; i++)
+	{
+		msurface_t *surf = mod->surfaces + i;
+		vec3_t smin = {1e30, 1e30, 1e30}, smax = {-1e30, -1e30, -1e30};
+		int j;
+		if (!surf->numedges || (surf->texinfo && (surf->texinfo->flags & TI_SKY)))
+			continue;
+		for (j = 0; j < surf->numedges; j++)
+		{
+			int se = mod->surfedges[surf->firstedge + j];
+			mvertex_t *v = (se >= 0)?&mod->vertexes[mod->edges[se].v[0]]:&mod->vertexes[mod->edges[-se].v[1]];
+			for (k = 0; k < 3; k++)
+			{
+				if (v->position[k] < smin[k])
+					smin[k] = v->position[k];
+				if (v->position[k] > smax[k])
+					smax[k] = v->position[k];
+			}
+		}
+		for (fi = 0; fi < count; fi++)
+		{
+			if (smin[0] < bmaxs[fi][0] && smax[0] > bmins[fi][0] && smin[1] < bmaxs[fi][1] && smax[1] > bmins[fi][1] &&
+				smin[2] < bmaxs[fi][2] && smax[2] > bmins[fi][2])
+			{
+				surf->fog = &mod->fogs[fi];
+				tagged++;
+				break;
+			}
+		}
+	}
+	Con_DPrintf("%s: %i fog volumes, %i surfaces in them\n", mod->name, count, tagged);
+}
 #endif
 #ifdef HAVE_CLIENT
 static texture_t *Mod_LoadWall(model_t *loadmodel, char *mapname, char *texname, char *shadername, unsigned int imageflags)
@@ -5244,6 +5358,10 @@ static cmodel_t *CM_LoadMap (model_t *mod, qbyte *filein, size_t filelen, qboole
 			{
 				return NULL;
 			}
+#ifdef DAIKATANA
+			if (header.version == BSPVERSION_DK)
+				CModDK_LoadFogVolumes(mod);
+#endif
 			mod->funcs.LightPointValues		= GLQ2BSP_LightPointValues;
 			mod->funcs.StainNode			= GLR_Q2BSP_StainNode;
 			mod->funcs.MarkLights			= Q2BSP_MarkLights;

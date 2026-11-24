@@ -3288,6 +3288,9 @@ void CLQ2_CalcViewValues (int seat)
 
 	//underwater warp and the ir goggles come from the server; V_CalcRefdef applies them
 	pv->q2rdflags = ps->rdflags;
+#ifdef DAIKATANA
+	CLDK_WaterTint(pv->screentint);	//its client's own, in its water
+#endif
 
 	// add the weapon
 	CLQ2_AddViewWeapon (seat, ps, ops);

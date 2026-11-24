@@ -2059,7 +2059,8 @@ qboolean CLDK_OpenMenu(void);		//its own menus, as FTE's while it's the game
 qboolean CLDK_OpenMenuAt(int button);
 char *CLDK_DefaultConfig(void);		//its default.cfg (Z_Malloced), from its daikatana.cfg
 void CLDK_LoopSoundParams(int entnum, float *volume, float *attenuation);	//its entity's looping sound's (daikatana/client)
-qboolean CLDK_ContentsColour(int contents, cshift_t *shift);	//its water's fog (and no tint) for the view in it
+qboolean CLDK_ContentsColour(int contents, cshift_t *shift);	//its water's fog (and tint) for the view in it
+void CLDK_WaterTint(float *rgba);	//the screen's tint (the server's blend) with its water's under it
 qboolean CMDK_SurfaceColour(struct model_s *mod, const vec3_t point, vec3_t rgb);	//gl_q2bsp.c: its maps' surface colours
 #endif
 void Media_NumberedTrack(unsigned int initialtrack, unsigned int looptrack);				//legacy cd interface for protocols that only support numbered tracks.

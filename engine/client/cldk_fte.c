@@ -226,16 +226,30 @@ const char *CLDKF_ImageName(int index)
 	return NULL;
 }
 //its fog (its renderer's GL_LINEAR, from start to end), as FTE's under r_fog_linear (the gamemode's set it):
-//density's the end, depthbias the start
-void CLDKF_SetFog(int active, float r, float g, float b, float start, float end)
+//density's the end, depthbias the start. Its sky (a box 4096 out, gl_warp.cpp's R_DrawSkyBox) was fogged to skyend
+//instead: so much of the fog as r_skyfog (the sky shaders' share of it)
+#define DKSKY_DIST	4096
+extern cvar_t r_skyfog;
+static float cldkskyfog = -1;	//what r_skyfog's to be while its fog's on (CLDK_KeepSkyFog)
+static void CLDK_KeepSkyFog(void)
+{	//(the map's start puts it back)
+	if (cldkskyfog >= 0 && r_skyfog.value != cldkskyfog)
+		Cvar_LockFromServer(&r_skyfog, va("%g", cldkskyfog));
+}
+void CLDKF_SetFog(int active, float r, float g, float b, float start, float end, float skyend)
 {
 	fogstate_t *f = &cl.fog[FOGTYPE_AIR];
 	if (!active || end <= 0)
 	{
+		cldkskyfog = -1;
 		if (f->density)
 			CL_ResetFog(FOGTYPE_AIR);
 		return;
 	}
+	cldkskyfog = 0;
+	if (skyend > start)	//GL_LINEAR's factor at the box, clamped: what's fogged is the rest
+		cldkskyfog = 1 - bound(0, (skyend - DKSKY_DIST) / (skyend - start), 1);
+	CLDK_KeepSkyFog();
 	if (f->density == end && f->depthbias == start && f->alpha == 1 &&
 		f->colour[0] == SRGBf(r) && f->colour[1] == SRGBf(g) && f->colour[2] == SRGBf(b))
 		return;
@@ -248,14 +262,19 @@ void CLDKF_SetFog(int active, float r, float g, float b, float start, float end)
 	f->alpha = 1;
 }
 //its view in water (cl_ents.cpp's CL_CalcViewValues): fogged in the water's colour (CMDK_SurfaceColour) from 32 to
-//1024 (FTE's water fog, which it has in water). Its tint of the colour lasted only the frame the view went in (the
-//server's blend replaced it each frame after), so there's none: nor FTE's own
+//1024 (FTE's water fog, which it has in water), and tinted it a fifth (its client's blend, which here stays while the
+//view's in it: CLDK_WaterTint, as Quake II's screen tint's the server's). Not FTE's own tint
+static vec4_t cldkwatertint;
 qboolean CLDK_ContentsColour(int contents, cshift_t *shift)
 {
 	vec3_t rgb, c;
 	fogstate_t *f = &cl.fog[FOGTYPE_WATER];
 	int i;
-	if (!(contents & (FTECONTENTS_WATER|FTECONTENTS_SLIME|FTECONTENTS_LAVA)) || !CLDK_IsDaikatana())
+	cldkwatertint[3] = 0;
+	if (!CLDK_IsDaikatana())
+		return false;
+	CLDK_KeepSkyFog();	//(each frame, this)
+	if (!(contents & (FTECONTENTS_WATER|FTECONTENTS_SLIME|FTECONTENTS_LAVA)))
 		return false;
 	if (!CMDK_SurfaceColour(cl.worldmodel, r_refdef.vieworg, rgb))
 		return false;
@@ -265,6 +284,8 @@ qboolean CLDK_ContentsColour(int contents, cshift_t *shift)
 		c[i] = SRGBf(rgb[i]);
 	}
 	shift->percent = 0;
+	VectorCopy(rgb, cldkwatertint);
+	cldkwatertint[3] = 0.2;
 	if (f->density != 1024 || f->depthbias != 32 || f->alpha != 1 || !VectorCompare(f->colour, c))
 	{
 		f->density = 1024;
@@ -278,6 +299,19 @@ qboolean CLDK_ContentsColour(int contents, cshift_t *shift)
 		cl.oldfog[FOGTYPE_WATER].alpha = 1;
 	}
 	return true;
+}
+//the screen's tint (the server's blend, clq2_ents.c's) with its water's under it, while the view's in water
+void CLDK_WaterTint(float *rgba)
+{
+	float a, s;
+	int i;
+	if (cldkwatertint[3] <= 0 || !CLDK_IsDaikatana())
+		return;
+	s = rgba[3];
+	a = cldkwatertint[3] + s*(1 - cldkwatertint[3]);
+	for (i = 0; i < 3; i++)
+		rgba[i] = (a > 0)?(cldkwatertint[i]*cldkwatertint[3]*(1-s) + rgba[i]*s) / a:rgba[i];
+	rgba[3] = a;
 }
 const char *CLDKF_PlayerSkinString(int player)
 {	//(cl_parse.c keeps them at the start of the general ones)
