@@ -4633,13 +4633,17 @@ int key_pasteanswer;
 
 /*
 A gamepad button's default, for what's unbound, in the game being played: quake 2's, the rerelease's (its weapon and
-powerup wheels), daikatana's. NULL for quake's own (Key_Event's).
+powerup wheels), daikatana's, hexen 2's, quake's own progs'. NULL for a quake mod with its own csqc (Key_Event's
+generic buttons are for it).
 */
 static const char *Key_GamepadDefault(int key)
 {
+#ifdef HEXEN2
+	extern qboolean sbar_hexen2;
+#endif
 #ifdef Q2CLIENT
 	if (cls.protocol != CP_QUAKE2)
-		return NULL;
+		goto notq2;
 #ifdef DAIKATANA
 	if (CLDK_IsDaikatana())
 	{	//its default_keys.cfg's commands
@@ -4686,8 +4690,52 @@ static const char *Key_GamepadDefault(int key)
 	case K_GP_START:
 	case K_GP_GUIDE:			return "togglemenu";
 	}
-#endif
 	return NULL;
+notq2:
+#endif
+#ifdef HEXEN2
+	if (sbar_hexen2)
+	{	//its default.cfg's and its keys menu's commands (+crouch's sbar.c's alias of its impulse 22)
+		switch (key)
+		{
+		case K_GP_RIGHT_TRIGGER:	return "+attack";
+		case K_GP_LEFT_TRIGGER:		return "+crouch";
+		case K_GP_A:				return "+jump";
+		case K_GP_B:				return "invuse";		//the selected artifact
+		case K_GP_X:				return "impulse 13";	//lift or push
+		case K_GP_Y:				return "+showinfo";		//the whole status bar and inventory
+		case K_GP_LEFT_SHOULDER:	return "impulse 12";	//previous weapon
+		case K_GP_RIGHT_SHOULDER:	return "impulse 10";	//next weapon
+		case K_GP_DPAD_LEFT:		return "invleft";
+		case K_GP_DPAD_RIGHT:		return "invright";
+		case K_GP_DPAD_UP:			return "+infoplaque";	//objectives
+		case K_GP_DPAD_DOWN:		return "+showinfo";
+		case K_GP_LEFT_STICK:		return "+speed";
+		case K_GP_RIGHT_STICK:		return "centerview";
+		case K_GP_BACK:				return "+showdm";
+		case K_GP_START:
+		case K_GP_GUIDE:			return "togglemenu";
+		}
+		return NULL;
+	}
+#endif
+#ifdef CSQC_DAT
+	if (CSQC_Inited())
+		return NULL;	//a mod's: Key_Event's generic +buttonN are for it
+#endif
+	switch (key)
+	{	//quake's own progs know nothing of +button3 etc: quakespasm's arrangement, mostly, and the weapon wheel
+	case K_GP_RIGHT_TRIGGER:	return "+attack";
+	case K_GP_LEFT_TRIGGER:		return "+jump";
+	case K_GP_A:				return "+jump";
+	case K_GP_B:				return "+movedown";		//swim down
+	case K_GP_Y:				return "+weaponwheel";
+	case K_GP_LEFT_SHOULDER:	return "impulse 12";	//previous weapon
+	case K_GP_RIGHT_SHOULDER:	return "impulse 10";	//next weapon
+	case K_GP_LEFT_STICK:		return "+speed";
+	case K_GP_RIGHT_STICK:		return "centerview";
+	}
+	return NULL;	//(the rest: Key_Event's)
 }
 
 void Key_Event (unsigned int devid, int key, unsigned int unicode, qboolean down)
@@ -5093,7 +5141,7 @@ void Key_Event (unsigned int devid, int key, unsigned int unicode, qboolean down
 		case K_GP_GUIDE:
 		case K_GP_LEFT_STICK:
 		case K_GP_RIGHT_STICK:
-			dc = Key_GamepadDefault(key);	//quake 2's (and the rerelease's), daikatana's: quake's below are no use to them
+			dc = Key_GamepadDefault(key);	//the game's own (quake 2's, daikatana's, hexen 2's, quake's progs'); then the generic ones below
 			if (dc)
 				goto defaultedbind;
 			if (key == K_GP_RIGHT_STICK)

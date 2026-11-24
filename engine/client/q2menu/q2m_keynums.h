@@ -1,0 +1,83 @@
+/* yquake2's key numbers (q2keys.h), for FTE's side of its menus (clq2_menu.c), where q2keys.h cannot be included:
+   the two engines number keys differently past ASCII. Generated from q2keys.h; q2menu_bridge.c checks every one
+   against it when it compiles, so a q2keys.h that changes cannot go unnoticed (its gamepad buttons once moved by
+   three, and the menus took A for Backspace and B for Back). */
+#ifndef Q2M_KEYNUMS_H
+#define Q2M_KEYNUMS_H
+#define Q2K_TAB              9
+#define Q2K_ENTER            13
+#define Q2K_ESCAPE           27
+#define Q2K_SPACE            32
+#define Q2K_BACKSPACE        127
+#define Q2K_COMMAND          128
+#define Q2K_CAPSLOCK         129
+#define Q2K_POWER            130
+#define Q2K_PAUSE            131
+#define Q2K_UPARROW          132
+#define Q2K_DOWNARROW        133
+#define Q2K_LEFTARROW        134
+#define Q2K_RIGHTARROW       135
+#define Q2K_ALT              136
+#define Q2K_CTRL             137
+#define Q2K_SHIFT            138
+#define Q2K_INS              139
+#define Q2K_DEL              140
+#define Q2K_PGDN             141
+#define Q2K_PGUP             142
+#define Q2K_HOME             143
+#define Q2K_END              144
+#define Q2K_F1               145
+#define Q2K_KP_HOME          160
+#define Q2K_KP_UPARROW       161
+#define Q2K_KP_PGUP          162
+#define Q2K_KP_LEFTARROW     163
+#define Q2K_KP_5             164
+#define Q2K_KP_RIGHTARROW    165
+#define Q2K_KP_END           166
+#define Q2K_KP_DOWNARROW     167
+#define Q2K_KP_PGDN          168
+#define Q2K_KP_ENTER         169
+#define Q2K_KP_INS           170
+#define Q2K_KP_DEL           171
+#define Q2K_KP_SLASH         172
+#define Q2K_KP_MINUS         173
+#define Q2K_KP_PLUS          174
+#define Q2K_KP_NUMLOCK       175
+#define Q2K_KP_STAR          176
+#define Q2K_KP_EQUALS        177
+#define Q2K_MOUSE1           178
+#define Q2K_MOUSE2           179
+#define Q2K_MOUSE3           180
+#define Q2K_MOUSE4           181
+#define Q2K_MOUSE5           182
+#define Q2K_MWHEELDOWN       183
+#define Q2K_MWHEELUP         184
+#define Q2K_SUPER            185
+#define Q2K_PRINT            189
+#define Q2K_SCROLLOCK        191
+#define Q2K_MENU             192
+#define Q2K_BTN_SOUTH        247
+#define Q2K_BTN_EAST         248
+#define Q2K_BTN_WEST         249
+#define Q2K_BTN_NORTH        250
+#define Q2K_BTN_BACK         251
+#define Q2K_BTN_GUIDE        252
+#define Q2K_BTN_START        253
+#define Q2K_STICK_LEFT       254
+#define Q2K_STICK_RIGHT      255
+#define Q2K_SHOULDER_LEFT    256
+#define Q2K_SHOULDER_RIGHT   257
+#define Q2K_DPAD_UP          258
+#define Q2K_DPAD_DOWN        259
+#define Q2K_DPAD_LEFT        260
+#define Q2K_DPAD_RIGHT       261
+#define Q2K_BTN_MISC1        262
+#define Q2K_PADDLE_RIGHT_1   263
+#define Q2K_PADDLE_LEFT_1    264
+#define Q2K_PADDLE_RIGHT_2   265
+#define Q2K_PADDLE_LEFT_2    266
+#define Q2K_TOUCHPAD         267
+#define Q2K_TRIG_LEFT        273
+#define Q2K_TRIG_RIGHT       274
+#define Q2K_LAST             303
+#endif
