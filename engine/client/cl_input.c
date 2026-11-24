@@ -1500,6 +1500,14 @@ void CL_ClampPitch (int pnum, float frametime)
 		memset(pv->viewanglechange, 0, sizeof(pv->viewanglechange));
 		return;
 	}
+#ifdef HEXEN2
+	if (pv->stats[STAT_H2_CAMERAMODE])
+	{	//uHexen2: hexen2's camera views (the gamecode's cameramode) take no looking around; it was all
+		//piled up on the player's angles for when the camera let go
+		memset(pv->viewanglechange, 0, sizeof(pv->viewanglechange));
+		return;
+	}
+#endif
  	if (pv->pmovetype == PM_6DOF)
 	{
 //		vec3_t impact;

@@ -4117,7 +4117,9 @@ void Surf_DrawWorld (void)
 #endif
 
 #ifdef RTLIGHTS
-		if (r_shadow_realtime_dlight.ival || currentmodel->type != mod_brush || !(currentmodel->fromgame == fg_quake || currentmodel->fromgame == fg_halflife) || !currentmodel->funcs.MarkLights)
+		//no double lighting with r_shadow_realtime_dlight: the lights drawn in realtime (LFLAG_NORMALMODE) are not
+		//marked on the lightmaps then; lightmap-only lights (hexen2's darklight, which subtracts) still are.
+		if (currentmodel->type != mod_brush || !(currentmodel->fromgame == fg_quake || currentmodel->fromgame == fg_halflife) || !currentmodel->funcs.MarkLights)
 			r_dlightlightmaps = false; //don't do double lighting.
 #endif
 

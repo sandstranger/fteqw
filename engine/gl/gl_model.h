@@ -234,7 +234,7 @@ m*_t structures are in-memory
 #define		DPEF_NOSELFSHADOW_		(1<<16)	//doesn't cast shadows on any noselfshadow entities.
 #define		DPEF_DYNAMICMODELLIGHT_	(1<<17)	//forces dynamic lights... I have no idea what this is actually needed for.
 #define	EF_GREEN				(1<<18)
-#define	EF_UNUSED19				(1<<19)
+#define	EF_H2DARKLIGHT			(1<<19)	//hexen2's EF_DARKLIGHT (16, which is nodraw/flag1 here): a light that darkens. Set by the server.
 #define	EF_RESTARTANIM_BIT		(1<<20)	//restarts the anim when toggled between states
 #define	EF_TELEPORT_BIT			(1<<21)	//disable lerping when toggled between states
 #define DPEF_LOWPRECISION		(1<<22) //part of the protocol/server, not the client itself.

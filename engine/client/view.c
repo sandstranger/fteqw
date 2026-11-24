@@ -305,8 +305,14 @@ lookspring is non 0, or when
 void V_DriftPitch (playerview_t *pv)
 {
 	float		delta, move;
+	qboolean	flying = false;
+#ifdef HEXEN2
+	extern qboolean sbar_hexen2;
+	if (sbar_hexen2)	//uHexen2: no pulling the view level while flying (the ring of flight) or noclipping
+		flying = pv->stats[STAT_H2_MOVETYPE] == 5/*MOVETYPE_FLY*/ || pv->stats[STAT_H2_MOVETYPE] == 8/*MOVETYPE_NOCLIP*/;
+#endif
 
-	if (!pv->onground || cls.demoplayback )
+	if (!pv->onground || cls.demoplayback || flying)
 	{
 		pv->driftmove = 0;
 		pv->pitchvel = 0;

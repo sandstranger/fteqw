@@ -3916,6 +3916,28 @@ void SV_Snapshot_BuildStateQ1(entity_state_t *state, edict_t *ent, client_t *cli
 					state->skinnum = 0;
 					state->hexen2flags = 0;
 				}
+				else
+				{
+					/*
+					Hexen II's effect bits from 16 up mean something else to FTE's clients: 16 (EF_DARKLIGHT, the
+					necromancer's invincibility) is nodraw (players lost their model), 32 (EF_DARKFIELD, haste) is
+					additive, 64 (EF_LIGHT) a blue light and shell. As uHexen2's client: EF_LIGHT is an orange
+					light, EF_DARKLIGHT a light that darkens; the fields (and EF_BRIGHTFIELD, which uHexen2 doesn't
+					draw) are particles only.
+					*/
+					unsigned int h2effects = state->effects;
+					state->effects &= ~(EF_BRIGHTFIELD|(1<<4)|(1<<5)|(1<<6));
+					if (h2effects & (1<<6))	//EF_LIGHT
+					{
+						state->lightpflags |= PFLAGS_FULLDYNAMIC;
+						state->light[0] = 0.8*1024;
+						state->light[1] = 0.4*1024;
+						state->light[2] = 0.2*1024;
+						state->light[3] = 200;
+					}
+					if (h2effects & (1<<4))	//EF_DARKLIGHT
+						state->effects |= EF_H2DARKLIGHT;
+				}
 			}
 			else if (progstype == PROG_TENEBRAE)
 			{
@@ -3931,7 +3953,7 @@ void SV_Snapshot_BuildStateQ1(entity_state_t *state, edict_t *ent, client_t *cli
 				}
 			}
 
-			if (state->number <= sv.allocated_client_slots) // clear only client ents
+			if (state->number <= sv.allocated_client_slots && progstype != PROG_H2) // clear only client ents (hexen2's bits are seen to above)
 			{
 				if (state->effects & NQEF_NODRAW)
 					state->modelindex = 0;

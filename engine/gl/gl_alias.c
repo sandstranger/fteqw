@@ -3442,6 +3442,14 @@ static void R_Sprite_GenerateTrisoup(entity_t *e, int bemode)
 		batchflags |= BEF_FORCEADDITIVE;
 	if (e->flags & RF_TRANSLUCENT)
 		batchflags |= BEF_FORCETRANSPARENT;
+#ifdef HEXEN2
+	else if ((e->drawflags & DRF_TRANSLUCENT) || (e->model->flags & MFH2_TRANSPARENT))
+	{	//uHexen2: hexen2's translucent sprites (punches, the demoness' fireball, the tomed acid ball) at
+		//r_wateralpha, as its translucent models are; they were drawn solid
+		batchflags |= BEF_FORCETRANSPARENT;
+		e->shaderRGBAf[3] = r_wateralpha.value;
+	}
+#endif
 	if (e->flags & RF_NODEPTHTEST)
 		batchflags |= BEF_FORCENODEPTH;
 	if (e->flags & RF_FORCECOLOURMOD)

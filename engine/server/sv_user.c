@@ -9073,19 +9073,26 @@ static void SV_RunCmdPart (usercmd_t *ucmd, qboolean recurse, int kind, float to
 		//fixme: should probably support rtlights, but this is a server, so urgh.
 		if (sv.world.worldmodel && sv.world.worldmodel->funcs.LightPointValues)
 		{
-			vec3_t diffuse, ambient, dir;
+			/*
+			Hexen II's light_level is what the client lit its gun with: the lightmap's brightness under the
+			view (R_LightPoint; uHexen2: the mean of r, g and b with coloured lightmaps), at least 24. The
+			length of the colour plus half again was some 2.6 times that, so the assassin's cloak (which
+			wants light_level at most 25-100) hardly ever worked, and monsters saw players too well.
+			*/
+			vec3_t diffuse, ambient, dir, org;
 			float lev = 0;
+			VectorAdd(sv_player->v->origin, sv_player->v->view_ofs, org);
 #if defined(RTLIGHTS) && !defined(SERVERONLY)
-			Sh_CalcPointLight(sv_player->v->origin, ambient);
-			lev += VectorLength(ambient);
+			Sh_CalcPointLight(org, ambient);
+			lev += (ambient[0]+ambient[1]+ambient[2])/3 * 255;
 
 			if (!r_shadow_realtime_world.ival || r_shadow_realtime_world_lightmaps.value)
 #endif
 			{
-				sv.world.worldmodel->funcs.LightPointValues(sv.world.worldmodel, sv_player->v->origin, ambient, diffuse, dir);
-				lev += (VectorLength(ambient) + VectorLength(diffuse)/2.0)/256;
+				sv.world.worldmodel->funcs.LightPointValues(sv.world.worldmodel, org, diffuse, ambient, dir);
+				lev += (diffuse[0]+diffuse[1]+diffuse[2])/3;
 			}
-			sv_player->xv->light_level = lev * 255;
+			sv_player->xv->light_level = max(lev, 24);
 		}
 		else	
 			sv_player->xv->light_level = 128;	//don't know, some dummy value.

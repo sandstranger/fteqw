@@ -6771,6 +6771,14 @@ void CL_LinkPacketEntities (void)
 				}
 			}
 		}
+		if (!(r_refdef.flags & RDF_WORLDONLY) && (state->effects & EF_H2DARKLIGHT))
+		{	//hexen2's darklight (the necromancer's invincibility): takes the light away around it, as uHexen2's.
+			//A lightmap light only: that is where a negative light subtracts (to black, no further).
+			dl = CL_NewDlight(state->number, ent->origin, 200 + ((flicker + state->number)&31), 0.1, -1, -1, -1);
+			dl->flags &= ~(LFLAG_NORMALMODE|LFLAG_REALTIMEMODE|LFLAG_FLASHBLEND);
+			dl->flags |= LFLAG_LIGHTMAP;
+			dl->corona = 0;
+		}
 		if (!(r_refdef.flags & RDF_WORLDONLY) && (state->lightpflags & (PFLAGS_FULLDYNAMIC|PFLAGS_CORONA)) && ((state->lightpflags&PFLAGS_FULLDYNAMIC)||state->light[3]))
 		{
 			vec3_t colour;
@@ -8147,6 +8155,19 @@ void CL_LinkPlayers (void)
 				}
 				CL_NewDlight(j+1, org, radius, 0.1, colour[0], colour[1], colour[2])->flags &= ~LFLAG_FLASHBLEND;
 			}
+		}
+		if (state->effects & EF_H2DARKLIGHT)
+		{	//hexen2's darklight (the necromancer's invincibility), as for other entities: a lightmap light that subtracts
+			vec3_t org;
+			dlight_t *dl;
+			VectorCopy(state->origin, org);
+			for (pnum = 0; pnum < cl.splitclients; pnum++)
+				if (cl.playerview[pnum].playernum == j)
+					VectorCopy(cl.playerview[pnum].simorg, org);
+			dl = CL_NewDlight(j+1, org, 200 + (rand()&31), 0.1, -1, -1, -1);
+			dl->flags &= ~(LFLAG_NORMALMODE|LFLAG_REALTIMEMODE|LFLAG_FLASHBLEND);
+			dl->flags |= LFLAG_LIGHTMAP;
+			dl->corona = 0;
 		}
 
 		if (state->modelindex < 1)
