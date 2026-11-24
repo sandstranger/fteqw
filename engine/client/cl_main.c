@@ -2409,6 +2409,11 @@ void CL_ClearState (qboolean gamestart)
 
 	CL_UpdateWindowTitle();
 
+#ifdef HEXEN2
+	CLH2_ResetHUD();			//no inventory picked up yet
+	CLH2_ClearCenterString();	//nor the last map's plaque
+#endif
+
 	/*FTESurf Patch 202: throw away any open input journal, WITHOUT writing it.  This
 	  is reached by both paths that matter -- the map-change ParseServerData calls and
 	  CL_Disconnect -- and dropping rather than salvaging is the same rule the .view

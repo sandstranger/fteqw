@@ -781,6 +781,7 @@ CLIENT_OBJS = \
 	cl_ents.o	\
 	clq2_ents.o	\
 	clq2_hud.o	\
+	clh2_hud.o	\
 	clq2_fx.o	\
 	cl_effects.o	\
 	cl_tempentities.o	\
@@ -1036,7 +1037,7 @@ COMMON_OBJS = \
 	qvm.o	\
 	r_d3.o	\
 	gl_q2bsp.o		\
-	q2mapfixes.o	\
+	mapfixes.o	\
 	glmod_doom.o 	\
 	world.o 		\
 	sv_phys.o 		\

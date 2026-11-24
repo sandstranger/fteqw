@@ -562,7 +562,7 @@ SET(FTE_COMMON_FILES
 	engine/common/qkupdate.c
 	engine/common/LzmaDec.c
 	engine/common/gl_q2bsp.c
-	engine/common/q2mapfixes.c
+	engine/common/mapfixes.c
 	engine/common/huff.c
 	engine/common/log.c
 	engine/common/mathlib.c
@@ -741,6 +741,7 @@ SET(FTE_CLIENT_FILES
 	engine/client/clq2_cin.c
 	engine/client/clq2_ents.c
 	engine/client/clq2_hud.c
+	engine/client/clh2_hud.c
 	engine/client/clq2_fx.c
 	engine/client/q2fx/cl_effects.c
 	engine/client/q2fx/cl_tempentities.c

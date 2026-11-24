@@ -3401,12 +3401,15 @@ qboolean Mod_LoadEntitiesBlob(struct model_s *mod, const char *entdata, size_t e
 		Q_strncatz(fname, ".edo", sizeof(fname));
 		ents = FS_LoadMallocFile(fname, &sz);
 	}
-	if (mod_loadentfiles.value && !ents && mod->fromgame == fg_quake2 && !*mod_modifier)
-	{	//no file: yquake2's own fixes, built in (q2mapfixes.c)
-		extern char *Mod_Q2MapFix(const char *modelname, unsigned int crc, size_t *size);
-		ents = Mod_Q2MapFix(mod->name, q2crc, &sz);
+	if (mod_loadentfiles.value && !ents && !*mod_modifier)
+	{	//no file: yquake2's (Quake 2) and uHexen2's (Hexen II) map fixes, built in (mapfixes.c), for the very
+		//map each was written against (name and crc)
+		extern char *Mod_BuiltinMapFix(const char *modelname, unsigned int crc, size_t *size);
+		if (mod->fromgame != fg_quake2)
+			q2crc = CalcHashInt(&hash_crc16, entdata, entdatasize-1);
+		ents = Mod_BuiltinMapFix(mod->name, q2crc, &sz);
 		if (ents)
-			Con_DPrintf("%s: yquake2's map fixes (@%04x)\n", mod->name, q2crc);
+			Con_DPrintf("%s: built in map fixes (@%04x)\n", mod->name, q2crc);
 	}
 	if (!ents)
 	{

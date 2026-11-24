@@ -721,8 +721,9 @@ void NPP_NQFlush(void)
 				/*FIXME: hexen2 intermission+finale includes the viewheight. NQ does not, and QW has explicit position with scores but no finale*/
 				/*hexen2 does something like this in the client, but we don't support those protocols, so translate to something usable*/
 				char *title[13] = {"gfx/finale.lmp", "gfx/meso.lmp", "gfx/egypt.lmp", "gfx/roman.lmp", "gfx/castle.lmp", "gfx/castle.lmp", "gfx/end-1.lmp", "gfx/end-2.lmp", "gfx/end-3.lmp", "gfx/castle.lmp", "gfx/mpend.lmp", "gfx/mpmid.lmp", "gfx/end-3.lmp"};
-				int lookup[13] = {394, 395, 396, 397, 358, strcmp(T_GetString(400+5*2+1), "BAD STRING")?400+5*2+1:400+4*2, 386+6, 386+7, 386+8, 391, 538, 545, 561};
-				//5 is the demo sell screen, which changes depending on hexen2 vs portals.
+				//uHexen2's CL_SetupIntermission: 4 (war defeated) is 398 (was 358, someone else's text), and the
+				//demo's ending (5) is 408 in hexen2's strings, 410 in the mission pack's (which has 411 too).
+				int lookup[13] = {394, 395, 396, 397, 398, strcmp(T_GetString(411), "BAD STRING")?410:408, 386+6, 386+7, 386+8, 391, 538, 545, 561};
 				if (buffer[1] < 13)
 				{
 					h2title = title[buffer[1]];

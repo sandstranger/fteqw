@@ -7478,6 +7478,23 @@ typedef struct
 	int	noqchandling;
 } ucmd_t;
 
+#ifdef HEXEN2
+/*
+Hexen II's clc_inv_select (uHexen2's Inv_Update): the inventory item the client's status bar has selected,
+for the gamecode's impulses that act on self.inventory -- 44 drops it, 23 uses it. Without it they act on
+whatever the gamecode last left there.
+*/
+static void SVH2_InvSelect_f (void)
+{
+	eval_t *val;
+	if (progstype != PROG_H2 || !svprogfuncs || !sv_player)
+		return;
+	val = svprogfuncs->GetEdictFieldValue(svprogfuncs, sv_player, "inventory", ev_float, NULL);
+	if (val)
+		val->_float = bound(0, atoi(Cmd_Argv(1)), 15);
+}
+#endif
+
 ucmd_t ucmds[] =
 {
 	/*connection process*/
@@ -7500,6 +7517,9 @@ ucmd_t ucmds[] =
 	{"kill",		SV_Kill_f},
 	{"pause",		SV_Pause_f},
 	{"msg",			SV_Msg_f},
+#ifdef HEXEN2
+	{"invselect",	SVH2_InvSelect_f},
+#endif
 	{"efpslist",	Cmd_FPSList_f},	//don't conflict with the ktpro one
 	{"vote",		SV_Vote_f},
 

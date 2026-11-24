@@ -479,6 +479,11 @@ V_CheckGamma
 */
 static void QDECL V_Gamma_Callback(struct cvar_s *var, char *oldvalue)
 {
+	if (var == &v_gamma && !(v_gamma.value > 0))
+	{	//uHexen2 (and other engines' configs) can leave gamma "0": not a gamma, just a white screen here. As uHexen2, back to 1.
+		Cvar_ForceSet(&v_gamma, "1");
+		return;	//which came back here
+	}
 	BuildGammaTable (v_gammainverted.ival?v_gamma.value:(1/v_gamma.value), v_contrast.value, v_contrastboost.value, v_brightness.value);
 	V_UpdatePalette (true);
 }
@@ -1485,16 +1490,16 @@ void V_ApplyRefdef (void)
 		sb_lines = 0;
 	else
 #endif
+#ifdef HEXEN2
+	if (sbar_hexen2)	//uHexen2: from 110 up the bar is down, only its small overlay (clh2_hud.c) remains
+		sb_lines = (size >= 110) ? 0 : 46;
+	else
+#endif
 	     if (size >= 120)
 		sb_lines = 0;           // no status bar at all
 	else if (size >= 110)
 		sb_lines = 24;          // no inventory
 	else
-#ifdef HEXEN2
-		if (sbar_hexen2)
-			sb_lines = 46;	//hexen2's sbar is a smidge more crampt.
-		else
-#endif
 		sb_lines = 24+16+8;
 
 	if (scr_viewsize.value >= 100.0)

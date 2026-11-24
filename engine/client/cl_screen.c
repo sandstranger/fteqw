@@ -1956,6 +1956,13 @@ void SCR_CenterPrint (int pnum, const char *str, qboolean skipgamecode)
 			return;
 #endif
 	}
+#ifdef HEXEN2
+	{
+		extern qboolean sbar_hexen2;
+		if (sbar_hexen2 && cls.protocol != CP_QUAKE2 && CLH2_CenterPrint(pnum, str))
+			return;	//Hexen II's centerprints, plaques and intermissions, as uHexen2 draws them (clh2_hud.c)
+	}
+#endif
 
 	if (Cmd_AliasExist("f_centerprint", RESTRICT_LOCAL))
 	{
@@ -2560,6 +2567,14 @@ void SCR_CheckDrawCenterString (void)
 	}
 #endif
 
+#ifdef HEXEN2
+	{
+		extern qboolean sbar_hexen2;
+		if (sbar_hexen2 && cls.protocol != CP_QUAKE2 && cl.playerview[0].gamerectknown == cls.framecount
+			&& !Key_Dest_Has(~(kdm_game|kdm_centerprint)))
+			CLH2_DrawCenterString(&cl.playerview[0].gamerect);
+	}
+#endif
 	for (pnum = 0; pnum < cl.splitclients; pnum++)
 	{
 #ifdef QUAKESTATS
