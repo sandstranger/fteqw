@@ -56,6 +56,10 @@ int CLDKF_Milliseconds(void)
 {
 	return (int)(cl.time*1000);
 }
+int CLDKF_RealMilliseconds(void)
+{
+	return (int)(realtime*1000);
+}
 float CLDKF_CvarValue(const char *name, const char *defaultvalue)
 {
 	cvar_t *v = Cvar_FindVar(name);
@@ -512,6 +516,211 @@ void CLDKF_DrawIcons(float x, float y, float w, float h, int num, const cldk_ico
 	memcpy(&r_refdef, &saved, sizeof(saved));
 }
 
+/*
+=====================================================================
+its menus (daikatana/client/menu): FTE's menu while it's the game
+=====================================================================
+*/
+void *CLDKF_GLGetProcAddress(const char *name)
+{	//(FTE keeps its GL to itself: its video menu has no driver info)
+	return NULL;
+}
+//its cvar names that are FTE's by others
+static const char *CLDK_CvarName(const char *name)
+{
+	static const struct {const char *dk, *fte;} names[] =
+	{
+		{"s_volume",	"volume"},
+		{"s_mp3_volume",	"bgmvolume"},
+		{"vid_gamma",	"gamma"},
+		{"in_mouse",	"in_mouse"},
+	};
+	size_t i;
+	for (i = 0; i < countof(names); i++)
+		if (!strcmp(names[i].dk, name))
+			return names[i].fte;
+	return name;
+}
+const char *CLDKF_CvarString(const char *name)
+{
+	cvar_t *v = Cvar_FindVar(CLDK_CvarName(name));
+	return v?v->string:"";
+}
+const char *CLDKF_CvarCreate(const char *name, const char *value, int archive)
+{
+	cvar_t *v = Cvar_FindVar(CLDK_CvarName(name));
+	if (!v)
+		v = Cvar_Get(CLDK_CvarName(name), value?value:"", archive?CVAR_ARCHIVE:0, "Daikatana");
+	return v?v->string:"";
+}
+
+//its key numbers (Quake II's) and FTE's
+static int CLDK_FTEKey(int k)
+{
+	static const struct {int dk, fte;} keys[] =
+	{
+		{128, K_UPARROW}, {129, K_DOWNARROW}, {130, K_LEFTARROW}, {131, K_RIGHTARROW},
+		{132, K_LALT}, {133, K_LCTRL}, {134, K_LSHIFT},
+		{135, K_F1}, {136, K_F2}, {137, K_F3}, {138, K_F4}, {139, K_F5}, {140, K_F6},
+		{141, K_F7}, {142, K_F8}, {143, K_F9}, {144, K_F10}, {145, K_F11}, {146, K_F12},
+		{147, K_INS}, {148, K_DEL}, {149, K_PGDN}, {150, K_PGUP}, {151, K_HOME}, {152, K_END},
+		{160, K_KP_HOME}, {161, K_KP_UPARROW}, {162, K_KP_PGUP}, {163, K_KP_LEFTARROW}, {164, K_KP_5},
+		{165, K_KP_RIGHTARROW}, {166, K_KP_END}, {167, K_KP_DOWNARROW}, {168, K_KP_PGDN}, {169, K_KP_ENTER},
+		{170, K_KP_INS}, {171, K_KP_DEL}, {172, K_KP_SLASH}, {173, K_KP_MINUS}, {174, K_KP_PLUS},
+		{200, K_MOUSE1}, {201, K_MOUSE2}, {202, K_MOUSE3},
+		{203, K_JOY1}, {204, K_JOY2}, {205, K_JOY3}, {206, K_JOY4},
+		{239, K_MWHEELDOWN}, {240, K_MWHEELUP}, {255, K_PAUSE},
+	};
+	size_t i;
+	if (k > 0 && k < 128)
+		return k;
+	for (i = 0; i < countof(keys); i++)
+		if (keys[i].dk == k)
+			return keys[i].fte;
+	if (k >= 207 && k <= 238)
+		return K_AUX1 + (k - 207);
+	return 0;
+}
+static int CLDK_DKKey(int k)
+{
+	int d;
+	if (k > 0 && k < 128)
+		return k;
+	if (k == K_RALT)	return 132;
+	if (k == K_RCTRL)	return 133;
+	if (k == K_RSHIFT)	return 134;
+	for (d = 128; d < 256; d++)
+		if (CLDK_FTEKey(d) == k)
+			return d;
+	return 0;
+}
+const char *CLDKF_KeyBinding(int dkkey)
+{
+	int k = CLDK_FTEKey(dkkey);
+	const char *b;
+	if (!k)
+		return NULL;
+	b = keybindings[k][0];
+	return (b && *b)?b:NULL;
+}
+void CLDKF_SetKeyBinding(int dkkey, const char *binding)
+{
+	int k = CLDK_FTEKey(dkkey);
+	if (k)
+		Key_SetBinding(k, ~0, binding, RESTRICT_LOCAL);
+}
+const char *CLDKF_KeyName(int dkkey)
+{
+	int k = CLDK_FTEKey(dkkey);
+	return k?Key_KeynumToString(k, 0):"<UNKNOWN KEYNUM>";
+}
+int CLDKF_KeyDown(int dkkey)
+{
+	int k = CLDK_FTEKey(dkkey);
+	return k && keydown[k];
+}
+const char *CLDKF_WriteDir(void)
+{
+	static char path[MAX_OSPATH];
+	if (!FS_SystemPath("", FS_GAMEONLY, path, sizeof(path)))
+		*path = 0;
+	else if (*path && path[strlen(path)-1] == '/')
+		path[strlen(path)-1] = 0;	//(its are without)
+	return path;
+}
+void *CLDKF_TagMalloc(size_t size, int tag)
+{	//as FTE's Quake II game API's (the game's IonCommon's allocations are freed through either)
+	return Z_TagMalloc(size, tag);
+}
+void CLDKF_TagFree(void *mem)
+{
+	Z_TagFree(mem);
+}
+int CLDKF_InGame(void)
+{
+	return cls.state == ca_active;
+}
+void CLDKF_StopAllSounds(void)
+{
+	S_StopAllSounds(true);
+}
+void CLDKF_MousePos(int *x, int *y)
+{	//the menu's drawn over the whole screen, its virtual one (cldkarea's set to that as it is)
+	*x = (mousecursor_x - cldkarea.x) / cldkarea.scale;
+	*y = (mousecursor_y - cldkarea.y) / cldkarea.scale;
+}
+
+static menu_t cldk_menu;
+static void CLDK_MenuArea(void)
+{	//the whole screen, the HUD's way (its menus fit 640x480 in it)
+	cldkarea.x = 0;
+	cldkarea.y = 0;
+	cldkarea.scale = (vid.height < 480)?vid.height/480.0:1;
+	cldkarea.w = vid.width / cldkarea.scale;
+	cldkarea.h = vid.height / cldkarea.scale;
+}
+static qboolean CLDK_MenuKeyEvent(menu_t *m, qboolean isdown, unsigned int devid, int key, int unicode)
+{
+	int dk;
+	CLDK_MenuArea();
+	if (key == K_TOUCHTAP)
+		key = K_MOUSE1;
+	if (isdown && unicode >= 32 && unicode < 127 && !keydown[K_LCTRL] && !keydown[K_RCTRL])
+		dk = unicode;	//typed text by character (shift, layouts)
+	else
+		dk = CLDK_DKKey(key);
+	if (key == K_MOUSE1 || key == K_TOUCHTAP)
+	{
+		int x, y;
+		CLDKF_MousePos(&x, &y);
+		CLDK_MenuMouse(x, y);
+	}
+	if (dk)
+		CLDK_MenuKey(dk, isdown);
+	if (!CLDK_MenuActive())
+		CLDKF_CloseMenu();
+	return true;
+}
+static void CLDK_MenuDrawMenu(menu_t *m)
+{
+	int x, y;
+	CLDK_MenuArea();
+	CLDKF_MousePos(&x, &y);
+	CLDK_MenuMouse(x, y);
+	CLDK_MenuDraw();
+	if (!CLDK_MenuActive())
+		CLDKF_CloseMenu();
+}
+static void CLDK_MenuRelease(menu_t *m, qboolean forced)
+{
+	if (CLDK_MenuActive())
+		CLDK_MenuKey(-1, true);	//(FTE closed it: a map start, closemenu...: it leaves)
+}
+void CLDKF_CloseMenu(void)
+{
+	if (Menu_IsLinked(&cldk_menu))
+		Menu_Unlink(&cldk_menu, false);
+}
+//FTE's menu (togglemenu, the escape key) while it's the game
+qboolean CLDK_OpenMenu(void)
+{
+	if (!CLDK_IsDaikatana())
+		return false;
+	cldk_menu.keyevent = CLDK_MenuKeyEvent;
+	cldk_menu.drawmenu = CLDK_MenuDrawMenu;
+	cldk_menu.release = CLDK_MenuRelease;
+	cldk_menu.cursor = &key_customcursor[kc_console];	//absolute pointer
+	cldk_menu.isopaque = true;
+	CLDK_MenuArea();
+	if (!Menu_IsLinked(&cldk_menu))
+	{
+		CLDK_MenuOpen();
+		if (CLDK_MenuActive())
+			Menu_Push(&cldk_menu, false);
+	}
+	return true;
+}
+
 //its cinematics (its server's, RDF_LETTERBOX with the player's state): 2:1, the rest black, as its client had them
 #define DKRDF_LETTERBOX	0x0020
 qboolean CLDK_InCinematic(void)
@@ -528,6 +737,85 @@ static void CLDK_DrawLetterbox(const vrect_t *area)
 	R2D_FillBlock(area->x, area->y, area->width, bar);
 	R2D_FillBlock(area->x, area->y + area->height - bar, area->width, bar);
 	R2D_ImageColours(1, 1, 1, 1);
+}
+
+//an image as a model's skin (its menus' buttons'): a skin file replacing every surface's
+void *CLDKF_RegisterSkin(const char *image)
+{
+	static struct {char name[MAX_QPATH]; skinid_t id;} skins[64];
+	static int numskins;
+	int i;
+	if (!image || !*image)
+		return NULL;
+	for (i = 0; i < numskins; i++)
+		if (!strcmp(skins[i].name, image))
+			return (void *)(size_t)skins[i].id;
+	if (numskins == countof(skins))
+		return NULL;
+	Q_strncpyz(skins[numskins].name, image, sizeof(skins[numskins].name));
+	skins[numskins].id = Mod_ReadSkinFile(va("dkskin_%i.skin", numskins), va("replace \"\" \"%s\"", image));
+	return (void *)(size_t)skins[numskins++].id;
+}
+//its re.RenderFrame with no world (its menus'), as clq2_menu.c's player preview
+void CLDKF_RenderView(float x, float y, float w, float h, float fov_x, float fov_y, const float *vieworg,
+	const float *viewangles, int num, const cldk_rentity_t *ents)
+{
+	static refdef_t saved;
+	entity_t ent;
+	int i;
+	if (num <= 0 || w <= 0 || h <= 0)
+		return;
+	if (R2D_Flush)
+		R2D_Flush();
+	memcpy(&saved, &r_refdef, sizeof(saved));
+	CL_ClearEntityLists();
+	for (i = 0; i < num; i++)
+	{
+		const cldk_rentity_t *e = &ents[i];
+		if (!e->model)
+			continue;
+		V_ClearEntity(&ent);
+		ent.model = e->model;
+		VectorCopy(e->origin, ent.origin);
+		VectorCopy(e->origin, ent.oldorigin);
+		VectorCopy(e->angles, ent.angles);
+		ent.angles[0] *= r_meshpitch.value;
+		ent.angles[2] *= r_meshroll.value;
+		AngleVectors(ent.angles, ent.axis[0], ent.axis[1], ent.axis[2]);
+		VectorInverse(ent.axis[1]);
+		ent.scale = (e->scale > 0)?e->scale:1;
+		ent.framestate.g[FS_REG].frame[0] = e->frame;
+		ent.framestate.g[FS_REG].frame[1] = e->oldframe;
+		ent.framestate.g[FS_REG].lerpweight[0] = 1 - e->backlerp;
+		ent.framestate.g[FS_REG].lerpweight[1] = e->backlerp;
+		ent.customskin = (skinid_t)(size_t)e->skin;
+		ent.flags = RF_NOSHADOW | (e->fullbright?RF_FULLBRIGHT:0);
+		Vector4Set(ent.shaderRGBAf, e->rgb[0], e->rgb[1], e->rgb[2], bound(0, e->alpha, 1));
+		if (e->alpha < 1)
+			ent.flags |= RF_TRANSLUCENT;
+		VectorSet(ent.glowmod, 1, 1, 1);
+		V_AddEntity(&ent);
+	}
+	VectorCopy(vieworg, r_refdef.vieworg);
+	VectorCopy(viewangles, r_refdef.viewangles);
+	AngleVectors(r_refdef.viewangles, r_refdef.viewaxis[0], r_refdef.viewaxis[1], r_refdef.viewaxis[2]);
+	VectorInverse(r_refdef.viewaxis[1]);
+	r_refdef.flags = RDF_NOWORLDMODEL;
+	r_refdef.fovv_x = r_refdef.fov_x = fov_x;
+	r_refdef.fovv_y = r_refdef.fov_y = fov_y;
+	r_refdef.vrect.x = cldkarea.x + x*cldkarea.scale;
+	r_refdef.vrect.y = cldkarea.y + y*cldkarea.scale;
+	r_refdef.vrect.width = w*cldkarea.scale;
+	r_refdef.vrect.height = h*cldkarea.scale;
+	r_refdef.time = realtime;
+	r_refdef.useperspective = true;
+	r_refdef.mindist = 1;
+	r_refdef.maxdist = 4096;
+	r_refdef.playerview = &cl.playerview[0];
+	memset(&r_refdef.globalfog, 0, sizeof(r_refdef.globalfog));
+	r_refdef.areabitsknown = false;
+	R_RenderView();
+	memcpy(&r_refdef, &saved, sizeof(saved));
 }
 
 //the status bar and the rest of its HUD, for the first seat (it had no splitscreen)

@@ -40,6 +40,14 @@ static inline char *_strupr(char *s)
 		*p = (char)toupper((unsigned char)*p);
 	return s;
 }
+static inline char *itoa(int value, char *str, int radix)
+{
+	sprintf(str, radix == 16?"%x":"%d", value);
+	return str;
+}
+#define _itoa		itoa
+#define _vsnprintf	vsnprintf
+#define _snprintf	snprintf
 #endif
 
 #ifdef __cplusplus

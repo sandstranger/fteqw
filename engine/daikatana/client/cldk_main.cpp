@@ -59,8 +59,6 @@ static void CLDK_ReadCvars(void)
 static void CLDK_S_StartLocalSound(const char *name)	{CLDKF_LocalSound(name);}
 void (*S_StartLocalSound)(const char *s) = CLDK_S_StartLocalSound;
 void Cbuf_AddText(const char *text)						{CLDKF_AddCommand(text);}
-cvar_t *Cvar_Set(const char *name, const char *value)		{CLDKF_CvarSet(name, value); return NULL;}
-cvar_t *Cvar_ForceSet(const char *name, const char *value)	{CLDKF_CvarSet(name, value); return NULL;}
 int CL_ModelIndex(char *name)							{return CLDKF_ModelIndex(name);}
 int CIN_RunningWithView(void)							{return 0;}
 
@@ -261,9 +259,69 @@ static void *RE_RegisterModel(const char *name, resource_t resource)
 	return CLDKF_RegisterModel(name);
 }
 static void *RE_RegisterSkin(const char *name, resource_t resource)
-{
-	return NULL;
+{	//an image as a model's skin (its menus' buttons)
+	return CLDKF_RegisterSkin(name);
 }
+
+//its menus' (menu/)
+static int RE_FontNumCharsInWidth(const char *string, void *vfont, int allowed, int start_pos)
+{	//how many of the string's, from start_pos, fit in the width
+	dkfont_t *font = (dkfont_t *)vfont;
+	int w = 0, n = 0;
+	if (!string || !font)
+		return 0;
+	if (start_pos > 0 && start_pos <= (int)strlen(string))
+		string += start_pos;
+	for (; *string; string++, n++)
+	{
+		unsigned char c = *string;
+		int cw = (c == ' ')?(font->height >> 1):(font->char_width[c]?font->char_width[c] + 1:0);
+		if (w + cw > allowed)
+			break;
+		w += cw;
+	}
+	return n;
+}
+static void RE_DrawFill(int x, int y, int w, int h, CVector rgb, float alpha)
+{
+	float rgba[4] = {rgb.x, rgb.y, rgb.z, alpha};
+	CLDKF_DrawFill(x, y, w, h, rgba);
+}
+static void RE_RenderFrame(refdef_t *fd)
+{	//(its menus': no world, its buttons' models)
+	static cldk_rentity_t ents[256];
+	float org[3] = {fd->vieworg.x, fd->vieworg.y, fd->vieworg.z}, ang[3] = {fd->viewangles.x, fd->viewangles.y, fd->viewangles.z};
+	int i, n = 0;
+	for (i = 0; i < fd->num_entities && n < 256; i++)
+	{
+		const entity_t *e = &fd->entities[i];
+		cldk_rentity_t *r = &ents[n];
+		if (!e->model || (size_t)e->model < MAX_MODELS)
+			continue;
+		r->model = e->model;
+		r->skin = e->skin;
+		r->origin[0] = e->origin.x; r->origin[1] = e->origin.y; r->origin[2] = e->origin.z;
+		r->angles[0] = e->angles.x; r->angles[1] = e->angles.y; r->angles[2] = e->angles.z;
+		r->frame = e->frame;
+		r->oldframe = e->oldframe;
+		r->backlerp = e->backlerp;
+		r->alpha = (e->flags & RF_TRANSLUCENT)?e->alpha:1;
+		r->scale = e->render_scale.x;
+		if (e->color.x || e->color.y || e->color.z)	//(its renderer's vertex colours, past the lighting)
+			r->rgb[0] = e->color.x, r->rgb[1] = e->color.y, r->rgb[2] = e->color.z;
+		else
+			r->rgb[0] = r->rgb[1] = r->rgb[2] = 1;
+		r->fullbright = !!(e->flags & RF_FULLBRIGHT);
+		n++;
+	}
+	CLDKF_RenderView(fd->x, fd->y, fd->width, fd->height, fd->fov_x, fd->fov_y, org, ang, n, ents);
+}
+static void RE_PurgeResources(resource_t resource)		{}
+static void RE_SetInterfacePalette(const unsigned char *palette)	{}
+static void RE_DrawChar(int x, int y, int c)			{}
+static void RE_GetSavegameScreenShot(void)				{}
+static void RE_ClearSavegameScreenShot(void)			{}
+static void RE_SaveSavegameScreenShot(char *path, char *savename)	{}
 //a surface's point (its hierarchical models' hardpoints, hr_*): FTE's models don't say yet, so the entity's own
 void CLDK_GetModelHardpoint(char *pSurfName, int curFrame, int lastFrame, entity_t &ent, CVector &hardPt);	//cldk_models.cpp
 void CLDK_ModelsReset(void);
@@ -285,6 +343,15 @@ static void CLDK_InitRefExport(void)
 	re.DrawString = RE_DrawString;
 	re.StringWidth = RE_StringWidth;
 	re.FontHeight = RE_FontHeight;
+	re.FontNumCharsInWidth = RE_FontNumCharsInWidth;
+	re.DrawFill = RE_DrawFill;
+	re.RenderFrame = RE_RenderFrame;
+	re.PurgeResources = RE_PurgeResources;
+	re.SetInterfacePalette = RE_SetInterfacePalette;
+	re.DrawChar = RE_DrawChar;
+	re.GetSavegameScreenShot = RE_GetSavegameScreenShot;
+	re.ClearSavegameScreenShot = RE_ClearSavegameScreenShot;
+	re.SaveSavegameScreenShot = RE_SaveSavegameScreenShot;
 }
 
 /*
@@ -477,6 +544,16 @@ static void CLDK_Frame(void)
 	cl.refdef.rdflags = CLDKF_RDFlags();
 	for (i = 0; i < MAX_STATS; i++)
 		cl.frame.playerstate.stats[i] = dkstatsvalid?dkstats[i]:CLDKF_Stat(i);
+	CLDKF_VidSize(&viddef.width, &viddef.height);
+	CLDK_ReadCvars();
+}
+//its menus': as the HUD's, whether it's in a game or not
+void CLDK_MenuFrame(void)
+{
+	CLDK_Init();
+	cls.state = CLDKF_InGame()?ca_active:ca_disconnected;
+	cl.time = CLDKF_Milliseconds();
+	cl.refdef.rdflags = CLDKF_RDFlags();
 	CLDKF_VidSize(&viddef.width, &viddef.height);
 	CLDK_ReadCvars();
 }

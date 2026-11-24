@@ -56,12 +56,4 @@ void	CL_ParseStartMusic(void);
 void	CL_ParseStartMP3(void);
 void	CL_ParseStopMP3(void);
 
-#ifndef _WIN32
-static inline char *itoa(int value, char *str, int radix)
-{
-	sprintf(str, radix == 16?"%x":"%d", value);
-	return str;
-}
-#endif
-
 #endif

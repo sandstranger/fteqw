@@ -2468,6 +2468,10 @@ void M_Menu_Main_f (void)
 	if (isDedicated || !Renderer_Started())
 		return;
 #endif
+#if defined(Q2CLIENT) && defined(DAIKATANA)
+	if (CLDK_OpenMenu())	//Daikatana's own (daikatana/client/menu, cldk_fte.c)
+		return;
+#endif
 
 #ifdef CSQC_DAT
 	if (CSQC_ConsoleCommand(-1, va("%s %s", Cmd_Argv(0), Cmd_Args())))

@@ -90,7 +90,7 @@ def main():
             return 'world'
         if 'user' in d:
             return 'user'
-        if mod in ('user', 'fte') and 'physics' in d:
+        if mod in ('user', 'fte', 'client') and 'physics' in d:
             return 'physics'	#each DLL's IonCommon had its own (memmgr): all the same, physics' is set up first
             					#(the cinematics, fte/cin_*.cpp, its engine's, use it too)
         dk = [m for m in d if m != 'fte']

@@ -15,6 +15,23 @@ void		CLDKF_DrawPic(void *pic, float x, float y, float w, float h, float s1, flo
 void		CLDKF_DrawFill(float x, float y, float w, float h, const float *rgba);
 void		CLDKF_VidSize(int *width, int *height);		//the virtual screen the HUD's drawn on
 int			CLDKF_Milliseconds(void);					//the client's time
+int			CLDKF_RealMilliseconds(void);				//real time (the menus')
+void		*CLDKF_GLGetProcAddress(const char *name);	//FTE's GL's, for the video menu's driver info (null if none)
+
+//its menus' (menu/, cldk_menu_sys.cpp)
+const char	*CLDKF_CvarString(const char *name);		//"" if there's no such cvar
+const char	*CLDKF_CvarCreate(const char *name, const char *value, int archive);	//its value, made if there wasn't one
+const char	*CLDKF_KeyBinding(int dkkey);				//its key numbers (Quake II's): null if unbound
+void		CLDKF_SetKeyBinding(int dkkey, const char *binding);
+const char	*CLDKF_KeyName(int dkkey);
+int			CLDKF_KeyDown(int dkkey);
+const char	*CLDKF_WriteDir(void);						//where the game's files are written (its gamedir's)
+void		CLDKF_CloseMenu(void);
+void		CLDKF_StopAllSounds(void);
+void		CLDKF_MousePos(int *x, int *y);				//in the HUD's units
+int			CLDKF_InGame(void);							//connected, a level up
+void		*CLDKF_TagMalloc(size_t size, int tag);		//FTE's zone's, as the game's are (svdk_game.cpp)
+void		CLDKF_TagFree(void *mem);
 float		CLDKF_CvarValue(const char *name, const char *defaultvalue);
 void		CLDKF_CvarSet(const char *name, const char *value);
 void		CLDKF_LocalSound(const char *name);
@@ -74,6 +91,19 @@ typedef struct
 	float	backlerp, alpha, scale;
 } cldk_icon_t;
 void		CLDKF_DrawIcons(float x, float y, float w, float h, int num, const cldk_icon_t *icons);
+//a view of no world (its menus' buttons: its re.RenderFrame's there), over the area, in perspective
+typedef struct
+{
+	void	*model, *skin;		//skin: CLDKF_RegisterSkin's (null: the model's own)
+	float	origin[3], angles[3];
+	int		frame, oldframe;
+	float	backlerp, alpha, scale;
+	float	rgb[3];
+	int		fullbright;
+} cldk_rentity_t;
+void		CLDKF_RenderView(float x, float y, float w, float h, float fov_x, float fov_y, const float *vieworg,
+				const float *viewangles, int num, const cldk_rentity_t *ents);
+void		*CLDKF_RegisterSkin(const char *image);		//an image as a model's skin
 
 //its player movement (the game's own pmove, dk_pmove.cpp), for FTE's client's prediction (cl_pred.c)
 typedef struct
@@ -107,6 +137,11 @@ void		CLDK_DrawHUD(void);
 void		CLDK_AddScene(void);						//its effects, each frame, as entities are added
 void		CLDK_Reset(void);							//new connection, new level
 void		CLDK_Pmove(cldk_pmove_t *pm);				//its pmove, a command's
+void		CLDK_MenuOpen(void);						//its menus (menu/): FTE's menu key while it's the game
+int			CLDK_MenuActive(void);
+void		CLDK_MenuDraw(void);						//(over CLDKF_DrawPic's area: the whole screen, its 640x480)
+void		CLDK_MenuKey(int dkkey, int down);
+void		CLDK_MenuMouse(int x, int y);				//its HUD units, where the pointer is
 
 #ifdef __cplusplus
 }
