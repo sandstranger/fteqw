@@ -107,7 +107,19 @@ enum {RR_PM_NORMAL, RR_PM_GRAPPLE, RR_PM_NOCLIP, RR_PM_SPECTATOR, RR_PM_DEAD, RR
 #define RR_BOXEDICTS_END		64
 
 //PathReturnCode
+#define RR_PATH_REACHEDGOAL		0
+#define RR_PATH_REACHEDPATHEND	1
+#define RR_PATH_TRAVERSALPENDING	2
+#define RR_PATH_RAWPATHFOUND	3
+#define RR_PATH_INPROGRESS		4
+#define RR_PATH_STARTPATHERRORS	5
+#define RR_PATH_INVALIDSTART	6
+#define RR_PATH_INVALIDGOAL		7
 #define RR_PATH_NONAVAILABLE	8
+#define RR_PATH_NOSTARTNODE		9
+#define RR_PATH_NOGOALNODE		10
+#define RR_PATH_NOPATHFOUND		11
+#define RR_PATH_MISSINGWALKORSWIMFLAG	12
 
 typedef struct {uint8_t r, g, b, a;} rr_rgba_t;
 typedef struct {float x, y;} rr_vec2_t;
@@ -177,6 +189,38 @@ typedef struct
 	float		forwardmove, sidemove;
 	uint32_t	server_frame;
 } rr_usercmd_t;
+
+#define RR_MAXTOUCH		32
+typedef struct
+{
+	uint32_t	num;
+	rr_trace_t	traces[RR_MAXTOUCH];
+} rr_touch_list_t;
+
+//pmove_t: cgame_export_t's Pmove takes one
+typedef struct
+{
+	rr_pmove_state_t s;		//state (in / out)
+	rr_usercmd_t cmd;		//command (in)
+	rr_bool		snapinitial;	//if s has been changed outside pmove
+	rr_touch_list_t touch;	//results (out)
+	rr_vec3_t	viewangles;		//clamped
+	rr_vec3_t	mins, maxs;		//bounding box size
+	struct rr_edict_s *groundentity;
+	rr_cplane_t	groundplane;
+	uint32_t	watertype;
+	uint8_t		waterlevel;
+	struct rr_edict_s *player;	//opaque handle
+	rr_trace_t	(*trace)(const float *start, const float *mins, const float *maxs, const float *end, const struct rr_edict_s *passent, uint32_t contentmask);
+	rr_trace_t	(*clip)(const float *start, const float *mins, const float *maxs, const float *end, uint32_t contentmask);	//world only
+	uint32_t	(*pointcontents)(const float *point);
+	rr_vec3_t	viewoffset;		//last viewoffset (in)
+	float		screen_blend[4];	//(out)
+	uint8_t		rdflags;		//merged with the server's
+	rr_bool		jump_sound;		//play the jump sound
+	rr_bool		step_clip;		//clipped on top of an object from below
+	float		impact_delta;	//for falling damage
+} rr_pmove_t;
 
 typedef struct
 {
@@ -296,6 +340,39 @@ typedef struct
 	int32_t		returnCode;
 } rr_PathInfo;
 
+//PathFlags
+#define RR_PATHFLAG_WATER			(1u<<0)
+#define RR_PATHFLAG_WALK			(1u<<1)
+#define RR_PATHFLAG_WALKOFFLEDGE	(1u<<2)
+#define RR_PATHFLAG_LONGJUMP		(1u<<3)
+#define RR_PATHFLAG_BARRIERJUMP		(1u<<4)
+#define RR_PATHFLAG_ELEVATOR		(1u<<5)
+
+typedef struct
+{
+	rr_vec3_t	start;
+	rr_vec3_t	goal;
+	uint32_t	pathFlags;
+	float		moveDist;
+	struct {
+		float	drawTime;			//if > 0, how long (in seconds) to draw the path in the world
+	} debugging;
+	struct {
+		rr_bool	ignoreNodeFlags;
+		float	minHeight;			//0 <= the defaults
+		float	maxHeight;
+		float	radius;
+	} nodeSearch;
+	struct {
+		float	dropHeight;			//0 = don't drop down
+		float	jumpHeight;			//0 = don't jump up
+	} traversals;
+	struct {
+		rr_vec3_t *array;			//to store the raw path's points in
+		int64_t	count;
+	} pathPoints;
+} rr_PathRequest;
+
 typedef int32_t (*rr_BoxEdictsFilter_t)(rr_edict_t *, void *);
 
 typedef struct
@@ -357,7 +434,7 @@ typedef struct
 	void (*Bot_UnRegisterEdict)(const rr_edict_t *edict);
 	int32_t (*Bot_MoveToPoint)(const rr_edict_t *bot, const float *point, const float moveTolerance);
 	int32_t (*Bot_FollowActor)(const rr_edict_t *bot, const rr_edict_t *actor);
-	rr_bool (*GetPathToGoal)(const void *request, rr_PathInfo *info);
+	rr_bool (*GetPathToGoal)(const rr_PathRequest *request, rr_PathInfo *info);
 	void (*Loc_Print)(rr_edict_t *ent, int32_t level, const char *base, const char **args, size_t num_args);
 	void (*Draw_Line)(const float *start, const float *end, const rr_rgba_t *color, const float lifeTime, const rr_bool depthTest);
 	void (*Draw_Point)(const float *point, const float size, const rr_rgba_t *color, const float lifeTime, const rr_bool depthTest);
@@ -407,7 +484,7 @@ typedef struct
 	uint32_t	max_edicts;
 	int32_t		server_flags;
 
-	void (*Pmove)(void *pmove);
+	void (*Pmove)(rr_pmove_t *pmove);
 	void *(*GetExtension)(const char *name);
 	void (*Bot_SetWeapon)(rr_edict_t *botEdict, const int weaponIndex, const rr_bool instantSwitch);
 	void (*Bot_TriggerEdict)(rr_edict_t *botEdict, rr_edict_t *edict);
@@ -495,7 +572,7 @@ typedef struct
 	int16_t (*GetWeaponWheelAmmoCount)(const rr_player_state_t *ps, int32_t ammo_id);
 	int16_t (*GetPowerupWheelCount)(const rr_player_state_t *ps, int32_t powerup_id);
 	int16_t (*GetHitMarkerDamage)(const rr_player_state_t *ps);
-	void (*Pmove)(void *pmove);
+	void (*Pmove)(rr_pmove_t *pmove);
 	void (*ParseConfigString)(int32_t i, const char *s);
 	void (*ParseCenterPrint)(const char *str, int isplit, rr_bool instant);
 	void (*ClearNotify)(int32_t isplit);
@@ -512,5 +589,13 @@ typedef struct
 #define RR_LAYOUTS_INTERMISSION		(1<<3)
 #define RR_LAYOUTS_HELP				(1<<4)
 #define RR_LAYOUTS_HIDE_CROSSHAIR	(1<<5)
+
+//svq2_rrnav.c: the maps' navigation meshes, for the game's gi.GetPathToGoal
+void RRNav_Init(void);
+void RRNav_Unload(void);
+void RRNav_Frame(const char *mapname, rr_game_import_t *gi, rr_game_export_t *ge);
+rr_bool RRNav_GetPathToGoal(const rr_PathRequest *request, rr_PathInfo *info);
+void RRNav_RegisterEdict(const rr_edict_t *e);
+void RRNav_UnRegisterEdict(const rr_edict_t *e);
 
 #endif

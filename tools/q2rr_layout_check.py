@@ -18,7 +18,15 @@ PAIRS = {
     'rr_player_state_t': 'player_state_t', 'rr_gclient_t': 'gclient_t', 'rr_sv_entity_t': 'sv_entity_t',
     'rr_edict_t': 'edict_t', 'rr_PathInfo': 'PathInfo', 'rr_game_import_t': 'game_import_t',
     'rr_game_export_t': 'game_export_t', 'rr_cgame_import_t': 'cgame_import_t', 'rr_cgame_export_t': 'cgame_export_t',
-    'rr_cg_server_data_t': 'cg_server_data_t', 'rr_vrect_t': 'vrect_t',
+    'rr_cg_server_data_t': 'cg_server_data_t', 'rr_vrect_t': 'vrect_t', 'rr_touch_list_t': 'touch_list_t',
+    'rr_pmove_t': 'pmove_t',
+}
+# structures with members inside nested structures: listed by hand
+NESTED = {
+    'rr_PathRequest': ('PathRequest', ['start', 'goal', 'pathFlags', 'moveDist', 'debugging.drawTime',
+                                       'nodeSearch.ignoreNodeFlags', 'nodeSearch.minHeight', 'nodeSearch.maxHeight',
+                                       'nodeSearch.radius', 'traversals.dropHeight', 'traversals.jumpHeight',
+                                       'pathPoints.array', 'pathPoints.count']),
 }
 
 
@@ -57,6 +65,12 @@ def main():
     c, cpp = [], []
     for cname, cppname in PAIRS.items():
         for m in members(text, cname):
+            c.append('P(%s,%s,"%s.%s");' % (cname, m, cppname, m))
+            cpp.append('P(%s,%s,"%s.%s");' % (cppname, m, cppname, m))
+        c.append('S(%s,"%s");' % (cname, cppname))
+        cpp.append('S(%s,"%s");' % (cppname, cppname))
+    for cname, (cppname, ms) in NESTED.items():
+        for m in ms:
             c.append('P(%s,%s,"%s.%s");' % (cname, m, cppname, m))
             cpp.append('P(%s,%s,"%s.%s");' % (cppname, m, cppname, m))
         c.append('S(%s,"%s");' % (cname, cppname))

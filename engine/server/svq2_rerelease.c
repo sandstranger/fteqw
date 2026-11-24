@@ -655,14 +655,13 @@ static const char *RRGI_args(void)					{return fgi->args();}
 static void RRGI_AddCommandString(const char *t)	{fgi->AddCommandString(t);}
 static void RRGI_DebugGraph(float value, int color)	{}
 static void *RRGI_GetExtension(const char *name)	{return NULL;}
-static void RRGI_Bot_RegisterEdict(const rr_edict_t *e) {}
-static void RRGI_Bot_UnRegisterEdict(const rr_edict_t *e) {}
+static void RRGI_Bot_RegisterEdict(const rr_edict_t *e)		{RRNav_RegisterEdict(e);}
+static void RRGI_Bot_UnRegisterEdict(const rr_edict_t *e)	{RRNav_UnRegisterEdict(e);}
 static int32_t RRGI_Bot_MoveToPoint(const rr_edict_t *bot, const float *point, const float tol)	{return 0;}
 static int32_t RRGI_Bot_FollowActor(const rr_edict_t *bot, const rr_edict_t *actor)		{return 0;}
-static rr_bool RRGI_GetPathToGoal(const void *request, rr_PathInfo *info)
-{	//no navigation meshes here: the monsters chase as the original game's did
-	info->returnCode = RR_PATH_NONAVAILABLE;
-	return false;
+static rr_bool RRGI_GetPathToGoal(const rr_PathRequest *request, rr_PathInfo *info)
+{	//the map's navigation mesh (svq2_rrnav.c)
+	return RRNav_GetPathToGoal(request, info);
 }
 static void RRGI_Draw_Line(const float *a, const float *b, const rr_rgba_t *c, const float l, const rr_bool d) {}
 static void RRGI_Draw_Point(const float *a, const float s, const rr_rgba_t *c, const float l, const rr_bool d) {}
@@ -722,6 +721,7 @@ static void VARGS RRGE_Init(void)
 	//lag compensation rewinds by the client's server_frame, which isn't the rerelease's here
 	Cvar_Get("g_lag_compensation", "0", 0, "Quake2 game variables");
 
+	RRNav_Init();
 	rrge->PreInit();
 	rrge->Init();
 
@@ -741,6 +741,7 @@ static void VARGS RRGE_Shutdown(void)
 {
 	if (rrge)
 		rrge->Shutdown();
+	RRNav_Unload();
 	Z_Free(shadow);
 	Z_Free(shadowcl);
 	shadow = NULL;
@@ -759,6 +760,7 @@ static void VARGS RRGE_SpawnEntities(const char *mapname, const char *entstring,
 	RR_SurfacesClear();	//a new map's
 	RR_ConfigstringsClear();
 	SVQ2_ExtraConfigstringsClear();
+	RRNav_Unload();
 	RR_PreCall();
 	rrge->SpawnEntities(mapname, entstring, spawnpoint);
 	RR_SyncAll();
@@ -831,6 +833,7 @@ static void VARGS RRGE_ReadLevel(const char *filename)
 	int i;
 	if (!json)
 		return;
+	RRNav_Unload();
 	RR_PreCall();
 	rrge->ReadLevelJson(json);
 	BZ_Free(json);
@@ -919,6 +922,7 @@ static void VARGS RRGE_RunFrame(void)
 {
 	RR_PreCall();
 	rrframenum++;
+	RRNav_Frame(svs.name, &rrgi, rrge);	//(loads the map's mesh first time), its conditional nodes
 	rrge->RunFrame(true);
 	RR_SyncAll();
 }
