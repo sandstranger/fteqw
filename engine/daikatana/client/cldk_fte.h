@@ -137,7 +137,7 @@ void		CLDK_DrawHUD(void);
 void		CLDK_AddScene(void);						//its effects, each frame, as entities are added
 void		CLDK_Reset(void);							//new connection, new level
 void		CLDK_Pmove(cldk_pmove_t *pm);				//its pmove, a command's
-void		CLDK_MenuOpen(void);						//its menus (menu/): FTE's menu key while it's the game
+void		CLDK_MenuOpen(int button);					//its menus (menu/), at a main button (its dk_main_button; -1: as it was)
 int			CLDK_MenuActive(void);
 void		CLDK_MenuDraw(void);						//(over CLDKF_DrawPic's area: the whole screen, its 640x480)
 void		CLDK_MenuKey(int dkkey, int down);

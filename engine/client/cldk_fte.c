@@ -17,9 +17,19 @@ static struct
 	int w, h;		//in the HUD's
 } cldkarea = {0, 0, 1, 640, 480};
 
+static void CLDK_MenuForce_f(void);
 qboolean CLDK_IsDaikatana(void)
 {
-	return !strcmp(com_protocolname.string, "FTE-Daikatana");
+	static qboolean commands;
+	if (strcmp(com_protocolname.string, "FTE-Daikatana"))
+		return false;
+	if (!commands)
+	{	//its client's commands FTE hasn't
+		commands = true;
+		if (!Cmd_Exists("menu_main_force"))
+			Cmd_AddCommand("menu_main_force", CLDK_MenuForce_f);
+	}
+	return true;
 }
 
 void *CLDKF_RegisterPic(const char *name, int *width, int *height)
@@ -701,8 +711,18 @@ void CLDKF_CloseMenu(void)
 	if (Menu_IsLinked(&cldk_menu))
 		Menu_Unlink(&cldk_menu, false);
 }
-//FTE's menu (togglemenu, the escape key) while it's the game
+//its menu_main_force <button>: its menus at one of the main buttons (0 new game, 2 load, 3 save...): the game
+//stuffs it, and it binds
+static void CLDK_MenuForce_f(void)
+{
+	CLDK_OpenMenuAt(atoi(Cmd_Argv(1)));
+}
 qboolean CLDK_OpenMenu(void)
+{
+	return CLDK_OpenMenuAt(-1);
+}
+//FTE's menu (togglemenu, the escape key) while it's the game
+qboolean CLDK_OpenMenuAt(int button)
 {
 	if (!CLDK_IsDaikatana())
 		return false;
@@ -714,10 +734,12 @@ qboolean CLDK_OpenMenu(void)
 	CLDK_MenuArea();
 	if (!Menu_IsLinked(&cldk_menu))
 	{
-		CLDK_MenuOpen();
+		CLDK_MenuOpen(button);
 		if (CLDK_MenuActive())
 			Menu_Push(&cldk_menu, false);
 	}
+	else if (button >= 0)
+		CLDK_MenuOpen(button);	//(up already: to that button's)
 	return true;
 }
 

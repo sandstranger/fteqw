@@ -1,3 +1,4 @@
+//FTE: its saved games are FTE's (saves/<name>/: game.gsv, info.fsv, its info.hdr)
 #include "dk_shared.h"
 #include "client.h"
 
@@ -127,7 +128,7 @@ int FileExists(char *path, char *file)
 
 int validSaveGame(char *path)
 {
-	return (FileExists(path,"game.ssv") && FileExists(path,"server.ssv")) ? TRUE : FALSE;
+	return (FileExists(path,"game.gsv") && FileExists(path,"info.fsv")) ? TRUE : FALSE;
 }
 
 void Sys_DateTime(char *path, char *date, int dateSize, char *time, int timeSize);
@@ -146,12 +147,12 @@ int LoadGameVerify(char *name, char *field1, char *field2, char *comment)
 	cvar_t *sv_savegamedir = Cvar_Get ("sv_savegamedir", "", CVAR_ARCHIVE);
 
 	if( sv_savegamedir->string != NULL && sv_savegamedir->string[0] != NULL )
-		Com_sprintf(path,sizeof(path),"%s/save/%s/",sv_savegamedir->string,name);
+		Com_sprintf(path,sizeof(path),"%s/saves/%s/",sv_savegamedir->string,name);
 	else
-		Com_sprintf(path,sizeof(path),"%s/save/%s/",FS_Gamedir(),name);
+		Com_sprintf(path,sizeof(path),"%s/saves/%s/",FS_Gamedir(),name);
 */
 
-	Com_sprintf(path,sizeof(path),"%s/save/%s/",FS_SaveGameDir(),name);
+	Com_sprintf(path,sizeof(path),"%s/saves/%s/",FS_SaveGameDir(),name);
 
 	// see if the files exist (game.ssv, server.ssv) and fill the comment field if available
 	if (validSaveGame(path))
@@ -159,14 +160,14 @@ int LoadGameVerify(char *name, char *field1, char *field2, char *comment)
 		char path2[MAX_OSPATH];
 		char date[MAX_FIELD];
 		char time[MAX_FIELD];
-		Com_sprintf(path2,sizeof(path2),"%s%s",path,"game.ssv");
+		Com_sprintf(path2,sizeof(path2),"%s%s",path,"game.gsv");
 		Sys_DateTime(path2, date, MAX_FIELD, time, MAX_FIELD);
 		Com_sprintf(field1,MAX_FIELD,"%s",date);
 		Com_sprintf(field2,MAX_FIELD,"%s",time);
 
 		// if the header exists, set the comment field to the mapTitle in the header file...
 //		Com_sprintf( path2,sizeof(path2), "%sinfo.hdr",path);
-		Com_sprintf( path2,sizeof(path2), "save/%s/info.hdr", name );
+		Com_sprintf( path2,sizeof(path2), "saves/%s/info.hdr", name );
 		
 		byte	*buffer;
 		int length = FS_LoadFile (path2, (void **)&buffer);
@@ -218,11 +219,11 @@ void CMenuSubLoadgame::Enter()
 	// the file list
 
 	if( sv_savegamedir->string != NULL && sv_savegamedir->string[0] != NULL )
-		Com_sprintf(file_filter,sizeof(file_filter),"%s/save/",sv_savegamedir->string);
+		Com_sprintf(file_filter,sizeof(file_filter),"%s/saves/",sv_savegamedir->string);
 	else
-		Com_sprintf(file_filter,sizeof(file_filter),"%s/save/",FS_Gamedir());
+		Com_sprintf(file_filter,sizeof(file_filter),"%s/saves/",FS_Gamedir());
 */
-	Com_sprintf(file_filter,sizeof(file_filter),"%s/save/",FS_SaveGameDir());
+	Com_sprintf(file_filter,sizeof(file_filter),"%s/saves/",FS_SaveGameDir());
 
 	files.Init(FILE_LIST_LEFT,FILE_LIST_TOP,FILE_LIST_RIGHT,FILE_LIST_BOTTOM,2,file_filter,"*.",NULL,FILE_LIST_SPACING,FILE_LIST_LENGTH);
 	files.SetFields(FILE_NAME_START,FILE_NAME_CHARS,FILE_DATE_START,FILE_DATE_CHARS,FILE_TIME_START,FILE_TIME_CHARS);
@@ -476,7 +477,7 @@ void CMenuSubLoadgame::FillGameInfo()
 
 	char name[MAX_OSPATH];
 
-	Com_sprintf(name,sizeof(name),"%s/save/%s/info.hdr",FS_SaveGameDir(),cur_file);
+	Com_sprintf(name,sizeof(name),"%s/saves/%s/info.hdr",FS_SaveGameDir(),cur_file);
 	FILE	*f;
 	f = fopen (name, "rb");
 
@@ -573,15 +574,22 @@ void CMenuSubLoadgame::FillGameInfo()
 	total = header->total;
 
 	char	string[128];
-	Com_sprintf(string,sizeof(string),"%s/save/%s/",FS_SaveGameDir(),cur_file);
+	Com_sprintf(string,sizeof(string),"%s/saves/%s/",FS_SaveGameDir(),cur_file);
 
-	if (FileExists(string,"shot.tga"))
+	int shot_w = (int)SCREEN_SHOT_IMAGE_WIDTH, shot_h = (int)SCREEN_SHOT_IMAGE_HEIGHT;
+	if (FileExists(string,"screeny.tga"))
 	{
-		Com_sprintf(string,sizeof(string),"save/%s/shot.tga",cur_file);
-		picDrawStruct.pImage = re.RegisterPic( string, NULL, NULL, RESOURCE_INTERFACE );
+		Com_sprintf(string,sizeof(string),"saves/%s/screeny.tga",cur_file);
+		picDrawStruct.pImage = re.RegisterPic( string, &shot_w, &shot_h, RESOURCE_INTERFACE );
 	}
 	else
-		picDrawStruct.pImage = re.RegisterPic( "pics/noscreen_avail.tga", NULL, NULL, RESOURCE_INTERFACE );
+		picDrawStruct.pImage = re.RegisterPic( "pics/noscreen_avail.tga", &shot_w, &shot_h, RESOURCE_INTERFACE );
+	//FTE: its screenshots were 256 square; FTE's are the screen's size
+	if (shot_w > 0 && shot_h > 0)
+	{
+		picDrawStruct.fScaleX = (SCREEN_SHOT_WIDTH * DKM_MenuScale()) / shot_w;
+		picDrawStruct.fScaleY = (SCREEN_SHOT_HEIGHT * DKM_MenuScale()) / shot_h;
+	}
 }
 
 void CMenuSubLoadgame::DoLoad()

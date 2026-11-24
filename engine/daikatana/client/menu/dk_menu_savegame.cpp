@@ -1,3 +1,4 @@
+//FTE: its saved games are FTE's (saves/<name>/: game.gsv, info.fsv, its info.hdr)
 #include "dk_shared.h"
 
 #include "dk_misc.h"
@@ -140,7 +141,7 @@ int save_LoadGameVerify(char *name, char *field1, char *field2, char *comment)
 		return 0;
 
 	char path[MAX_OSPATH];
-	Com_sprintf(path,sizeof(path),"%s/save/%s/",FS_SaveGameDir(),name);
+	Com_sprintf(path,sizeof(path),"%s/saves/%s/",FS_SaveGameDir(),name);
 
 	// see if the files exist (game.ssv, server.ssv)
 	if (validSaveGame(path))
@@ -148,13 +149,13 @@ int save_LoadGameVerify(char *name, char *field1, char *field2, char *comment)
 		char path2[MAX_OSPATH];
 		char date[MAX_FIELD];
 		char time[MAX_FIELD];
-		Com_sprintf(path2,sizeof(path2),"%s%s",path,"game.ssv");
+		Com_sprintf(path2,sizeof(path2),"%s%s",path,"game.gsv");
 		Sys_DateTime(path2, date, MAX_FIELD, time, MAX_FIELD);
 		Com_sprintf(field1,MAX_FIELD,"%s",date);
 		Com_sprintf(field2,MAX_FIELD,"%s",time);
 
 		// if the header exists, set the comment field to the mapTitle in the header file...
-		Com_sprintf( path2,sizeof(path2), "save/%s/info.hdr", name );
+		Com_sprintf( path2,sizeof(path2), "saves/%s/info.hdr", name );
 		
 		byte	*buffer;
 		int length = FS_LoadFile (path2, (void **)&buffer);
@@ -184,7 +185,7 @@ CMenuSubSavegame::CMenuSubSavegame()
 	char path[MAX_OSPATH];
 	char path1[MAX_OSPATH];
 
-	Com_sprintf(path,sizeof(path),"%s/save/save",FS_SaveGameDir());
+	Com_sprintf(path,sizeof(path),"%s/saves/save",FS_SaveGameDir());
 
 	for (char c = 'a'; c <= 'a'+20; c++)
 	{
@@ -227,7 +228,7 @@ void CMenuSubSavegame::Enter()
 
 	// set up the file list
 	char file_filter[MAX_OSPATH];
-	Com_sprintf(file_filter,sizeof(file_filter),"%s/save/",FS_SaveGameDir());
+	Com_sprintf(file_filter,sizeof(file_filter),"%s/saves/",FS_SaveGameDir());
 
 	files.Init(FILE_LIST_LEFT,FILE_LIST_TOP,FILE_LIST_RIGHT,FILE_LIST_BOTTOM,2,file_filter,"*.",NULL,FILE_LIST_SPACING,FILE_LIST_LENGTH);
 	files.SetFields(FILE_NAME_START,FILE_NAME_CHARS,FILE_DATE_START,FILE_DATE_CHARS,FILE_TIME_START,FILE_TIME_CHARS);
@@ -240,7 +241,7 @@ void CMenuSubSavegame::Enter()
 	// try to find an empty slot
 	char path[MAX_OSPATH];
 	char path1[MAX_OSPATH];
-	Com_sprintf(path,sizeof(path),"%s/save/save",FS_SaveGameDir());
+	Com_sprintf(path,sizeof(path),"%s/saves/save",FS_SaveGameDir());
 
 	for (char c = 'a'; c <= 'a'+20; c++)
 	{

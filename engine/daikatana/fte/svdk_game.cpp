@@ -49,6 +49,7 @@ static fq2::gclient_t		*shadowcl;		//and of its clients
 static int					shadowmax;
 static int					dkmaxclients;
 static bool					dklevelloaded;	//a level's been spawned (so the next needs the last's cleared away)
+static bool					dkloadinggame;	//a saved game's been read: its level's to spawn as such (then read)
 static unsigned char		dkbegun[256];	//which clients the game's begun (only those does it disconnect)
 static bool					dksentvalid[256];	//DK_SendStats has sent them their stats
 
@@ -1965,8 +1966,8 @@ static void FQ2_VARGS DK3_SpawnEntities(const char *mapname, const char *entstri
 	char *ents;
 	DK_PreCall();
 	CIN_Stop(NULL);	//(its client's, changing map)
-	if (dklevelloaded)
-	{	//its engine went through these for each level after the first
+	if (dklevelloaded && !dkloadinggame)
+	{	//its engine went through these for each level after the first (not for a saved game's: it's just read)
 		dkge->LevelExit();
 		DKGI_Mem_Free_Tag(MEM_TAG_GAME);	//the last level's edicts and clients, which physics doesn't
 		g_edicts = NULL;
@@ -1993,15 +1994,75 @@ static void FQ2_VARGS DK3_SpawnEntities(const char *mapname, const char *entstri
 	dkge->LevelLoad();
 	dkge->LoadNodes(map);
 	dkge->SetServerTime(0.75f);
-	dkge->SpawnEntities(map, ents, (char *)(spawnpoint?spawnpoint:""), false);
+	dkge->SpawnEntities(map, ents, (char *)(spawnpoint?spawnpoint:""), dkloadinggame);
 	free(ents);
 	DK_SyncAll();
 }
 
-static void FQ2_VARGS DK3_WriteGame(const char *filename, fq2::qboolean autosave)	{}
-static void FQ2_VARGS DK3_ReadGame(const char *filename)		{}
-static void FQ2_VARGS DK3_WriteLevel(const char *filename)	{}
-static void FQ2_VARGS DK3_ReadLevel(const char *filename)		{}
+/*
+saved games (p_save.cpp's: its functions are saved by their registered indexes, so they load here as anywhere):
+FTE's Quake II server reads the game, spawns the level's entities, then reads the level over them, as its engine did
+*/
+static void FQ2_VARGS DK3_WriteGame(const char *filename, fq2::qboolean autosave)
+{
+	DK_PreCall();
+	if (!autosave && dkge->WriteHeader)
+	{	//a save (not a level change's): as its engine's SV_DoSaveGame, it uses a savegem, and writes the header its
+		//menus show beside it (info.hdr: the comment, its stats)
+		char hdr[MAX_OSPATH], *slash;
+		cvar_t *comment = DKGI_cvar("dk_savecomment", "", 0);
+		if (DKCIN_CvarValue("unlimited_saves", "0") == 0)
+			DKCIN_Command("item_savegem_use\n");
+		snprintf(hdr, sizeof(hdr), "%s", filename);
+		slash = strrchr(hdr, '/');
+		if (slash && (size_t)(slash + 1 - hdr) + 9 < sizeof(hdr))
+		{
+			strcpy(slash + 1, "info.hdr");
+			dkge->WriteHeader(hdr, (char *)((comment && *comment->string)?comment->string:DKGI_GetConfigString(CS_NAME)), false);
+		}
+		if (comment)
+			DKGI_cvar_set("dk_savecomment", "");
+	}
+	dkge->WriteGame((char *)filename, autosave?1:0);
+}
+static void FQ2_VARGS DK3_ReadGame(const char *filename)
+{
+	DK_PreCall();
+	CIN_Stop(NULL);
+	if (dklevelloaded)
+	{	//(its engine loaded the game afresh: FTE keeps it, so the level it's in is left first)
+		dkge->LevelExit();
+		dklevelloaded = false;
+	}
+	dkge->ReadGame((char *)filename);	//(its edicts and clients anew)
+	dkloadinggame = true;				//the level's spawned for a saved game's (its SpawnEntities' bLoadgame)
+	DK_SyncAll();
+}
+static void FQ2_VARGS DK3_WriteLevel(const char *filename)
+{
+	DK_PreCall();
+	dkge->WriteLevel((char *)filename);
+}
+static void FQ2_VARGS DK3_ReadLevel(const char *filename)
+{
+	int i;
+	DK_PreCall();
+	for (i = 0; i < shadowmax; i++)
+		memset(&shadow[i].area, 0, sizeof(shadow[i].area));	//(FTE's cleared its world's links)
+	dkge->ReadLevel((char *)filename);
+	//its edicts as they were read (their links stale): linked again, as Quake II's game did
+	for (i = dkmaxclients+1; i < dkge->num_edicts && i < shadowmax; i++)
+	{
+		edict_t *de = DKEDICT(i);
+		de->area.prev = de->area.next = NULL;
+		if (de->inuse)
+			DKGI_linkentity(de);
+	}
+	dkloadinggame = false;
+	if (dkentx)
+		memset(dkentx, 0, sizeof(*dkentx)*shadowmax);	//(its clients start over)
+	DK_SyncAll();
+}
 
 static fq2::qboolean FQ2_VARGS DK3_ClientConnect(fq2::edict_t *ent, char *userinfo)
 {

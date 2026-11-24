@@ -1,3 +1,4 @@
+//FTE: its saved games are FTE's (saves/<name>/: game.gsv, info.fsv, its info.hdr)
 #include "dk_buffer.h"
 #include "dk_array.h"
 
@@ -3091,8 +3092,8 @@ int CInterfaceFileBox::CompareField(config_file_t &first, config_file_t &second,
 				{
 					char path1[MAX_OSPATH];
 					char path2[MAX_OSPATH];
-					Com_sprintf(path1,sizeof(path1),"%s/save/%s/game.ssv",FS_SaveGameDir(),first.name);
-					Com_sprintf(path2,sizeof(path2),"%s/save/%s/game.ssv",FS_SaveGameDir(),second.name);
+					Com_sprintf(path1,sizeof(path1),"%s/saves/%s/game.gsv",FS_SaveGameDir(),first.name);
+					Com_sprintf(path2,sizeof(path2),"%s/saves/%s/game.gsv",FS_SaveGameDir(),second.name);
 					return Sys_CompareFileDateTime(path1,path2);
 				}
 				break;
@@ -3119,8 +3120,8 @@ int CInterfaceFileBox::CompareField(config_file_t &first, config_file_t &second,
 				{
 					char path1[MAX_OSPATH];
 					char path2[MAX_OSPATH];
-					Com_sprintf(path1,sizeof(path2),"%s/save/%s/game.ssv",FS_SaveGameDir(),first.name);
-					Com_sprintf(path2,sizeof(path2),"%s/save/%s/game.ssv",FS_SaveGameDir(),second.name);
+					Com_sprintf(path1,sizeof(path2),"%s/saves/%s/game.gsv",FS_SaveGameDir(),first.name);
+					Com_sprintf(path2,sizeof(path2),"%s/saves/%s/game.gsv",FS_SaveGameDir(),second.name);
 					return -Sys_CompareFileDateTime(path1,path2);
 				}
 				break;

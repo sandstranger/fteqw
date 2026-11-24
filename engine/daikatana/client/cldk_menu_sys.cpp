@@ -267,7 +267,8 @@ static char *FindNext(unsigned musthave, unsigned canthave)
 	if (!fdir)
 		return NULL;
 	while ((d = readdir(fdir)) != NULL)
-		if (!fnmatch(findpattern, d->d_name, 0) && FindAttributes(d->d_name, musthave, canthave))
+		if ((!strcmp(findpattern, "*.")?!strchr(d->d_name, '.'):!fnmatch(findpattern, d->d_name, 0))	//(Windows' *.: no extension)
+			&& FindAttributes(d->d_name, musthave, canthave))
 		{
 			snprintf(findpath, sizeof(findpath), "%s/%s", findbase, d->d_name);
 			return findpath;
@@ -335,10 +336,13 @@ int Sys_CompareFileDateTime(char *path1, char *path2)
 }
 void Sys_Minimize(void)	{}
 
-//saving: the game's (FTE's save command)
+//saving: FTE's save command (the game writes its header with the comment: svdk_game.cpp's DK3_WriteGame)
 short SV_DoSaveGame(char *dir, char *comment)
 {
 	char cmd[MAX_OSPATH+16];
+	if (!CLDK_CanSave())
+		return false;
+	CLDKF_CvarSet("dk_savecomment", comment?comment:"");
 	snprintf(cmd, sizeof(cmd), "save \"%s\"\n", dir);
 	CLDKF_AddCommand(cmd);
 	return 1;
@@ -495,7 +499,7 @@ extern memory_import_t dkph_memmgr;
 static void *CLDK_X_Malloc(size_t size, MEM_TAG tag)	{return CLDKF_TagMalloc(size, 0x4b00 + (int)tag);}
 static void CLDK_X_Free(void *mem)						{if (mem) CLDKF_TagFree(mem);}
 
-extern "C" void CLDK_MenuOpen(void)
+extern "C" void CLDK_MenuOpen(int button)
 {
 	CLDK_MenuFrame();
 	if (!dkph_memmgr.X_Malloc)
@@ -512,7 +516,10 @@ extern "C" void CLDK_MenuOpen(void)
 	CLDK_CvarsRefresh();
 	CLDK_KeysRefresh();
 	cl_episode_num = CL_Episode();
-	DKM_Enter();
+	if (button >= 0 && button < DKMB_NUM_BUTTONS)
+		DKM_Enter((dk_main_button)button);	//(its menu_main_force's)
+	else
+		DKM_Enter();
 }
 extern "C" int CLDK_MenuActive(void)
 {
