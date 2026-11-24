@@ -6311,6 +6311,8 @@ static qboolean QDECL Mod_LoadDaikatanaModel (model_t *mod, void *buffer, size_t
 	galiasinfo_t *root, *galias, *prev = NULL;
 	galiasanimation_t *anims;
 	const int *cmd, *cmdend;
+	int *cmdcopy;
+	dkmsurface_t *surfcopy;
 	dkmvert_t *tmpvert;
 	int (*tri)[3];
 	vec3_t min, max;
@@ -6339,7 +6341,13 @@ static qboolean QDECL Mod_LoadDaikatanaModel (model_t *mod, void *buffer, size_t
 		Con_Printf (CON_ERROR "%s: invalid or truncated\n", mod->name);
 		return false;
 	}
-	insurf = (const dkmsurface_t*)((qbyte*)buffer + h.ofs_surfaces);
+	//the file's offsets need not be aligned: work on aligned copies (strict-alignment cpus fault otherwise)
+	surfcopy = BZ_Malloc(sizeof(*surfcopy)*h.num_surfaces);
+	memcpy(surfcopy, (qbyte*)buffer + h.ofs_surfaces, sizeof(*surfcopy)*h.num_surfaces);
+	insurf = surfcopy;
+	cmdcopy = BZ_Malloc(sizeof(*cmdcopy)*h.num_glcmds + 4);
+	if (h.num_glcmds > 0)
+		memcpy(cmdcopy, (qbyte*)buffer + h.ofs_glcmds, sizeof(*cmdcopy)*h.num_glcmds);
 
 	//one mesh per drawn surface
 	for (surf = 0, nummeshes = 0; surf < h.num_surfaces; surf++)
@@ -6365,6 +6373,7 @@ static qboolean QDECL Mod_LoadDaikatanaModel (model_t *mod, void *buffer, size_t
 	for (surf = 0, galias = root; surf < h.num_surfaces && galias < root+nummeshes; surf++)
 	{
 		int numverts = 0, numtri = 0;
+		size_t posesize;
 		galiaspose_t *pose;
 		vecV_t *verts;
 #ifndef SERVERONLY
@@ -6402,8 +6411,8 @@ static qboolean QDECL Mod_LoadDaikatanaModel (model_t *mod, void *buffer, size_t
 #endif
 
 		//the strips and fans of this surface, as triangles
-		cmd = (const int*)((qbyte*)buffer + h.ofs_glcmds);
-		cmdend = cmd + h.num_glcmds;
+		cmd = cmdcopy;
+		cmdend = cmd + max(h.num_glcmds, 0);
 		while (cmd + 3 <= cmdend)
 		{
 			dkmvert_t v[3];
@@ -6422,8 +6431,10 @@ static qboolean QDECL Mod_LoadDaikatanaModel (model_t *mod, void *buffer, size_t
 				for (i = 0; i < count; i++)
 				{
 					v[0].xyz = LittleLong(vert[i*3+0]);
-					v[0].s = LittleFloat(((const float*)vert)[i*3+1]);
-					v[0].t = LittleFloat(((const float*)vert)[i*3+2]);
+					memcpy(&v[0].s, &vert[i*3+1], sizeof(float));
+					memcpy(&v[0].t, &vert[i*3+2], sizeof(float));
+					v[0].s = LittleFloat(v[0].s);
+					v[0].t = LittleFloat(v[0].t);
 					if (v[0].xyz < 0 || v[0].xyz >= h.num_xyz)
 						v[0].xyz = 0;
 					third = DKM_MatchVert(tmpvert, &numverts, &v[0]);
@@ -6482,13 +6493,14 @@ static qboolean QDECL Mod_LoadDaikatanaModel (model_t *mod, void *buffer, size_t
 		}
 #endif
 
-		//frames
-		pose = ZG_Malloc(&mod->memgroup, (sizeof(galiaspose_t) + sizeof(vecV_t)*numverts
+		//frames (the verts are a 16-byte aligned type, so start them on a 16 byte boundary)
+		posesize = (sizeof(galiaspose_t)*h.num_frames + 15) & ~(size_t)15;
+		pose = ZG_Malloc(&mod->memgroup, posesize + (sizeof(vecV_t)*numverts
 #ifndef SERVERONLY
 			+ sizeof(vec3_t)*3*numverts
 #endif
 			)*h.num_frames + 1);
-		verts = (vecV_t*)(pose + h.num_frames);
+		verts = (vecV_t*)((qbyte*)pose + posesize);
 #ifndef SERVERONLY
 		normals = (vec3_t*)(verts + h.num_frames*numverts);
 #endif
@@ -6499,10 +6511,12 @@ static qboolean QDECL Mod_LoadDaikatanaModel (model_t *mod, void *buffer, size_t
 			galiasanimation_t *anim = &galias->ofsanimations[n];
 			float scale[3], translate[3];
 
+			memcpy(scale, inframe, sizeof(scale));
+			memcpy(translate, inframe + 12, sizeof(translate));
 			for (j = 0; j < 3; j++)
 			{
-				scale[j] = LittleFloat(((const float*)inframe)[j]);
-				translate[j] = LittleFloat(((const float*)inframe)[3+j]);
+				scale[j] = LittleFloat(scale[j]);
+				translate[j] = LittleFloat(translate[j]);
 			}
 			anim->poseofs = pose;
 			anim->numposes = 1;
@@ -6556,6 +6570,8 @@ static qboolean QDECL Mod_LoadDaikatanaModel (model_t *mod, void *buffer, size_t
 	}
 	BZ_Free(tmpvert);
 	BZ_Free(tri);
+	BZ_Free(cmdcopy);
+	BZ_Free(surfcopy);
 
 	if (mod->mins[0] > mod->maxs[0])
 	{	//nothing: a box at the origin

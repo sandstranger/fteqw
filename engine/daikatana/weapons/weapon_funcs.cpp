@@ -830,7 +830,8 @@ ammo_t* ammoAdd(userEntity_t* self, int amount, weaponInfo_t* winfo)
 void* winfoGenericCommand(weaponInfo_t* winfo, userInventory_t* inv, char* commandStr, void* data)
 {
 	userEntity_t* self = (userEntity_t*)data;
-	playerHook_t* phook = (playerHook_t*)self->userHook;
+	playerHook_t* phook = NULL;	//FTE: only "ambient"'s data is an entity: its hook was read through whatever data was (a
+								//killerInfo_t, a float, a pointer on the caller's stack)
 	weapon_t* weapon = (weapon_t*)inv;
 
 	if (!stricmp(commandStr, "death_msg"))
@@ -900,6 +901,8 @@ void* winfoGenericCommand(weaponInfo_t* winfo, userInventory_t* inv, char* comma
 	else if (!stricmp(commandStr, "ambient"))
 	{
 		if (gstate->bCinematicPlaying)
+			return NULL;
+		if (!self || !(phook = (playerHook_t*)self->userHook))
 			return NULL;
 
 		float animtime = winfoNumFrames(ANIM_AMBIENT_STD) * .05;
@@ -1863,7 +1866,7 @@ void weaponAutoChange(userEntity_t* self)
 	// [cek 11-26-99] This circumvents the 'normal' weapon select procedure.  Call the weapon's select,
 	// which by default calls weaponsSelect...
 	if (new_weapon)
-		(weaponInfo_t*)new_weapon->winfo->select_func(self);
+		new_weapon->winfo->select_func(self);
 	//        weaponSelect (self, (weaponInfo_t *) new_weapon->winfo);
 }
 
@@ -3779,7 +3782,7 @@ void ManualNextWeapon(userEntity_t* self, int dir)
 	// [cek 11-14-99] This circumvents the 'normal' weapon select procedure.  Call the weapon's select,
 	// which by default calls weaponsSelect...
 	if (new_weapon)
-		(weaponInfo_t*)new_weapon->winfo->select_func(self);
+		new_weapon->winfo->select_func(self);
 	//        weaponSelect (self, (weaponInfo_t *) new_weapon->winfo);
 }
 

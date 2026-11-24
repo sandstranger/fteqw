@@ -28,7 +28,7 @@ typedef struct
 } SHA1_CTX;
 #define SHA1_DIGEST_SIZE 20
 
-#define ShaBigLong(l)  (((unsigned char*)&l)[0]<<24) | (((unsigned char*)&l)[1]<<16) | (((unsigned char*)&l)[2]<<8) | (((unsigned char*)&l)[3]<<0)
+#define ShaBigLong(l)  (((unsigned int)((unsigned char*)&l)[0]<<24) | ((unsigned int)((unsigned char*)&l)[1]<<16) | ((unsigned int)((unsigned char*)&l)[2]<<8) | ((unsigned int)((unsigned char*)&l)[3]<<0))	//(unsigned: a byte past 127 shifted 24 into an int overflowed it)
 
 
 #define rol(value, bits) (((value) << (bits)) | ((value) >> (32 - (bits))))
@@ -191,7 +191,7 @@ unsigned int hashfunc_terminate_uint(const hashfunc_t *func, void *context)
 	unsigned char *digest = alloca(func->digestsize);
 	func->terminate(digest, context);
 	for (l = 0; l < func->digestsize; l++)
-		r ^= digest[l]<<((l%sizeof(r))*8);
+		r ^= (unsigned int)digest[l]<<((l%sizeof(r))*8);
 	return r;
 }
 unsigned int CalcHashInt(const hashfunc_t *func, const void *data, size_t datasize)

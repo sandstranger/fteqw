@@ -399,7 +399,7 @@ void areaportal_set (userEntity_t *self, int state);
 void	com_CalcMoveFinished (userEntity_t *self)
 {
 	doorHook_t		*hook = (doorHook_t *) self->userHook;
-	doorHook_t		*lhook;
+	doorHook_t		*lhook = NULL;	//(none when the door has no linked doors: it was read uninitialised then)
 	int				all_closed = TRUE;
 	userEntity_t	*linked_door;
 
@@ -443,7 +443,7 @@ void	com_CalcMoveFinished (userEntity_t *self)
 			}
 
 			areaportal_set( hook->portal, AREAPORTAL_CLOSED );
-			if( lhook->portal )
+			if( lhook && lhook->portal )
 			{
 				areaportal_set( lhook->portal, AREAPORTAL_CLOSED );
 			}

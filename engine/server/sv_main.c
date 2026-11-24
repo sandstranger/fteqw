@@ -1647,7 +1647,7 @@ int SV_NewChallenge (void)
 	}
 
 	// overwrite the oldest
-	svs.challenges[oldest].challenge = (rand() << 16) ^ rand();
+	svs.challenges[oldest].challenge = (int)((unsigned int)rand() << 16) ^ rand();
 	svs.challenges[oldest].adr = net_from;
 	svs.challenges[oldest].time = realtime;
 
@@ -3232,7 +3232,12 @@ void SV_DoDirectConnect(svconnectinfo_t *fte_restrict info)
 	// spectator mode can ONLY be set at join time
 	newcl->spectator = spectator;
 
-	newcl->realip_ping = (((rand()^(rand()<<8) ^ *(int*)&realtime)&0xffffff)<<8) | (newcl-svs.clients);
+	{	//(unsigned, and realtime's bits by memcpy: rand()<<8 overflowed an int, and a double read as an int breaks
+		//the aliasing rules)
+		unsigned int rt;
+		memcpy(&rt, &realtime, sizeof(rt));
+		newcl->realip_ping = ((((unsigned int)rand()^((unsigned int)rand()<<8) ^ rt)&0xffffff)<<8) | (unsigned int)(newcl-svs.clients);
+	}
 
 #ifdef HEXEN2
 	if (newcl->istobeloaded && newcl->edict)

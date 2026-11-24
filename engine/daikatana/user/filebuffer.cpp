@@ -18,26 +18,34 @@ CFileBuffer::~CFileBuffer()
 }
 
 // get next line
+//FTE: bounded by the buffer (it tested nPos, which doesn't move, and read past the end) and by n; its EOF test is
+//on a signed char, as on x86 (char's unsigned on arm, where 0xff never equalled EOF)
 char *CFileBuffer::FGetLine( char *string, int n )
 {
 	int nStringCounter = 0;
 	int nCounter = nPos;
-	while ( pBuffer[nCounter] != '\n' && pBuffer[nCounter] != '\r' && 
-			pBuffer[nCounter] != EOF && nPos < nNumChars-1 )
+	if ( !string || n <= 0 || !pBuffer )
 	{
-		string[nStringCounter++] = pBuffer[nCounter];
+		return NULL;
+	}
+	while ( nCounter < nNumChars && pBuffer[nCounter] != '\n' && pBuffer[nCounter] != '\r' && pBuffer[nCounter] != '\0' &&
+			(signed char)pBuffer[nCounter] != EOF )
+	{
+		if ( nStringCounter < n-1 )
+			string[nStringCounter++] = pBuffer[nCounter];
 		nCounter++;
 	}
-	
+
 	if ( nStringCounter == 0 )
 	{
 		return NULL;
 	}
 
 	// get rest of the line including line feed
-	while ( pBuffer[nCounter] == ' ' || pBuffer[nCounter] == '\n' || pBuffer[nCounter] == '\r' )
+	while ( nCounter < nNumChars && (pBuffer[nCounter] == ' ' || pBuffer[nCounter] == '\n' || pBuffer[nCounter] == '\r') )
 	{
-		string[nStringCounter++] = pBuffer[nCounter];
+		if ( nStringCounter < n-1 )
+			string[nStringCounter++] = pBuffer[nCounter];
 		nCounter++;
 	}
 	string[nStringCounter] = '\0';

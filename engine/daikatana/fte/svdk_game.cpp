@@ -18,6 +18,7 @@ and edicts that are copies kept in step with the game's own,
 GPL v2 or later.
 */
 #include <stdarg.h>
+#include <stddef.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -1603,9 +1604,9 @@ static bool DK_LoadFrameNames(int modelindex)
 	dkframes.numframes = h->num_frames;
 	dkframes.names = (char (*)[16])calloc(h->num_frames, 16);
 	for (i = 0; i < h->num_frames; i++)
-	{	//the name's after the scale and translate in both versions' frames
-		const daliasframe_t *fr = (const daliasframe_t *)(buf + h->ofs_frames + (size_t)i*h->framesize);
-		memcpy(dkframes.names[i], fr->name, 16);
+	{	//the name's after the scale and translate in both versions' frames (by bytes: frames needn't be aligned, and
+		//arm's word-pair loads fault on what isn't)
+		memcpy(dkframes.names[i], buf + h->ofs_frames + (size_t)i*h->framesize + offsetof(daliasframe_t, name), 16);
 		dkframes.names[i][15] = 0;
 	}
 	SVDK_FreeFile(buf);
@@ -1642,13 +1643,14 @@ static int DKGI_GetAnimSequences(int modelindex, frameData_t *pFrameData)
 		n = 0;
 	if (pFrameData)
 	{
-		const animSeq_t *seq = (const animSeq_t *)(buf + h->ofs_sequences);
 		for (i = 0; i < n; i++)
-		{
-			memcpy(pFrameData[i].animation_name, seq[i].seqName, sizeof(pFrameData[i].animation_name));
+		{	//(copied out: the sequences needn't be aligned)
+			animSeq_t seq;
+			memcpy(&seq, buf + h->ofs_sequences + (size_t)i*sizeof(animSeq_t), sizeof(seq));
+			memcpy(pFrameData[i].animation_name, seq.seqName, sizeof(pFrameData[i].animation_name));
 			pFrameData[i].animation_name[sizeof(pFrameData[i].animation_name)-1] = 0;
-			pFrameData[i].first = seq[i].startFrame;
-			pFrameData[i].last = seq[i].endFrame;
+			pFrameData[i].first = seq.startFrame;
+			pFrameData[i].last = seq.endFrame;
 			pFrameData[i].flags = 0;
 			pFrameData[i].soundframe1 = -1;
 			pFrameData[i].soundframe2 = -1;

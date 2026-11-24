@@ -24,7 +24,7 @@ struct galiasinfo_s; //per-surface info.
 //a single pose within an animation (note: always refered to via a framegroup, even if there's only one frame in that group).
 typedef struct
 {
-	vecV_t *ofsverts;
+	FTE_AVEC_ALIGN vecV_t *ofsverts;	//(aligned: the loaders put the verts straight after an array of these)
 #ifndef SERVERONLY
 	vec3_t *ofsnormals;
 	vec3_t *ofstvector;

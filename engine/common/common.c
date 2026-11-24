@@ -619,8 +619,8 @@ static int dehex(int i)
 }
 
 int Q_atoi (const char *str)
-{
-	int		val;
+{	//(in unsigned arithmetic, which wraps: 0xffffffff and big numbers overflowed an int, undefined)
+	unsigned int	val;
 	int		sign;
 	int		c;
 
@@ -650,7 +650,7 @@ int Q_atoi (const char *str)
 			else if (c >= 'A' && c <= 'F')
 				val = (val<<4) + c - 'A' + 10;
 			else
-				return val*sign;
+				return (int)(val*(unsigned int)sign);
 		}
 	}
 
@@ -669,7 +669,7 @@ int Q_atoi (const char *str)
 	{
 		c = *str++;
 		if (c <'0' || c > '9')
-			return val*sign;
+			return (int)(val*(unsigned int)sign);
 		val = val*10 + c - '0';
 	}
 
@@ -827,22 +827,24 @@ short		ShortSwap	(short l)
 			((l<< 8)&0xff00);
 }
 int			LongSwap	(int l)
-{
-	return	((l>>24)&0x000000ff)|
-			((l>> 8)&0x0000ff00)|
-			((l<< 8)&0x00ff0000)|
-			((l<<24)&0xff000000);
+{	//(unsigned: shifting a signed value's bits into or past its sign is undefined)
+	unsigned int u = (unsigned int)l;
+	return	(int)(((u>>24)&0x000000ff)|
+			((u>> 8)&0x0000ff00)|
+			((u<< 8)&0x00ff0000)|
+			((u<<24)&0xff000000));
 }
 qint64_t    I64Swap		(qint64_t l)
 {
-	return	((l>>56)&        0x000000ff)|
-			((l>>40)&        0x0000ff00)|
-			((l>>24)&        0x00ff0000)|
-			((l>> 8)&        0xff000000)|
-			((l<< 8)&0x000000ff00000000)|
-			((l<<24)&0x0000ff0000000000)|
-			((l<<40)&0x00ff000000000000)|
-			((l<<56)&0xff00000000000000);
+	quint64_t u = (quint64_t)l;
+	return	(qint64_t)(((u>>56)&        0x000000ff)|
+			((u>>40)&        0x0000ff00)|
+			((u>>24)&        0x00ff0000)|
+			((u>> 8)&        0xff000000)|
+			((u<< 8)&0x000000ff00000000)|
+			((u<<24)&0x0000ff0000000000)|
+			((u<<40)&0x00ff000000000000)|
+			((u<<56)&0xff00000000000000));
 }
 
 float FloatSwap(float f)
@@ -1376,11 +1378,13 @@ int COM_EncodeSize(const float *mins, const float *maxs)
 {
 	int solid;
 #if 1
-	solid = bound(0, (int)-mins[0], 255);
-	solid |= bound(0, (int)-mins[2], 255)<<8;
-	solid |= bound(0, (int)((maxs[2]+32768)), 65535)<<16;	/*up can be negative*/;
-	if (solid == 0x80000000)
-		solid = 0;	//point sized stuff should just be non-solid. you'll thank me for splitscreens.
+	unsigned int u;	//(the top half's 16 bits into an int's sign: unsigned, then back)
+	u = bound(0, (int)-mins[0], 255);
+	u |= (unsigned int)bound(0, (int)-mins[2], 255)<<8;
+	u |= (unsigned int)bound(0, (int)((maxs[2]+32768)), 65535)<<16;	/*up can be negative*/;
+	if (u == 0x80000000u)
+		u = 0;	//point sized stuff should just be non-solid. you'll thank me for splitscreens.
+	solid = (int)u;
 #else
 	//vanilla q2
 	solid = bound(0, (int)-mins[0]/8, 31);
@@ -2344,7 +2348,7 @@ int MSG_ReadLong (void)
 	c = msg_readmsg->data[msg_readcount]
 	+ (msg_readmsg->data[msg_readcount+1]<<8)
 	+ (msg_readmsg->data[msg_readcount+2]<<16)
-	+ (msg_readmsg->data[msg_readcount+3]<<24);
+	+ ((unsigned int)msg_readmsg->data[msg_readcount+3]<<24);	//(unsigned: past 127, an int's overflowed)
 
 	msg_readcount += 4;
 	msg_readmsg->currentbit = msg_readcount<<3;
@@ -2450,7 +2454,7 @@ double MSG_ReadDouble (void)
 	dat.l = (           net_message.data[msg_readcount+0]<< 0)|
 			(           net_message.data[msg_readcount+1]<< 8)|
 			(           net_message.data[msg_readcount+2]<<16)|
-			(           net_message.data[msg_readcount+3]<<24)|
+			((quint64_t)net_message.data[msg_readcount+3]<<24)|	//(an int's overflowed past 127, and sign extended into the top half)
 			((quint64_t)net_message.data[msg_readcount+4]<<32)|
 			((quint64_t)net_message.data[msg_readcount+5]<<40)|
 			((quint64_t)net_message.data[msg_readcount+6]<<48)|
@@ -6886,7 +6890,9 @@ void COM_Init (void)
 #if !defined(FTE_BIG_ENDIAN) && !defined(FTE_LITTLE_ENDIAN)
 // set the qbyte swapping variables in a portable manner
 	qbyte	swaptest[2] = {1,0};
-	if ( *(short *)swaptest == 1)
+	short	swapshort;
+	memcpy(&swapshort, swaptest, sizeof(swapshort));
+	if (swapshort == 1)
 	{
 		bigendian = false;
 		BigShort = ShortSwap;

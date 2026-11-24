@@ -717,10 +717,10 @@ static shader_t *GL_ChooseSkin(galiasinfo_t *inf, model_t *model, int surfnum, e
 			plskin = NULL;
 		else if (!plskin || plskin->loadstate != SKIN_LOADED)
 		{
-			if (e->playerindex >= 0 && e->playerindex <= MAX_CLIENTS)
+			if (e->playerindex >= 0 && e->playerindex < MAX_CLIENTS)
 			{
 				//heads don't get skinned, only players (and weaponless players), they do still get recoloured.
-				if (model==cl.model_precache[cl_playerindex]
+				if ((cl_playerindex >= 0 && model==cl.model_precache[cl_playerindex])
 #ifdef HAVE_LEGACY
 					|| model==cl.model_precache_vwep[0]
 #endif
@@ -2521,7 +2521,7 @@ void R_GAlias_GenerateBatches(entity_t *e, batch_t **batches)
 	/*switch model if we're the player model, and the player skin says a new model*/
 	{
 		extern int cl_playerindex;
-		if (e->playerindex >= 0 && e->model == cl.model_precache[cl_playerindex])
+		if (e->playerindex >= 0 && cl_playerindex >= 0 && e->model == cl.model_precache[cl_playerindex])
 		{
 			clmodel = cl.players[e->playerindex].model;
 			if (!clmodel || clmodel->type != mod_alias)

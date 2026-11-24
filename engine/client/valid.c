@@ -846,8 +846,10 @@ extrafilehash:
 	}
 
 	//sort it for consistency
-	qsort(rs->rule, rs->rules, sizeof(*rs->rule), Ruleset_SortRuleCB);
-	qsort(rs->filehash, rs->filehashes, sizeof(*rs->filehash), Ruleset_SortFileCB);
+	if (rs->rules)
+		qsort(rs->rule, rs->rules, sizeof(*rs->rule), Ruleset_SortRuleCB);
+	if (rs->filehashes)
+		qsort(rs->filehash, rs->filehashes, sizeof(*rs->filehash), Ruleset_SortFileCB);
 
 	hashfunc = &hash_sha1;
 	hctx = alloca(hashfunc->contextsize);

@@ -186,7 +186,7 @@ void nightmareShootFunc(userEntity_t *self)
 
     nmController->userHook = gstate->X_Malloc(sizeof(nmControllerHook_t),MEM_TAG_HOOK);
     hook = (nmControllerHook_t *) nmController->userHook;
-	memset(hook,0,sizeof(hook));
+	memset(hook,0,sizeof(*hook));
 
 	gstate->LinkEntity(nmController);
 	

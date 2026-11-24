@@ -487,7 +487,9 @@ void Swap_Init( void )
 	byte swaptest[2] = {1,0};
 
 // set the byte swapping variables in a portable manner	
-	if ( *(short *)swaptest == 1)
+	short swapshort;
+	memcpy(&swapshort, swaptest, sizeof(swapshort));
+	if ( swapshort == 1)
 	{
 		bigendien		= false;
 		//_BigShort		= ShortSwap;

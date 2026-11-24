@@ -147,11 +147,12 @@ short hammerSelect(userEntity_t *self)
 void *hammerCommand(struct userInventory_s *inv, char *commandStr, void *data)
 {
     userEntity_t *self=(userEntity_t *)data;
-    playerHook_t *phook=(playerHook_t *)self->userHook;
+    playerHook_t *phook=NULL;	//FTE: data's only an entity for "ambient" (weapon_funcs.cpp's winfoGenericCommand)
 
     if ( !stricmp(commandStr,"ambient") )
     {
 		return NULL;
+		phook=(playerHook_t *)self->userHook;
         hammer_t *hammer=(hammer_t *)self->curWeapon;
 
         if ( gstate->time > hammer->smashtime )

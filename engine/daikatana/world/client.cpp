@@ -73,7 +73,8 @@ void SetTeam(userEntity_t *ent)
 
     pc = 0;
 
-    strncpy(s, Info_ValueForKey(ent->client->pers.userinfo, "skinname"), 64);        
+    strncpy(s, Info_ValueForKey(ent->client->pers.userinfo, "skinname"), sizeof(s)-1);
+    s[sizeof(s)-1] = 0;
     if(strstr(s,"iko"))
         pc = PLAYERCLASS_MIKIKO;
     else if (strstr(s, "fly"))
@@ -202,9 +203,9 @@ void PlayClientSound(userEntity_t *self, char *soundfile)
 	}
 
 	if (deathmatch->value || coop->value)
-		strncpy(modelname, self->client->pers.body_info.modelname, 64);
+		strncpy(modelname, self->client->pers.body_info.modelname, sizeof(modelname)-1);
 	else
-		strncpy(modelname, Info_ValueForKey(self->client->pers.userinfo, "modelname"), 64);
+		strncpy(modelname, Info_ValueForKey(self->client->pers.userinfo, "modelname"), sizeof(modelname)-1);
 
     if(strstr(modelname, "mikiko"))
         Com_sprintf(path, sizeof(path),"mikiko/%s", soundfile);
@@ -276,7 +277,14 @@ void Client_InitClientModel ( userEntity_t *self )
 #endif
 
     self->s.modelindex = gstate->ModelIndex(m_name);
-	self->modelName = m_name;
+	{	//(this was pointed at m_name itself, which is gone once this returns: saving the game read it)
+		static char clientmodelnames[256][MAX_QPATH];
+		int cl = self - gstate->g_edicts;
+		char *dst = clientmodelnames[(cl >= 0 && cl < 256)?cl:0];
+		strncpy(dst, m_name, MAX_QPATH-1);
+		dst[MAX_QPATH-1] = 0;
+		self->modelName = dst;
+	}
 
     self->s.skinnum = CHARACTER_MODEL_SKINNUM; // special case to notify AddEntityPackets of character skin to be applied
     
@@ -2491,7 +2499,7 @@ void	Client_CheckWaterDamage (userEntity_t *self)
 				{
 					if (self == self->input_entity)
 					{
-						int sound_index;
+						int sound_index = 0;
 						if (time_under > 8)
 						{
 							{
@@ -4878,9 +4886,9 @@ void Client_Pain( userEntity_t *self, userEntity_t *other, float kick, int damag
 			//NSS[10/25/99]:This will now randomly select sounds for the cocks.  This is also a new optimized function.
 
 			if (deathmatch->value || coop->value)
-				strncpy(modelname, self->client->pers.body_info.modelname, 64);
+				strncpy(modelname, self->client->pers.body_info.modelname, sizeof(modelname)-1);
 			else
-				strncpy(modelname, Info_ValueForKey(self->client->pers.userinfo, "modelname"), 64);
+				strncpy(modelname, Info_ValueForKey(self->client->pers.userinfo, "modelname"), sizeof(modelname)-1);
 			
 			if(strstr(modelname, "mikiko"))
 					Max = 8;
@@ -5119,7 +5127,8 @@ void	dll_ClientUserinfoChanged(edict_t *ent, char *userinfo)
 			}
 			TEAM_SetSkin(ent, userinfo);
 			// save off the userinfo in case we want to check something later
-			strncpy (ent->client->pers.userinfo, userinfo, sizeof(ent->client->pers.userinfo)-1);
+			if (ent->client->pers.userinfo != userinfo)
+				strncpy (ent->client->pers.userinfo, userinfo, sizeof(ent->client->pers.userinfo)-1);
 			return;
 		}
 
@@ -5134,7 +5143,8 @@ void	dll_ClientUserinfoChanged(edict_t *ent, char *userinfo)
 		if (coop->value)
 		{
 			CoopSelectCharacter( ent, (char *)userinfo );
-			strncpy (ent->client->pers.userinfo, userinfo, sizeof(ent->client->pers.userinfo)-1);
+			if (ent->client->pers.userinfo != userinfo)
+				strncpy (ent->client->pers.userinfo, userinfo, sizeof(ent->client->pers.userinfo)-1);
 			return;
 		}
 		else
@@ -5151,7 +5161,8 @@ void	dll_ClientUserinfoChanged(edict_t *ent, char *userinfo)
 	}
 
 	// save off the userinfo in case we want to check something later
-	strncpy (ent->client->pers.userinfo, userinfo, sizeof(ent->client->pers.userinfo)-1);
+	if (ent->client->pers.userinfo != userinfo)
+		strncpy (ent->client->pers.userinfo, userinfo, sizeof(ent->client->pers.userinfo)-1);
 
 	// send the configstring
 	gstate->ConfigString (CS_PLAYERSKINS + playernum, va("%s\\%s\\%s\\%d", ent->netname, m, s, c) );

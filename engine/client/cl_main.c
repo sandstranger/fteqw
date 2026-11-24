@@ -1820,7 +1820,7 @@ static void CL_BeginServerConnect(char *chain, int port, qboolean noproxy, enum 
 	connectinfo.protocol = CP_UNKNOWN;
 	connectinfo.mode = mode;
 	connectinfo.spec = spec;
-	connectinfo.clchallenge = rand()^(rand()<<16);
+	connectinfo.clchallenge = rand()^(int)((unsigned int)rand()<<16);
 
 	connectinfo.peercred.name = cls.servername;
 	if (arglist)
@@ -1888,7 +1888,7 @@ void CL_BeginServerReconnect(void)
 	connectinfo.time = 0;
 	connectinfo.tries = 0;	//re-ensure routes.
 	connectinfo.nextadr = 0; //should at least be consistent, other than packetloss. yay.
-	connectinfo.clchallenge = rand()^(rand()<<16);
+	connectinfo.clchallenge = rand()^(int)((unsigned int)rand()<<16);
 
 	NET_InitClient(false);
 }

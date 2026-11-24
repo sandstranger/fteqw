@@ -2218,7 +2218,7 @@ static qboolean QDECL ICE_Set(struct icestate_s *con, const char *prop, const ch
 					con->sctp->friendlyname = con->friendlyname;
 					con->sctp->myport = htons(con->mysctpport);
 					con->sctp->peerport = htons(con->peersctpport);
-					con->sctp->o.tsn = rand() ^ (rand()<<16);
+					con->sctp->o.tsn = rand() ^ ((unsigned int)rand()<<16);
 					Sys_RandomBytes((void*)&con->sctp->o.verifycode, sizeof(con->sctp->o.verifycode));
 					Sys_RandomBytes((void*)&con->sctp->i.verifycode, sizeof(con->sctp->i.verifycode));
 				}
@@ -4077,7 +4077,7 @@ qboolean SCTP_Handshake(const dtlsfuncs_t *dtlsfuncs, void *dtlsstate, sctp_t **
 
 			struct cookiedata_s cookie = {0};
 
-			cookie.otsn = rand() ^ (rand()<<16);
+			cookie.otsn = rand() ^ ((unsigned int)rand()<<16);
 			Sys_RandomBytes((void*)&cookie.iverifycode, sizeof(cookie.iverifycode));
 			cookie.ictsn = BigLong(init->tsn)-1;
 			cookie.overifycode = init->verifycode;

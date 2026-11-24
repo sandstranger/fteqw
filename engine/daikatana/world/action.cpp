@@ -1155,7 +1155,7 @@ void UNIQUEID_Destroy()
 // Note:
 //
 // ----------------------------------------------------------------------------
-__inline static int ACTION_IsStartComment( CFileInfo *pFileInfo, char ch )
+__inline static int ACTION_IsStartComment( CFileInfo *pFileInfo, int ch )
 {
 	if ( ch == '/' )
 	{

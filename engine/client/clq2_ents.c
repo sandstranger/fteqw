@@ -2046,7 +2046,7 @@ void CLQ2_ParsePlayerstate (int seat, q2frame_t *oldframe, q2frame_t *newframe, 
 	if (statbits)
 	{
 		for (i=0 ; i<min(32,Q2MAX_STATS) ; i++)
-			if (statbits & (1<<i) )
+			if (statbits & (1u<<i) )
 				state->stats[i] = MSG_ReadShort();
 	}
 	if (q2e)

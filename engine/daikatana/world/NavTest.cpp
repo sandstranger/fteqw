@@ -353,7 +353,8 @@ void NAVTEST_Start( userEntity_t *self, const char *szAIClassName )
 		}
 
 		hook					= AI_InitMonster( pMonster, nType );
-		pMonster->className		= szClassName;
+		pMonster->className		= (char*)gstate->X_Malloc(strlen(szClassName)+1, MEM_TAG_LEVEL);	//(was szClassName itself, a local)
+		strcpy(pMonster->className, szClassName);
 
 		pMonster->s.modelindex = gstate->ModelIndex( szModelName );
 

@@ -975,8 +975,8 @@ int Netchan_Transmit (netchan_t *chan, int length, qbyte *data, int rate)
 	for (; (chan->outgoing_sequence_last&(countof(chan->sentsizes)-1)) != mtuseq; chan->outgoing_sequence_last++)
 		chan->sentsizes[chan->outgoing_sequence_last&(countof(chan->sentsizes)-1)] = 0;	//lost c2s or something, gaps now.
 
-	w1 = chan->outgoing_sequence | (send_reliable<<31);
-	w2 = chan->incoming_sequence | (chan->incoming_reliable_sequence<<31);
+	w1 = chan->outgoing_sequence | ((unsigned int)send_reliable<<31);	//(unsigned: 1<<31 overflows an int)
+	w2 = chan->incoming_sequence | ((unsigned int)chan->incoming_reliable_sequence<<31);
 
 	if (chan->flags&NCF_STUNAWARE)
 	{
@@ -1146,18 +1146,26 @@ int Netchan_Transmit (netchan_t *chan, int length, qbyte *data, int rate)
 					more = false;
 				}
 
-				*(int*)&send.data[(offset) + 0] = LittleLong(w1);
-				*(int*)&send.data[(offset) + 4] = LittleLong(w2);
+				{	//by bytes: offset needn't be aligned, and arm's paired word stores (strd) fault on what isn't
+					int l;
+					short s;
+					l = LittleLong(w1);	memcpy(&send.data[(offset) + 0], &l, 4);
+					l = LittleLong(w2);	memcpy(&send.data[(offset) + 4], &l, 4);
 #ifndef SERVERONLY
-				if (chan->flags&NCF_CLIENT)
-				{
-					if (chan->qportsize == 2)
-						*(short*)&send.data[offset + hsz-4] = LittleShort(chan->qport);
-					else if (chan->qportsize == 1)
-						*(qbyte*)&send.data[offset + hsz-3] = chan->qport&0xff;
-				}
+					if (chan->flags&NCF_CLIENT)
+					{
+						if (chan->qportsize == 2)
+						{
+							s = LittleShort(chan->qport);
+							memcpy(&send.data[offset + hsz-4], &s, 2);
+						}
+						else if (chan->qportsize == 1)
+							*(qbyte*)&send.data[offset + hsz-3] = chan->qport&0xff;
+					}
 #endif
-				*(short*)&send.data[offset + hsz-2] = LittleShort((offset>>2) | (more?1:0));
+					s = LittleShort((offset>>2) | (more?1:0));
+					memcpy(&send.data[offset + hsz-2], &s, 2);
+				}
 
 				if (e == NETERR_SENT)
 				{

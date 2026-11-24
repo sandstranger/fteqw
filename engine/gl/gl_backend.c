@@ -224,7 +224,7 @@ static struct {
 		float projectionmatrix[16];
 
 		int colourarraytype;
-		vec4_t pendingcolourflat;
+		avec4_t pendingcolourflat;	//(alphagen writes it as an avec4_t)
 		//FTESurf Patch 166.  pendingcolourflat has ALWAYS been a leftover as far as
 		//the GLSL path is concerned -- nothing cleared it and nothing bound it -- so
 		//v_colour could not be trusted from it.  This says "GenerateColourMods just

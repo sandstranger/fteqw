@@ -35,7 +35,7 @@ static void MSG_WriteSizeQ2E(sizebuf_t *sb, int solid)
 		solid = ((solid & 255)<<0)	//recode fte's sizes to q2ex's...
 		      | ((solid & 255)<<8)
 		      | (((solid>>8) & 255)<<16)
-		      | ((((solid>>16) & 65535) - 32768+32)<<24);
+		      | (int)((unsigned int)(((solid>>16) & 65535) - 32768+32)<<24);
 	MSG_WriteLong(sb, solid);
 }
 /*
@@ -918,10 +918,10 @@ void SVQ2_WritePlayerstateToClient (client_t *client, int seat, int extflags, q2
 	statbits = 0;
 	for (i=0 ; i<min(32,Q2MAX_STATS); i++)
 		if (ps->stats[i] != ops->stats[i])
-			statbits |= 1<<i;
+			statbits |= 1u<<i;
 	MSG_WriteLong (msg, statbits);
 	for (i=0 ; i<min(32,Q2MAX_STATS) ; i++)
-		if (statbits & (1<<i) )
+		if (statbits & (1u<<i) )
 			MSG_WriteShort (msg, ps->stats[i]);
 
 	if (q2e)

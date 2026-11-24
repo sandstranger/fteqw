@@ -124,6 +124,10 @@ if (ANDROID)
 	IF(NOT CMAKE_BUILD_TYPE MATCHES "Debug")
 		add_compile_options(-Os)
 	ENDIF()
+	#char's signed as on x86, which the quake (and daikatana) code assumes in places (comparisons with EOF, -1,
+	#negative chars): arm's is unsigned. And no strict aliasing: the code type-puns all over (floats/ints through pointers),
+	#which -Os and LTO would otherwise be free to miscompile
+	add_compile_options(-fsigned-char -fno-strict-aliasing)
 endif ()
 
 # Added these to solve some build issues I ran into - Brad

@@ -84,6 +84,7 @@ void	com_VecToYPR (CVector &vec2, CVector &vec1)
 	if (vec1.y == 0 && vec1.x == 0)
 	{
 		yaw = 0;
+		roll = 0;
 		if (vec1.z > 0)
 			pitch = 90;
 		else

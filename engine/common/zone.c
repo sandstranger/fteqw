@@ -258,7 +258,8 @@ void Z_StrCatLen(char **ptr, const char *append, size_t newlen)
 {
 	size_t oldlen = *ptr?strlen(*ptr):0;
 	char *newptr = BZ_Malloc(oldlen+newlen+1);
-	memcpy(newptr, *ptr, oldlen);
+	if (oldlen)	//(memcpy from a null pointer's undefined, even of nothing)
+		memcpy(newptr, *ptr, oldlen);
 	memcpy(newptr+oldlen, append, newlen);
 	newptr[oldlen+newlen] = 0;
 	BZ_Free(*ptr);
@@ -269,7 +270,8 @@ void Z_StrCat(char **ptr, const char *append)
 	size_t oldlen = *ptr?strlen(*ptr):0;
 	size_t newlen = strlen(append);
 	char *newptr = BZ_Malloc(oldlen+newlen+1);
-	memcpy(newptr, *ptr, oldlen);
+	if (oldlen)	//(memcpy from a null pointer's undefined, even of nothing)
+		memcpy(newptr, *ptr, oldlen);
 	memcpy(newptr+oldlen, append, newlen);
 	newptr[oldlen+newlen] = 0;
 	BZ_Free(*ptr);
@@ -564,7 +566,9 @@ typedef struct zonegroupblock_s
 			unsigned int size;
 #endif
 		};
-		vec4_t align16;
+		FTE_ALIGN(16) vec4_t align16;	//(the header's a multiple of 16 whatever's in it: what follows is aligned for
+										//the 16-byte types carved out of it. vec4_t alone didn't make it one, in
+										//debug builds with 64 bit pointers it was 24)
 	};
 } zonegroupblock_t;
 

@@ -3853,6 +3853,7 @@ void ModQ1_Batches_BuildQ1Q2Poly(model_t *mod, msurface_t *surf, builddata_t *co
 	{
 		int nverts = surf->numedges;
 		int nindexes = (surf->numedges-2)*3;
+		size_t hdr = (sizeof(mesh_t) + 15) & ~(size_t)15;
 #ifndef SERVERONLY
 		if (Surf_WaterShouldRipple(surf))
 		{	// size the standalone mesh for the subdivided grid (non-world/bmodel path)
@@ -3865,17 +3866,19 @@ void ModQ1_Batches_BuildQ1Q2Poly(model_t *mod, msurface_t *surf, builddata_t *co
 			}
 		}
 #endif
-		mesh = surf->mesh = ZG_Malloc(&mod->memgroup, sizeof(mesh_t) + (sizeof(vecV_t)+sizeof(vec2_t)*(1+1)+sizeof(vec3_t)*3+sizeof(vec4_t)*1)* nverts + sizeof(index_t)*nindexes);
+		//the 16-byte arrays (vecV_t, avec4_t) first, at 16 bytes in: sizeof(mesh_t) isn't a multiple of 16, and the
+		//colours came after an odd count of the rest (misaligned for what's promised 16: sse, neon)
+		mesh = surf->mesh = ZG_Malloc(&mod->memgroup, hdr + (sizeof(vecV_t)+sizeof(vec4_t)*1+sizeof(vec2_t)*(1+1)+sizeof(vec3_t)*3)* nverts + sizeof(index_t)*nindexes);
 		mesh->numvertexes = nverts;
 		mesh->numindexes = nindexes;
-		mesh->xyz_array = (vecV_t*)(mesh+1);
-		mesh->st_array = (vec2_t*)(mesh->xyz_array+nverts);
+		mesh->xyz_array = (vecV_t*)((qbyte*)mesh + hdr);
+		mesh->colors4f_array[0] = (vec4_t*)(mesh->xyz_array+nverts);
+		mesh->st_array = (vec2_t*)(mesh->colors4f_array[0]+nverts);
 		mesh->lmst_array[0] = (vec2_t*)(mesh->st_array+nverts);
 		mesh->normals_array = (vec3_t*)(mesh->lmst_array[0]+nverts);
 		mesh->snormals_array = (vec3_t*)(mesh->normals_array+nverts);
 		mesh->tnormals_array = (vec3_t*)(mesh->snormals_array+nverts);
-		mesh->colors4f_array[0] = (vec4_t*)(mesh->tnormals_array+nverts);
-		mesh->indexes = (index_t*)(mesh->colors4f_array[0]+nverts);
+		mesh->indexes = (index_t*)(mesh->tnormals_array+nverts);
 	}
 
 #ifndef SERVERONLY

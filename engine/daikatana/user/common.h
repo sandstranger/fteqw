@@ -179,7 +179,7 @@ typedef struct weaponCommand_s {
 } weaponCmd_t;
 
 typedef struct weaponFrame_s {
-	char model;                      // model num this frame is in
+	signed char model;               // model num this frame is in (-1 ends a run of frames: signed whatever char is)
 	char *name;                      // name of anim
 	int first,last;                  // first/last frame of anim
 } weaponFrame_t;

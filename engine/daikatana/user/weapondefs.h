@@ -37,7 +37,7 @@
 #define winfoPlayAttn(ent,num,vol, att1, att2)  gstate->StartEntitySound(ent,CHAN_AUTO,gstate->SoundIndex(winfo->sounds[(short)(num)]),vol,att1,att2)
 #define winfoSetModel(ent,num)                  {ent->s.modelindex=gstate->ModelIndex(winfoModel(num));}
 #define dk2SetModel(ent,str)                    {ent->s.modelindex=gstate->ModelIndex(str);}
-#define winfoPlayLooped(ent,num,vol)            {ent->s.sound = gstate->SoundIndex(winfo->sounds[(short)(num)]); ent->s.volume = vol;}//gstate->sound(ent,CHAN_WEAPON,winfo->sounds[(short)(num)],vol,ATTN_NORM)
+#define winfoPlayLooped(ent,num,vol)            {ent->s.sound = ((short)(num) < 0)?0:gstate->SoundIndex(winfo->sounds[(short)(num)]); ent->s.volume = vol;}//(a negative num: off. It was winfo->sounds[-1])//gstate->sound(ent,CHAN_WEAPON,winfo->sounds[(short)(num)],vol,ATTN_NORM)
 #define winfoAttackWeap							gstate->attackWeap = winfo->weaponName
 #define WP_NUM_EPISODES    4
 #define WP_WEAPONS_PER_EP  8

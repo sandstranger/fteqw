@@ -35,7 +35,16 @@ typedef ivec_t ivec5_t[5];
 sse and altivec can unroll loops using aligned reads, which should be faster... 4 at once.
 */
 typedef FTE_ALIGN(16) vec3_t avec3_t;
-typedef FTE_ALIGN(16) vec4_t avec4_t;
+#if defined(__arm__) || defined(__aarch64__) || defined(_M_ARM) || defined(_M_ARM64)
+	//arm: 16 bytes still, but no alignment promised. Arrays of these (vecV_t's) are carved out of packed
+	//allocations, after headers that aren't multiples of 16, and a compiler that's been promised 16 may use NEON
+	//loads and stores with :128 alignment hints, which fault on armv7 (the crashes once -Os/LTO is on).
+	typedef vec4_t avec4_t;
+	#define FTE_AVEC_ALIGN
+#else
+	typedef FTE_ALIGN(16) vec4_t avec4_t;	//(sse)
+	#define FTE_AVEC_ALIGN FTE_ALIGN(16)	//for headers that avec4_t arrays are allocated straight after
+#endif
 typedef FTE_ALIGN(4) qbyte byte_vec4_t[4];
 
 //VECV_STRIDE is used only as an argument for opengl.

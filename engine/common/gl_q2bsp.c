@@ -150,7 +150,7 @@ void CalcSurfaceExtents (model_t *mod, msurface_t *s)
 		bmins[i] = floor(mins[i]/(1<<s->lmshift));
 		bmaxs[i] = ceil(maxs[i]/(1<<s->lmshift));
 
-		s->texturemins[i] = bmins[i] << s->lmshift;
+		s->texturemins[i] = bmins[i] * (1<<s->lmshift);
 		s->extents[i] = (bmaxs[i] - bmins[i]);
 
 //		if ( !(tex->flags & TEX_SPECIAL) && s->extents[i] > 17 )	//vanilla used 16(+1), glquake used 17(+1). FTE uses 255(+1), but we omit lightmapping instead of crashing if its larger than our limit, so we omit the check here. different engines use different limits here, many of them make no sense.
@@ -4913,6 +4913,7 @@ static cmodel_t *CM_LoadMap (model_t *mod, qbyte *filein, size_t filelen, qboole
 	model_t			*wmod = mod;
 	char			loadname[32];
 	qbyte			*mod_base = (qbyte *)filein;
+	qbyte			*realigned = NULL;	//(a copy of the file with its lumps aligned, when they weren't)
 	bspx_header_t	*bspx = NULL;
 	unsigned int	checksum1, checksum2;
 #ifdef Q3BSPS
@@ -4966,7 +4967,8 @@ static cmodel_t *CM_LoadMap (model_t *mod, qbyte *filein, size_t filelen, qboole
 	checksum2 = checksum1;	//we accept either, so wimp out.
 #endif
 
-	header = *(q2dheader_t *)(buf);
+	memset(&header, 0, sizeof(header));	//(the struct has room for 50 lumps: small files have fewer bytes than that)
+	memcpy(&header, buf, min(filelen, sizeof(header)));
 	header.ident = LittleLong(header.ident);
 	header.version = LittleLong(header.version);
 
@@ -5278,7 +5280,41 @@ static cmodel_t *CM_LoadMap (model_t *mod, qbyte *filein, size_t filelen, qboole
 				header.lumps[i].fileofs = LittleLong (header.lumps[i].fileofs);
 			}
 		}
-		bspx = BSPX_Setup(mod, mod_base, filelen, header.lumps, i);
+		{	//some compilers (the rerelease's mods' maps among them) write lumps at unaligned offsets. The loaders read
+			//their structs in place, which faults on strict-alignment cpus (armv7's ldrd/ldm, once optimised), so
+			//those lumps get aligned copies, after a copy of the whole file (where the bspx lumps stay as they were)
+			size_t extra = 0, ofs;
+			int j;
+			lump_t origlumps[countof(header.lumps)];
+			for (j = 0; j < i; j++)
+			{
+				if ((size_t)header.lumps[j].fileofs + (size_t)header.lumps[j].filelen > filelen)
+				{
+					Con_Printf (CON_ERROR "WARNING: %s truncated (lump %i, %u+%u > %u)\n", mod->name, j, header.lumps[j].fileofs, header.lumps[j].filelen, (unsigned int)filelen);
+					header.lumps[j].fileofs = header.lumps[j].filelen = 0;
+				}
+				else if ((header.lumps[j].fileofs & 3) && header.lumps[j].filelen)
+					extra += header.lumps[j].filelen + 4;
+			}
+			memcpy(origlumps, header.lumps, sizeof(origlumps));
+			if (extra)
+			{
+				realigned = BZ_Malloc(filelen + extra + 4);
+				memcpy(realigned, mod_base, filelen);
+				ofs = (filelen + 3) & ~(size_t)3;
+				for (j = 0; j < i; j++)
+				{
+					if ((header.lumps[j].fileofs & 3) && header.lumps[j].filelen)
+					{
+						memcpy(realigned + ofs, mod_base + header.lumps[j].fileofs, header.lumps[j].filelen);
+						header.lumps[j].fileofs = ofs;
+						ofs = (ofs + header.lumps[j].filelen + 3) & ~(size_t)3;
+					}
+				}
+				mod_base = realigned;
+			}
+			bspx = BSPX_Setup(mod, (char*)mod_base, filelen, origlumps, i);
+		}
 
 #if defined(HAVE_CLIENT) && defined(IMAGEFMT_PCX)
 		if (CM_GetQ2Palette())
@@ -5356,6 +5392,7 @@ static cmodel_t *CM_LoadMap (model_t *mod, qbyte *filein, size_t filelen, qboole
 
 			if (!noerrors)
 			{
+				BZ_Free(realigned);
 				return NULL;
 			}
 #ifdef DAIKATANA
@@ -5376,6 +5413,9 @@ static cmodel_t *CM_LoadMap (model_t *mod, qbyte *filein, size_t filelen, qboole
 	}
 
 	BSPX_LoadEnvmaps(mod, bspx, mod_base);
+	BZ_Free(realigned);	//(everything's been copied out of it)
+	realigned = NULL;
+	mod_base = NULL;
 
 #ifdef Q3BSPS
 	{
@@ -7712,8 +7752,11 @@ static qboolean	VARGS CM_AreasConnected (model_t *mod, unsigned int area1, unsig
 
 	if (area1 == ~0 || area2 == ~0)
 		return area1 == area2;
-	if (area1 > prv->numareas || area2 > prv->numareas)
-		Host_Error ("area > numareas");
+	if (area1 >= MAX_CM_AREAS || area2 >= MAX_CM_AREAS || area1 > prv->numareas || area2 > prv->numareas)
+	{	//(game code asks with entities' areas that can be stale over a map change: that's not worth ending the server over)
+		Con_DPrintf ("CM_AreasConnected: area %u/%u > numareas %i\n", area1, area2, prv->numareas);
+		return false;
+	}
 
 	if (prv->areaflood[area1].floodnum == prv->areaflood[area2].floodnum)
 		return true;
@@ -7742,8 +7785,8 @@ static size_t CM_WriteAreaBits (model_t *mod, qbyte *buffer, size_t buffersize, 
 	if (bytes > buffersize)
 		bytes = buffersize;
 
-	if (map_noareas.value || (area < 0 && !merge))
-	{	// for debugging, send everything
+	if (map_noareas.value || area < 0 || area >= MAX_CM_AREAS || area > prv->numareas)	//(merging an area of -1 used to read areaflood[-1])
+	{	// for debugging, send everything (and for areas the map doesn't have)
 		if (!merge)
 			memset (buffer, 255, bytes);
 	}
@@ -7834,7 +7877,8 @@ static size_t	CM_LoadAreaPortalBlob (model_t *mod, void *ptr, size_t ptrsize)
 				Con_Printf("CM_ReadPortalState() expected %u, but only %u available\n",(unsigned int)sizeof(prv->q2portalopen),(unsigned int)ptrsize);
 			if (ptrsize > sizeof(prv->q2portalopen))
 				ptrsize = sizeof(prv->q2portalopen);
-			memcpy(prv->q2portalopen, ptr, ptrsize);
+			if (ptrsize)	//(memcpy from a null pointer's undefined, even of nothing)
+				memcpy(prv->q2portalopen, ptr, ptrsize);
 			memset(prv->q2portalopen+ptrsize, map_autoopenportals.ival, sizeof(prv->q2portalopen)-ptrsize);
 			FloodAreaConnections (prv);
 			return sizeof(prv->q2portalopen);
