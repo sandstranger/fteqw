@@ -247,6 +247,21 @@ qboolean CLQ2_GetEntityOrigin(int entnum, vec3_t origin, vec3_t angles)
 	return true;
 }
 
+//a client entity as the last frame has it, for Daikatana's client code (cldk_fte.c): false if it isn't in it
+qboolean CLQ2_GetEntityState(int entnum, float *origin, float *angles, float *lerporigin, int *modelindex, int *frame)
+{
+	q2centity_t *cent;
+	if (entnum < 0 || entnum >= MAX_Q2EDICTS)
+		return false;
+	cent = &cl_entities[entnum];
+	VectorCopy(cent->current.origin, origin);
+	VectorCopy(cent->current.angles, angles);
+	VectorCopy(cent->lerp_origin, lerporigin);
+	*modelindex = cent->current.modelindex;
+	*frame = cent->current.frame;
+	return cent->serverframe == cl.q2frame.serverframe;
+}
+
 void CL_SmokeAndFlash(vec3_t origin);
 
 void CL_GetNumberedEntityInfo (int num, float *org, float *ang)
@@ -3265,6 +3280,10 @@ void CLQ2_AddEntities (void)
 #endif
 	CLQ2FX_AddEntities ();	//yquake2's temp entities, explosions, beams, lasers, particles, dlights
 	CL_UpdateTEnts ();
+#ifdef DAIKATANA
+	if (CLDK_IsDaikatana())
+		CLDK_AddScene ();	//Daikatana's own (daikatana/client): its temp events, particles, lights
+#endif
 
 #ifdef _DEBUG
 	if (chase_active.ival)

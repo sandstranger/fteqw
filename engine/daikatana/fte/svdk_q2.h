@@ -223,6 +223,15 @@ namespace fq2
 		void	(FQ2_VARGS *DebugGraph) (float value, int color);
 	};
 
+	//Q2EX's entity state past game API 3's (FTE's q2entityex_t)
+	struct entityex_t
+	{
+		unsigned int	effects_hi;
+		qbyte			alpha;			//in 255ths; 0: the default
+		qbyte			scale;			//in 16ths; 0: the default (1)
+		qbyte			instance_bits;
+	};
+
 	struct game_export_t
 	{
 		int			apiversion;

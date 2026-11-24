@@ -1414,6 +1414,7 @@ qboolean SVDK_IsDaikatana(void);
 void *SVDK_GetGameAPI(void *fteimport);
 int SVDK_Active(void);
 void SVDK_PrepFrame(void);
+void SVDK_EntityExtras(struct q2edict_s *ent, q2entityex_t *out);
 #endif
 
 //svq2_ents.c

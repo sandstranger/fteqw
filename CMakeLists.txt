@@ -733,7 +733,8 @@ SET(FTE_SERVER_FILES
 SET(FTE_GAME_DAIKATANA true CACHE BOOL "Include Daikatana's game code (C++).")
 IF(FTE_GAME_DAIKATANA)
 	ENABLE_LANGUAGE(CXX)
-	#its sources (a list of them), as a library: dkgame the game (and IonCommon), dkclient its client's code
+	#its sources (a list of them), as a library, with its include directories (ARGN) ahead of FTE's: dkgame the game
+	#(and IonCommon), dkclient its client's code (with its client's headers)
 	FUNCTION(FTE_DK_LIBRARY name sourcelist)
 		FILE(STRINGS engine/daikatana/${sourcelist} DK_SOURCES)
 		SET(DK_FILES)
@@ -752,14 +753,7 @@ IF(FTE_GAME_DAIKATANA)
 		ENDFOREACH()
 		ADD_LIBRARY(${name} STATIC ${DK_FILES})
 		TARGET_COMPILE_DEFINITIONS(${name} PRIVATE TONGUE_ENGLISH C_ONLY)
-		TARGET_INCLUDE_DIRECTORIES(${name} BEFORE PRIVATE
-			engine/daikatana/user
-			engine/daikatana/include
-			engine/daikatana/physics
-			engine/daikatana/world
-			engine/daikatana/weapons
-			engine/daikatana/fte
-			engine/daikatana/client)
+		TARGET_INCLUDE_DIRECTORIES(${name} BEFORE PRIVATE ${ARGN})
 		IF(MSVC)
 			TARGET_COMPILE_OPTIONS(${name} PRIVATE /FI${CMAKE_CURRENT_SOURCE_DIR}/engine/daikatana/include/dk_fte_compat.h /w)
 		ELSE()
@@ -772,8 +766,18 @@ IF(FTE_GAME_DAIKATANA)
 		ENDIF()
 		SET_TARGET_PROPERTIES(${name} PROPERTIES POSITION_INDEPENDENT_CODE ON)
 	ENDFUNCTION()
-	FTE_DK_LIBRARY(dkgame sources.txt)
-	FTE_DK_LIBRARY(dkclient sources_client.txt)
+	FTE_DK_LIBRARY(dkgame sources.txt
+		engine/daikatana/user
+		engine/daikatana/include
+		engine/daikatana/physics
+		engine/daikatana/world
+		engine/daikatana/weapons
+		engine/daikatana/fte)
+	FTE_DK_LIBRARY(dkclient sources_client.txt
+		engine/daikatana/client/dkinc
+		engine/daikatana/client
+		engine/daikatana/user
+		engine/daikatana/include)
 	TARGET_LINK_LIBRARIES(dkclient dkgame)	#IonCommon
 	SET(FTE_SERVER_FILES ${FTE_SERVER_FILES} engine/server/svdk_fte.c)
 	SET(FTE_DK_CLIENT_FILES engine/client/cldk_fte.c)	#(FTE_CLIENT_FILES is set below)

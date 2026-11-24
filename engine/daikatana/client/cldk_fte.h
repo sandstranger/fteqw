@@ -28,9 +28,29 @@ void		*CLDKF_LoadFile(const char *name, int *length);
 void		CLDKF_FreeFile(void *buf);
 void		CLDKF_Music(const char *name, int loop);		//null: stop
 
+//its scene
+void		*CLDKF_RegisterModel(const char *name);
+void		*CLDKF_ModelForIndex(int modelindex);
+void		CLDKF_AddEntity(void *model, const float *origin, const float *oldorigin, const float *angles, int frame, int oldframe,
+				float backlerp, int skinnum, float alpha, float scale, const float *rgb, unsigned int dkrenderfx);
+void		CLDKF_AddLight(const float *origin, float radius, float r, float g, float b);
+void		CLDKF_AddTriangles(void *shader, int numverts, const float *xyz, const float *st, const float *rgba);
+void		*CLDKF_RegisterParticleShader(void);
+void		*CLDKF_RegisterSound(const char *name);
+void		CLDKF_StartSound(void *sfx, const float *origin, int entnum, int channel, float volume, float attenuation, float timeofs);
+float		CLDKF_Trace(const float *start, const float *end, int passent, int mask, float *endpos, float *normal, int *entnum, int *contents);
+int			CLDKF_PointContents(const float *point);
+int			CLDKF_EntityState(int entnum, float *origin, float *angles, float *lerporigin, int *modelindex, int *frame);
+void		CLDKF_View(float *origin, float *angles);
+int			CLDKF_ServerFrame(void);
+float		CLDKF_LerpFrac(void);
+float		CLDKF_FrameTime(void);
+int			CLDKF_PlayerNum(void);
+
 //the game's client code, for FTE's
 void		CLDK_ParseMessage(const unsigned char *data, int length);	//an svcq2dk_message's
 void		CLDK_DrawHUD(void);
+void		CLDK_AddScene(void);						//its effects, each frame, as entities are added
 void		CLDK_Reset(void);							//new connection, new level
 
 #ifdef __cplusplus

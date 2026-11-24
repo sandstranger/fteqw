@@ -4,15 +4,16 @@ cl_icons.cpp, cl_sidekick.cpp, cl_selector.cpp, and cl_main.cpp's and cl_parse.c
 Changes are marked FTE.
 */
 #include "cldk_local.h"
+#include "p_user.h"		//BOOSTICON_*, ICON_* (cl_icons.cpp had it)
 
 int		xplevelup_mode;
 int		xplevelup_selection;
 float	xplevelup_timer;
 qboolean	xplevelup_blink;
-int		cl_death_gib;
+byte	cl_death_gib;
 float	cl_gameover_time, cl_gameover_alpha;
 float	cl_theend_time, cl_theend_alpha;
-int		cl_savegem_count;
+byte	cl_savegem_count;
 
 //---- cl_inventory.cpp
 //#include  "physics.h"

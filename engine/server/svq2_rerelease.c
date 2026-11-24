@@ -977,6 +977,13 @@ void SVQ2RR_EntityExtras(q2edict_t *ent, q2entityex_t *out)
 {
 	rr_edict_t *re = (rrge && shadow)?RR_FromShadow(ent):NULL;
 	memset(out, 0, sizeof(*out));
+#ifdef DAIKATANA
+	if (SVDK_Active())
+	{	//Daikatana's game's: alpha, scale
+		SVDK_EntityExtras(ent, out);
+		return;
+	}
+#endif
 	if (!re)
 		return;
 	out->effects_hi = (uint32_t)(re->s.effects >> 32);

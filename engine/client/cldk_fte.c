@@ -126,6 +126,187 @@ void CLDKF_Music(const char *name, int loop)
 		Media_NamedTrack(name, loop?name:NULL);
 }
 
+/*
+=====================================================================
+its scene: what its client's effects (cl_tent, cl_fx...) add each frame
+=====================================================================
+*/
+qboolean CLQ2_GetEntityState(int entnum, float *origin, float *angles, float *lerporigin, int *modelindex, int *frame);
+
+void *CLDKF_RegisterModel(const char *name)
+{
+	if (!name || !*name)
+		return NULL;
+	return Mod_ForName(name, MLV_WARN);
+}
+void *CLDKF_ModelForIndex(int modelindex)
+{
+	if (modelindex <= 0 || modelindex >= MAX_PRECACHE_MODELS)
+		return NULL;
+	return cl.model_precache[modelindex];
+}
+//its renderfx: some Quake II's in other bits
+#define DKRF_MINLIGHT		0x00000001
+#define DKRF_VIEWERMODEL	0x00000002
+#define DKRF_WEAPONMODEL	0x00000004
+#define DKRF_FULLBRIGHT		0x00000008
+#define DKRF_BEAM			0x00000010
+#define DKRF_TRANSLUCENT	0x00000020
+#define DKRF_DEPTHHACK		0x00000080
+#define DKRF_GLOW			0x00000200
+#define DKRF_NODRAW			0x00080000
+void CLDKF_AddEntity(void *model, const float *origin, const float *oldorigin, const float *angles, int frame, int oldframe,
+	float backlerp, int skinnum, float alpha, float scale, const float *rgb, unsigned int dkrenderfx)
+{
+	entity_t *ent;
+	if (!model || (dkrenderfx & DKRF_NODRAW))
+		return;
+	ent = CL_NewTempEntity();
+	if (!ent)
+		return;
+	VectorCopy(origin, ent->origin);
+	VectorCopy(oldorigin, ent->oldorigin);
+	VectorCopy(angles, ent->angles);
+	ent->angles[0] *= r_meshpitch.value;
+	ent->angles[2] *= r_meshroll.value;
+	AngleVectors(ent->angles, ent->axis[0], ent->axis[1], ent->axis[2]);
+	VectorInverse(ent->axis[1]);
+	ent->model = model;
+	ent->framestate.g[FS_REG].frame[0] = frame;
+	ent->framestate.g[FS_REG].frame[1] = oldframe;
+	ent->framestate.g[FS_REG].lerpweight[0] = 1-backlerp;
+	ent->framestate.g[FS_REG].lerpweight[1] = backlerp;
+	ent->skinnum = skinnum;
+	ent->scale = (scale > 0)?scale:1;
+	if (rgb && (rgb[0] || rgb[1] || rgb[2]))
+		VectorCopy(rgb, ent->shaderRGBAf);
+	ent->flags = dkrenderfx & (DKRF_MINLIGHT|DKRF_VIEWERMODEL|DKRF_WEAPONMODEL|DKRF_FULLBRIGHT|DKRF_TRANSLUCENT|DKRF_GLOW);
+	if (dkrenderfx & DKRF_DEPTHHACK)
+		ent->flags |= RF_DEPTHHACK;
+	if (dkrenderfx & DKRF_TRANSLUCENT)
+		ent->shaderRGBAf[3] = alpha;
+	if (dkrenderfx & DKRF_BEAM)
+		ent->rtype = RT_BEAM;
+	if (cl.worldmodel)
+		cl.worldmodel->funcs.FindTouchedLeafs(cl.worldmodel, &ent->pvscache, ent->origin, ent->origin);
+}
+void CLDKF_AddLight(const float *origin, float radius, float r, float g, float b)
+{
+	vec3_t org;
+	VectorCopy(origin, org);
+	V_AddLight(0, org, radius, r, g, b);
+}
+//triangles (numverts a multiple of 3) in the scene with a shader of its own
+void CLDKF_AddTriangles(void *shader, int numverts, const float *xyz, const float *st, const float *rgba)
+{
+	scenetris_t *t;
+	int i;
+	if (!shader || numverts < 3)
+		return;
+	if (cl_numstrisvert + numverts > cl_maxstrisvert)
+		cl_stris_ExpandVerts(cl_numstrisvert + numverts + 64);
+	if (cl_numstrisidx + numverts > cl_maxstrisidx)
+	{
+		cl_maxstrisidx = cl_numstrisidx + numverts + 64;
+		cl_strisidx = BZ_Realloc(cl_strisidx, sizeof(*cl_strisidx)*cl_maxstrisidx);
+	}
+	if (cl_numstris == cl_maxstris)
+	{
+		cl_maxstris += 8;
+		cl_stris = BZ_Realloc(cl_stris, sizeof(*cl_stris)*cl_maxstris);
+	}
+	t = &cl_stris[cl_numstris++];
+	t->shader = shader;
+	t->flags = 0;
+	t->lightmap = -1;
+	t->firstvert = cl_numstrisvert;
+	t->firstidx = cl_numstrisidx;
+	for (i = 0; i < numverts; i++)
+	{
+		VectorCopy(xyz+i*3, cl_strisvertv[cl_numstrisvert+i]);
+		Vector2Copy(st+i*2, cl_strisvertt[cl_numstrisvert+i]);
+		Vector4Copy(rgba+i*4, cl_strisvertc[cl_numstrisvert+i]);
+		cl_strisidx[cl_numstrisidx+i] = cl_numstrisvert+i - t->firstvert;
+	}
+	cl_numstrisvert += numverts;
+	cl_numstrisidx += numverts;
+	t->numvert = numverts;
+	t->numidx = numverts;
+}
+void *CLDKF_RegisterParticleShader(void)
+{	//its particles' atlas, blended over the scene as its renderer had them
+	return R_RegisterShader("dkparticles", SUF_NONE,
+		"{\n"
+			"nomipmaps\n"
+			"{\n"
+				"map pics/particles/particles.tga\n"
+				"blendfunc blend\n"
+				"rgbgen vertex\n"
+				"alphagen vertex\n"
+			"}\n"
+		"}\n");
+}
+void *CLDKF_RegisterSound(const char *name)
+{
+	if (!name || !*name)
+		return NULL;
+	return S_PrecacheSound(name);
+}
+void CLDKF_StartSound(void *sfx, const float *origin, int entnum, int channel, float volume, float attenuation, float timeofs)
+{
+	vec3_t org;
+	if (!sfx)
+		return;
+	if (origin)
+		VectorCopy(origin, org);
+	S_StartSound(entnum, channel, sfx, origin?org:NULL, NULL, volume, attenuation, timeofs, 0, 0);
+}
+float CLDKF_Trace(const float *start, const float *end, int passent, int mask, float *endpos, float *normal, int *entnum, int *contents)
+{
+	vec3_t s, e;
+	float frac;
+	int ent = 0;
+	VectorCopy(start, s);
+	VectorCopy(end, e);
+	frac = CL_TraceLine(s, e, endpos, normal, &ent);
+	*entnum = ent;
+	*contents = (frac < 1 && cl.worldmodel)?cl.worldmodel->funcs.PointContents(cl.worldmodel, NULL, endpos):0;
+	return frac;
+}
+int CLDKF_PointContents(const float *point)
+{
+	vec3_t p;
+	if (!cl.worldmodel)
+		return 0;
+	VectorCopy(point, p);
+	return cl.worldmodel->funcs.PointContents(cl.worldmodel, NULL, p);
+}
+int CLDKF_EntityState(int entnum, float *origin, float *angles, float *lerporigin, int *modelindex, int *frame)
+{
+	return CLQ2_GetEntityState(entnum, origin, angles, lerporigin, modelindex, frame);
+}
+void CLDKF_View(float *origin, float *angles)
+{
+	VectorCopy(r_refdef.vieworg, origin);
+	VectorCopy(r_refdef.viewangles, angles);
+}
+int CLDKF_ServerFrame(void)
+{
+	return cl.q2frame.serverframe;
+}
+float CLDKF_LerpFrac(void)
+{
+	return cl.lerpfrac;
+}
+float CLDKF_FrameTime(void)
+{
+	return host_frametime;
+}
+int CLDKF_PlayerNum(void)
+{
+	return cl.playerview[0].playernum;
+}
+
 //the status bar and the rest of its HUD, for the first seat (it had no splitscreen)
 qboolean CLDK_DrawHUDArea(int seat, const vrect_t *area)
 {

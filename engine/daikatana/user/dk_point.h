@@ -250,7 +250,7 @@ void VectorToAngles( const CVector &v, CVector &angles );
 void AngleToVectors( const CVector &v, CVector &forward );
 void YawToVector( float fYaw, CVector &vector );
 float VectorToYaw( const CVector &v );
-void VectorMA( CVector &v1, CVector &v2, float scale, CVector &out );
+void VectorMA( const CVector &v1, const CVector &v2, float scale, CVector &out );
 float AngleMod (float ang);
 float AngleDiff( float ang1, float ang2 );
 void Normal( CVector &v1, CVector &v2, CVector &v3, CVector &out );
@@ -899,7 +899,7 @@ __inline float VectorToYaw( const CVector &v )
 	return yaw;
 }
 
-__inline void VectorMA( CVector &v1, CVector &v2, float scale, CVector &out )
+__inline void VectorMA( const CVector &v1, const CVector &v2, float scale, CVector &out )
 {
 	float fX = v1.x + (v2.x*scale);
 	float fY = v1.y + (v2.y*scale);

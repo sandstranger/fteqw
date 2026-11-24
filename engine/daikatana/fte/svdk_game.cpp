@@ -1454,6 +1454,13 @@ static void FQ2_VARGS DK3_SpawnEntities(const char *mapname, const char *entstri
 
 	snprintf(map, sizeof(map), "%s", mapname);
 	ents = strdup(entstring?entstring:"");
+	{	//its engine's: the episode, from the map's name (e<episode>m<map>), for the game's level setup (weapons...)
+		char episode[2] = {'0', 0};
+		if ((map[0] == 'e' || map[0] == 'E') && map[1] >= '1' && map[1] <= '9')
+			episode[0] = map[1];
+		DKGI_cvar_forceset("sv_episode", episode);
+		DK_CvarsUpdate();
+	}
 	dkge->RegisterWorldFuncs();
 	dkge->LevelLoad();
 	dkge->LoadNodes(map);
@@ -1620,6 +1627,24 @@ extern "C" void SVDK_PrepFrame(void)
 		DKEDICT(i)->s.event = 0;
 	for (i = 0; i < ge3.num_edicts; i++)
 		shadow[i].s.event = 0;
+}
+
+//what Q2EX's entity state has past Quake II's that Daikatana's has too: its translucency, its scale
+extern "C" void SVDK_EntityExtras(fq2::edict_t *ent, fq2::entityex_t *out)
+{
+	edict_t *de = DK_FromShadow(ent);
+	float a, s;
+	memset(out, 0, sizeof(*out));
+	if (!de || !dkge)
+		return;
+	if (de->s.renderfx & RF_TRANSLUCENT)
+	{
+		a = de->s.alpha;
+		out->alpha = (a <= 0)?1:((a >= 1)?255:(int)(a*255+0.5f));
+	}
+	s = de->s.render_scale.x;
+	if (s > 0 && (s < 0.99f || s > 1.01f))
+		out->scale = (s*16 >= 255)?255:((s*16 < 1)?1:(int)(s*16+0.5f));
 }
 
 extern "C" void *SVDK_GetGameAPI(void *fteimport)

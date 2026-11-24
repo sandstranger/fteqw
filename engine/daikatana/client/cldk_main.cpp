@@ -56,12 +56,13 @@ static void CLDK_ReadCvars(void)
 	cv_dmhints.value = CLDKF_CvarValue("cl_dmhints", "1");
 }
 
-void S_StartLocalSound(const char *name)				{CLDKF_LocalSound(name);}
+static void CLDK_S_StartLocalSound(const char *name)	{CLDKF_LocalSound(name);}
+void (*S_StartLocalSound)(const char *s) = CLDK_S_StartLocalSound;
 void Cbuf_AddText(const char *text)						{CLDKF_AddCommand(text);}
-void Cvar_Set(const char *name, const char *value)		{CLDKF_CvarSet(name, value);}
-void Cvar_ForceSet(const char *name, const char *value)	{CLDKF_CvarSet(name, value);}
-int CL_ModelIndex(const char *name)						{return CLDKF_ModelIndex(name);}
-qboolean CIN_RunningWithView(void)						{return false;}
+cvar_t *Cvar_Set(const char *name, const char *value)		{CLDKF_CvarSet(name, value); return NULL;}
+cvar_t *Cvar_ForceSet(const char *name, const char *value)	{CLDKF_CvarSet(name, value); return NULL;}
+int CL_ModelIndex(char *name)							{return CLDKF_ModelIndex(name);}
+int CIN_RunningWithView(void)							{return 0;}
 
 int CL_Episode(void)
 {	//its maps are e<episode>m<map><letter>
@@ -97,7 +98,7 @@ typedef struct dkfont_s
 } dkfont_t;
 static dkfont_t *dkfonts;
 
-static void *RE_RegisterPic(const char *name, int *width, int *height, int resource)
+static void *RE_RegisterPic(const char *name, int *width, int *height, resource_t resource)
 {
 	dkpic_t *p;
 	for (p = dkpics; p; p = p->next)
@@ -255,38 +256,63 @@ static int RE_DrawString(DRAWSTRUCT &ds)
 	return (int)x;
 }
 
-refexport_t re =
+static void *RE_RegisterModel(const char *name, resource_t resource)
 {
-	RE_RegisterPic,
-	RE_LoadFont,
-	RE_DrawPic,
-	RE_DrawString,
-	RE_StringWidth,
-	RE_FontHeight,
-};
+	return CLDKF_RegisterModel(name);
+}
+static void *RE_RegisterSkin(const char *name, resource_t resource)
+{
+	return NULL;
+}
+//a surface's point (its hierarchical models' hardpoints, hr_*): FTE's models don't say yet, so the entity's own
+static void RE_GetModelHardpoint(char *pSurfName, int curFrame, int lastFrame, entity_t &ent, CVector &hardPt)
+{
+	hardPt = ent.origin;
+}
+//surface sprites (bullet holes, blood, scorch marks): not yet
+static void RE_AddSurfaceSprite(CVector &vOrigin, CVector &vEntOrigin, CVector &vEntAngles, void *pHitModel, int nIndex,
+	void *pSpriteModel, int nFrame, float fRoll, float fScale, byte nFlags)
+{
+}
+
+refexport_t re;	//what of it there is here: CLDK_InitRefExport
+static void CLDK_InitRefExport(void)
+{
+	re.RegisterModel = RE_RegisterModel;
+	re.RegisterSkin = RE_RegisterSkin;
+	re.GetModelHardpoint = RE_GetModelHardpoint;
+	re.AddSurfaceSprite = RE_AddSurfaceSprite;
+	re.RegisterPic = RE_RegisterPic;
+	re.LoadFont = RE_LoadFont;
+	re.DrawPic = RE_DrawPic;
+	re.DrawString = RE_DrawString;
+	re.StringWidth = RE_StringWidth;
+	re.FontHeight = RE_FontHeight;
+}
 
 /*
 =====================================================================
 its messages
 =====================================================================
 */
+static bool msg_badread;	//its sizebuf_t has no such thing
 int MSG_ReadChar(sizebuf_t *sb)
 {
 	if (sb->readcount + 1 > sb->cursize)
-		return sb->badread = true, -1;
+		return msg_badread = true, -1;
 	return (signed char)sb->data[sb->readcount++];
 }
 int MSG_ReadByte(sizebuf_t *sb)
 {
 	if (sb->readcount + 1 > sb->cursize)
-		return sb->badread = true, -1;
+		return msg_badread = true, -1;
 	return sb->data[sb->readcount++];
 }
 int MSG_ReadShort(sizebuf_t *sb)
 {
 	int v;
 	if (sb->readcount + 2 > sb->cursize)
-		return sb->badread = true, -1;
+		return msg_badread = true, -1;
 	v = (short)(sb->data[sb->readcount] | (sb->data[sb->readcount+1]<<8));
 	sb->readcount += 2;
 	return v;
@@ -295,7 +321,7 @@ int MSG_ReadLong(sizebuf_t *sb)
 {
 	int v;
 	if (sb->readcount + 4 > sb->cursize)
-		return sb->badread = true, -1;
+		return msg_badread = true, -1;
 	v = sb->data[sb->readcount] | (sb->data[sb->readcount+1]<<8) | (sb->data[sb->readcount+2]<<16) | (sb->data[sb->readcount+3]<<24);
 	sb->readcount += 4;
 	return v;
@@ -361,7 +387,7 @@ static void CL_MusicPath(char *out, size_t outsize, const char *name)
 	else
 		snprintf(out, outsize, "music/%s.mp3", name);
 }
-void S_StartMusic(const char *name, int chan)
+static void CLDK_S_StartMusic(const char *name, int chan)
 {
 	char path[MAX_QPATH];
 	if (!name || !*name)
@@ -369,7 +395,7 @@ void S_StartMusic(const char *name, int chan)
 	CL_MusicPath(path, sizeof(path), name);
 	CLDKF_Music(path, true);
 }
-void S_StartMP3(const char *name, int chan, float vol, int play_count, qboolean bRestart)
+static void CLDK_S_StartMP3(const char *name, int chan, float vol, int play_count, qboolean bRestart)
 {
 	char path[MAX_QPATH];
 	if (!name || !*name)
@@ -377,10 +403,13 @@ void S_StartMP3(const char *name, int chan, float vol, int play_count, qboolean 
 	CL_MusicPath(path, sizeof(path), name);
 	CLDKF_Music(path, play_count <= 0);
 }
-void S_StopMP3(int chan)
+static void CLDK_S_StopMP3(int chan)
 {
 	CLDKF_Music(NULL, false);
 }
+void (*S_StartMusic)(const char *name, int chan) = CLDK_S_StartMusic;
+void (*S_StartMP3)(const char *name, int chan, float fvol, int play_count, qboolean bRestart) = CLDK_S_StartMP3;
+void (*S_StopMP3)(int chan) = CLDK_S_StopMP3;
 
 /*
 =====================================================================
@@ -398,13 +427,16 @@ static void CLDK_Init(void)
 	if (dkinitialised)
 		return;
 	dkinitialised = true;
+	CLDK_InitRefExport();
 	for (i = 0; i < MAX_MODELS; i++)
 		cl.model_draw[i] = (void *)(size_t)i;	//what the HUD has of models: their indexes
 }
 
+void CLDK_SceneReset(void);	//cldk_scene.cpp
 extern "C" void CLDK_Reset(void)
 {
 	CLDK_Init();
+	CLDK_SceneReset();
 	dkstatsvalid = false;
 	memset(dkstats, 0, sizeof(dkstats));
 	cl.sidekicks_active = 0;
@@ -454,11 +486,11 @@ extern "C" void CLDK_ParseMessage(const unsigned char *data, int length)
 {
 	int svc, old;
 	CLDK_Frame();
-	net_message.data = data;
-	net_message.cursize = length;
+	net_message.data = (byte *)data;
+	net_message.maxsize = net_message.cursize = length;
 	net_message.readcount = 0;
-	net_message.badread = false;
-	while (net_message.readcount < net_message.cursize && !net_message.badread)
+	msg_badread = false;
+	while (net_message.readcount < net_message.cursize && !msg_badread)
 	{
 		svc = MSG_ReadByte(&net_message);
 		switch(svc)
@@ -466,31 +498,33 @@ extern "C" void CLDK_ParseMessage(const unsigned char *data, int length)
 		case svcdk_fte_stats:
 			for (old = 0; old < MAX_STATS; old++)
 				dkstats[old] = MSG_ReadLong(&net_message);
-			dkstatsvalid = !net_message.badread;
+			dkstatsvalid = !msg_badread;
 			break;
-		case SVC_LAYOUT:			MSG_ReadString(&net_message);	break;
-		case SVC_INVENTORY:			inventory_ParseInventory();		break;
-		case SVC_ONSCREEN_ICON:		CL_Boost_Icons();				break;
-		case SVC_CLIENTDEATH:		CL_InformClientDeath();			break;
-		case SVC_SIDEKICK_UPDATE:
+		case svc_layout:			MSG_ReadString(&net_message);	break;
+		case svc_temp_entity:		CL_ParseTEnt();					break;
+		case svc_effect_notify:		CL_ParseEffect();				break;
+		case svc_inventory:			inventory_ParseInventory();		break;
+		case svc_onscreen_icon:		CL_Boost_Icons();				break;
+		case svc_clientdeath:		CL_InformClientDeath();			break;
+		case svc_sidekick_update:
 			old = cl.sidekicks_active;
 			CL_Sidekick_Update();
 			if (!(cl.refdef.rdflags & RDF_COOP))
 				sidekicks_active_update(old);
 			break;
-		case SVC_SELECTOR:			CL_ParseSelectorCommand();		break;
-		case SVC_WEAPON_ICON:		CL_ParseWeaponIcons();			break;
-		case SVC_XPLEVEL:			CL_ParseXPLevel();				break;
-		case SVC_SAVEGEM:			CL_ParseSaveGem();				break;
-		case SVC_CLIENTRESPAWN:		CL_ClientRespawn();				break;
-		case SVC_NOP:												break;
-		case SVC_CROSSHAIR:			CL_ParseCrosshairMessage();		break;
-		case SVC_END_OF_GAME:		CL_InformClientTheEnd();		break;
-		case SVC_AMMO_COUNT_UPDATE:	CL_ParseAmmoUpdate();			break;
-		case SVC_SIDEKICK_WEAPON_STATUS: CL_ParseSidekickWeaponStatus(); break;
-		case SVC_START_MUSIC:		CL_ParseStartMusic();			break;
-		case SVC_START_MP3:			CL_ParseStartMP3();				break;
-		case SVC_STOP_MP3:			CL_ParseStopMP3();				break;
+		case svc_selector:			CL_ParseSelectorCommand();		break;
+		case svc_weapon_icon:		CL_ParseWeaponIcons();			break;
+		case svc_xplevel:			CL_ParseXPLevel();				break;
+		case svc_savegem:			CL_ParseSaveGem();				break;
+		case svc_clientrespawn:		CL_ClientRespawn();				break;
+		case svc_nop:												break;
+		case svc_crosshair:			CL_ParseCrosshairMessage();		break;
+		case svc_end_of_game:		CL_InformClientTheEnd();		break;
+		case svc_ammo_count_update:	CL_ParseAmmoUpdate();			break;
+		case svc_sidekick_weapon_status: CL_ParseSidekickWeaponStatus(); break;
+		case svc_start_music:		CL_ParseStartMusic();			break;
+		case svc_start_mp3:			CL_ParseStartMP3();				break;
+		case svc_stop_mp3:			CL_ParseStopMP3();				break;
 		default:
 			//not handled yet: the rest of this message is lost
 			return;

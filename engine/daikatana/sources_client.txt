@@ -1,3 +1,12 @@
 client/cldk_main.cpp
+client/cldk_scene.cpp
 client/cl_hud.cpp
 client/cl_hudmsg.cpp
+client/cl_tent.cpp
+client/cl_fx.cpp
+client/dk_beams.cpp
+client/dk_cl_curve.cpp
+client/dk_gce_curve.cpp
+client/Projectile_fx.cpp
+client/Artifact_fx.cpp
+user/dk_gce_spline.cpp
