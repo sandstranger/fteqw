@@ -1,3 +1,5 @@
+#ifndef DKINC_KEYS_H	//FTE: (included more than once here)
+#define DKINC_KEYS_H
 
 //
 // these are the key numbers that should be passed to Key_Event
@@ -119,3 +121,5 @@ int Key_GetKey (void);
 
 int Key_IsDown(int key);
 char Key_MatchCommand(char * command);
+
+#endif

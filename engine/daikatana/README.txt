@@ -13,6 +13,13 @@ interface (shadow edicts, as server/svq2_rerelease.c does for the Quake II rerel
 Daikatana's engine's player movement. server/svdk_fte.c is FTE's side of it. Daikatana (-daikatana, the
 FTE-Daikatana game) runs it instead of looking for a game library.
 
+client/ is its client's code on FTE's client (the dkclient library, sources_client.txt; its client's headers in
+client/dkinc): the HUD, its own messages (svcq2dk_message, fte/dk_fteproto.h), temp events and effects, and its
+entities: FTE's client keeps Quake II's entity state (which carries its renderfx, effects, frames as they are) and
+hands it over each frame (client/cldk_fte.c), what Quake II's has no room for (frameInfo, effects2, render_scale,
+modelindex2..4...) comes reliably as it changes (svcdk_fte_entstate), and cl_ents.cpp draws and animates them as
+its client did (cldk_ents.cpp builds its frame). cldk_fte.h is all it has of FTE.
+
 Building (CMakeLists.txt, FTE_GAME_DAIKATANA, the dkgame library): sources.txt lists what's compiled, each with
 -include include/dk_fte_compat.h (what MSVC and its CRT had, elsewhere), -DDK_MODULE_<directory> (physics,
 world, weapons, user, fte), -DTONGUE_ENGLISH -DC_ONLY, the directories user, include, physics, world, weapons, fte

@@ -1,3 +1,5 @@
+#ifndef DKINC_INPUT_H	//FTE: (included more than once here)
+#define DKINC_INPUT_H
 // input.h -- external (non-keyboard) input devices
 
 struct SDL_Window;
@@ -19,3 +21,5 @@ void IN_MenuMouseSetup (void);
 void IN_MenuMouseRelease (void);
 void IN_SetSDLWindow (SDL_Window *window);
 qboolean IN_HandleSetCursor (void);
+
+#endif

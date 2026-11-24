@@ -262,6 +262,39 @@ qboolean CLQ2_GetEntityState(int entnum, float *origin, float *angles, float *le
 	return cent->serverframe == cl.q2frame.serverframe;
 }
 
+//the last frame's entities, their last two states, for Daikatana's client code to draw them itself (cldk_fte.c)
+int CLQ2_NumFrameEntities(void)
+{
+	return cl.q2frame.valid?cl.q2frame.num_entities:0;
+}
+int CLQ2_FrameEntity(int i, entity_state_t **current, entity_state_t **prev, qboolean *isnew)
+{	//its number; 0 if there's none
+	entity_state_t *s;
+	q2centity_t *cent;
+	if (i < 0 || i >= cl.q2frame.num_entities)
+		return 0;
+	s = &clq2_parse_entities[(cl.q2frame.parse_entities+i)&(MAX_PARSE_ENTITIES-1)];
+	if (s->number <= 0 || s->number >= MAX_Q2EDICTS)
+		return 0;
+	cent = &cl_entities[s->number];
+	*current = &cent->current;
+	*prev = &cent->prev;
+	*isnew = cent->serverframe_created == cl.q2frame.serverframe;	//(prev's a copy, with the old origin)
+	return s->number;
+}
+//where its entities are this frame, for the sounds of the map's own brush models (CLQ2_BSPSoundOrigin)
+static void CLQ2_LerpOrigins (q2frame_t *frame)
+{
+	int pnum, k;
+	for (pnum = 0; pnum < frame->num_entities; pnum++)
+	{
+		entity_state_t *s1 = &clq2_parse_entities[(frame->parse_entities+pnum)&(MAX_PARSE_ENTITIES-1)];
+		q2centity_t *cent = &cl_entities[s1->number];
+		for (k = 0; k < 3; k++)
+			cent->lerp_origin[k] = cent->prev.origin[k] + cl.lerpfrac * (cent->current.origin[k] - cent->prev.origin[k]);
+	}
+}
+
 void CL_SmokeAndFlash(vec3_t origin);
 
 void CL_GetNumberedEntityInfo (int num, float *org, float *ang)
@@ -3274,16 +3307,20 @@ void CLQ2_AddEntities (void)
 	for (seat = 0; seat < cl.splitclients; seat++)
 		CLQ2_CalcViewValues (seat);
 	CLQ2FX_BeginFrame ();	//yquake2's effects: the time and view the trails are stamped with
+#ifdef DAIKATANA
+	if (CLDK_IsDaikatana())
+	{
+		CLQ2_LerpOrigins (&cl.q2frame);
+		CLDK_AddScene ();	//Daikatana's client code draws its entities itself (daikatana/client), and its effects
+	}
+	else
+#endif
 	CLQ2_AddPacketEntities (&cl.q2frame);
 #if 0
 	CLQ2_AddProjectiles ();
 #endif
 	CLQ2FX_AddEntities ();	//yquake2's temp entities, explosions, beams, lasers, particles, dlights
 	CL_UpdateTEnts ();
-#ifdef DAIKATANA
-	if (CLDK_IsDaikatana())
-		CLDK_AddScene ();	//Daikatana's own (daikatana/client): its temp events, particles, lights
-#endif
 
 #ifdef _DEBUG
 	if (chase_active.ival)

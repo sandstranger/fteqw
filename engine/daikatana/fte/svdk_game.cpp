@@ -100,7 +100,6 @@ static short DK_Short8(float f)
 static void DK_PlayerStateToShadow(fq2::player_state_t *o, const player_state_t *ps)
 {
 	int i;
-	const edict_t *weapon = (const edict_t *)ps->weapon;
 
 	switch(ps->pmove.pm_type)
 	{
@@ -129,14 +128,8 @@ static void DK_PlayerStateToShadow(fq2::player_state_t *o, const player_state_t 
 		o->gunangles[i] = ps->gunangles[i];
 		o->gunoffset[i] = ps->gunoffset[i];
 	}
-	//the view model is an entity of its own
-	if (weapon && weapon->inuse)
-	{
-		o->gunindex = weapon->s.modelindex;
-		o->gunframe = weapon->s.frame;
-	}
-	else
-		o->gunindex = o->gunframe = 0;
+	//the view model is an entity of its own, its client draws (RF_WEAPONMODEL)
+	o->gunindex = o->gunframe = 0;
 
 	for (i = 0; i < 4; i++)
 		o->blend[i] = ps->blend[i];
@@ -149,17 +142,11 @@ static void DK_PlayerStateToShadow(fq2::player_state_t *o, const player_state_t 
 	}
 }
 
-//Quake II's renderfx and effects for Daikatana's: what has the same meaning, where it's in another bit; the
-//rest is Daikatana's own (its client draws those: beams, flares, particle volumes...)
-#define DK_RF_SPECIAL	(RF_BEAM|RF_LIGHTRAY|RF_TRACKENT|RF_LIGHTFLARE|RF_SPOTLIGHT|RF_LIGHTNING|RF_NODRAW|RF_BEAM_MOVING|RF_PARTICLEVOLUME|RF_TRACER)
-static int DK_RenderFX(unsigned int rf)
-{
-	int q2 = rf & (RF_MINLIGHT|RF_VIEWERMODEL|RF_WEAPONMODEL|RF_FULLBRIGHT|RF_TRANSLUCENT|RF_FRAMELERP|RF_GLOW);
-	if (rf & RF_DEPTHHACK)
-		q2 |= 0x10;		//Quake II's RF_DEPTHHACK
-	return q2;
-}
-#define DK_EF_KEPT	(EF_ROTATE|EF_GIB|EF_COLOR_SHELL|EF_POWERSCREEN|EF_ANIM01|EF_ANIM23|EF_ANIM_ALL|EF_ANIM_ALLFAST|EF_FLIES|EF_TELEPORTER|EF_FLAG1|EF_FLAG2)
+//its renderfx and effects go as they are (FTE's client hands them to Daikatana's client code, which draws the
+//entities: daikatana/client/cldk_ents.cpp); its beams have Quake II's RF_BEAM too (which is its RF_DEPTHHACK,
+//nothing to a beam), for FTE's server to send their ends (old_origin) as they move
+#define DK_RF_BEAMS		(RF_BEAM|RF_LIGHTRAY|RF_LIGHTNING|RF_BEAM_MOVING|RF_TRACER)
+#define Q2RF_BEAM		0x00000080
 
 static void DK_EdictToShadow(int i)
 {
@@ -179,6 +166,8 @@ static void DK_EdictToShadow(int i)
 	if (!de->inuse && !se->inuse)
 		return;
 
+	if (de->inuse)
+		de->s.number = i;	//its engine's, as it sent them (the game tags a weapon with its owner's)
 	se->s.number = i;
 	for (k = 0; k < 3; k++)
 	{
@@ -188,17 +177,12 @@ static void DK_EdictToShadow(int i)
 		se->mins[k] = de->s.mins[k];
 		se->maxs[k] = de->s.maxs[k];
 	}
-	if (de->s.renderfx & DK_RF_SPECIAL)
-		se->s.modelindex = 0;	//not something Quake II's clients can draw
-	else
-		se->s.modelindex = de->s.modelindex;
-	se->s.modelindex2 = de->s.modelindex2;
-	se->s.modelindex3 = de->s.modelindex3;
-	se->s.modelindex4 = de->s.modelindex4;
+	se->s.modelindex = de->s.modelindex;
+	se->s.modelindex2 = se->s.modelindex3 = se->s.modelindex4 = 0;	//(its, past Quake II's ranges: DK_SendEntX's)
 	se->s.frame = de->s.frame;
 	se->s.skinnum = de->s.skinnum;
-	se->s.effects = de->s.effects & DK_EF_KEPT;
-	se->s.renderfx = DK_RenderFX(de->s.renderfx);
+	se->s.effects = de->s.effects;
+	se->s.renderfx = de->s.renderfx | ((de->s.renderfx & DK_RF_BEAMS)?Q2RF_BEAM:0);
 	se->s.sound = de->s.sound;
 	se->s.event = 0;	//Daikatana's events aren't Quake II's
 	//s.solid is FTE's to pack, as it links
@@ -258,6 +242,7 @@ static void DK_PreCall(void)
 	for (i = 1; i <= dkmaxclients && i < shadowmax; i++)
 	{
 		edict_t *de = DKEDICT(i);
+		de->s.number = i;	//its engine's, from the start (ClientConnect gives the weapons their owner's)
 		if (de->client && shadow[i].client)
 			de->client->ping = shadow[i].client->ping;
 	}
@@ -909,8 +894,10 @@ static bool DK_TranslateMessage(void)
 	return any;
 }
 
-//what Quake II's player state has no room for: its stats are longs (experience points...), sent when they change
+//what Quake II's player state has no room for: its stats are longs (experience points...), its pmove's flags
+//(the camera's...); sent when they change
 static long dksentstats[256][MAX_STATS];
+static int dksentpmflags[256], dksentpmtype[256];
 static void DK_SendStats(void)
 {
 	int i, k;
@@ -922,17 +909,253 @@ static void DK_SendStats(void)
 			dksentvalid[i] = false;
 			continue;
 		}
-		if (dksentvalid[i] && !memcmp(dksentstats[i], de->client->ps.stats, sizeof(dksentstats[i])))
+		if (dksentvalid[i] && !memcmp(dksentstats[i], de->client->ps.stats, sizeof(dksentstats[i]))
+			&& dksentpmflags[i] == de->client->ps.pmove.pm_flags && dksentpmtype[i] == (int)de->client->ps.pmove.pm_type)
 			continue;
 		memcpy(dksentstats[i], de->client->ps.stats, sizeof(dksentstats[i]));
+		dksentpmflags[i] = de->client->ps.pmove.pm_flags;
+		dksentpmtype[i] = (int)de->client->ps.pmove.pm_type;
 		dksentvalid[i] = true;
 		fgi->WriteByte(svcq2dk_message);
-		fgi->WriteShort(1 + MAX_STATS*4);
+		fgi->WriteShort(1 + MAX_STATS*4 + 4 + 1);
 		fgi->WriteByte(svcdk_fte_stats);
 		for (k = 0; k < MAX_STATS; k++)
 			fgi->WriteLong((int)de->client->ps.stats[k]);
+		fgi->WriteLong(dksentpmflags[i]);
+		fgi->WriteByte(dksentpmtype[i]);
 		fgi->unicast(&shadow[i], true);
 	}
+}
+
+/*
+=====================================================================
+what of its entities' state Quake II's has no room for (its client draws them, and animates them itself:
+daikatana/client/cldk_ents.cpp): sent reliably to everyone as it changes, all of it to a client as it begins
+=====================================================================
+*/
+typedef struct
+{
+	int				modelindex2, modelindex3, modelindex4;
+	unsigned int	effects2, flags;
+	float			alpha;
+	float			color[3], render_scale[3], mins[3], maxs[3], angle_delta[3], origin_hack[3];
+	short			frameFlags, startFrame, endFrame, startLoop, endLoop, loopCount, sound1Frame, sound2Frame;
+	unsigned char	sound1Index, sound2Index, frameInc;
+	float			modelAnimSpeed;
+	int				numClusters;
+	int				clusterIdx[MAX_MESH_CLUSTERS];
+	float			clusterAngles[MAX_MESH_CLUSTERS][3];
+	unsigned char	snd_flags;
+	float			volume, dist_min, dist_max;
+} dkentx_t;
+static dkentx_t	*dkentx;		//[shadowmax]: what everyone has
+static const dkentx_t dkentxnull = {0};
+
+static void DK_EntXFrom(dkentx_t *x, const edict_t *de)
+{
+	const entity_state_t *s = &de->s;
+	const frameInfo_t *fi = &s->frameInfo;
+	int k;
+	memset(x, 0, sizeof(*x));
+	if (!de->inuse)
+		return;
+	x->modelindex2 = s->modelindex2;
+	x->modelindex3 = s->modelindex3;
+	x->modelindex4 = s->modelindex4;
+	x->effects2 = s->effects2;
+	x->flags = s->flags;
+	x->alpha = s->alpha;
+	for (k = 0; k < 3; k++)
+	{
+		x->color[k] = s->color[k];
+		x->render_scale[k] = s->render_scale[k];
+		x->mins[k] = s->mins[k];
+		x->maxs[k] = s->maxs[k];
+		x->angle_delta[k] = s->angle_delta[k];
+		x->origin_hack[k] = s->origin_hack[k];
+	}
+	//its engine's: the frame rate as flags, what was forced not
+	x->frameFlags = fi->frameFlags & ~(FRAME_FPS10|FRAME_FPS30|FRAME_FORCEINDEX);
+	if (fi->frameTime >= FRAMETIME_FPS10)
+		x->frameFlags |= FRAME_FPS10;
+	else if (fi->frameTime <= FRAMETIME_FPS30 && fi->frameTime > 0)
+		x->frameFlags |= FRAME_FPS30;
+	x->startFrame = fi->startFrame;
+	x->endFrame = fi->endFrame;
+	x->startLoop = fi->startLoop;
+	x->endLoop = fi->endLoop;
+	x->loopCount = fi->loopCount;
+	x->sound1Frame = fi->sound1Frame;
+	x->sound2Frame = fi->sound2Frame;
+	x->sound1Index = (unsigned char)fi->sound1Index;
+	x->sound2Index = (unsigned char)fi->sound2Index;
+	x->frameInc = (unsigned char)fi->frameInc;
+	x->modelAnimSpeed = fi->modelAnimSpeed;
+	x->numClusters = (s->numClusters < 0)?0:((s->numClusters > MAX_MESH_CLUSTERS)?MAX_MESH_CLUSTERS:s->numClusters);
+	for (k = 0; k < x->numClusters; k++)
+	{
+		x->clusterIdx[k] = s->cDef[k].clusterIdx;
+		x->clusterAngles[k][0] = s->cDef[k].angles.x;
+		x->clusterAngles[k][1] = s->cDef[k].angles.y;
+		x->clusterAngles[k][2] = s->cDef[k].angles.z;
+	}
+	x->snd_flags = s->snd_flags;
+	x->volume = s->volume;
+	x->dist_min = s->dist_min;
+	x->dist_max = s->dist_max;
+}
+
+//the ops going out: an svcq2dk_message each so many, through FTE's back buffers (there can be more than a
+//message has room for)
+static unsigned char	dkxbuf[3+1024];
+static int				dkxlen = 3;
+static int				dkxto = -1;		//the player; -1: everyone
+static void DKX_Flush(void)
+{
+	if (dkxlen <= 3)
+		return;
+	dkxbuf[0] = svcq2dk_message;
+	dkxbuf[1] = (dkxlen-3) & 0xff;
+	dkxbuf[2] = ((dkxlen-3)>>8) & 0xff;
+	SVDK_ReliableWrite(dkxto, dkxbuf, dkxlen);
+	dkxlen = 3;
+}
+static void DKX_Byte(int c)		{dkxbuf[dkxlen++] = (unsigned char)c;}
+static void DKX_Short(int c)	{DKX_Byte(c); DKX_Byte(c>>8);}
+static void DKX_Long(int c)		{DKX_Byte(c); DKX_Byte(c>>8); DKX_Byte(c>>16); DKX_Byte(c>>24);}
+static void DKX_Float(float f)	{union {float f; int i;} u; u.f = f; DKX_Long(u.i);}
+static void DKX_Floats(const float *f, int n)	{while (n-- > 0) DKX_Float(*f++);}
+
+//an entity's op, from what they have to what it is (and its frame to sync to if sync); nothing if no change
+static void DKX_Write(int entnum, const dkentx_t *from, const dkentx_t *to, bool reset, bool sync, int frame)
+{
+	int bits = 0, k;
+	if (reset)
+		bits |= DKX_RESET, from = &dkentxnull;
+	if (to->modelindex2 != from->modelindex2)	bits |= DKX_MODEL2;
+	if (to->modelindex3 != from->modelindex3)	bits |= DKX_MODEL3;
+	if (to->modelindex4 != from->modelindex4)	bits |= DKX_MODEL4;
+	if (to->effects2 != from->effects2)			bits |= DKX_EFFECTS2;
+	if (to->flags != from->flags)				bits |= DKX_FLAGS;
+	if (to->alpha != from->alpha)				bits |= DKX_ALPHA;
+	if (memcmp(to->color, from->color, sizeof(to->color)))					bits |= DKX_COLOR;
+	if (memcmp(to->render_scale, from->render_scale, sizeof(to->render_scale)))	bits |= DKX_SCALE;
+	if (memcmp(to->mins, from->mins, sizeof(to->mins)) || memcmp(to->maxs, from->maxs, sizeof(to->maxs)))	bits |= DKX_MINSMAXS;
+	if (memcmp(to->angle_delta, from->angle_delta, sizeof(to->angle_delta)))	bits |= DKX_ANGLEDELTA;
+	if (memcmp(to->origin_hack, from->origin_hack, sizeof(to->origin_hack)))	bits |= DKX_ORIGINHACK;
+	if (to->frameFlags != from->frameFlags || to->startFrame != from->startFrame || to->endFrame != from->endFrame
+		|| to->startLoop != from->startLoop || to->endLoop != from->endLoop)
+		bits |= DKX_FRAMEINFO, sync = true;		//(its engine synced the frame on these)
+	if (to->loopCount != from->loopCount || to->sound1Frame != from->sound1Frame || to->sound2Frame != from->sound2Frame
+		|| to->sound1Index != from->sound1Index || to->sound2Index != from->sound2Index || to->frameInc != from->frameInc
+		|| to->modelAnimSpeed != from->modelAnimSpeed)
+		bits |= DKX_FRAMEINFO;
+	if (sync)
+		bits |= DKX_SYNC;
+	if (to->numClusters != from->numClusters || memcmp(to->clusterIdx, from->clusterIdx, sizeof(to->clusterIdx))
+		|| memcmp(to->clusterAngles, from->clusterAngles, sizeof(to->clusterAngles)))
+		bits |= DKX_CLUSTERS;
+	if (to->snd_flags != from->snd_flags || to->volume != from->volume || to->dist_min != from->dist_min
+		|| to->dist_max != from->dist_max)
+		bits |= DKX_SOUND;
+	if (!bits)
+		return;
+
+	if (dkxlen + 200 > (int)sizeof(dkxbuf))
+		DKX_Flush();
+	DKX_Byte(svcdk_fte_entstate);
+	DKX_Short(entnum);
+	DKX_Short(bits);
+	if (bits & DKX_MODEL2)		DKX_Long(to->modelindex2);
+	if (bits & DKX_MODEL3)		DKX_Long(to->modelindex3);
+	if (bits & DKX_MODEL4)		DKX_Long(to->modelindex4);
+	if (bits & DKX_EFFECTS2)	DKX_Long((int)to->effects2);
+	if (bits & DKX_FLAGS)		DKX_Long((int)to->flags);
+	if (bits & DKX_ALPHA)		DKX_Float(to->alpha);
+	if (bits & DKX_COLOR)		DKX_Floats(to->color, 3);
+	if (bits & DKX_SCALE)		DKX_Floats(to->render_scale, 3);
+	if (bits & DKX_MINSMAXS)	{DKX_Floats(to->mins, 3); DKX_Floats(to->maxs, 3);}
+	if (bits & DKX_ANGLEDELTA)	DKX_Floats(to->angle_delta, 3);
+	if (bits & DKX_ORIGINHACK)	DKX_Floats(to->origin_hack, 3);
+	if (bits & DKX_FRAMEINFO)
+	{
+		DKX_Short(to->frameFlags);
+		DKX_Short(to->startFrame);
+		DKX_Short(to->endFrame);
+		DKX_Short(to->startLoop);
+		DKX_Short(to->endLoop);
+		DKX_Short(to->loopCount);
+		DKX_Short(to->sound1Frame);
+		DKX_Short(to->sound2Frame);
+		DKX_Byte(to->sound1Index);
+		DKX_Byte(to->sound2Index);
+		DKX_Byte(to->frameInc);
+		DKX_Float(to->modelAnimSpeed);
+	}
+	if (bits & DKX_SYNC)		DKX_Short(frame);
+	if (bits & DKX_CLUSTERS)
+	{
+		DKX_Byte(to->numClusters);
+		for (k = 0; k < to->numClusters; k++)
+		{
+			DKX_Byte(to->clusterIdx[k]);
+			DKX_Floats(to->clusterAngles[k], 3);
+		}
+	}
+	if (bits & DKX_SOUND)
+	{
+		DKX_Byte(to->snd_flags);
+		DKX_Float(to->volume);
+		DKX_Float(to->dist_min);
+		DKX_Float(to->dist_max);
+	}
+}
+
+//each frame: what's changed, to everyone
+static void DK_SendEntX(void)
+{
+	int i, n;
+	dkentx_t x;
+	if (!dkge || !dkge->edicts || !dkentx)
+		return;
+	n = dkge->num_edicts;
+	if (n > shadowmax)
+		n = shadowmax;
+	dkxto = -1;
+	for (i = 1; i < n; i++)
+	{
+		edict_t *de = DKEDICT(i);
+		bool force = de->inuse && (de->s.frameInfo.frameFlags & FRAME_FORCEINDEX);
+		if (!de->inuse && !memcmp(&dkentx[i], &dkentxnull, sizeof(dkentx[i])))
+			continue;
+		DK_EntXFrom(&x, de);
+		if (!de->inuse)
+			DKX_Write(i, &dkentx[i], &x, true, false, 0);
+		else
+		{
+			DKX_Write(i, &dkentx[i], &x, false, force, de->s.frame);
+			de->s.frameInfo.frameFlags &= ~FRAME_FORCEINDEX;	//(its engine cleared it as it sent the entity)
+		}
+		dkentx[i] = x;
+	}
+	DKX_Flush();
+}
+//all of it, to a client that's begun (fresh: its client starts over with each level); its client syncs the
+//frames of what it hasn't had from the frame Quake II's entity state has
+static void DK_SendAllEntX(int playernum)
+{
+	int i, n;
+	if (!dkge || !dkge->edicts || !dkentx)
+		return;
+	n = dkge->num_edicts;
+	if (n > shadowmax)
+		n = shadowmax;
+	dkxto = playernum;
+	for (i = 1; i < n; i++)
+		if (DKEDICT(i)->inuse)
+			DKX_Write(i, &dkentxnull, &dkentx[i], false, false, 0);
+	DKX_Flush();
+	dkxto = -1;
 }
 
 static void DKGI_multicast(const CVector &origin, multicast_t to)
@@ -1393,6 +1616,8 @@ static void DK_Free(void)
 	shadow = NULL;
 	free(shadowcl);
 	shadowcl = NULL;
+	free(dkentx);
+	dkentx = NULL;
 	shadowmax = 0;
 	ge3.edicts = NULL;
 	ge3.num_edicts = ge3.max_edicts = 0;
@@ -1409,6 +1634,7 @@ static void FQ2_VARGS DK3_Init(void)
 	shadowmax = dkge->max_edicts;
 	shadow = (fq2::edict_t *)calloc(shadowmax, sizeof(*shadow));
 	shadowcl = (fq2::gclient_t *)calloc(dkmaxclients+1, sizeof(*shadowcl));
+	dkentx = (dkentx_t *)calloc(shadowmax, sizeof(*dkentx));
 	ge3.edicts = shadow;
 	ge3.edict_size = sizeof(*shadow);
 	ge3.max_edicts = shadowmax;
@@ -1450,6 +1676,8 @@ static void FQ2_VARGS DK3_SpawnEntities(const char *mapname, const char *entstri
 	}
 	dklevelloaded = true;
 	memset(dkbegun, 0, sizeof(dkbegun));	//they begin again in the new level
+	if (dkentx)
+		memset(dkentx, 0, sizeof(*dkentx)*shadowmax);	//(and their clients start over)
 	DK_FramesClear();
 
 	snprintf(map, sizeof(map), "%s", mapname);
@@ -1491,6 +1719,9 @@ static void FQ2_VARGS DK3_ClientBegin(fq2::edict_t *ent)
 	if (n > 0 && n < 256)
 		dkbegun[n] = true, dksentvalid[n] = false;
 	DK_SyncAll();
+	DK_SendEntX();			//what's changed, to everyone, then all of it to this one
+	if (n > 0)
+		DK_SendAllEntX(n-1);
 }
 static void FQ2_VARGS DK3_ClientUserinfoChanged(fq2::edict_t *ent, char *userinfo)
 {
@@ -1601,6 +1832,7 @@ static void FQ2_VARGS DK3_RunFrame(void)
 	dkge->RunFrame();
 	DK_SyncAll();
 	DK_SendStats();
+	DK_SendEntX();
 }
 static void FQ2_VARGS DK3_ServerCommand(void)
 {

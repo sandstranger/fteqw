@@ -29,6 +29,10 @@ int			CIN_RunningWithView(void);	//dk_gce_main.h's
 int			CL_Episode(void);	//the map's episode (FTE: its worldspawn's, CM_KeyValue(map_epairs, "episode"))
 const char	*CL_ConfigModelName(int modelindex);
 
+//its entities (cldk_ents.cpp)
+extern int	cldk_pmflags, cldk_pmtype;	//its pmove's, the server's (svcdk_fte_stats)
+void		CLDK_ParseEntState(void);	//svcdk_fte_entstate
+
 //the HUD (cl_hud.cpp)
 void	SCR_RegisterStatus(void);
 void	SCR_DrawStats(void);

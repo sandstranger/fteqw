@@ -9,10 +9,7 @@ GPL v2 or later.
 #include "dk_beams.h"
 
 centity_t		cl_entities[MAX_EDICTS];
-cl_TempEventFunction_t	cl_TempEventFunctionList[TEMP_EVENT_COUNT];
 foginfo_t		r_foginfo;
-foginfo_t		global_fog_state;
-int				last_player_contents;
 
 static cvar_t	cv_cl_bob = {(char *)"cl_bob"}, cv_weapon_visible = {(char *)"weapon_visible"}, cv_sv_violence = {(char *)"sv_violence"};
 static cvar_t	cv_fov = {(char *)"fov"};
@@ -31,6 +28,8 @@ void CL_AddParticles(void);
 void CL_AddComParticles(void);
 void CL_AddDLights(void);
 void CL_AddTrackEnts(void);
+void CLDK_EntitiesReset(void);	//cldk_ents.cpp's
+void CLDK_AddEntities(void);
 
 /*
 =====================================================================
@@ -48,11 +47,20 @@ void Com_Error(int code, char *fmt, ...)
 	va_start(argptr, fmt);
 	vsnprintf(text, sizeof(text), fmt, argptr);
 	va_end(argptr);
-	{
-		char cmd[1100];
-		snprintf(cmd, sizeof(cmd), "echo \"Daikatana: %s\"\n", text);
-		CLDKF_AddCommand(cmd);
-	}
+	CLDKF_Print("Daikatana: ");
+	CLDKF_Print(text);
+	CLDKF_Print("\n");
+}
+void Com_DPrintf(char *fmt, ...)
+{
+	va_list argptr;
+	char text[1024];
+	if (!CLDKF_CvarValue("developer", "0"))
+		return;
+	va_start(argptr, fmt);
+	vsnprintf(text, sizeof(text), fmt, argptr);
+	va_end(argptr);
+	CLDKF_Print(text);
 }
 int CM_PointContents(CVector &p, int headnode)
 {
@@ -73,10 +81,6 @@ trace_t CL_TraceLine(const CVector &start, const CVector &end, int passent_num, 
 	tr.surface = &cltracesurface;
 	tr.ent = (struct edict_s *)(size_t)ent;	//its client's traces had entity numbers there
 	return tr;
-}
-CVector CL_GetBobOffset(void)
-{	//(cl_ents.cpp's: the view weapon's bob)
-	return CVector(0, 0, 0);
 }
 //cl_pv.cpp's particle volumes (rain, snow...) aren't here yet
 void CL_AddDripSplash(cparticle_t *p)	{}
@@ -277,14 +281,15 @@ void CLDK_SceneReset(void)
 	CL_ClearEffects();
 	CL_ClearTEnts();
 	memset(cl_entities, 0, sizeof(cl_entities));
+	CLDK_EntitiesReset();
 	dkscene_registered = false;
 }
 
-//its client's frame state, from FTE's
+//its client's frame state, from FTE's (cldk_ents.cpp has the entities)
 static void CLDK_SceneFrame(void)
 {
-	int i, modelindex, frame;
-	float org[3], ang[3], lerp[3];
+	int i;
+	float org[3], ang[3];
 	int serverframe = CLDKF_ServerFrame();
 
 	cl.frame.serverframe = serverframe;
@@ -301,22 +306,9 @@ static void CLDK_SceneFrame(void)
 	cl.refdef.viewangles.Set(ang[0], ang[1], ang[2]);
 	pvieworg = cl.refdef.vieworg;
 	AngleToVectors(cl.refdef.viewangles, pvpn, pvright, pvup);
-
-	for (i = 0; i < MAX_EDICTS; i++)
-	{
-		centity_t *cent = &cl_entities[i];
-		if (!CLDKF_EntityState(i, org, ang, lerp, &modelindex, &frame))
-			continue;
-		cent->prev = cent->current;
-		cent->current.number = i;
-		cent->current.origin.Set(org[0], org[1], org[2]);
-		cent->current.angles.Set(ang[0], ang[1], ang[2]);
-		cent->current.modelindex = modelindex;
-		cent->current.frame = frame;
-		cent->lerp_origin.Set(lerp[0], lerp[1], lerp[2]);
-		cent->lerp_angles = cent->current.angles;
-		cent->serverframe = serverframe;
-	}
+	cl.v_forward = pvpn;
+	cl.v_right = pvright;
+	cl.v_up = pvup;
 
 	cv_cl_bob.value = CLDKF_CvarValue("cl_bob", "1");
 	cv_weapon_visible.value = CLDKF_CvarValue("weapon_visible", "1");
@@ -339,6 +331,7 @@ extern "C" void CLDK_AddScene(void)
 
 	numparts = 0;
 	beam_InitFrame();
+	CLDK_AddEntities();
 	CL_AddTEnts();
 	CL_AddParticles();
 	CL_AddDLights();

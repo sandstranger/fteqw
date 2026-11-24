@@ -79,6 +79,10 @@ void CLDKF_AddCommand(const char *text)
 {
 	Cbuf_AddText(text, RESTRICT_LOCAL);
 }
+void CLDKF_Print(const char *text)
+{
+	Con_Printf("%s", text);
+}
 int CLDKF_Stat(int i)
 {
 	if (i < 0 || i >= Q2MAX_STATS)
@@ -132,6 +136,7 @@ its scene: what its client's effects (cl_tent, cl_fx...) add each frame
 =====================================================================
 */
 qboolean CLQ2_GetEntityState(int entnum, float *origin, float *angles, float *lerporigin, int *modelindex, int *frame);
+entity_t *CL_NewTempEntity (void);	//cl_tent.c's
 
 void *CLDKF_RegisterModel(const char *name)
 {
@@ -154,13 +159,14 @@ void *CLDKF_ModelForIndex(int modelindex)
 #define DKRF_TRANSLUCENT	0x00000020
 #define DKRF_DEPTHHACK		0x00000080
 #define DKRF_GLOW			0x00000200
+#define DKRF_SPOTLIGHT		0x00008000
 #define DKRF_NODRAW			0x00080000
 void CLDKF_AddEntity(void *model, const float *origin, const float *oldorigin, const float *angles, int frame, int oldframe,
 	float backlerp, int skinnum, float alpha, float scale, const float *rgb, unsigned int dkrenderfx)
 {
 	entity_t *ent;
-	if (!model || (dkrenderfx & DKRF_NODRAW))
-		return;
+	if (!model || (dkrenderfx & (DKRF_NODRAW|DKRF_SPOTLIGHT)))
+		return;	//(its renderer drew spotlights as volumes, to render_scale: not yet)
 	ent = CL_NewTempEntity();
 	if (!ent)
 		return;
@@ -183,12 +189,50 @@ void CLDKF_AddEntity(void *model, const float *origin, const float *oldorigin, c
 	ent->flags = dkrenderfx & (DKRF_MINLIGHT|DKRF_VIEWERMODEL|DKRF_WEAPONMODEL|DKRF_FULLBRIGHT|DKRF_TRANSLUCENT|DKRF_GLOW);
 	if (dkrenderfx & DKRF_DEPTHHACK)
 		ent->flags |= RF_DEPTHHACK;
+	if (dkrenderfx & DKRF_WEAPONMODEL)
+	{	//its view model's where the view is, in the world (bobbing as its client has it): FTE's are relative to it
+		vec3_t d;
+		int i;
+		//the matrix FTE draws them by is the view (its Quake II gun's sets it, and there's none here)
+		AngleVectors(r_refdef.viewangles, r_refdef.weaponmatrix[0], r_refdef.weaponmatrix[1], r_refdef.weaponmatrix[2]);
+		VectorInverse(r_refdef.weaponmatrix[1]);
+		VectorCopy(r_refdef.vieworg, r_refdef.weaponmatrix[3]);
+		memcpy(r_refdef.weaponmatrix_bob, r_refdef.weaponmatrix, sizeof(r_refdef.weaponmatrix_bob));
+		VectorSubtract(ent->origin, r_refdef.vieworg, d);
+		for (i = 0; i < 3; i++)
+			ent->origin[i] = DotProduct(d, r_refdef.weaponmatrix[i]);
+		VectorCopy(ent->origin, ent->oldorigin);
+		VectorSubtract(angles, r_refdef.viewangles, ent->angles);	//(the view's, for its view model)
+		ent->angles[0] *= r_meshpitch.value;
+		ent->angles[2] *= r_meshroll.value;
+		AngleVectors(ent->angles, ent->axis[0], ent->axis[1], ent->axis[2]);
+		VectorInverse(ent->axis[1]);
+		ent->flags |= RF_WEAPONMODELNOBOB|RF_NOSHADOW;
+	}
 	if (dkrenderfx & DKRF_TRANSLUCENT)
 		ent->shaderRGBAf[3] = alpha;
 	if (dkrenderfx & DKRF_BEAM)
 		ent->rtype = RT_BEAM;
-	if (cl.worldmodel)
-		cl.worldmodel->funcs.FindTouchedLeafs(cl.worldmodel, &ent->pvscache, ent->origin, ent->origin);
+	if (cl.worldmodel && !(ent->flags & RF_WEAPONMODEL))
+	{	//the leaves it's in, for the visibility culling (as cl_ents.c has them: rotated or scaled, by its radius)
+		model_t *mod = model;
+		vec3_t absmin, absmax;
+		int i;
+		float r = 0;
+		if (mod->type == mod_brush && (angles[0] || angles[1] || angles[2]))
+		{
+			for (i = 0; i < 3; i++)
+				r = max(r, max(fabs(mod->mins[i]), fabs(mod->maxs[i])));
+		}
+		else if (mod->type != mod_brush && (angles[0] || angles[1] || angles[2] || ent->scale != 1))
+			r = mod->radius * ent->scale;
+		for (i = 0; i < 3; i++)
+		{
+			absmin[i] = ent->origin[i] + (r?-r:mod->mins[i]);
+			absmax[i] = ent->origin[i] + (r?r:mod->maxs[i]);
+		}
+		cl.worldmodel->funcs.FindTouchedLeafs(cl.worldmodel, &ent->pvscache, absmin, absmax);
+	}
 }
 void CLDKF_AddLight(const float *origin, float radius, float r, float g, float b)
 {
@@ -284,6 +328,43 @@ int CLDKF_PointContents(const float *point)
 int CLDKF_EntityState(int entnum, float *origin, float *angles, float *lerporigin, int *modelindex, int *frame)
 {
 	return CLQ2_GetEntityState(entnum, origin, angles, lerporigin, modelindex, frame);
+}
+int CLQ2_NumFrameEntities(void);
+int CLQ2_FrameEntity(int i, entity_state_t **current, entity_state_t **prev, qboolean *isnew);
+int CLDKF_NumFrameEntities(void)
+{
+	return CLQ2_NumFrameEntities();
+}
+static void CLDK_EState(cldk_estate_t *o, const entity_state_t *s)
+{
+	VectorCopy(s->origin, o->origin);
+	VectorCopy(s->angles, o->angles);
+	VectorCopy(s->u.q2.old_origin, o->old_origin);
+	o->modelindex = s->modelindex;
+	o->frame = s->frame;
+	o->skinnum = s->skinnum;
+	o->sound = s->u.q2.sound;
+	o->event = s->u.q2.event;
+	o->effects = s->effects;
+	o->renderfx = s->u.q2.renderfx;
+}
+int CLDKF_FrameEntity(int i, cldk_estate_t *current, cldk_estate_t *prev, int *isnew)
+{
+	entity_state_t *cur, *old;
+	qboolean created;
+	int num = CLQ2_FrameEntity(i, &cur, &old, &created);
+	if (!num)
+		return 0;
+	CLDK_EState(current, cur);
+	CLDK_EState(prev, old);
+	*isnew = created;
+	return num;
+}
+void CLDKF_PlayerVelocity(float *velocity)
+{
+	int i;
+	for (i = 0; i < 3; i++)
+		velocity[i] = cl.q2frame.seat[0].playerstate.pmove.velocity[i] * 0.125;
 }
 void CLDKF_View(float *origin, float *angles)
 {

@@ -1,3 +1,5 @@
+#ifndef DKINC_CLIENT_H	//FTE: (included more than once here)
+#define DKINC_CLIENT_H
 #include <stdint.h>
 // client.h -- primary header for client
 
@@ -999,3 +1001,4 @@ int	M_GetMenuPic (char *name, char *r_path, int *w, int *h);
 
 // dk_model
 int	dk_GetSpecificAnimSequences(int modelindex, char *fName, frameData_t *pFrameData, char *seqName);
+#endif

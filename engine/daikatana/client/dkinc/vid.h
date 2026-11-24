@@ -1,3 +1,5 @@
+#ifndef DKINC_VID_H	//FTE: (included more than once here)
+#define DKINC_VID_H
 // vid.h -- video driver defs
 
 typedef struct vrect_s
@@ -26,3 +28,5 @@ void	VID_MenuInit( void );
 void	VID_MenuDraw( void );
 const char *VID_MenuKey( int );
 
+
+#endif

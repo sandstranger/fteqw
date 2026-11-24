@@ -507,8 +507,11 @@ extern "C" void CLDK_ParseMessage(const unsigned char *data, int length)
 		case svcdk_fte_stats:
 			for (old = 0; old < MAX_STATS; old++)
 				dkstats[old] = MSG_ReadLong(&net_message);
+			cldk_pmflags = MSG_ReadLong(&net_message);
+			cldk_pmtype = MSG_ReadByte(&net_message);
 			dkstatsvalid = !msg_badread;
 			break;
+		case svcdk_fte_entstate:	CLDK_ParseEntState();			break;
 		case svc_layout:			MSG_ReadString(&net_message);	break;
 		case svc_temp_entity:		CL_ParseTEnt();					break;
 		case svc_effect_notify:		CL_ParseEffect();				break;

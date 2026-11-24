@@ -66,6 +66,25 @@ int SVDK_IsLocalClient(int playernum)
 	return cl->netchan.remote_address.type == NA_LOOPBACK;
 }
 
+//reliable data for a client (0-based), or everyone connected (-1), through the back buffers when there's much (its
+//entities' state for a client that's begun is more than a message has room for)
+void SVDK_ReliableWrite(int playernum, const void *data, int len)
+{
+	int i;
+	for (i = 0; i < svs.allocated_client_slots; i++)
+	{
+		client_t *cl = &svs.clients[i];
+		sizebuf_t *msg;
+		if (playernum >= 0 && i != playernum)
+			continue;
+		if (cl->state < cs_connected || cl->protocol == SCP_BAD || cl->controller)
+			continue;
+		msg = ClientReliable_StartWrite(cl, len);
+		SZ_Write(msg, data, len);
+		ClientReliable_FinishWrite(cl);
+	}
+}
+
 //the game to run, by the files there are
 qboolean SVDK_IsDaikatana(void)
 {

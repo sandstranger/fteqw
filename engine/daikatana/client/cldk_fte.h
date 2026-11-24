@@ -19,6 +19,7 @@ float		CLDKF_CvarValue(const char *name, const char *defaultvalue);
 void		CLDKF_CvarSet(const char *name, const char *value);
 void		CLDKF_LocalSound(const char *name);
 void		CLDKF_AddCommand(const char *text);			//to the console (forwarded to the server, as the game's are)
+void		CLDKF_Print(const char *text);				//to the console
 int			CLDKF_Stat(int i);							//Quake II's (short) stats
 int			CLDKF_RDFlags(void);
 const char	*CLDKF_MapName(void);
@@ -41,6 +42,16 @@ void		CLDKF_StartSound(void *sfx, const float *origin, int entnum, int channel, 
 float		CLDKF_Trace(const float *start, const float *end, int passent, int mask, float *endpos, float *normal, int *entnum, int *contents);
 int			CLDKF_PointContents(const float *point);
 int			CLDKF_EntityState(int entnum, float *origin, float *angles, float *lerporigin, int *modelindex, int *frame);
+//the last frame's entities: what Quake II's entity state has of Daikatana's (its server's as they are)
+typedef struct
+{
+	float			origin[3], angles[3], old_origin[3];
+	int				modelindex, frame, skinnum, sound, event;
+	unsigned int	effects, renderfx;
+} cldk_estate_t;
+int			CLDKF_NumFrameEntities(void);
+int			CLDKF_FrameEntity(int i, cldk_estate_t *current, cldk_estate_t *prev, int *isnew);	//its number, 0 if none
+void		CLDKF_PlayerVelocity(float *velocity);
 void		CLDKF_View(float *origin, float *angles);
 int			CLDKF_ServerFrame(void);
 float		CLDKF_LerpFrac(void);

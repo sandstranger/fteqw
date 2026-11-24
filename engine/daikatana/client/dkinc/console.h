@@ -1,3 +1,5 @@
+#ifndef DKINC_CONSOLE_H	//FTE: (included more than once here)
+#define DKINC_CONSOLE_H
 
 //
 // console
@@ -61,3 +63,5 @@ void Con_ClearNotify (void);
 void Con_ToggleConsole_f (void);
 void Con_ToggleQuickConsole_f (void);
 void Con_ConsoleOff (void);
+
+#endif

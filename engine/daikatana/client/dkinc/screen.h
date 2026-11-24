@@ -1,3 +1,5 @@
+#ifndef DKINC_SCREEN_H	//FTE: (included more than once here)
+#define DKINC_SCREEN_H
 // screen.h
 
 #define STATUS_INFO_END    ((char *)-1)
@@ -89,3 +91,5 @@ void SCR_RunCinematic (void);
 void SCR_StopCinematic (void);
 void SCR_FinishCinematic (void);
 
+
+#endif
