@@ -665,6 +665,101 @@ static qboolean CLQ2RR_PredictMovement(int seat)
 	return true;
 }
 
+#ifdef DAIKATANA
+/*
+=====================================================================
+Daikatana's player movement (its game's own pmove: daikatana/client/cldk_pred.cpp), to predict with, as its client
+did: Quake II's moves differently (its speeds, skills, ladders, ducking).
+=====================================================================
+*/
+#include "../daikatana/client/cldk_fte.h"
+static void CLDK_PMTraceBox(const float *start, const float *mins, const float *maxs, const float *end, cldk_trace_t *out)
+{
+	vec3_t s, mn, mx, e;
+	q2trace_t t;
+	VectorCopy(start, s);
+	VectorCopy(mins, mn);
+	VectorCopy(maxs, mx);
+	VectorCopy(end, e);
+	t = CLQ2_PMTrace(s, mn, mx, e);
+	out->fraction = t.fraction;
+	VectorCopy(t.endpos, out->endpos);
+	VectorCopy(t.plane.normal, out->normal);
+	out->dist = t.plane.dist;
+	out->allsolid = t.allsolid;
+	out->startsolid = t.startsolid;
+	out->contents = t.contents;
+	out->surfaceflags = t.surface?t.surface->flags:0;
+	out->hit = t.ent != NULL;
+}
+static int CLDK_PMPointContents(const float *p)
+{
+	vec3_t o;
+	VectorCopy(p, o);
+	return CLQ2_PMpointcontents(o);
+}
+static void CLDK_RunCommand(cldk_pmove_t *pm, const usercmd_t *cmd)
+{
+	int i;
+	pm->msec = cmd->msec;
+	pm->buttons = cmd->buttons;
+	for (i = 0; i < 3; i++)
+		pm->angles[i] = cmd->angles[i];
+	pm->forwardmove = cmd->forwardmove;
+	pm->sidemove = cmd->sidemove;
+	pm->upmove = cmd->upmove;
+	pm->impulse = cmd->impulse;
+	pm->lightlevel = cmd->lightlevel;
+	CLDK_Pmove(pm);
+}
+static void CLDK_PredictMovement (int seat)
+{
+	int ack = cl.ackedmovesequence, current = cl.movesequence, frame, i;
+	cldk_pmove_t pm;
+	q2player_state_t *ps = &cl.q2frame.seat[seat].playerstate;
+	playerview_t *pv = &cl.playerview[seat];
+
+	if (current - ack >= UPDATE_MASK)
+		return;	//too far out of date: frozen
+
+	memset(&pm, 0, sizeof(pm));
+	pm.tracebox = CLDK_PMTraceBox;
+	pm.pointcontents = CLDK_PMPointContents;
+	pm.pm_type = ps->pmove.pm_type;
+	for (i = 0; i < 3; i++)
+	{
+		pm.origin[i] = ps->pmove.origin[i];
+		pm.velocity[i] = ps->pmove.velocity[i];
+		pm.delta_angles[i] = ps->pmove.delta_angles[i];
+	}
+	pm.pm_flags = ps->pmove.pm_flags;
+	pm.pm_time = ps->pmove.pm_time;
+	pm.gravity = ps->pmove.gravity;
+
+	predignoreentitynum = cl.q2frame.seat[seat].clientnum+1;
+	while (++ack < current)
+	{
+		frame = ack & UPDATE_MASK;
+		if (!cl.outframes[frame].cmd[seat].msec)
+			continue;
+		CLDK_RunCommand(&pm, &cl.outframes[frame].cmd[seat]);
+		for (i = 0; i < 3; i++)
+			cl_predictions[seat][frame].origin[i] = pm.origin[i];
+		cl_predictions[seat][frame].seq = ack;
+	}
+	if (cl_pendingcmd[seat].msec)
+		CLDK_RunCommand(&pm, &cl_pendingcmd[seat]);
+
+	pv->onground = pm.onground;
+	for (i = 0; i < 3; i++)
+	{
+		pv->predicted_origin[i] = pm.origin[i]*0.125;
+		pv->simvel[i] = pm.velocity[i]*0.125;
+	}
+	VectorCopy(pm.viewangles, pv->predicted_angles);
+}
+#endif
+
 static void CLQ2_PredictMovement (int seat)	//q2 doesn't support split clients.
 {
 	int			ack, current;
@@ -691,6 +786,13 @@ static void CLQ2_PredictMovement (int seat)	//q2 doesn't support split clients.
 	}
 	if (CLQ2RR_PredictMovement(seat))
 		return;	//the rerelease's game, with its own pmove
+#ifdef DAIKATANA
+	if (CLDK_IsDaikatana())
+	{
+		CLDK_PredictMovement(seat);	//Daikatana's, with its own too
+		return;
+	}
+#endif
 	ack = cl.ackedmovesequence;	//index was received
 	current = cl.movesequence;	//count generated, [current] is thus invalid.
 

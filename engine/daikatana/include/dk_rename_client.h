@@ -97,6 +97,7 @@
 #define cl_showflares dkcl_cl_showflares
 #define cl_theend_alpha dkcl_cl_theend_alpha
 #define cl_theend_time dkcl_cl_theend_time
+#define cldk_maxspeed dkcl_cldk_maxspeed
 #define cldk_pmflags dkcl_cldk_pmflags
 #define cldk_pmtype dkcl_cldk_pmtype
 #define cls dkcl_cls

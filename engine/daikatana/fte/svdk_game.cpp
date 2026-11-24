@@ -36,6 +36,7 @@ GPL v2 or later.
 extern "C" game_export_t *GetGameAPI (game_import_t *import);	//physics' (p_main.cpp)
 extern edict_t *g_edicts;									//physics' too: freed here between levels
 void DKPM_Pmove (pmove_t *pmove);							//dk_pmove.cpp
+float DKPH_EdictMaxSpeed(struct edict_s *e);					//physics/dk_static.cpp
 
 #define DKMEMTAG_BASE		0x4b00	//Daikatana's MEM_TAG_*s, among FTE's tags
 
@@ -141,8 +142,11 @@ static void DK_PlayerStateToShadow(fq2::player_state_t *o, const player_state_t 
 	}
 	if (ps->pmove.pm_flags & PMF_CAMERAMODE)
 		o->pmove.pm_type = fq2::PM_FREEZE;	//the view's the server's (its client didn't predict the angles)
-	//FTE's clients predict with Quake II's pmove, which isn't Daikatana's: not yet
-	o->pmove.pm_flags = (ps->pmove.pm_flags & 0x3f) | PMF_NO_PREDICTION;
+	//its flags Quake II's have (FTE's client predicts with its pmove: daikatana/client/cldk_pred.cpp); not from
+	//a view entity
+	o->pmove.pm_flags = ps->pmove.pm_flags & 0x7f;
+	if (ps->view_entity > 0)
+		o->pmove.pm_flags |= PMF_NO_PREDICTION;
 	o->pmove.pm_time = ps->pmove.pm_time;
 	o->pmove.gravity = ps->pmove.gravity;
 
@@ -984,6 +988,7 @@ static bool DK_TranslateMessage(void)
 //(the camera's...); sent when they change
 static long dksentstats[256][MAX_STATS];
 static int dksentpmflags[256], dksentpmtype[256];
+static float dksentmaxspeed[256];
 static void DK_SendStats(void)
 {
 	int i, k;
@@ -996,19 +1001,26 @@ static void DK_SendStats(void)
 			continue;
 		}
 		if (dksentvalid[i] && !memcmp(dksentstats[i], de->client->ps.stats, sizeof(dksentstats[i]))
-			&& dksentpmflags[i] == de->client->ps.pmove.pm_flags && dksentpmtype[i] == (int)de->client->ps.pmove.pm_type)
+			&& dksentpmflags[i] == de->client->ps.pmove.pm_flags && dksentpmtype[i] == (int)de->client->ps.pmove.pm_type
+			&& dksentmaxspeed[i] == DKPH_EdictMaxSpeed(de))
 			continue;
 		memcpy(dksentstats[i], de->client->ps.stats, sizeof(dksentstats[i]));
 		dksentpmflags[i] = de->client->ps.pmove.pm_flags;
 		dksentpmtype[i] = (int)de->client->ps.pmove.pm_type;
+		dksentmaxspeed[i] = DKPH_EdictMaxSpeed(de);
 		dksentvalid[i] = true;
 		fgi->WriteByte(svcq2dk_message);
-		fgi->WriteShort(1 + MAX_STATS*4 + 4 + 1);
+		fgi->WriteShort(1 + MAX_STATS*4 + 4 + 1 + 4);
 		fgi->WriteByte(svcdk_fte_stats);
 		for (k = 0; k < MAX_STATS; k++)
 			fgi->WriteLong((int)de->client->ps.stats[k]);
 		fgi->WriteLong(dksentpmflags[i]);
 		fgi->WriteByte(dksentpmtype[i]);
+		{	//its pmove's max_speed (the player's: its skills, boosts), for its client's prediction
+			union {float f; int i;} u;
+			u.f = dksentmaxspeed[i];
+			fgi->WriteLong(u.i);
+		}
 		fgi->unicast(&shadow[i], true);
 	}
 }

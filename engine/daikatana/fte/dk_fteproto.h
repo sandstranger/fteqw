@@ -10,8 +10,8 @@ writes it, daikatana/client reads it). Plain defines: C and C++, FTE's side and 
 #define svcq2dk_message		64
 
 //in those, ops of FTE's past Daikatana's svcs
-#define svcdk_fte_stats		240		//[MAX_STATS longs][long pm_flags][byte pm_type]: the player's stats (Quake II's
-									//are shorts), its pmove's flags and type (Daikatana's, past Quake II's)
+#define svcdk_fte_stats		240		//[MAX_STATS longs][long pm_flags][byte pm_type][float max_speed]: the player's stats
+									//(Quake II's are shorts), its pmove's flags, type and speed (Daikatana's)
 #define svcdk_fte_entstate	241		//[short entnum][short DKX_ bits][the fields they say]: what of an entity's state
 									//Quake II's has no room for, as it changes (reliably, to everyone)
 

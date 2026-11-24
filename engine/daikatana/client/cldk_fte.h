@@ -75,11 +75,38 @@ typedef struct
 } cldk_icon_t;
 void		CLDKF_DrawIcons(float x, float y, float w, float h, int num, const cldk_icon_t *icons);
 
+//its player movement (the game's own pmove, dk_pmove.cpp), for FTE's client's prediction (cl_pred.c)
+typedef struct
+{
+	float			fraction, endpos[3], normal[3], dist;
+	int				allsolid, startsolid, contents, surfaceflags;
+	int				hit;		//an entity or the world
+} cldk_trace_t;
+typedef struct
+{
+	//its pmove_state_t (in and out)
+	int				pm_type;	//Quake II's (FTE's player state's)
+	short			origin[3], velocity[3];
+	unsigned short	pm_flags;
+	unsigned char	pm_time;
+	short			gravity, delta_angles[3];
+	//the command
+	unsigned char	msec, buttons, impulse, lightlevel;
+	short			angles[3], forwardmove, sidemove, upmove;
+	//out
+	float			viewangles[3], viewheight;
+	int				onground;
+	//the world
+	void			(*tracebox)(const float *start, const float *mins, const float *maxs, const float *end, cldk_trace_t *out);
+	int				(*pointcontents)(const float *point);	//Quake II's contents (its are those)
+} cldk_pmove_t;
+
 //the game's client code, for FTE's
 void		CLDK_ParseMessage(const unsigned char *data, int length);	//an svcq2dk_message's
 void		CLDK_DrawHUD(void);
 void		CLDK_AddScene(void);						//its effects, each frame, as entities are added
 void		CLDK_Reset(void);							//new connection, new level
+void		CLDK_Pmove(cldk_pmove_t *pm);				//its pmove, a command's
 
 #ifdef __cplusplus
 }

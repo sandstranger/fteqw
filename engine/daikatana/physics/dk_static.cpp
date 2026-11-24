@@ -223,3 +223,9 @@ void DLL_UnloadDLLs (void)
 void DumpStack (unsigned long)
 {
 }
+
+//FTE: an entity's max_speed (its pmove's), for fte/svdk_game.cpp, whose edict_t is the engine's (shorter) view
+float DKPH_EdictMaxSpeed(struct edict_s *e)
+{
+	return ((userEntity_t *)e)->max_speed;
+}

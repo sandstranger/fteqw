@@ -508,6 +508,7 @@ extern "C" void CLDK_ParseMessage(const unsigned char *data, int length)
 				dkstats[old] = MSG_ReadLong(&net_message);
 			cldk_pmflags = MSG_ReadLong(&net_message);
 			cldk_pmtype = MSG_ReadByte(&net_message);
+			cldk_maxspeed = MSG_ReadFloat(&net_message);
 			dkstatsvalid = !msg_badread;
 			break;
 		case svcdk_fte_entstate:	CLDK_ParseEntState();			break;

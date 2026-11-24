@@ -10,6 +10,7 @@ client/cl_pv.cpp
 client/cldk_models.cpp
 client/cldk_surfsprites.cpp
 client/cldk_icons.cpp
+client/cldk_pred.cpp
 client/cl_fx.cpp
 client/dk_beams.cpp
 client/dk_cl_curve.cpp

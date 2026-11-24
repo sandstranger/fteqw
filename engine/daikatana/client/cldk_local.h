@@ -31,6 +31,7 @@ const char	*CL_ConfigModelName(int modelindex);
 
 //its entities (cldk_ents.cpp)
 extern int	cldk_pmflags, cldk_pmtype;	//its pmove's, the server's (svcdk_fte_stats)
+extern float cldk_maxspeed;				//the player's, for its pmove (cldk_pred.cpp)
 void		CLDK_ParseEntState(void);	//svcdk_fte_entstate
 
 //the HUD (cl_hud.cpp)
