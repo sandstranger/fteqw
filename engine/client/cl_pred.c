@@ -314,8 +314,11 @@ void CLQ2_ClipMoveToEntities ( vec3_t start, vec3_t mins, vec3_t maxs, vec3_t en
 
 		if (trace.allsolid || trace.startsolid || trace.fraction < tr->fraction)
 		{
+			qboolean startsolid = tr->startsolid;	//once in solid, a nearer hit does not take us out of it
 			trace.ent = (struct edict_s *)ent;
 			*tr = trace;
+			if (startsolid)
+				tr->startsolid = true;
 		}
 	}
 }
@@ -405,10 +408,8 @@ static void CLQ2_PredictMovement (int seat)	//q2 doesn't support split clients.
 {
 	int			ack, current;
 	int			frame;
-	int			oldframe;
 	q2pmove_t	pm;
 	int			step;
-	int			oldz;
 	int			i;
 	q2player_state_t *ps = &cl.q2frame.seat[seat].playerstate;
 	playerview_t *pv = &cl.playerview[seat];
@@ -457,6 +458,8 @@ static void CLQ2_PredictMovement (int seat)	//q2 doesn't support split clients.
 	while (++ack < current)
 	{
 		frame = ack & (UPDATE_MASK);
+		if (!cl.outframes[frame].cmd[seat].msec)
+			continue;	//null entries move nothing (yquake2 skips them too)
 		CLQ2_UserCmdToQ2(&pm.cmd, &cl.outframes[frame].cmd[seat]);
 		Q2_Pmove (&pm);
 
@@ -471,13 +474,19 @@ static void CLQ2_PredictMovement (int seat)	//q2 doesn't support split clients.
 		Q2_Pmove (&pm);
 	}
 
-	oldframe = (ack-1) & (UPDATE_MASK);
-	oldz = cl_predictions[seat][oldframe].origin[2];
-	step = pm.s.origin[2] - oldz;
-	if (step > 63 && step < 160 && (pm.s.pm_flags & Q2PMF_ON_GROUND) )
+	/*
+	Stair smoothing, as yquake2 does it: the step is measured against what was RENDERED last, not against
+	the last command sent. Commands go out faster than frames are drawn, so a stair climbed inside a command
+	sent between two frames used to show a step of 0 and the view jumped. Only 8/12/16 unit steps (the
+	stairs Quake 2 maps are built from) while walking on the ground count, so a landing or a lift does not.
+	*/
+	step = pm.s.origin[2] - (int)(pv->predicted_origin[2]*8);
+	if (((step > 62 && step < 66) || (step > 94 && step < 98) || (step > 126 && step < 130))
+		&& (pm.s.velocity[0] || pm.s.velocity[1] || pm.s.velocity[2])
+		&& (pm.s.pm_flags & Q2PMF_ON_GROUND))
 	{
 		pv->predicted_step = step * 0.125;
-		pv->predicted_step_time = realtime;// - host_frametime;// * 0.5;
+		pv->predicted_step_time = realtime - host_frametime*0.5;	//yquake2: half a packet interval back
 	}
 
 	pv->onground = !!(pm.s.pm_flags & Q2PMF_ON_GROUND);

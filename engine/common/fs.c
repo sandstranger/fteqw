@@ -73,7 +73,10 @@ static char *vidfilenames[] =	//list of filenames to check to see if graphics st
 /*yay q2!*/
 #define Q2CFG "plug_load ffmpeg;plug_load bullet;plug_load openssl\n" "//schemes quake2\n" "set com_protocolversion "STRINGIFY(PROTOCOL_VERSION_Q2)"\nset v_gammainverted 1\nset com_parseutf8 0\ncom_gamedirnativecode 1\nset sv_bigcoords 0\nsv_port "STRINGIFY(PORT_Q2SERVER)" "STRINGIFY(PORT_Q2EXSERVER)"\ncl_defaultport "STRINGIFY(PORT_Q2SERVER)"\n"	\
 	"set r_replacemodels " IFMINIMAL("","md3 md5mesh")"\n"	\
-	"set r_glsl_emissive 0\n" /*work around the _glow textures not being meant to glow*/
+	"set r_glsl_emissive 0\n" /*work around the _glow textures not being meant to glow*/	\
+	/*yquake2's movement: 200 walking, doubled by running (cl_movespeedkey 2), and always run on as its yq2.cfg		\
+	  sets it. QW's 400 is past Quake 2's 300 speed cap, which left no way to walk (or step quietly).*/				\
+	"set cl_forwardspeed 200\nset cl_backspeed 200\nset cl_sidespeed 200\nset cl_upspeed 200\nset cl_run 1\n"
 /*Q3's ui doesn't like empty model/headmodel/handicap cvars, even if the gamecode copes*/
 #define Q3CFG "plug_load ffmpeg;plug_load bullet;plug_load openssl\n" "//schemes quake3\n" "set v_gammainverted 0\nset snd_ignorecueloops 1\nsetfl g_gametype 0 s\nset gl_clear 1\nset r_clearcolour 0 0 0\nset com_parseutf8 0\ngl_overbright "FORWEB("0","2")"\nseta model sarge\nseta headmodel sarge\nseta handicap 100\ncom_gamedirnativecode 1\nsv_port "STRINGIFY(PORT_Q3SERVER)"\ncl_defaultport "STRINGIFY(PORT_Q3SERVER)"\ncom_protocolversion 68\n"
 //#define RMQCFG "sv_bigcoords 1\n"

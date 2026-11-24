@@ -8339,23 +8339,27 @@ void CL_LinkViewModel(void)
 #ifdef Q2CLIENT
 	if (cls.protocol == CP_QUAKE2)
 	{
-		//generate root matrix..
-		VectorCopy(pv->simorg, r_refdef.weaponmatrix[3]);
-		AngleVectors(pv->simangles, r_refdef.weaponmatrix[0], r_refdef.weaponmatrix[1], r_refdef.weaponmatrix[2]);
+		vec3_t gunangles;
+		if (!pv->vm.oldmodel)
+			return;	//no gun, or CLQ2_AddViewWeapon declined to draw it
+
+		//generate root matrix: the view plus the gun's own offset and angles (yquake2's CL_AddViewWeapon)
+		VectorAdd(pv->simorg, pv->vm.q2offset, r_refdef.weaponmatrix[3]);
+		VectorAdd(pv->simangles, pv->vm.q2angles, gunangles);
+		AngleVectors(gunangles, r_refdef.weaponmatrix[0], r_refdef.weaponmatrix[1], r_refdef.weaponmatrix[2]);
 		VectorInverse(r_refdef.weaponmatrix[1]);
 		memcpy(r_refdef.weaponmatrix_bob, r_refdef.weaponmatrix, sizeof(r_refdef.weaponmatrix_bob));
 
 		V_ClearEntity(&ent);
 		ent.model = pv->vm.oldmodel;
 
+		//the server's gun frames, lerped by the frame's lerpfrac like every other entity
 		ent.framestate.g[FS_REG].frame[0] = pv->vm.prevframe;
 		ent.framestate.g[FS_REG].frame[1] = pv->vm.oldframe;
-		ent.framestate.g[FS_REG].frametime[0] = cl.time-pv->vm.lerptime;
-		ent.framestate.g[FS_REG].frametime[1] = cl.time-pv->vm.oldlerptime;
-		ent.framestate.g[FS_REG].lerpweight[0] = (cl.time - pv->vm.lerptime)*10;
-		ent.framestate.g[FS_REG].lerpweight[1] = 1 - ent.framestate.g[FS_REG].lerpweight[0];
+		ent.framestate.g[FS_REG].lerpweight[0] = pv->vm.q2lerp;
+		ent.framestate.g[FS_REG].lerpweight[1] = 1 - pv->vm.q2lerp;
 
-		ent.flags |= RF_WEAPONMODEL|RF_DEPTHHACK|RF_NOSHADOW;
+		ent.flags |= RF_WEAPONMODEL|RF_DEPTHHACK|RF_NOSHADOW|Q2RF_MINLIGHT;
 		if (pv->handedness == 1)
 			ent.flags |= RF_XFLIP;
 		else if (pv->handedness == 2)

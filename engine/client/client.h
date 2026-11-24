@@ -815,8 +815,9 @@ struct playerview_s
 	vec3_t predicted_origin;
 	vec3_t predicted_angles;
 	vec3_t prediction_error;
-	float predicted_step_time;
+	double predicted_step_time;	//realtime: a float loses the milliseconds after a few hours
 	float predicted_step;
+	int q2rdflags;				//the player state's rdflags (underwater, ir goggles)
 #endif
 
 	//temporary view kick from weapon firing, angles+origins
@@ -861,6 +862,11 @@ struct playerview_s
 		float frameduration;
 		int prevframe;
 		int oldframe;
+#ifdef Q2CLIENT
+		vec3_t q2offset;	//Quake 2: lerped gunoffset, world space, added to the view origin
+		vec3_t q2angles;	//Quake 2: lerped gunangles, added to the view angles
+		float q2lerp;		//Quake 2: weight of prevframe (the frame's lerpfrac); oldframe gets the rest
+#endif
 	} vm;
 
 	struct

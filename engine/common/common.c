@@ -1316,6 +1316,9 @@ int MSG_ReadSize16 (sizebuf_t *sb)
 	unsigned short ssolid = MSG_ReadShort();
 	if (ssolid == ES_SOLID_BSP)
 		return ssolid;
+	else if (!ssolid)
+		return ES_SOLID_NOT;	//MSG_WriteSize16 writes 0 for "not solid": decoded as a box it was an 0x0 slab
+								//down to 32 units below the origin, so corpses (Q2 sends solid 0) blocked prediction
 	else
 	{
 		int solid = (((ssolid>>7) & 0x1F8) - 32+32768)<<16;	/*up can be negative*/

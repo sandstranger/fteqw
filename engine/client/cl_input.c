@@ -1447,7 +1447,7 @@ static void CL_BaseMove (vec3_t moves, int pnum)
 	float fwdspeed = cl_forwardspeed.value;
 	float sidespeed = cl_sidespeed.value;
 	float backspeed = (*cl_backspeed.string?cl_backspeed.value:cl_forwardspeed.value);
-	float upspeed = (*cl_backspeed.string?cl_backspeed.value:cl_forwardspeed.value);
+	float upspeed = cl_upspeed.value;	//was a copy of the backspeed line: cl_upspeed was never read
 	float scale = 1;
 //
 // adjust for speed key
@@ -1965,6 +1965,12 @@ static void CL_AccumlateInput(int plnum, float frametime/*extra contribution*/, 
 	  being sent to the server", is derived from viewangles by CL_ClampPitch just
 	  above, and is identical to it with in_vraim 0.*/
 	CL_PushAngleSample(plnum, cl.playerview[plnum].aimangles);
+#ifdef Q2CLIENT
+	if (cls.protocol == CP_QUAKE2)
+		VectorCopy(cl.playerview[plnum].aimangles, resampled);	//yquake2 sends (and predicts with) the angles of now:
+																//the resampled ones lag a frame and the view yaw jittered
+	else
+#endif
 	CL_AngleAt(plnum, realtime - cmdlag*0.001, resampled);
 
 	for (i=0 ; i<3 ; i++)
@@ -3197,6 +3203,15 @@ void CL_SendCmd (double frametime, qboolean mainloop)
 	//	Con_Printf("%f\n", msecs);
 
 		wantfps = cl_netfps.value;
+#ifdef Q2CLIENT
+		/*
+		Quake 2's pmove counts its timers (landing, teleport, waterjump: pm_time) down by msec/8 per command,
+		but by at least 1, so commands shorter than 8 ms run those timers fast -- by 20-33% at the default
+		150 a second (6-7 ms each). yquake2 sends about 60 a second; so does this, for Quake 2.
+		*/
+		if (cls.protocol == CP_QUAKE2 && (wantfps <= 0 || wantfps > 60))
+			wantfps = 60;
+#endif
 
 		/*
 		==================================================================

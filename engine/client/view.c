@@ -1750,6 +1750,13 @@ void V_CalcRefdef (playerview_t *pv)
 	{
 		VectorCopy (pv->simorg, r_refdef.vieworg);
 		VectorCopy (pv->simangles, r_refdef.viewangles);
+		//as yquake2's V_RenderView: never let the eye sit exactly on a node line, a water plane can vanish
+		//when viewed from exactly on it. The protocol only has 1/8 unit precision, so add 1/16 on each axis.
+		r_refdef.vieworg[0] += 1.0/16;
+		r_refdef.vieworg[1] += 1.0/16;
+		r_refdef.vieworg[2] += 1.0/16;
+		//the server decides these (gl_rmain.c does not test contents for quake2): warp+fog, ir goggles
+		r_refdef.flags |= pv->q2rdflags & (RDF_UNDERWATER|Q2RDF_IRGOGGLES);
 		return;
 	}
 #endif

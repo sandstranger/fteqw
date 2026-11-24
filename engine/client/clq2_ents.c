@@ -90,6 +90,7 @@ typedef struct q2centity_s
 	entity_state_t	prev;			// will always be valid, but might just be a copy of current
 
 	int			serverframe;		// if not current, this ent isn't in the frame
+	int			serverframe_created;	// the frame it (re)appeared in: lasers lerp from the second one on (yquake2)
 
 	trailkey_t trailstate;
 	trailkey_t emitstate;
@@ -1238,6 +1239,7 @@ static void CLQ2_DeltaEntity (q2frame_t *frame, int newnum, entity_state_t *old,
 
 		// duplicate the current state so lerping doesn't hurt anything
 		ent->prev = *state;
+		ent->serverframe_created = cl.q2frame.serverframe;
 		if (state->u.q2.event == Q2EV_OTHER_TELEPORT)
 		{
 			VectorCopy (state->origin, ent->prev.origin);
@@ -2246,7 +2248,7 @@ static void CLQ2_AddPacketEntities (q2frame_t *frame)
 		else if (effects & Q2EF_ANIM_ALL)
 			ent.framestate.g[FS_REG].frame[0] = autoanim;
 		else if (effects & Q2EF_ANIM_ALLFAST)
-			ent.framestate.g[FS_REG].frame[0] = cl.time / 100;
+			ent.framestate.g[FS_REG].frame[0] = cl.time * 10;	//yquake2's cl.time/100 counts milliseconds: ten frames a second
 		else
 			ent.framestate.g[FS_REG].frame[0] = s1->frame;
 
@@ -2284,7 +2286,15 @@ static void CLQ2_AddPacketEntities (q2frame_t *frame)
 		ent.framestate.g[FS_REG].frame[1] = cent->prev.frame;
 		ent.framestate.g[FS_REG].lerpweight[0] = cl.lerpfrac;
 
-		if (renderfx & (Q2RF_FRAMELERP|Q2RF_BEAM))
+		if ((renderfx & Q2RF_BEAM) && cl.q2frame.serverframe - cent->serverframe_created >= 2)
+		{	//yquake2: a laser that has been there for two frames moves smoothly, both of its ends
+			for (i=0 ; i<3 ; i++)
+			{
+				ent.origin[i] = cent->prev.origin[i] + cl.lerpfrac * (cent->current.origin[i] - cent->prev.origin[i]);
+				ent.oldorigin[i] = cent->prev.u.q2.old_origin[i] + cl.lerpfrac * (cent->current.u.q2.old_origin[i] - cent->prev.u.q2.old_origin[i]);
+			}
+		}
+		else if (renderfx & (Q2RF_FRAMELERP|Q2RF_BEAM))
 		{	// step origin discretely, because the frames
 			// do the animation properly
 			VectorCopy (cent->current.origin, ent.origin);
@@ -2299,18 +2309,8 @@ static void CLQ2_AddPacketEntities (q2frame_t *frame)
 			}
 		}
 
-		if (ent.framestate.g[FS_REG].frame[0] != cent->oldframe)
-		{
-			ent.framestate.g[FS_REG].frame[1] = cent->oldframe;
-			ent.framestate.g[FS_REG].lerpweight[0] = 10*(cl.time - cent->oldframetime);	//anim rate is still 1ms... could guess at it, but urgh
-
-			if (ent.framestate.g[FS_REG].lerpweight[0] >= 1)
-			{
-				ent.framestate.g[FS_REG].lerpweight[0] = 1;
-				cent->oldframe = ent.framestate.g[FS_REG].frame[0];
-			}
-		}
-
+		//as yquake2: the previous server frame's frame, weighted by the frame's lerpfrac. A second clock used to
+		//take over whenever the frame changed, lerping over 100ms from when the change was SEEN.
 		ent.framestate.g[FS_REG].lerpweight[1] = 1-ent.framestate.g[FS_REG].lerpweight[0];
 
 		if (renderfx & Q2EXRF_FLARE)
@@ -2416,7 +2416,7 @@ static void CLQ2_AddPacketEntities (q2frame_t *frame)
 		}
 
 		// only used for black hole model right now, FIXME: do better
-		if (renderfx == RF_TRANSLUCENT)
+		if ((renderfx & RF_TRANSLUCENT) && !(renderfx & Q2RF_BEAM))	//yquake2 tests the bit: == missed any combination
 			ent.shaderRGBAf[3] = 0.70;
 		else if (s1->trans != 255)
 		{
@@ -2443,7 +2443,7 @@ static void CLQ2_AddPacketEntities (q2frame_t *frame)
 		else if (effects & Q2EF_SPINNINGLIGHTS)
 		{
 			ent.angles[0] = 0;
-			ent.angles[1] = anglemod(cl.time/2) + s1->angles[1];
+			ent.angles[1] = anglemod(cl.time*500) + s1->angles[1];	//yquake2's cl.time/2 is milliseconds: 500 degrees a second
 			ent.angles[2] = 180;
 			{
 				vec3_t forward;
@@ -2583,7 +2583,7 @@ static void CLQ2_AddPacketEntities (q2frame_t *frame)
 			}
 			// pmm
 			ent.flags = renderfx;
-			ent.shaderRGBAf[3] = 0.20;
+			ent.shaderRGBAf[3] = 0.30;	//yquake2's shell alpha
 			ent.shaderRGBAf[0] = (!!(renderfx & Q2RF_SHELL_RED));
 			ent.shaderRGBAf[1] = (!!(renderfx & Q2RF_SHELL_GREEN));
 			ent.shaderRGBAf[2] = (!!(renderfx & Q2RF_SHELL_BLUE));
@@ -2781,7 +2781,7 @@ static void CLQ2_AddPacketEntities (q2frame_t *frame)
 				{
 					float intensity;
 
-					intensity = 50 + (500 * (sin(cl.time/500.0) + 1.0));
+					intensity = 50 + (500 * (sin(cl.time*2.0) + 1.0));	//yquake2's sin(cl.time/500) counts milliseconds
 
 					// FIXME - check out this effect in rendition
 					V_AddLight (ent.keynum, ent.origin, intensity, -0.2, -0.2, -0.2);
@@ -2847,7 +2847,7 @@ CL_AddViewWeapon
 static void CLQ2_AddViewWeapon (int seat, q2player_state_t *ps, q2player_state_t *ops)
 {
 	playerview_t *pv = &cl.playerview[seat];
-	struct model_s *om = pv->vm.oldmodel;
+	int i;
 
 	pv->vm.oldmodel = NULL;
 
@@ -2858,32 +2858,25 @@ static void CLQ2_AddViewWeapon (int seat, q2player_state_t *ps, q2player_state_t
 	if (!Cam_DrawViewModel(pv))
 		return;
 
-	// don't draw gun if in wide angle view
-	if (ps->fov > 90 && !*scr_fov_viewmodel.string)
-		return;
+	//no wide angle check: yquake2 draws the gun at any fov (its cl_gun defaults to 2)
 
-	//generate root matrix..
-	VectorCopy(pv->simorg, r_refdef.weaponmatrix[3]);
-	AngleVectors(pv->simangles, r_refdef.weaponmatrix[0], r_refdef.weaponmatrix[1], r_refdef.weaponmatrix[2]);
-	VectorInverse(r_refdef.weaponmatrix[1]);
-	memcpy(r_refdef.weaponmatrix_bob, r_refdef.weaponmatrix, sizeof(r_refdef.weaponmatrix_bob));
-
-	if (om != cl.model_precache[ps->gunindex])
-	{
-		pv->vm.prevframe = pv->vm.oldframe = ps->gunframe;
-		pv->vm.lerptime = pv->vm.oldlerptime = cl.oldgametime;
-	}
 	pv->vm.oldmodel = cl.model_precache[ps->gunindex];
 	if (!pv->vm.oldmodel)
 		return;
 
-	if (ps->gunframe != pv->vm.prevframe)
+	/*
+	As yquake2's CL_AddViewWeapon: the gun shows the server's frames, lerped between the last two player
+	states like every other entity, and is placed at the view plus the gunoffset/gunangles the game sends
+	(the sway and the kick of firing). This used to lerp on its own 10 Hz clock from the time a frame
+	change was SEEN, and never applied gunoffset or gunangles at all. CL_LinkViewModel draws it.
+	*/
+	pv->vm.prevframe = ps->gunframe;
+	pv->vm.oldframe = ps->gunframe ? ops->gunframe : 0;	//frame 0: just changed weapons, nothing to lerp from
+	pv->vm.q2lerp = cl.lerpfrac;
+	for (i = 0; i < 3; i++)
 	{
-		pv->vm.oldframe = pv->vm.prevframe;
-		pv->vm.oldlerptime = pv->vm.lerptime;
-
-		pv->vm.prevframe = ps->gunframe;
-		pv->vm.lerptime = cl.time;
+		pv->vm.q2offset[i] = ops->gunoffset[i] + cl.lerpfrac * (ps->gunoffset[i] - ops->gunoffset[i]);
+		pv->vm.q2angles[i] = LerpAngle(ops->gunangles[i], ps->gunangles[i], cl.lerpfrac);
 	}
 }
 
@@ -2975,14 +2968,13 @@ void CLQ2_CalcViewValues (int seat)
 	pv->forcefov = ops->fov + lerp * (ps->fov - ops->fov);
 	pv->handedness = atoi(InfoBuf_ValueForKey(&cls.userinfo[seat], "hand"));
 
-	//do interpolate blend alpha, but only if the rgb didn't change
-	// don't interpolate blend color
+	// don't interpolate blend color (nor its alpha: yquake2 shows the server's blend as it is)
 	for (i=0 ; i<3 ; i++)
 		pv->screentint[i] = ps->blend[i];
-	if (ps->blend[0] == ops->blend[0] && ps->blend[1] == ops->blend[1] && ps->blend[2] == ops->blend[2] && (!ps->blend[3]) == (!ops->blend[3]))
-		pv->screentint[3] = (ops->blend[3] + lerp * (ps->blend[3]-ops->blend[3]))*gl_cshiftenabled.value;
-	else
-		pv->screentint[3] = ps->blend[3]*gl_cshiftenabled.value;
+	pv->screentint[3] = ps->blend[3]*gl_cshiftenabled.value;
+
+	//underwater warp and the ir goggles come from the server; V_CalcRefdef applies them
+	pv->q2rdflags = ps->rdflags;
 
 	// add the weapon
 	CLQ2_AddViewWeapon (seat, ps, ops);
