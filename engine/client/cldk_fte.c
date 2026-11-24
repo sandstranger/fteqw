@@ -30,7 +30,16 @@ qboolean CLDK_IsDaikatana(void)
 		return false;
 	if (!commands)
 	{	//its client's commands FTE hasn't
+		static const struct {const char *name, *value;} userinfo[] =
+		{	//and its userinfo cvars (cl_main.cpp's, its menus'), which its game reads (the player's model in
+			//deathmatch's from modelname: without, it had none, nor its weapon)
+			{"modelname", "models/global/m_hiro.dkm"}, {"skinname", "skins/hiro_bod_1.wal"}, {"skincolor", "0"},
+			{"character", "0"}, {"ctf_team", "0"}, {"dt_team", "0"}, {"dm_taunts", "1"}, {"cl_autowweaponswitch", "0"},
+		};
+		int i;
 		commands = true;
+		for (i = 0; i < countof(userinfo); i++)
+			Cvar_Get(userinfo[i].name, userinfo[i].value, CVAR_USERINFO|CVAR_ARCHIVE, "Daikatana");
 		if (!Cmd_Exists("menu_main_force"))
 			Cmd_AddCommand("menu_main_force", CLDK_MenuForce_f);
 		if (!Cmd_Exists("togglequickconsole"))
