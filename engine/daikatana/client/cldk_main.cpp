@@ -621,6 +621,7 @@ extern "C" void CLDK_ParseMessage(const unsigned char *data, int length)
 		case svc_nop:												break;
 		case svc_crosshair:			CL_ParseCrosshairMessage();		break;
 		case svc_scoreboard:		sb_ParseScoreboardMessage();	break;
+		case svc_disconnect:		CLDKF_AddCommand("disconnect\n");	return;	//(coop's COOP_DropClient)
 		case svc_end_of_game:		CL_InformClientTheEnd();		break;
 		case svc_ammo_count_update:	CL_ParseAmmoUpdate();			break;
 		case svc_sidekick_weapon_status: CL_ParseSidekickWeaponStatus(); break;
