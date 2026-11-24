@@ -44,6 +44,7 @@ static fq2::gclient_t		*shadowcl;		//and of its clients
 static int					shadowmax;
 static int					dkmaxclients;
 static bool					dklevelloaded;	//a level's been spawned (so the next needs the last's cleared away)
+static unsigned char		dkbegun[256];	//which clients the game's begun (only those does it disconnect)
 
 #define DKEDICT(i)		((edict_t *)((char *)dkge->edicts + (size_t)(i)*dkge->edict_size))
 #define DKNUM(e)		((int)(((char *)(e) - (char *)dkge->edicts) / dkge->edict_size))
@@ -522,8 +523,17 @@ static float DK_Attenuation(float dist_min, float dist_max)
 static void DKGI_StartSound(const CVector &origin, edict_t *ent, int channel, int soundindex, float volume, float dist_min, float dist_max, float timeofs)
 {
 	float attn = DK_Attenuation(dist_min, dist_max);
+	//FTE stops on what's out of Quake II's range
 	if (volume > 1)
 		volume = 1;
+	if (!(volume >= 0))
+		volume = 0;
+	if (!(timeofs >= 0))
+		timeofs = 0;
+	if (timeofs > 0.255f)
+		timeofs = 0.255f;
+	if (soundindex <= 0)
+		return;
 	if (ent && !origin.x && !origin.y && !origin.z)
 		fgi->sound(DK_ToShadow(ent), channel & 7, soundindex, volume, attn, timeofs);
 	else
@@ -1398,6 +1408,7 @@ static void FQ2_VARGS DK3_SpawnEntities(const char *mapname, const char *entstri
 			fgi->error("Daikatana: maxentities can't change in a game");
 	}
 	dklevelloaded = true;
+	memset(dkbegun, 0, sizeof(dkbegun));	//they begin again in the new level
 	DK_FramesClear();
 
 	snprintf(map, sizeof(map), "%s", mapname);
@@ -1426,8 +1437,11 @@ static fq2::qboolean FQ2_VARGS DK3_ClientConnect(fq2::edict_t *ent, char *userin
 }
 static void FQ2_VARGS DK3_ClientBegin(fq2::edict_t *ent)
 {
+	int n = SHADOWNUM(ent);
 	DK_PreCall();
 	dkge->ClientBegin(DK_FromShadow(ent), false);
+	if (n > 0 && n < 256)
+		dkbegun[n] = true;
 	DK_SyncAll();
 }
 static void FQ2_VARGS DK3_ClientUserinfoChanged(fq2::edict_t *ent, char *userinfo)
@@ -1438,6 +1452,11 @@ static void FQ2_VARGS DK3_ClientUserinfoChanged(fq2::edict_t *ent, char *userinf
 }
 static void FQ2_VARGS DK3_ClientDisconnect(fq2::edict_t *ent)
 {
+	int n = SHADOWNUM(ent);
+	//its engine only told the game of clients that had begun (spawned): before that they've no hook
+	if (n <= 0 || n >= 256 || !dkbegun[n])
+		return;
+	dkbegun[n] = false;
 	DK_PreCall();
 	dkge->ClientDisconnect(DK_FromShadow(ent));
 	DK_SyncAll();
@@ -1454,6 +1473,60 @@ static void FQ2_VARGS DK3_ClientCommand(fq2::edict_t *ent)
 			DK_SyncAll();
 			return;
 		}
+	if (!strcasecmp(cmd, "dkents"))
+	{	//debugging: what the game has, to dkents.txt in the working directory (too much to print to a client)
+		int i;
+		const char *filter = fgi->argv(1);
+		FILE *f = fopen("dkents.txt", "a");
+		if (!f)
+			return;
+		fprintf(f, "---- dkents %s\n", filter);
+		for (i = 0; i < dkge->num_edicts && i < shadowmax; i++)
+		{
+			edict_t *de = DKEDICT(i);
+			if (!de->inuse)
+				continue;
+			if (*filter && (!de->className || !strstr(de->className, filter)))
+				continue;
+			fprintf(f, "%4i %-24s %6.0f %6.0f %6.0f model %3i:%-32s frame %3i rf %08x ef %08x sv %x solid %i\n", i,
+				de->className?de->className:"?", de->s.origin.x, de->s.origin.y, de->s.origin.z,
+				de->s.modelindex, DKGI_GetConfigString(CS_MODELS+de->s.modelindex), de->s.frame,
+				de->s.renderfx, de->s.effects, de->svflags, de->solid);
+		}
+		fclose(f);
+		return;
+	}
+	if (!strcasecmp(cmd, "setpos") && fgi->argc() >= 4)
+	{	//the game's own is in its debug builds only
+		cvar_t *cheats = DKGI_cvar("sv_cheats", "0", 0);
+		edict_t *de = DK_FromShadow(ent);
+		int k;
+		if (!cheats || !cheats->value || !de || !de->client)
+		{
+			fgi->cprintf(ent, PRINT_HIGH, "setpos needs sv_cheats\n");
+			return;
+		}
+		for (k = 0; k < 3; k++)
+		{
+			de->s.origin[k] = atof(fgi->argv(1+k));
+			de->client->ps.pmove.origin[k] = (short)(de->s.origin[k]*8);
+			de->client->ps.pmove.velocity[k] = 0;
+		}
+		de->s.old_origin = de->s.origin;
+		if (fgi->argc() >= 7)
+		{	//the view: the client's angles stay as they are, the delta goes round to these
+			for (k = 0; k < 3; k++)
+			{
+				short want = (short)(atof(fgi->argv(4+k))*65536/360);
+				short cmdangle = (short)(((int)(de->client->ps.viewangles[k]*65536/360)) - de->client->ps.pmove.delta_angles[k]);
+				de->client->ps.pmove.delta_angles[k] = (short)(want - cmdangle);
+				de->client->ps.viewangles[k] = atof(fgi->argv(4+k));
+			}
+			de->s.angles.Set(0, de->client->ps.viewangles[1], 0);
+		}
+		DKGI_linkentity(de);
+		return;
+	}
 	fgi->cprintf(ent, PRINT_HIGH, "Unknown command \"%s\"\n", cmd);
 }
 static void FQ2_VARGS DK3_ClientThink(fq2::edict_t *ent, fq2::usercmd_t *cmd)
