@@ -352,10 +352,10 @@ void monster_blackprisoner (userEntity_t *self)
 ///////////////////////////////////////////////////////////////////////////////
 void world_ai_blackpris_register_func()
 {
-	gstate->RegisterFunc("blackpris_start_pain",blackpris_start_pain);
-	gstate->RegisterFunc("blackpris_start_die",blackpris_start_die);
+	gstate->RegisterFunc("blackpris_start_pain",(void*)blackpris_start_pain);
+	gstate->RegisterFunc("blackpris_start_die",(void*)blackpris_start_die);
 
-	gstate->RegisterFunc("blackpris_begin_attack",blackpris_begin_attack);
-	gstate->RegisterFunc("blackpris_attack",blackpris_attack);
-	gstate->RegisterFunc("blackpris_check_range",blackpris_check_range);
+	gstate->RegisterFunc("blackpris_begin_attack",(void*)blackpris_begin_attack);
+	gstate->RegisterFunc("blackpris_attack",(void*)blackpris_attack);
+	gstate->RegisterFunc("blackpris_check_range",(void*)blackpris_check_range);
 }

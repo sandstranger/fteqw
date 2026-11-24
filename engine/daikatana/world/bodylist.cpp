@@ -225,6 +225,6 @@ void bodylist_add (userEntity_t *self, float fadeTime)
 ///////////////////////////////////////////////////////////////////////////////
 void world_bodylist_register_func()
 {
-	gstate->RegisterFunc("bodylist_die",bodylist_die);
-	gstate->RegisterFunc("bodylist_fade",bodylist_fade);
+	gstate->RegisterFunc("bodylist_die",(void*)bodylist_die);
+	gstate->RegisterFunc("bodylist_fade",(void*)bodylist_fade);
 }

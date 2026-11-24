@@ -873,9 +873,9 @@ void monster_doombat( userEntity_t *self )
 ///////////////////////////////////////////////////////////////////////////////
 void world_ai_doombat_register_func()
 {
-	gstate->RegisterFunc("DOOMBAT_Touch",DOOMBAT_Touch);
-	gstate->RegisterFunc("DOOMBAT_Think",DOOMBAT_Think);
+	gstate->RegisterFunc("DOOMBAT_Touch",(void*)DOOMBAT_Touch);
+	gstate->RegisterFunc("DOOMBAT_Think",(void*)DOOMBAT_Think);
 
-	gstate->RegisterFunc("DOOMBAT_Begin_Attack",DOOMBAT_Begin_Attack);
-	gstate->RegisterFunc("DOOMBAT_Attack",DOOMBAT_Attack);
+	gstate->RegisterFunc("DOOMBAT_Begin_Attack",(void*)DOOMBAT_Begin_Attack);
+	gstate->RegisterFunc("DOOMBAT_Attack",(void*)DOOMBAT_Attack);
 }

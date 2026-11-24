@@ -488,8 +488,8 @@ void monster_rotworm( userEntity_t *self )
 ///////////////////////////////////////////////////////////////////////////////
 void world_ai_rotworm_register_func()
 {
-	gstate->RegisterFunc("rotworm_start_die",rotworm_start_die);
-	gstate->RegisterFunc("ROTWORM_Think",ROTWORM_Think);
-	gstate->RegisterFunc("rotworm_start_attack",rotworm_start_attack);
-	gstate->RegisterFunc("rotworm_attack",rotworm_attack);
+	gstate->RegisterFunc("rotworm_start_die",(void*)rotworm_start_die);
+	gstate->RegisterFunc("ROTWORM_Think",(void*)ROTWORM_Think);
+	gstate->RegisterFunc("rotworm_start_attack",(void*)rotworm_start_attack);
+	gstate->RegisterFunc("rotworm_attack",(void*)rotworm_attack);
 }

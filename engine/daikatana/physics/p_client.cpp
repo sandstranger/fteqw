@@ -64,7 +64,7 @@ void P_RunSyncFrame (edict_t *client);
 ///////////////////////////////////////////////////////////////////////////////
 // pmove doesn't need to know about passent and contentmask
 ///////////////////////////////////////////////////////////////////////////////
-trace_t	PM_TraceLine (CVector &start, CVector &end)
+trace_t	PM_TraceLine (const CVector &start, const CVector &end)
 {
 	trace_t		trace;
 	CVector		dir, move_dir, move;
@@ -84,10 +84,11 @@ trace_t	PM_TraceLine (CVector &start, CVector &end)
 		return	trace;
 	}
 
-	start.Multiply( -1.0f );
+	CVector pushdir = start;	//FTE: its own to turn round
+	pushdir.Multiply( -1.0f );
 
 	//	push off of our ground entity!
-	P_MomentumPush (push.client, groundEntity, start);
+	P_MomentumPush (push.client, groundEntity, pushdir);
 
 	//	only needs to be moved, no thinking!
 	P_RunEntity (groundEntity, false);
@@ -98,7 +99,7 @@ trace_t	PM_TraceLine (CVector &start, CVector &end)
 ///////////////////////////////////////////////////////////////////////////////
 // pmove doesn't need to know about passent and contentmask
 ///////////////////////////////////////////////////////////////////////////////
-trace_t	PM_TraceBox (CVector &start, CVector &mins, CVector &maxs, CVector &end)
+trace_t	PM_TraceBox (const CVector &start, const CVector &mins, const CVector &maxs, const CVector &end)
 {
 //.	trace_t		trace;
 //	int			pushes;
@@ -274,7 +275,7 @@ void	Client_SetViewEntity (userEntity_t *clientEntity, userEntity_t *viewEntity)
 //	turns camera mode on or off
 ///////////////////////////////////////////////////////////////////////////////
 
-void	Client_SetClientAngles (userEntity_t *ent, CVector &angle)
+void	Client_SetClientAngles (userEntity_t *ent, const CVector &angle)
 {
 	ent->client->fix_angles = angle;
 }

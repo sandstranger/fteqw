@@ -355,7 +355,7 @@ void monster_piperat( userEntity_t *self )
 ///////////////////////////////////////////////////////////////////////////////
 void world_ai_piperat_register_func()
 {
-	gstate->RegisterFunc("pipe_rat_begin_attack",pipe_rat_begin_attack);
-	gstate->RegisterFunc("pipe_rat_attack",pipe_rat_attack);
+	gstate->RegisterFunc("pipe_rat_begin_attack",(void*)pipe_rat_begin_attack);
+	gstate->RegisterFunc("pipe_rat_attack",(void*)pipe_rat_attack);
 }
 

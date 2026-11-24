@@ -482,11 +482,11 @@ void monster_sealgirl( userEntity_t *self )
 ///////////////////////////////////////////////////////////////////////////////
 void world_ai_sgirl_register_func()
 {
-	gstate->RegisterFunc("sealgirl_start_pain",sealgirl_start_pain);
-	gstate->RegisterFunc("sealgirl_start_die",sealgirl_start_die);
+	gstate->RegisterFunc("sealgirl_start_pain",(void*)sealgirl_start_pain);
+	gstate->RegisterFunc("sealgirl_start_die",(void*)sealgirl_start_die);
 
-	gstate->RegisterFunc("sealgirl_begin_attack",sealgirl_begin_attack);
-	gstate->RegisterFunc("sealgirl_ranged_attack",sealgirl_ranged_attack);
-	gstate->RegisterFunc("AI_SealGirlTakeCover",AI_SealGirlTakeCover);
-	gstate->RegisterFunc("sealgirl_chasing_attack",sealgirl_chasing_attack);
+	gstate->RegisterFunc("sealgirl_begin_attack",(void*)sealgirl_begin_attack);
+	gstate->RegisterFunc("sealgirl_ranged_attack",(void*)sealgirl_ranged_attack);
+	gstate->RegisterFunc("AI_SealGirlTakeCover",(void*)AI_SealGirlTakeCover);
+	gstate->RegisterFunc("sealgirl_chasing_attack",(void*)sealgirl_chasing_attack);
 }

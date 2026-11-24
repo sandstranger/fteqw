@@ -348,7 +348,7 @@ void Client_InitDefaultWeapon(userEntity_t* self)
 		// see if the spawnflags indicates that weapons should be given to the player...
 			else if (dm_instagib->value)
 	{
-		char *weap = NULL;
+		const char *weap = NULL;
 		int r = rand() % 2;
 		switch(gstate->episode)
 		{
@@ -359,7 +359,7 @@ void Client_InitDefaultWeapon(userEntity_t* self)
 		}
 		if (weap)
 		{
-			winfo = com->FindRegisteredWeapon(weap);
+			winfo = com->FindRegisteredWeapon((char *)weap);
 			if (winfo)
 			{
 				winfo->give_func(self, winfo->initialAmmo);

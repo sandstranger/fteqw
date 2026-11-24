@@ -1137,15 +1137,15 @@ void monster_cambot( userEntity_t *self )
 ///////////////////////////////////////////////////////////////////////////////
 void world_ai_cambot_register_func()
 {
-	gstate->RegisterFunc( "CAMBOT_Think", CAMBOT_Think );
-	gstate->RegisterFunc( "CAMBOT_ParseEpairs", CAMBOT_ParseEpairs );
-	gstate->RegisterFunc( "CAMBOT_FindNearPlayer", CAMBOT_FindNearPlayer );
-	gstate->RegisterFunc( "cambot_moveup", cambot_moveup);
-	gstate->RegisterFunc( "cambot_movedown", cambot_movedown);
-	gstate->RegisterFunc( "CAMBOT_SoundAlarm", CAMBOT_SoundAlarm);
-	gstate->RegisterFunc( "CAMBOT_StartFollowPlayer", CAMBOT_StartFollowPlayer);
-	gstate->RegisterFunc( "CAMBOT_FollowPlayer", CAMBOT_FollowPlayer);
-	gstate->RegisterFunc( "CAMBOT_StartPathFollow", CAMBOT_StartPathFollow);
-	gstate->RegisterFunc( "CAMBOT_PathFollow", CAMBOT_PathFollow);
-	gstate->RegisterFunc( "CAMBOT_StartPain", CAMBOT_StartPain);
+	gstate->RegisterFunc( "CAMBOT_Think", (void*)CAMBOT_Think );
+	gstate->RegisterFunc( "CAMBOT_ParseEpairs", (void*)CAMBOT_ParseEpairs );
+	gstate->RegisterFunc( "CAMBOT_FindNearPlayer", (void*)CAMBOT_FindNearPlayer );
+	gstate->RegisterFunc( "cambot_moveup", (void*)cambot_moveup);
+	gstate->RegisterFunc( "cambot_movedown", (void*)cambot_movedown);
+	gstate->RegisterFunc( "CAMBOT_SoundAlarm", (void*)CAMBOT_SoundAlarm);
+	gstate->RegisterFunc( "CAMBOT_StartFollowPlayer", (void*)CAMBOT_StartFollowPlayer);
+	gstate->RegisterFunc( "CAMBOT_FollowPlayer", (void*)CAMBOT_FollowPlayer);
+	gstate->RegisterFunc( "CAMBOT_StartPathFollow", (void*)CAMBOT_StartPathFollow);
+	gstate->RegisterFunc( "CAMBOT_PathFollow", (void*)CAMBOT_PathFollow);
+	gstate->RegisterFunc( "CAMBOT_StartPain", (void*)CAMBOT_StartPain);
 }

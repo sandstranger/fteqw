@@ -1029,12 +1029,12 @@ void monster_buboid( userEntity_t *self )
 ///////////////////////////////////////////////////////////////////////////////
 void world_ai_buboid_register_func()
 {
-	gstate->RegisterFunc("buboid_begin_attack",buboid_begin_attack);
-	gstate->RegisterFunc("buboid_attack",buboid_attack);
+	gstate->RegisterFunc("buboid_begin_attack",(void*)buboid_begin_attack);
+	gstate->RegisterFunc("buboid_attack",(void*)buboid_attack);
 
-	gstate->RegisterFunc("BUBOID_GetOutOfCoffinThink",BUBOID_GetOutOfCoffinThink);
-	gstate->RegisterFunc("buboid_start_pain",buboid_start_pain);
-	gstate->RegisterFunc("buboid_die_maybe",buboid_die_maybe);
-	gstate->RegisterFunc("Buboid_ParseEpairs",Buboid_ParseEpairs);
-	gstate->RegisterFunc("Buboid_Think",Buboid_Think);
+	gstate->RegisterFunc("BUBOID_GetOutOfCoffinThink",(void*)BUBOID_GetOutOfCoffinThink);
+	gstate->RegisterFunc("buboid_start_pain",(void*)buboid_start_pain);
+	gstate->RegisterFunc("buboid_die_maybe",(void*)buboid_die_maybe);
+	gstate->RegisterFunc("Buboid_ParseEpairs",(void*)Buboid_ParseEpairs);
+	gstate->RegisterFunc("Buboid_Think",(void*)Buboid_Think);
 }

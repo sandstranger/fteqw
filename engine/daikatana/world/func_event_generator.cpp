@@ -404,11 +404,11 @@ void func_event_generator( userEntity_t *self )
 ///////////////////////////////////////////////////////////////////////////////
 void world_func_event_generator_register_func()
 {
-	gstate->RegisterFunc("func_event_generator_touch",func_event_generator_touch);
-	gstate->RegisterFunc("func_event_generator_think",func_event_generator_think);
-	gstate->RegisterFunc("func_event_generator_use",func_event_generator_use);
-	gstate->RegisterFunc("func_event_generator", func_event_generator );
+	gstate->RegisterFunc("func_event_generator_touch",(void*)func_event_generator_touch);
+	gstate->RegisterFunc("func_event_generator_think",(void*)func_event_generator_think);
+	gstate->RegisterFunc("func_event_generator_use",(void*)func_event_generator_use);
+	gstate->RegisterFunc("func_event_generator", (void*)func_event_generator );
 
-	gstate->RegisterFunc( "event_generator_hook_save", event_generator_hook_save );
-	gstate->RegisterFunc( "event_generator_hook_load", event_generator_hook_load );
+	gstate->RegisterFunc( "event_generator_hook_save", (void*)event_generator_hook_save );
+	gstate->RegisterFunc( "event_generator_hook_load", (void*)event_generator_hook_load );
 }

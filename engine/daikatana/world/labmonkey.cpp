@@ -662,8 +662,8 @@ void monster_labmonkey (userEntity_t *self)
 ///////////////////////////////////////////////////////////////////////////////
 void world_ai_labmonkey_register_func()
 {
-	gstate->RegisterFunc("monkey_begin_attack",monkey_begin_attack);
-	gstate->RegisterFunc("monkey_attack",monkey_attack);
-	gstate->RegisterFunc("monkey_start_pain",monkey_start_pain);
-	gstate->RegisterFunc("LABMONKEY_Activate",LABMONKEY_Activate);// NSS[3/9/00]:
+	gstate->RegisterFunc("monkey_begin_attack",(void*)monkey_begin_attack);
+	gstate->RegisterFunc("monkey_attack",(void*)monkey_attack);
+	gstate->RegisterFunc("monkey_start_pain",(void*)monkey_start_pain);
+	gstate->RegisterFunc("LABMONKEY_Activate",(void*)LABMONKEY_Activate);// NSS[3/9/00]:
 }

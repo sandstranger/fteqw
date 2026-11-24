@@ -454,10 +454,10 @@ void monster_knight1( userEntity_t *self )
 ///////////////////////////////////////////////////////////////////////////////
 void world_ai_paladin_register_func()
 {
-	gstate->RegisterFunc("knight1_check_range",knight1_check_range);
-	gstate->RegisterFunc("knight1_begin_attack",knight1_begin_attack);
-	gstate->RegisterFunc("knight1_attack",knight1_attack);
-	gstate->RegisterFunc("Knight1_ParseEpairs",Knight1_ParseEpairs);
+	gstate->RegisterFunc("knight1_check_range",(void*)knight1_check_range);
+	gstate->RegisterFunc("knight1_begin_attack",(void*)knight1_begin_attack);
+	gstate->RegisterFunc("knight1_attack",(void*)knight1_attack);
+	gstate->RegisterFunc("Knight1_ParseEpairs",(void*)Knight1_ParseEpairs);
 }
 
 

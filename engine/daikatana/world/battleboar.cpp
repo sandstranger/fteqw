@@ -351,11 +351,11 @@ void monster_battleboar( userEntity_t *self )
 ///////////////////////////////////////////////////////////////////////////////
 void world_ai_battleboar_register_func()
 {
-	gstate->RegisterFunc( "battleboar_start_pain", battleboar_start_pain );
-	gstate->RegisterFunc( "battleboar_start_die", battleboar_start_die );
+	gstate->RegisterFunc( "battleboar_start_pain", (void*)battleboar_start_pain );
+	gstate->RegisterFunc( "battleboar_start_die", (void*)battleboar_start_die );
 
-	gstate->RegisterFunc( "AI_ParseEpairs", AI_ParseEpairs );
+	gstate->RegisterFunc( "AI_ParseEpairs", (void*)AI_ParseEpairs );
 
-	gstate->RegisterFunc( "battleboar_begin_attack", battleboar_begin_attack );
-	gstate->RegisterFunc( "battleboar_ranged_attack", battleboar_ranged_attack );
+	gstate->RegisterFunc( "battleboar_begin_attack", (void*)battleboar_begin_attack );
+	gstate->RegisterFunc( "battleboar_ranged_attack", (void*)battleboar_ranged_attack );
 }

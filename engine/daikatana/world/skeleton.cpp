@@ -351,10 +351,10 @@ void monster_skeleton(userEntity_t *self)
 ///////////////////////////////////////////////////////////////////////////////
 void world_ai_skeleton_register_func()
 {
-	gstate->RegisterFunc("skeleton_start_pain",skeleton_start_pain);
-	gstate->RegisterFunc("skeleton_start_die",skeleton_start_die);
+	gstate->RegisterFunc("skeleton_start_pain",(void*)skeleton_start_pain);
+	gstate->RegisterFunc("skeleton_start_die",(void*)skeleton_start_die);
 
-	gstate->RegisterFunc("skel_begin_attack",skel_begin_attack);
-	gstate->RegisterFunc("skel_attack",skel_attack);
-	gstate->RegisterFunc("skel_check_range",skel_check_range);
+	gstate->RegisterFunc("skel_begin_attack",(void*)skel_begin_attack);
+	gstate->RegisterFunc("skel_attack",(void*)skel_attack);
+	gstate->RegisterFunc("skel_check_range",(void*)skel_check_range);
 }

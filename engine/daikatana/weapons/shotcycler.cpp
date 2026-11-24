@@ -514,9 +514,9 @@ void ammo_shells (userEntity_t *self)
 ///////////////////////////////////////////////////////////////////////////////
 void weapon_shotcycler_register_func()
 {
-	gstate->RegisterFunc("shotcyclershootThink",shootThink);
-	gstate->RegisterFunc("shotcyclerremove_controller",remove_controller);
-	gstate->RegisterFunc("shotcyclerUse",shotcyclerUse);
-	gstate->RegisterFunc("shotcyclerGive",shotcyclerGive);
-	gstate->RegisterFunc("shotcyclerSelect",shotcyclerSelect);
+	gstate->RegisterFunc("shotcyclershootThink",(void*)shootThink);
+	gstate->RegisterFunc("shotcyclerremove_controller",(void*)remove_controller);
+	gstate->RegisterFunc("shotcyclerUse",(void*)shotcyclerUse);
+	gstate->RegisterFunc("shotcyclerGive",(void*)shotcyclerGive);
+	gstate->RegisterFunc("shotcyclerSelect",(void*)shotcyclerSelect);
 }

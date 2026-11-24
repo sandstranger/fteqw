@@ -3112,7 +3112,7 @@ void worldspawn (userEntity_t *self)
 	self->prethink = worldspawn_prethink;
 
 	// add prethink to function list
-	gstate->RegisterFunc("worldspawn_prethink",worldspawn_prethink);
+	gstate->RegisterFunc("worldspawn_prethink",(void*)worldspawn_prethink);
 
 	ACTION_Start();
 }
@@ -3235,11 +3235,11 @@ void coop_register_func();
 void	world_register_funcs()
 {
 	// register all of the callback functions for world.dll
-	gstate->RegisterFunc("Client_PreThink",Client_PreThink);
-	gstate->RegisterFunc("Client_PostThink",Client_PostThink);
-	gstate->RegisterFunc("Client_Pain",Client_Pain);
-	gstate->RegisterFunc("Client_Die",Client_Die);
-	gstate->RegisterFunc("restore_timeout",restore_timeout);
+	gstate->RegisterFunc("Client_PreThink",(void*)Client_PreThink);
+	gstate->RegisterFunc("Client_PostThink",(void*)Client_PostThink);
+	gstate->RegisterFunc("Client_Pain",(void*)Client_Pain);
+	gstate->RegisterFunc("Client_Die",(void*)Client_Die);
+	gstate->RegisterFunc("restore_timeout",(void*)restore_timeout);
 
 	target_register_func();		// target.cpp
 	misc_register_func();		// misc.cpp

@@ -1457,11 +1457,11 @@ void monster_harpy( userEntity_t *self )
 ///////////////////////////////////////////////////////////////////////////////
 void world_ai_harpy_register_func()
 {
-	gstate->RegisterFunc("HARPY_Think",HARPY_Think);
-	gstate->RegisterFunc("HARPY_Start_Pain",HARPY_Start_Pain);
-	gstate->RegisterFunc("HARPY_Start_Die",HARPY_Start_Die);
+	gstate->RegisterFunc("HARPY_Think",(void*)HARPY_Think);
+	gstate->RegisterFunc("HARPY_Start_Pain",(void*)HARPY_Start_Pain);
+	gstate->RegisterFunc("HARPY_Start_Die",(void*)HARPY_Start_Die);
 
-	gstate->RegisterFunc("HARPY_Begin_Attack",HARPY_Begin_Attack);
-	gstate->RegisterFunc("HARPY_Attack",HARPY_Attack);
+	gstate->RegisterFunc("HARPY_Begin_Attack",(void*)HARPY_Begin_Attack);
+	gstate->RegisterFunc("HARPY_Attack",(void*)HARPY_Attack);
 
 }

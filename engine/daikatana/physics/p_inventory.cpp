@@ -873,8 +873,8 @@ void P_WriteItem(void **buf, userInventory_t *item, int index)
 			fwrite(item->name,sizeof(char),size,f);
 		}
 
-		P_WriteFunc(f,item->use,"item_use");
-		P_WriteFunc(f,item->command,"item_command");
+		P_WriteFunc(f,(void*)item->use,"item_use");
+		P_WriteFunc(f,(void*)item->command,"item_command");
 //		fwrite(&item->modelIndex,sizeof(int),1,f);
 		fwrite(item->modelName,sizeof(item->modelName),1,f);
 		fwrite(&item->flags,sizeof(unsigned long),1,f);
@@ -897,8 +897,8 @@ void P_WriteItem(void **buf, userInventory_t *item, int index)
 
 		save->valid = 1;
 		Com_sprintf(save->name,sizeof(save->name),item->name);
-		save->use = P_GetIndexForFunc(item->use);
-		save->command = P_GetIndexForFunc(item->command);
+		save->use = P_GetIndexForFunc((void*)item->use);
+		save->command = P_GetIndexForFunc((void*)item->command);
 		strcpy(save->model,item->modelName);
 		save->flags = item->flags;
 
@@ -1101,8 +1101,8 @@ void P_WriteItem(FILE *f, userInventory_t *item)
 		fwrite(item->name,sizeof(char),size,f);
 	}
 
-	P_WriteFunc(f,item->use,"item_use");
-	P_WriteFunc(f,item->command,"item_command");
+	P_WriteFunc(f,(void*)item->use,"item_use");
+	P_WriteFunc(f,(void*)item->command,"item_command");
 	fwrite(&item->modelIndex,sizeof(int),1,f);
 	fwrite(&item->flags,sizeof(unsigned long),1,f);
 

@@ -627,8 +627,8 @@ void daikatana_think(userEntity_t *self)
 ///////////////////////////////////////////////////////////////////////////////
 void weapon_daikatana_register_func()
 {
-	gstate->RegisterFunc("dk_meleeThink",daikatana_think);
-	gstate->RegisterFunc("dk_meleeuse",daikatana_use);
+	gstate->RegisterFunc("dk_meleeThink",(void*)daikatana_think);
+	gstate->RegisterFunc("dk_meleeuse",(void*)daikatana_use);
 }
 
 //---------------------------------------------------------------------------

@@ -489,10 +489,10 @@ void monster_dragon( userEntity_t *self )
 ///////////////////////////////////////////////////////////////////////////////
 void world_ai_dragon_register_func()
 {
-	gstate->RegisterFunc("DRAGON_Think",DRAGON_Think);
-	gstate->RegisterFunc("DRAGON_ParseEpairs",DRAGON_ParseEpairs);
-	gstate->RegisterFunc("DRAGON_BeginAttack",DRAGON_BeginAttack);
-	gstate->RegisterFunc("DRAGON_Attack",DRAGON_Attack);
+	gstate->RegisterFunc("DRAGON_Think",(void*)DRAGON_Think);
+	gstate->RegisterFunc("DRAGON_ParseEpairs",(void*)DRAGON_ParseEpairs);
+	gstate->RegisterFunc("DRAGON_BeginAttack",(void*)DRAGON_BeginAttack);
+	gstate->RegisterFunc("DRAGON_Attack",(void*)DRAGON_Attack);
 }
 
 

@@ -159,7 +159,7 @@ void e_seagull( userEntity_t *self )
 ///////////////////////////////////////////////////////////////////////////////
 void world_ai_seagull_register_func()
 {
-	gstate->RegisterFunc("SEAGULL_Think",SEAGULL_Think);
+	gstate->RegisterFunc("SEAGULL_Think",(void*)SEAGULL_Think);
 	// SCG[2/2/00]: Redundant.  This function is registered in func2.cpp
-//	gstate->RegisterFunc("AI_ParseEpairs2",AI_ParseEpairs2);
+//	gstate->RegisterFunc("AI_ParseEpairs2",(void*)AI_ParseEpairs2);
 }

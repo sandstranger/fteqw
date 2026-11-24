@@ -560,11 +560,11 @@ void monster_knight2(userEntity_t *self)
 ///////////////////////////////////////////////////////////////////////////////
 void world_ai_valkyrie_register_func()
 {
-	gstate->RegisterFunc("knight2_begin_attack",knight2_begin_attack);
-	gstate->RegisterFunc("knight2_attack",knight2_attack);
-	gstate->RegisterFunc("AI_Knight2TakeCover",AI_Knight2TakeCover);
-	gstate->RegisterFunc("knight2_check_range",knight2_check_range);
-	gstate->RegisterFunc("knight2_start_pain",knight2_start_pain);
-	gstate->RegisterFunc("knight2_start_die",knight2_start_die);
-	gstate->RegisterFunc("Knight2_ParseEpairs",Knight2_ParseEpairs);
+	gstate->RegisterFunc("knight2_begin_attack",(void*)knight2_begin_attack);
+	gstate->RegisterFunc("knight2_attack",(void*)knight2_attack);
+	gstate->RegisterFunc("AI_Knight2TakeCover",(void*)AI_Knight2TakeCover);
+	gstate->RegisterFunc("knight2_check_range",(void*)knight2_check_range);
+	gstate->RegisterFunc("knight2_start_pain",(void*)knight2_start_pain);
+	gstate->RegisterFunc("knight2_start_die",(void*)knight2_start_die);
+	gstate->RegisterFunc("Knight2_ParseEpairs",(void*)Knight2_ParseEpairs);
 }

@@ -631,8 +631,8 @@ void monster_deathsphere( userEntity_t *self )
 
 void world_ai_deathsphere_register_func()
 {
-	gstate->RegisterFunc( "deathsphere_begin_attack", deathsphere_begin_attack );
-	gstate->RegisterFunc( "deathsphere_attack", deathsphere_attack );
-	gstate->RegisterFunc( "DEATHSPHERE_ParseEpairs", DEATHSPHERE_ParseEpairs );
-	gstate->RegisterFunc( "DEATHSPHERE_Think", DEATHSPHERE_Think );
+	gstate->RegisterFunc( "deathsphere_begin_attack", (void*)deathsphere_begin_attack );
+	gstate->RegisterFunc( "deathsphere_attack", (void*)deathsphere_attack );
+	gstate->RegisterFunc( "DEATHSPHERE_ParseEpairs", (void*)DEATHSPHERE_ParseEpairs );
+	gstate->RegisterFunc( "DEATHSPHERE_Think", (void*)DEATHSPHERE_Think );
 }

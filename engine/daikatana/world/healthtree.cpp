@@ -473,12 +473,12 @@ void misc_drugbox(userEntity_t *self)
 void world_healthtree_register_func()
 {
 	// NSS[1/15/00]:
-	gstate->RegisterFunc("misc_drugbox_fade",misc_drugbox_fade);
-	gstate->RegisterFunc("misc_drugbox_use",misc_drugbox_use);
-	gstate->RegisterFunc("misc_drugbox_fade",misc_drugbox_fade);
+	gstate->RegisterFunc("misc_drugbox_fade",(void*)misc_drugbox_fade);
+	gstate->RegisterFunc("misc_drugbox_use",(void*)misc_drugbox_use);
+	gstate->RegisterFunc("misc_drugbox_fade",(void*)misc_drugbox_fade);
 
-	gstate->RegisterFunc("misc_healthtree_think",misc_healthtree_think);
-	gstate->RegisterFunc("misc_healthtree_use",misc_healthtree_use);
-	gstate->RegisterFunc("health_tree_hook_save",health_tree_hook_save);
-	gstate->RegisterFunc("health_tree_hook_load",health_tree_hook_load);
+	gstate->RegisterFunc("misc_healthtree_think",(void*)misc_healthtree_think);
+	gstate->RegisterFunc("misc_healthtree_use",(void*)misc_healthtree_use);
+	gstate->RegisterFunc("health_tree_hook_save",(void*)health_tree_hook_save);
+	gstate->RegisterFunc("health_tree_hook_load",(void*)health_tree_hook_load);
 }

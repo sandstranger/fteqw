@@ -585,9 +585,9 @@ void weapon_hammer(userEntity_t *self)
 ///////////////////////////////////////////////////////////////////////////////
 void weapon_hammer_register_func()
 {
-	gstate->RegisterFunc("hammerThink",hammerThink);
-	gstate->RegisterFunc("hammerdoEarthquake",doEarthquake);
-	gstate->RegisterFunc("hammerUse",hammerUse);
-	gstate->RegisterFunc("hammerGive",hammerGive);
-	gstate->RegisterFunc("hammerSelect",hammerSelect);
+	gstate->RegisterFunc("hammerThink",(void*)hammerThink);
+	gstate->RegisterFunc("hammerdoEarthquake",(void*)doEarthquake);
+	gstate->RegisterFunc("hammerUse",(void*)hammerUse);
+	gstate->RegisterFunc("hammerGive",(void*)hammerGive);
+	gstate->RegisterFunc("hammerSelect",(void*)hammerSelect);
 }

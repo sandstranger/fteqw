@@ -1047,15 +1047,15 @@ void effect_steam (userEntity_t *self)
 ///////////////////////////////////////////////////////////////////////////////
 void world_effects_register_func()
 {
-	gstate->RegisterFunc("effect_bolt_think",effect_bolt_think);
-	gstate->RegisterFunc("effect_lightning_think",effect_lightning_think);
-	gstate->RegisterFunc("effect_lightning_start",effect_lightning_start);
-	gstate->RegisterFunc("effect_lightning_use",effect_lightning_use);
-	gstate->RegisterFunc( "lightning_effect_hook_save", lightning_effect_hook_save );
-	gstate->RegisterFunc( "lightning_effect_hook_load", lightning_effect_hook_load );
-	gstate->RegisterFunc( "effect_entity_hook_save", effect_entity_hook_save );
-	gstate->RegisterFunc( "effect_entity_hook_load", effect_entity_hook_load );
-	gstate->RegisterFunc( "steam_effect_hook_save", steam_effect_hook_save );
-	gstate->RegisterFunc( "steam_effect_hook_load", steam_effect_hook_load );
+	gstate->RegisterFunc("effect_bolt_think",(void*)effect_bolt_think);
+	gstate->RegisterFunc("effect_lightning_think",(void*)effect_lightning_think);
+	gstate->RegisterFunc("effect_lightning_start",(void*)effect_lightning_start);
+	gstate->RegisterFunc("effect_lightning_use",(void*)effect_lightning_use);
+	gstate->RegisterFunc( "lightning_effect_hook_save", (void*)lightning_effect_hook_save );
+	gstate->RegisterFunc( "lightning_effect_hook_load", (void*)lightning_effect_hook_load );
+	gstate->RegisterFunc( "effect_entity_hook_save", (void*)effect_entity_hook_save );
+	gstate->RegisterFunc( "effect_entity_hook_load", (void*)effect_entity_hook_load );
+	gstate->RegisterFunc( "steam_effect_hook_save", (void*)steam_effect_hook_save );
+	gstate->RegisterFunc( "steam_effect_hook_load", (void*)steam_effect_hook_load );
 }
 

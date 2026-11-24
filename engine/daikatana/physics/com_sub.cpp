@@ -31,8 +31,8 @@
 userEntity_t *FindRadius(userEntity_t *ent_from, CVector &origin, float radius);
 void *DLL_FindFunction(char *funcName);
 void com_ClientPrint (userEntity_t *self, char *msg);
-void com_Damage (userEntity_t *target, userEntity_t *inflictor, userEntity_t *attacker, CVector &point_of_impact, 
-				 CVector &damage_vec, float damage, unsigned long damage_flags);
+void com_Damage (userEntity_t *target, userEntity_t *inflictor, userEntity_t *attacker, const CVector &point_of_impact, 
+				 const CVector &damage_vec, float damage, unsigned long damage_flags);
 
 
 //////////////////////////////////////////////////////////////////////////////////////////
@@ -1058,7 +1058,7 @@ void com_FlashClient (userEntity_t *self, float amt, float r, float g, float b, 
 //
 ///////////////////////////////////////////////////////////////////////////////
 
-void com_SpawnBlood ( CVector &origin, CVector &normal, int damage, float health, int type)
+void com_SpawnBlood ( const CVector &origin, const CVector &normal, int damage, float health, int type)
 {
 
 //	if (type == TE_SPARKS)
@@ -1603,8 +1603,8 @@ qboolean com_CanHurt( userEntity_t *attacker, userEntity_t *target );
 void com_Damage ( userEntity_t *target, 
 				  userEntity_t *inflictor, 
 				  userEntity_t *attacker, 
-				  CVector &point_of_impact, 
-				  CVector &damage_vec, 
+				  const CVector &point_of_impact, 
+				  const CVector &damage_vec, 
 				  float damage, 
 				  unsigned long damage_flags )
 {

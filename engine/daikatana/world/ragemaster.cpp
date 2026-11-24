@@ -269,9 +269,9 @@ void monster_ragemaster (userEntity_t *self)
 ///////////////////////////////////////////////////////////////////////////////
 void world_ai_ragemaster_register_func()
 {
-	gstate->RegisterFunc("ragemaster_begin_attack",ragemaster_begin_attack);
-	gstate->RegisterFunc("ragemaster_attack",ragemaster_attack);
-	gstate->RegisterFunc("ragemaster_start_pain",ragemaster_start_pain);
-	gstate->RegisterFunc("AI_ParseEpairs",AI_ParseEpairs);
+	gstate->RegisterFunc("ragemaster_begin_attack",(void*)ragemaster_begin_attack);
+	gstate->RegisterFunc("ragemaster_attack",(void*)ragemaster_attack);
+	gstate->RegisterFunc("ragemaster_start_pain",(void*)ragemaster_start_pain);
+	gstate->RegisterFunc("AI_ParseEpairs",(void*)AI_ParseEpairs);
 
 }

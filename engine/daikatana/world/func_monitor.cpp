@@ -451,10 +451,10 @@ void func_monitor (userEntity_t *self)
 
 void monitor_register_func()
 {
-	gstate->RegisterFunc("monitor_use",monitor_use);
-	gstate->RegisterFunc("monitor_find_target",monitor_find_target);
-	gstate->RegisterFunc("monitor_hook_save",monitor_hook_save);
-	gstate->RegisterFunc("monitor_hook_load",monitor_hook_load);
+	gstate->RegisterFunc("monitor_use",(void*)monitor_use);
+	gstate->RegisterFunc("monitor_find_target",(void*)monitor_find_target);
+	gstate->RegisterFunc("monitor_hook_save",(void*)monitor_hook_save);
+	gstate->RegisterFunc("monitor_hook_load",(void*)monitor_hook_load);
 }
 
 

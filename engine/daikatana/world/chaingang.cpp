@@ -1814,13 +1814,13 @@ void monster_chaingang( userEntity_t *self )
 ///////////////////////////////////////////////////////////////////////////////
 void world_ai_chaingang_register_func()
 {
-	gstate->RegisterFunc("CHAINGANG_Think",CHAINGANG_Think);
-	gstate->RegisterFunc("CHAINGANG_FX_Smoke1",CHAINGANG_FX_Smoke1);
-	gstate->RegisterFunc("CHAINGANG_FX_Light",CHAINGANG_FX_Light);
-	gstate->RegisterFunc("CHAINGANG_Think_Start",CHAINGANG_Think_Start);
-	gstate->RegisterFunc("CHAINGANG_ParseEpairs",CHAINGANG_ParseEpairs);
-	gstate->RegisterFunc("CHAINGANG_Start_Die",CHAINGANG_Start_Die);
+	gstate->RegisterFunc("CHAINGANG_Think",(void*)CHAINGANG_Think);
+	gstate->RegisterFunc("CHAINGANG_FX_Smoke1",(void*)CHAINGANG_FX_Smoke1);
+	gstate->RegisterFunc("CHAINGANG_FX_Light",(void*)CHAINGANG_FX_Light);
+	gstate->RegisterFunc("CHAINGANG_Think_Start",(void*)CHAINGANG_Think_Start);
+	gstate->RegisterFunc("CHAINGANG_ParseEpairs",(void*)CHAINGANG_ParseEpairs);
+	gstate->RegisterFunc("CHAINGANG_Start_Die",(void*)CHAINGANG_Start_Die);
 
-	gstate->RegisterFunc("CHAINGANG_Begin_Attack",CHAINGANG_Begin_Attack);
-	gstate->RegisterFunc("CHAINGANG_Attack",CHAINGANG_Attack);
+	gstate->RegisterFunc("CHAINGANG_Begin_Attack",(void*)CHAINGANG_Begin_Attack);
+	gstate->RegisterFunc("CHAINGANG_Attack",(void*)CHAINGANG_Attack);
 }

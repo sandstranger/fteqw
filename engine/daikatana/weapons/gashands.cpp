@@ -329,8 +329,8 @@ void weapon_gashands(userEntity_t *self)
 ///////////////////////////////////////////////////////////////////////////////
 void weapon_gashands_register_func()
 {
-	gstate->RegisterFunc("gashandsThink",gashandsThink);
-	gstate->RegisterFunc("gashandsUse",gashandsUse);
-	gstate->RegisterFunc("gashandsGive",gashandsGive);
-	gstate->RegisterFunc("gashandsSelect",gashandsSelect);
+	gstate->RegisterFunc("gashandsThink",(void*)gashandsThink);
+	gstate->RegisterFunc("gashandsUse",(void*)gashandsUse);
+	gstate->RegisterFunc("gashandsGive",(void*)gashandsGive);
+	gstate->RegisterFunc("gashandsSelect",(void*)gashandsSelect);
 }

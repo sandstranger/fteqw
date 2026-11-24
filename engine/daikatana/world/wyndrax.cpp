@@ -615,7 +615,7 @@ void monster_wyndrax( userEntity_t *self )
 ///////////////////////////////////////////////////////////////////////////////
 void world_ai_wyndrax_register_func()
 {
-	gstate->RegisterFunc("wyndrax_begin_attack",wyndrax_begin_attack);
-	gstate->RegisterFunc("wyndrax_attack",wyndrax_attack);
-	gstate->RegisterFunc("wyndrax_start_pain",wyndrax_start_pain);
+	gstate->RegisterFunc("wyndrax_begin_attack",(void*)wyndrax_begin_attack);
+	gstate->RegisterFunc("wyndrax_attack",(void*)wyndrax_attack);
+	gstate->RegisterFunc("wyndrax_start_pain",(void*)wyndrax_start_pain);
 }

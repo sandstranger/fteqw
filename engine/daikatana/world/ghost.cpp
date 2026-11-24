@@ -478,9 +478,9 @@ void	monster_ghost(userEntity_t *self)
 ///////////////////////////////////////////////////////////////////////////////
 void world_ai_ghost_register_func()
 {
-	gstate->RegisterFunc("Ghost_ParseEpairs",Ghost_ParseEpairs);
-	gstate->RegisterFunc("Ghost_Pain",Ghost_Pain);
-	gstate->RegisterFunc("Ghost_Attack",Ghost_Attack);
-	gstate->RegisterFunc("Ghost_Begin_Attack",Ghost_Begin_Attack);
-	gstate->RegisterFunc("Ghost_Think",Ghost_Think);
+	gstate->RegisterFunc("Ghost_ParseEpairs",(void*)Ghost_ParseEpairs);
+	gstate->RegisterFunc("Ghost_Pain",(void*)Ghost_Pain);
+	gstate->RegisterFunc("Ghost_Attack",(void*)Ghost_Attack);
+	gstate->RegisterFunc("Ghost_Begin_Attack",(void*)Ghost_Begin_Attack);
+	gstate->RegisterFunc("Ghost_Think",(void*)Ghost_Think);
 }

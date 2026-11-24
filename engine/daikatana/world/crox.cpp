@@ -356,9 +356,9 @@ void monster_crox( userEntity_t *self )
 ///////////////////////////////////////////////////////////////////////////////
 void world_ai_crox_register_func()
 {
-	gstate->RegisterFunc( "crox_start_die", crox_start_die );
-	gstate->RegisterFunc( "crox_begin_attack", crox_begin_attack );
-	gstate->RegisterFunc( "crox_attack", crox_attack );
-	gstate->RegisterFunc( "crox_parseEpairs", crox_parseEpairs );
-	gstate->RegisterFunc( "crox_think", crox_think );
+	gstate->RegisterFunc( "crox_start_die", (void*)crox_start_die );
+	gstate->RegisterFunc( "crox_begin_attack", (void*)crox_begin_attack );
+	gstate->RegisterFunc( "crox_attack", (void*)crox_attack );
+	gstate->RegisterFunc( "crox_parseEpairs", (void*)crox_parseEpairs );
+	gstate->RegisterFunc( "crox_think", (void*)crox_think );
 }

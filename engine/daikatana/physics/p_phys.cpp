@@ -1120,8 +1120,8 @@ p_float_pushentity_exit:
 }					
 
 
-void com_Damage (userEntity_t *target, userEntity_t *inflictor, userEntity_t *attacker, CVector &point_of_impact, 
-				 CVector &damage_vec, float damage, unsigned long damage_flags);
+void com_Damage (userEntity_t *target, userEntity_t *inflictor, userEntity_t *attacker, const CVector &point_of_impact, 
+				 const CVector &damage_vec, float damage, unsigned long damage_flags);
 ///////////////////////////////////////////////////////////////////////////////
 //	P_Push
 //
@@ -1378,8 +1378,9 @@ qboolean P_PushForceMove( edict_t *pusher, CVector &move, CVector &amove )
 	return true;
 }
 
-qboolean P_Push( edict_t *pusher, CVector &move, CVector &amove )
+qboolean P_Push( edict_t *pusher, const CVector &move_in, const CVector &amove_in )
 {
+	CVector move = move_in, amove = amove_in;	//FTE: its own (it rounds them)
 //	int			i, e;
 	int			e;
 	edict_t		*check, *block;

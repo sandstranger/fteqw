@@ -234,9 +234,9 @@ void monster_stavros( userEntity_t *self )
 ///////////////////////////////////////////////////////////////////////////////
 void world_ai_stavros_register_func()
 {
-	gstate->RegisterFunc("stavros_begin_attack",stavros_begin_attack);
-	gstate->RegisterFunc("stavros_attack",stavros_attack);
-	gstate->RegisterFunc("stavros_start_pain",stavros_start_pain);
-	gstate->RegisterFunc("stavros_think",stavros_think);
-	gstate->RegisterFunc("stavros_parseEpairs",stavros_parseEpairs);
+	gstate->RegisterFunc("stavros_begin_attack",(void*)stavros_begin_attack);
+	gstate->RegisterFunc("stavros_attack",(void*)stavros_attack);
+	gstate->RegisterFunc("stavros_start_pain",(void*)stavros_start_pain);
+	gstate->RegisterFunc("stavros_think",(void*)stavros_think);
+	gstate->RegisterFunc("stavros_parseEpairs",(void*)stavros_parseEpairs);
 }

@@ -823,12 +823,12 @@ void func_clock (userEntity_t *self)
 ///////////////////////////////////////////////////////////////////////////////
 void world_func_various_register_func()
 {
-	gstate->RegisterFunc("func_timer_think",func_timer_think);
-	gstate->RegisterFunc("func_dynalight_think",func_dynalight_think);
-	gstate->RegisterFunc("func_dynalight_start",func_dynalight_start);
-//	gstate->RegisterFunc("func_clock_think",func_clock_think);
-//	gstate->RegisterFunc("func_clock_use",func_clock_use);
-	gstate->RegisterFunc("timer_hook_save",timer_hook_save);
-	gstate->RegisterFunc("timer_hook_load",timer_hook_load);
-	gstate->RegisterFunc("func_timer_use",func_timer_use);
+	gstate->RegisterFunc("func_timer_think",(void*)func_timer_think);
+	gstate->RegisterFunc("func_dynalight_think",(void*)func_dynalight_think);
+	gstate->RegisterFunc("func_dynalight_start",(void*)func_dynalight_start);
+//	gstate->RegisterFunc("func_clock_think",(void*)func_clock_think);
+//	gstate->RegisterFunc("func_clock_use",(void*)func_clock_use);
+	gstate->RegisterFunc("timer_hook_save",(void*)timer_hook_save);
+	gstate->RegisterFunc("timer_hook_load",(void*)timer_hook_load);
+	gstate->RegisterFunc("func_timer_use",(void*)func_timer_use);
 }

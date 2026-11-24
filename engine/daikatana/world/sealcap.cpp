@@ -485,12 +485,12 @@ void monster_sealcaptain( userEntity_t *self )
 ///////////////////////////////////////////////////////////////////////////////
 void world_ai_sealcap_register_func()
 {
-	gstate->RegisterFunc("sealcaptain_start_pain",sealcaptain_start_pain);
-	gstate->RegisterFunc("sealcaptain_start_die",sealcaptain_start_die);
+	gstate->RegisterFunc("sealcaptain_start_pain",(void*)sealcaptain_start_pain);
+	gstate->RegisterFunc("sealcaptain_start_die",(void*)sealcaptain_start_die);
 
-	gstate->RegisterFunc("sealcaptain_begin_attack",sealcaptain_begin_attack);
-	gstate->RegisterFunc("sealcaptain_ranged_attack",sealcaptain_ranged_attack);
-	gstate->RegisterFunc("AI_SealCaptainTakeCover",AI_SealCaptainTakeCover);
-	gstate->RegisterFunc("sealcaptain_chasing_attack",sealcaptain_chasing_attack);
+	gstate->RegisterFunc("sealcaptain_begin_attack",(void*)sealcaptain_begin_attack);
+	gstate->RegisterFunc("sealcaptain_ranged_attack",(void*)sealcaptain_ranged_attack);
+	gstate->RegisterFunc("AI_SealCaptainTakeCover",(void*)AI_SealCaptainTakeCover);
+	gstate->RegisterFunc("sealcaptain_chasing_attack",(void*)sealcaptain_chasing_attack);
 }
 

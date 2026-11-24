@@ -461,10 +461,10 @@ void monster_thief(userEntity_t *self)
 ///////////////////////////////////////////////////////////////////////////////
 void world_ai_thief_register_func()
 {
-	gstate->RegisterFunc("thief_begin_attack",thief_begin_attack);
-	gstate->RegisterFunc("thief_attack",thief_attack);
-	gstate->RegisterFunc("AI_ThiefTakeCover",AI_ThiefTakeCover);
-	gstate->RegisterFunc("thief_check_range",thief_check_range);
-	gstate->RegisterFunc("thief_start_pain",thief_start_pain);
-	gstate->RegisterFunc("thief_start_die",thief_start_die);
+	gstate->RegisterFunc("thief_begin_attack",(void*)thief_begin_attack);
+	gstate->RegisterFunc("thief_attack",(void*)thief_attack);
+	gstate->RegisterFunc("AI_ThiefTakeCover",(void*)AI_ThiefTakeCover);
+	gstate->RegisterFunc("thief_check_range",(void*)thief_check_range);
+	gstate->RegisterFunc("thief_start_pain",(void*)thief_start_pain);
+	gstate->RegisterFunc("thief_start_die",(void*)thief_start_die);
 }

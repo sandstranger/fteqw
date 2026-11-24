@@ -898,9 +898,9 @@ void monster_medusa( userEntity_t *self )
 ///////////////////////////////////////////////////////////////////////////////
 void world_ai_medusa_register_func()
 {
-	gstate->RegisterFunc("medusa_start_attack",medusa_start_attack);
-	gstate->RegisterFunc("medusa_attack",medusa_attack);
-	gstate->RegisterFunc("medusa_check_range",medusa_check_range);
-	gstate->RegisterFunc("AI_TaskThink",AI_TaskThink);
+	gstate->RegisterFunc("medusa_start_attack",(void*)medusa_start_attack);
+	gstate->RegisterFunc("medusa_attack",(void*)medusa_attack);
+	gstate->RegisterFunc("medusa_check_range",(void*)medusa_check_range);
+	gstate->RegisterFunc("AI_TaskThink",(void*)AI_TaskThink);
 }
 

@@ -447,9 +447,9 @@ void monster_sludgeminion( userEntity_t *self )
 ///////////////////////////////////////////////////////////////////////////////
 void world_ai_sludgeminion_register_func()
 {
-	gstate->RegisterFunc("sludgeminion_start_pain",sludgeminion_start_pain);
-	gstate->RegisterFunc("sludge_begin_attack",sludge_begin_attack);
-	gstate->RegisterFunc("sludge_ranged_attack",sludge_ranged_attack);
-	gstate->RegisterFunc("sludge_start_idle",sludge_start_idle);
-	gstate->RegisterFunc("AI_ParseEpairs",AI_ParseEpairs);
+	gstate->RegisterFunc("sludgeminion_start_pain",(void*)sludgeminion_start_pain);
+	gstate->RegisterFunc("sludge_begin_attack",(void*)sludge_begin_attack);
+	gstate->RegisterFunc("sludge_ranged_attack",(void*)sludge_ranged_attack);
+	gstate->RegisterFunc("sludge_start_idle",(void*)sludge_start_idle);
+	gstate->RegisterFunc("AI_ParseEpairs",(void*)AI_ParseEpairs);
 }

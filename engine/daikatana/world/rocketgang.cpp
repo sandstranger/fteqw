@@ -432,10 +432,10 @@ void monster_rocketdude( userEntity_t *self )
 ///////////////////////////////////////////////////////////////////////////////
 void world_ai_rocketgang_register_func()
 {
-	gstate->RegisterFunc("rocketgang_start_pain",rocketgang_start_pain);
-	gstate->RegisterFunc("rocketgang_start_die",rocketgang_start_die);
+	gstate->RegisterFunc("rocketgang_start_pain",(void*)rocketgang_start_pain);
+	gstate->RegisterFunc("rocketgang_start_die",(void*)rocketgang_start_die);
 
-	gstate->RegisterFunc("rocketgang_begin_attack",rocketgang_begin_attack);
-	gstate->RegisterFunc("rocketgang_attack",rocketgang_attack);
-	gstate->RegisterFunc("AI_RocketGangTakeCover",AI_RocketGangTakeCover);
+	gstate->RegisterFunc("rocketgang_begin_attack",(void*)rocketgang_begin_attack);
+	gstate->RegisterFunc("rocketgang_attack",(void*)rocketgang_attack);
+	gstate->RegisterFunc("AI_RocketGangTakeCover",(void*)AI_RocketGangTakeCover);
 }

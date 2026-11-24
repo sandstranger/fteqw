@@ -515,7 +515,7 @@ void monster_nharre( userEntity_t *self )
 ///////////////////////////////////////////////////////////////////////////////
 void world_ai_nharre_register_func()
 {
-	gstate->RegisterFunc("nharre_start_pain",nharre_start_pain);
-	gstate->RegisterFunc("nharre_begin_attack",nharre_begin_attack);
-	gstate->RegisterFunc("nharre_attack",nharre_attack);
+	gstate->RegisterFunc("nharre_start_pain",(void*)nharre_start_pain);
+	gstate->RegisterFunc("nharre_begin_attack",(void*)nharre_begin_attack);
+	gstate->RegisterFunc("nharre_attack",(void*)nharre_attack);
 }

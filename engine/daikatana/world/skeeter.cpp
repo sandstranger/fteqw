@@ -679,23 +679,23 @@ void monster_slaughterskeet( userEntity_t *self )
 ///////////////////////////////////////////////////////////////////////////////
 void world_ai_skeeter_register_func()
 {
-	gstate->RegisterFunc("SKEETER_ParseEpairs",SKEETER_ParseEpairs);
-	gstate->RegisterFunc("SKEETER_Begin_Attack",SKEETER_Begin_Attack);
-	gstate->RegisterFunc("SKEETER_Attack",SKEETER_Attack);
+	gstate->RegisterFunc("SKEETER_ParseEpairs",(void*)SKEETER_ParseEpairs);
+	gstate->RegisterFunc("SKEETER_Begin_Attack",(void*)SKEETER_Begin_Attack);
+	gstate->RegisterFunc("SKEETER_Attack",(void*)SKEETER_Attack);
 
-	gstate->RegisterFunc("SKEETER_Think",SKEETER_Think);
-	gstate->RegisterFunc("SKEETER_Chase",SKEETER_Chase);
-	gstate->RegisterFunc("SKEETER_StartHover",SKEETER_StartHover);
-	gstate->RegisterFunc("SKEETER_Hover",SKEETER_Hover);
-	gstate->RegisterFunc("SKEETER_StartDartTowardEnemy",SKEETER_StartDartTowardEnemy);
-	gstate->RegisterFunc("SKEETER_DartTowardEnemy",SKEETER_DartTowardEnemy);
-	gstate->RegisterFunc("SKEETER_StartFlyAway",SKEETER_StartFlyAway);
-	gstate->RegisterFunc("SKEETER_FlyAway",SKEETER_FlyAway);
-	gstate->RegisterFunc("SKEETER_StartPreHatch",SKEETER_StartPreHatch);
-	gstate->RegisterFunc("SKEETER_PreHatch",SKEETER_PreHatch);
-	gstate->RegisterFunc("SKEETER_StartHatch",SKEETER_StartHatch);
-	gstate->RegisterFunc("SKEETER_Hatch",SKEETER_Hatch);
-	gstate->RegisterFunc("skeeter_set_attack_seq",skeeter_set_attack_seq);
+	gstate->RegisterFunc("SKEETER_Think",(void*)SKEETER_Think);
+	gstate->RegisterFunc("SKEETER_Chase",(void*)SKEETER_Chase);
+	gstate->RegisterFunc("SKEETER_StartHover",(void*)SKEETER_StartHover);
+	gstate->RegisterFunc("SKEETER_Hover",(void*)SKEETER_Hover);
+	gstate->RegisterFunc("SKEETER_StartDartTowardEnemy",(void*)SKEETER_StartDartTowardEnemy);
+	gstate->RegisterFunc("SKEETER_DartTowardEnemy",(void*)SKEETER_DartTowardEnemy);
+	gstate->RegisterFunc("SKEETER_StartFlyAway",(void*)SKEETER_StartFlyAway);
+	gstate->RegisterFunc("SKEETER_FlyAway",(void*)SKEETER_FlyAway);
+	gstate->RegisterFunc("SKEETER_StartPreHatch",(void*)SKEETER_StartPreHatch);
+	gstate->RegisterFunc("SKEETER_PreHatch",(void*)SKEETER_PreHatch);
+	gstate->RegisterFunc("SKEETER_StartHatch",(void*)SKEETER_StartHatch);
+	gstate->RegisterFunc("SKEETER_Hatch",(void*)SKEETER_Hatch);
+	gstate->RegisterFunc("skeeter_set_attack_seq",(void*)skeeter_set_attack_seq);
 }
 
 // ----------------------------------------------------------------------------

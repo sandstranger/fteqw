@@ -405,9 +405,9 @@ void monster_cryotech (userEntity_t *self)
 
 void world_ai_cryotech_register_func()
 {
-	gstate->RegisterFunc( "cryotech_begin_attack", cryotech_begin_attack );
-	gstate->RegisterFunc( "cryotech_attack", cryotech_attack );
-	gstate->RegisterFunc( "cryotech_start_pain", cryotech_start_pain );
-	gstate->RegisterFunc( "cryotech_start_die", cryotech_start_die );
-	gstate->RegisterFunc( "AI_ParseEpairs", AI_ParseEpairs );
+	gstate->RegisterFunc( "cryotech_begin_attack", (void*)cryotech_begin_attack );
+	gstate->RegisterFunc( "cryotech_attack", (void*)cryotech_attack );
+	gstate->RegisterFunc( "cryotech_start_pain", (void*)cryotech_start_pain );
+	gstate->RegisterFunc( "cryotech_start_die", (void*)cryotech_start_die );
+	gstate->RegisterFunc( "AI_ParseEpairs", (void*)AI_ParseEpairs );
 }

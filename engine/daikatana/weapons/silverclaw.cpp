@@ -345,8 +345,8 @@ void weapon_silverclaw(userEntity_t *self)
 ///////////////////////////////////////////////////////////////////////////////
 void weapon_silverclaw_register_func()
 {
-	gstate->RegisterFunc("silverclaw_use",silverclaw_use);
-	gstate->RegisterFunc("silverclaw_think",silverclaw_think);
-	gstate->RegisterFunc("silverclaw_select",silverclaw_select);
-	gstate->RegisterFunc("silverclaw_give",silverclaw_give);
+	gstate->RegisterFunc("silverclaw_use",(void*)silverclaw_use);
+	gstate->RegisterFunc("silverclaw_think",(void*)silverclaw_think);
+	gstate->RegisterFunc("silverclaw_select",(void*)silverclaw_select);
+	gstate->RegisterFunc("silverclaw_give",(void*)silverclaw_give);
 }

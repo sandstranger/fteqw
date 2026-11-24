@@ -623,10 +623,10 @@ void sfx_complex_particle(userEntity_t *self)
 ///////////////////////////////////////////////////////////////////////////////
 void world_SFX_ENTITIES_register_func()
 {
-	gstate->RegisterFunc("SFX_Spawn",SFX_Spawn);
-	gstate->RegisterFunc("SFX2_ParseEpairs",SFX2_ParseEpairs);
-	gstate->RegisterFunc("SFX2_Use",SFX2_Use);
-	gstate->RegisterFunc("SFX2_Think",SFX2_Think);
-	gstate->RegisterFunc("sfx_particle_hook_save",sfx_particle_hook_save);
-	gstate->RegisterFunc("sfx_particle_hook_load",sfx_particle_hook_load);
+	gstate->RegisterFunc("SFX_Spawn",(void*)SFX_Spawn);
+	gstate->RegisterFunc("SFX2_ParseEpairs",(void*)SFX2_ParseEpairs);
+	gstate->RegisterFunc("SFX2_Use",(void*)SFX2_Use);
+	gstate->RegisterFunc("SFX2_Think",(void*)SFX2_Think);
+	gstate->RegisterFunc("sfx_particle_hook_save",(void*)sfx_particle_hook_save);
+	gstate->RegisterFunc("sfx_particle_hook_load",(void*)sfx_particle_hook_load);
 }

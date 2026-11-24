@@ -504,9 +504,9 @@ void monster_mishimaguard( userEntity_t *self )
 ///////////////////////////////////////////////////////////////////////////////
 void world_ai_mishimaguard_register_func()
 {
-	gstate->RegisterFunc( "mishimaguard_begin_attack", mishimaguard_begin_attack );
-	gstate->RegisterFunc( "mishimaguard_attack", mishimaguard_attack );
-	gstate->RegisterFunc( "AI_MishimaguardTakeCover", AI_MishimaguardTakeCover );
-	gstate->RegisterFunc( "AI_ParseEpairs", AI_ParseEpairs );
-	gstate->RegisterFunc( "mishimaguard_start_pain", mishimaguard_start_pain );
+	gstate->RegisterFunc( "mishimaguard_begin_attack", (void*)mishimaguard_begin_attack );
+	gstate->RegisterFunc( "mishimaguard_attack", (void*)mishimaguard_attack );
+	gstate->RegisterFunc( "AI_MishimaguardTakeCover", (void*)AI_MishimaguardTakeCover );
+	gstate->RegisterFunc( "AI_ParseEpairs", (void*)AI_ParseEpairs );
+	gstate->RegisterFunc( "mishimaguard_start_pain", (void*)mishimaguard_start_pain );
 }

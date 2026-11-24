@@ -819,10 +819,10 @@ void	com_CalcAngleMove (userEntity_t *self, const CVector &destangle, float tspe
 ///////////////////////////////////////////////////////////////////////////////
 void world_common_register_func()
 {
-	gstate->RegisterFunc("func_dynalight_on",func_dynalight_on);
-	gstate->RegisterFunc("com_CalcMoveFinished",com_CalcMoveFinished);
-	gstate->RegisterFunc("com_CalcMoveDone",com_CalcMoveDone);
-	gstate->RegisterFunc("com_CalcAcceleratedAngleMove",com_CalcAcceleratedAngleMove);
-	gstate->RegisterFunc("com_CalcAngleMoveDone",com_CalcAngleMoveDone);
-	gstate->RegisterFunc("com_FindParent",com_FindParent);
+	gstate->RegisterFunc("func_dynalight_on",(void*)func_dynalight_on);
+	gstate->RegisterFunc("com_CalcMoveFinished",(void*)com_CalcMoveFinished);
+	gstate->RegisterFunc("com_CalcMoveDone",(void*)com_CalcMoveDone);
+	gstate->RegisterFunc("com_CalcAcceleratedAngleMove",(void*)com_CalcAcceleratedAngleMove);
+	gstate->RegisterFunc("com_CalcAngleMoveDone",(void*)com_CalcAngleMoveDone);
+	gstate->RegisterFunc("com_FindParent",(void*)com_FindParent);
 }

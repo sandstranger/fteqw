@@ -512,9 +512,9 @@ void monster_venomvermin( userEntity_t *self )
 ///////////////////////////////////////////////////////////////////////////////
 void world_ai_venomvermin_register_func()
 {
-	gstate->RegisterFunc("vermin_begin_attack",vermin_begin_attack);
-	gstate->RegisterFunc("vermin_attack",vermin_attack);
-	gstate->RegisterFunc("vermin_start_pain",vermin_start_pain);
-	gstate->RegisterFunc("AI_ParseEpairs",AI_ParseEpairs);
+	gstate->RegisterFunc("vermin_begin_attack",(void*)vermin_begin_attack);
+	gstate->RegisterFunc("vermin_attack",(void*)vermin_attack);
+	gstate->RegisterFunc("vermin_start_pain",(void*)vermin_start_pain);
+	gstate->RegisterFunc("AI_ParseEpairs",(void*)AI_ParseEpairs);
 }
 

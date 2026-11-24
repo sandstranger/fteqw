@@ -250,6 +250,6 @@ void monster_cerberus(userEntity_t *self)
 ///////////////////////////////////////////////////////////////////////////////
 void world_ai_cerberus_register_func()
 {
-	gstate->RegisterFunc("cerberus_begin_attack",cerberus_begin_attack);
-	gstate->RegisterFunc("cerberus_attack",cerberus_attack);
+	gstate->RegisterFunc("cerberus_begin_attack",(void*)cerberus_begin_attack);
+	gstate->RegisterFunc("cerberus_attack",(void*)cerberus_attack);
 }

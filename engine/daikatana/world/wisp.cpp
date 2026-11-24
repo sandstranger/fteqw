@@ -844,15 +844,15 @@ void monster_wisp( userEntity_t *self )
 ///////////////////////////////////////////////////////////////////////////////
 void world_ai_wisp_register_func()
 {
-	gstate->RegisterFunc("WISP_Think",WISP_Think);
-	gstate->RegisterFunc("WISP_InitThink",WISP_InitThink);
-	gstate->RegisterFunc("WISP_Monitor",WISP_Monitor);
-	gstate->RegisterFunc("WISP_Spawn",WISP_Spawn);
-	gstate->RegisterFunc("WISP_ParseEpairs",WISP_ParseEpairs);
+	gstate->RegisterFunc("WISP_Think",(void*)WISP_Think);
+	gstate->RegisterFunc("WISP_InitThink",(void*)WISP_InitThink);
+	gstate->RegisterFunc("WISP_Monitor",(void*)WISP_Monitor);
+	gstate->RegisterFunc("WISP_Spawn",(void*)WISP_Spawn);
+	gstate->RegisterFunc("WISP_ParseEpairs",(void*)WISP_ParseEpairs);
 
-	gstate->RegisterFunc( "wisp_hook_save", wisp_hook_save );
-	gstate->RegisterFunc( "wisp_hook_load", wisp_hook_load );
-	gstate->RegisterFunc( "wisp_master_hook_save", wisp_master_hook_save );
-	gstate->RegisterFunc( "wisp_master_hook_load", wisp_master_hook_load );
+	gstate->RegisterFunc( "wisp_hook_save", (void*)wisp_hook_save );
+	gstate->RegisterFunc( "wisp_hook_load", (void*)wisp_hook_load );
+	gstate->RegisterFunc( "wisp_master_hook_save", (void*)wisp_master_hook_save );
+	gstate->RegisterFunc( "wisp_master_hook_load", (void*)wisp_master_hook_load );
 }
 

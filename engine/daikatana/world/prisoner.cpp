@@ -659,8 +659,8 @@ void func_prisoner_respawn(userEntity_t *self)
 ///////////////////////////////////////////////////////////////////////////////
 void world_ai_prisoner_register_func()
 {
-	gstate->RegisterFunc("AI_PrisonerSpawnThink",AI_PrisonerSpawnThink);
-	gstate->RegisterFunc("AI_ParseEpairs",AI_ParseEpairs);
+	gstate->RegisterFunc("AI_PrisonerSpawnThink",(void*)AI_PrisonerSpawnThink);
+	gstate->RegisterFunc("AI_ParseEpairs",(void*)AI_ParseEpairs);
 
 
 }

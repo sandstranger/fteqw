@@ -18797,22 +18797,22 @@ void SIDEKICK_Stats_MK(userEntity_t* self)
 ///////////////////////////////////////////////////////////////////////////////
 void world_sidekick_register_func()
 {
-	gstate->RegisterFunc("SIDEKICK_FindOwnerThink", SIDEKICK_FindOwnerThink);
-	gstate->RegisterFunc("SIDEKICK_NitroDeath", SIDEKICK_NitroDeath);
-	gstate->RegisterFunc("SIDEKICK_Think", SIDEKICK_Think);
-	gstate->RegisterFunc("SIDEKICK_AttackPlayerThink", SIDEKICK_AttackPlayerThink);
-	gstate->RegisterFunc("SIDEKICK_StopAttackPlayer", SIDEKICK_StopAttackPlayer);
-	gstate->RegisterFunc("SIDEKICK_Pain", SIDEKICK_Pain);
-	gstate->RegisterFunc("SIDEKICK_StartDie", SIDEKICK_StartDie);
-	gstate->RegisterFunc("SIDEKICK_PreThink", SIDEKICK_PreThink);
-	gstate->RegisterFunc("SIDEKICK_PostThink", SIDEKICK_PostThink);
-	gstate->RegisterFunc("SIDEKICK_InAttackRange", SIDEKICK_InAttackRange);
-	gstate->RegisterFunc("AI_SaveSidekick", AI_SaveSidekick);
-	//	gstate->RegisterFunc("AI_LoadSidekick",AI_LoadSidekick);
-	gstate->RegisterFunc("AI_LoadSidekick", AI_LoadSidekick);
-	gstate->RegisterFunc("Sidekick_Touch", Sidekick_Touch);
-	gstate->RegisterFunc("SIDEKICK_RipgunThink", SIDEKICK_RipgunThink);
+	gstate->RegisterFunc("SIDEKICK_FindOwnerThink", (void*)SIDEKICK_FindOwnerThink);
+	gstate->RegisterFunc("SIDEKICK_NitroDeath", (void*)SIDEKICK_NitroDeath);
+	gstate->RegisterFunc("SIDEKICK_Think", (void*)SIDEKICK_Think);
+	gstate->RegisterFunc("SIDEKICK_AttackPlayerThink", (void*)SIDEKICK_AttackPlayerThink);
+	gstate->RegisterFunc("SIDEKICK_StopAttackPlayer", (void*)SIDEKICK_StopAttackPlayer);
+	gstate->RegisterFunc("SIDEKICK_Pain", (void*)SIDEKICK_Pain);
+	gstate->RegisterFunc("SIDEKICK_StartDie", (void*)SIDEKICK_StartDie);
+	gstate->RegisterFunc("SIDEKICK_PreThink", (void*)SIDEKICK_PreThink);
+	gstate->RegisterFunc("SIDEKICK_PostThink", (void*)SIDEKICK_PostThink);
+	gstate->RegisterFunc("SIDEKICK_InAttackRange", (void*)SIDEKICK_InAttackRange);
+	gstate->RegisterFunc("AI_SaveSidekick", (void*)AI_SaveSidekick);
+	//	gstate->RegisterFunc("AI_LoadSidekick",(void*)AI_LoadSidekick);
+	gstate->RegisterFunc("AI_LoadSidekick", (void*)AI_LoadSidekick);
+	gstate->RegisterFunc("Sidekick_Touch", (void*)Sidekick_Touch);
+	gstate->RegisterFunc("SIDEKICK_RipgunThink", (void*)SIDEKICK_RipgunThink);
 
-	gstate->RegisterFunc("trigger_superfly_spawn_use", trigger_superfly_spawn_use);
-	gstate->RegisterFunc("trigger_mikiko_spawn_use", trigger_mikiko_spawn_use);
+	gstate->RegisterFunc("trigger_superfly_spawn_use", (void*)trigger_superfly_spawn_use);
+	gstate->RegisterFunc("trigger_mikiko_spawn_use", (void*)trigger_mikiko_spawn_use);
 }

@@ -506,8 +506,8 @@ void monster_smallspider(userEntity_t *self)
 ///////////////////////////////////////////////////////////////////////////////
 void world_ai_smallspider_register_func()
 {
-	gstate->RegisterFunc("SMALLSPIDER_StartPain",SMALLSPIDER_StartPain);
-	gstate->RegisterFunc("smallspider_begin_attack",smallspider_begin_attack);
-	gstate->RegisterFunc("smallspider_attack",smallspider_attack);
-	gstate->RegisterFunc("SMALLSPIDER_Activate",SMALLSPIDER_Activate);
+	gstate->RegisterFunc("SMALLSPIDER_StartPain",(void*)SMALLSPIDER_StartPain);
+	gstate->RegisterFunc("smallspider_begin_attack",(void*)smallspider_begin_attack);
+	gstate->RegisterFunc("smallspider_attack",(void*)smallspider_attack);
+	gstate->RegisterFunc("SMALLSPIDER_Activate",(void*)SMALLSPIDER_Activate);
 }

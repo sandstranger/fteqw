@@ -714,10 +714,10 @@ void ammo_shocksphere (userEntity_t *self)
 ///////////////////////////////////////////////////////////////////////////////
 void weapon_shockwave_register_func()
 {
-	gstate->RegisterFunc("shockorbThink",shockorbThink);
-	gstate->RegisterFunc("shockringThink",shockringThink);
-	gstate->RegisterFunc("shockwaveTouch",shockwaveTouch);
-	gstate->RegisterFunc("shockwaveUse",shockwaveUse);
-	gstate->RegisterFunc("shockwaveGive",shockwaveGive);
-	gstate->RegisterFunc("shockwaveSelect",shockwaveSelect);
+	gstate->RegisterFunc("shockorbThink",(void*)shockorbThink);
+	gstate->RegisterFunc("shockringThink",(void*)shockringThink);
+	gstate->RegisterFunc("shockwaveTouch",(void*)shockwaveTouch);
+	gstate->RegisterFunc("shockwaveUse",(void*)shockwaveUse);
+	gstate->RegisterFunc("shockwaveGive",(void*)shockwaveGive);
+	gstate->RegisterFunc("shockwaveSelect",(void*)shockwaveSelect);
 }

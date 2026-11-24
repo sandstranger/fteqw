@@ -2586,47 +2586,47 @@ void target_turret (userEntity_t *self)
 */
 void target_register_func()
 {
-	gstate->RegisterFunc("target_laser_use",target_laser_use);
-	gstate->RegisterFunc("target_earthquake_use",target_earthquake_use);
-	gstate->RegisterFunc("target_spotlight_use",target_spotlight_use);
-	gstate->RegisterFunc("target_lightramp_use",target_lightramp_use);
-// SCG[12/5/99]: 	gstate->RegisterFunc("target_framechange_use",target_framechange_use);
-	gstate->RegisterFunc("target_effect_use",target_effect_use);
-	gstate->RegisterFunc("target_monster_spawn_use",target_monster_spawn_use);
-	gstate->RegisterFunc("target_speaker_use",target_speaker_use);
-// SCG[12/5/99]: 	gstate->RegisterFunc("target_lightray_use",target_lightray_use);
-//	gstate->RegisterFunc("target_throw_use",target_throw_use);
-//	gstate->RegisterFunc("target_turret_use",target_turret_use);
+	gstate->RegisterFunc("target_laser_use",(void*)target_laser_use);
+	gstate->RegisterFunc("target_earthquake_use",(void*)target_earthquake_use);
+	gstate->RegisterFunc("target_spotlight_use",(void*)target_spotlight_use);
+	gstate->RegisterFunc("target_lightramp_use",(void*)target_lightramp_use);
+// SCG[12/5/99]: 	gstate->RegisterFunc("target_framechange_use",(void*)target_framechange_use);
+	gstate->RegisterFunc("target_effect_use",(void*)target_effect_use);
+	gstate->RegisterFunc("target_monster_spawn_use",(void*)target_monster_spawn_use);
+	gstate->RegisterFunc("target_speaker_use",(void*)target_speaker_use);
+// SCG[12/5/99]: 	gstate->RegisterFunc("target_lightray_use",(void*)target_lightray_use);
+//	gstate->RegisterFunc("target_throw_use",(void*)target_throw_use);
+//	gstate->RegisterFunc("target_turret_use",(void*)target_turret_use);
 
-	gstate->RegisterFunc("target_laser_think",target_laser_think);
-	gstate->RegisterFunc("target_laser_start",target_laser_start);
-	gstate->RegisterFunc("target_earthquake_think",target_earthquake_think);
-	gstate->RegisterFunc("target_spotlight_think",target_spotlight_think);
-	gstate->RegisterFunc("target_spotlight_start",target_spotlight_start);
-	gstate->RegisterFunc("target_lightramp_think",target_lightramp_think);
-	gstate->RegisterFunc("target_effect_think",target_effect_think);
-	gstate->RegisterFunc("emitter_find",emitter_find);
-	gstate->RegisterFunc("target_speaker_think",target_speaker_think);
-// SCG[12/5/99]: 	gstate->RegisterFunc("target_lightray_think",target_lightray_think);
-// SCG[12/5/99]: 	gstate->RegisterFunc("target_lightray_start",target_lightray_start);
-//	gstate->RegisterFunc("target_turret_think",target_turret_think);
-	gstate->RegisterFunc("emitter_remove_attractor",emitter_remove_attractor);
+	gstate->RegisterFunc("target_laser_think",(void*)target_laser_think);
+	gstate->RegisterFunc("target_laser_start",(void*)target_laser_start);
+	gstate->RegisterFunc("target_earthquake_think",(void*)target_earthquake_think);
+	gstate->RegisterFunc("target_spotlight_think",(void*)target_spotlight_think);
+	gstate->RegisterFunc("target_spotlight_start",(void*)target_spotlight_start);
+	gstate->RegisterFunc("target_lightramp_think",(void*)target_lightramp_think);
+	gstate->RegisterFunc("target_effect_think",(void*)target_effect_think);
+	gstate->RegisterFunc("emitter_find",(void*)emitter_find);
+	gstate->RegisterFunc("target_speaker_think",(void*)target_speaker_think);
+// SCG[12/5/99]: 	gstate->RegisterFunc("target_lightray_think",(void*)target_lightray_think);
+// SCG[12/5/99]: 	gstate->RegisterFunc("target_lightray_start",(void*)target_lightray_start);
+//	gstate->RegisterFunc("target_turret_think",(void*)target_turret_think);
+	gstate->RegisterFunc("emitter_remove_attractor",(void*)emitter_remove_attractor);
 
-	gstate->RegisterFunc( "effect_hook_save", effect_hook_save );
-	gstate->RegisterFunc( "effect_hook_load", effect_hook_load );
-	gstate->RegisterFunc( "attractor_hook_save", attractor_hook_save );
-	gstate->RegisterFunc( "attractor_hook_load", attractor_hook_load );
+	gstate->RegisterFunc( "effect_hook_save", (void*)effect_hook_save );
+	gstate->RegisterFunc( "effect_hook_load", (void*)effect_hook_load );
+	gstate->RegisterFunc( "attractor_hook_save", (void*)attractor_hook_save );
+	gstate->RegisterFunc( "attractor_hook_load", (void*)attractor_hook_load );
 
-	gstate->RegisterFunc( "monster_spawn_hook_save", monster_spawn_hook_save );
-	gstate->RegisterFunc( "monster_spawn_hook_load", monster_spawn_hook_load );
-	gstate->RegisterFunc( "light_ramp_hook_save", light_ramp_hook_save );
-	gstate->RegisterFunc( "light_ramp_hook_load", light_ramp_hook_load );
-	gstate->RegisterFunc( "laser_hook_save", laser_hook_save );
-	gstate->RegisterFunc( "laser_hook_load", laser_hook_load );
-	gstate->RegisterFunc( "frame_change_hook_load", frame_change_hook_load );
-	gstate->RegisterFunc( "frame_change_hook_save", frame_change_hook_save );
-	gstate->RegisterFunc( "quake_hook_save", quake_hook_save );
-	gstate->RegisterFunc( "quake_hook_load", quake_hook_load );
+	gstate->RegisterFunc( "monster_spawn_hook_save", (void*)monster_spawn_hook_save );
+	gstate->RegisterFunc( "monster_spawn_hook_load", (void*)monster_spawn_hook_load );
+	gstate->RegisterFunc( "light_ramp_hook_save", (void*)light_ramp_hook_save );
+	gstate->RegisterFunc( "light_ramp_hook_load", (void*)light_ramp_hook_load );
+	gstate->RegisterFunc( "laser_hook_save", (void*)laser_hook_save );
+	gstate->RegisterFunc( "laser_hook_load", (void*)laser_hook_load );
+	gstate->RegisterFunc( "frame_change_hook_load", (void*)frame_change_hook_load );
+	gstate->RegisterFunc( "frame_change_hook_save", (void*)frame_change_hook_save );
+	gstate->RegisterFunc( "quake_hook_save", (void*)quake_hook_save );
+	gstate->RegisterFunc( "quake_hook_load", (void*)quake_hook_load );
 }
 
 

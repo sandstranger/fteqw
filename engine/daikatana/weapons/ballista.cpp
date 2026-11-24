@@ -614,10 +614,10 @@ void ammo_ballista (userEntity_t *self)
 ///////////////////////////////////////////////////////////////////////////////
 void weapon_ballista_register_func()
 {
-	gstate->RegisterFunc("ballistaThink",ballistaThink);
-	gstate->RegisterFunc("ballistaUse",ballistaUse);
-	gstate->RegisterFunc("ballistaTouch",ballistaTouch);
-	gstate->RegisterFunc("ballistaDie",ballistaDie);
-	gstate->RegisterFunc("ballistaSelect",ballistaSelect);
-	gstate->RegisterFunc("ballistaGive",ballistaGive);
+	gstate->RegisterFunc("ballistaThink",(void*)ballistaThink);
+	gstate->RegisterFunc("ballistaUse",(void*)ballistaUse);
+	gstate->RegisterFunc("ballistaTouch",(void*)ballistaTouch);
+	gstate->RegisterFunc("ballistaDie",(void*)ballistaDie);
+	gstate->RegisterFunc("ballistaSelect",(void*)ballistaSelect);
+	gstate->RegisterFunc("ballistaGive",(void*)ballistaGive);
 }

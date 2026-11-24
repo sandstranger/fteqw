@@ -367,10 +367,10 @@ void monster_mikiko( userEntity_t *self )
 ///////////////////////////////////////////////////////////////////////////////
 void world_ai_mikikomon_register_func()
 {
-	gstate->RegisterFunc("mikiko_start_pain",mikiko_start_pain);
-	gstate->RegisterFunc("mikiko_start_die",mikiko_start_die);
-	gstate->RegisterFunc("mikiko_begin_attack",mikiko_begin_attack);
-	gstate->RegisterFunc("mikiko_attack",mikiko_attack);
-	gstate->RegisterFunc("mikiko_MM_ParseEpairs",MM_ParseEpairs);
-	gstate->RegisterFunc("mikiko_MM_Think",MM_Think);
+	gstate->RegisterFunc("mikiko_start_pain",(void*)mikiko_start_pain);
+	gstate->RegisterFunc("mikiko_start_die",(void*)mikiko_start_die);
+	gstate->RegisterFunc("mikiko_begin_attack",(void*)mikiko_begin_attack);
+	gstate->RegisterFunc("mikiko_attack",(void*)mikiko_attack);
+	gstate->RegisterFunc("mikiko_MM_ParseEpairs",(void*)MM_ParseEpairs);
+	gstate->RegisterFunc("mikiko_MM_Think",(void*)MM_Think);
 }

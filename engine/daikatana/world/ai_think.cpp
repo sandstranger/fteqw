@@ -4700,8 +4700,8 @@ void AI_PostThink( userEntity_t *self )
 ///////////////////////////////////////////////////////////////////////////////
 void world_ai_think_register_func()
 {
-	gstate->RegisterFunc("NitroDeath",NitroDeath);
-	gstate->RegisterFunc("AI_TaskThink",AI_TaskThink);
-	gstate->RegisterFunc("AI_Update",AI_Update);
-	gstate->RegisterFunc("AI_PostThink",AI_PostThink);
+	gstate->RegisterFunc("NitroDeath",(void*)NitroDeath);
+	gstate->RegisterFunc("AI_TaskThink",(void*)AI_TaskThink);
+	gstate->RegisterFunc("AI_Update",(void*)AI_Update);
+	gstate->RegisterFunc("AI_PostThink",(void*)AI_PostThink);
 }

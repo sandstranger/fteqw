@@ -851,13 +851,13 @@ void weapon_discus(userEntity_t *self)
 ///////////////////////////////////////////////////////////////////////////////
 void weapon_discus_register_func()
 {
-	gstate->RegisterFunc("discusThink",discusThink);
-	gstate->RegisterFunc("spinDiscus",spinDiscus);
-	gstate->RegisterFunc("discusUse",discusUse);
-	gstate->RegisterFunc("discusRemove",discusRemove);
-	gstate->RegisterFunc("discusTouch",discusTouch);
-	gstate->RegisterFunc("discusPickup",discusPickup);
-	gstate->RegisterFunc("discusGive",discusGive);
-	gstate->RegisterFunc("discusSelect",discusSelect);
-	gstate->RegisterFunc("dropDiscusPickup",dropDiscusPickup);
+	gstate->RegisterFunc("discusThink",(void*)discusThink);
+	gstate->RegisterFunc("spinDiscus",(void*)spinDiscus);
+	gstate->RegisterFunc("discusUse",(void*)discusUse);
+	gstate->RegisterFunc("discusRemove",(void*)discusRemove);
+	gstate->RegisterFunc("discusTouch",(void*)discusTouch);
+	gstate->RegisterFunc("discusPickup",(void*)discusPickup);
+	gstate->RegisterFunc("discusGive",(void*)discusGive);
+	gstate->RegisterFunc("discusSelect",(void*)discusSelect);
+	gstate->RegisterFunc("dropDiscusPickup",(void*)dropDiscusPickup);
 }

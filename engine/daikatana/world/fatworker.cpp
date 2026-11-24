@@ -269,5 +269,5 @@ void monster_fatworker(userEntity_t *self)
 ///////////////////////////////////////////////////////////////////////////////
 void world_ai_fatworker_register_func()
 {
-	gstate->RegisterFunc("FATWORKER_StartPain",FATWORKER_StartPain);
+	gstate->RegisterFunc("FATWORKER_StartPain",(void*)FATWORKER_StartPain);
 }

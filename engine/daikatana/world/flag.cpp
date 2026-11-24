@@ -683,8 +683,8 @@ userEntity_t *FLAG_CaptureSpawn( unsigned long spawnflags, int points, const CVe
 
 void flag_register_func()
 {
-//	gstate->RegisterFunc("flag_hook_save",flag_hook_save);
-//	gstate->RegisterFunc("flag_hook_load",flag_hook_load);
+//	gstate->RegisterFunc("flag_hook_save",(void*)flag_hook_save);
+//	gstate->RegisterFunc("flag_hook_load",(void*)flag_hook_load);
 }
 
 //=======================================================================================================================================

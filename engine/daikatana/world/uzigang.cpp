@@ -411,10 +411,10 @@ void monster_uzigang( userEntity_t *self )
 ///////////////////////////////////////////////////////////////////////////////
 void world_ai_uzigang_register_func()
 {
-	gstate->RegisterFunc("uzigang_start_pain",uzigang_start_pain);
-	gstate->RegisterFunc("uzigang_start_die",uzigang_start_die);
+	gstate->RegisterFunc("uzigang_start_pain",(void*)uzigang_start_pain);
+	gstate->RegisterFunc("uzigang_start_die",(void*)uzigang_start_die);
 
-	gstate->RegisterFunc("uzigang_begin_attack",uzigang_begin_attack);
-	gstate->RegisterFunc("uzigang_ranged_attack",uzigang_ranged_attack);
-	gstate->RegisterFunc("uzigang_chasing_attack",uzigang_chasing_attack);
+	gstate->RegisterFunc("uzigang_begin_attack",(void*)uzigang_begin_attack);
+	gstate->RegisterFunc("uzigang_ranged_attack",(void*)uzigang_ranged_attack);
+	gstate->RegisterFunc("uzigang_chasing_attack",(void*)uzigang_chasing_attack);
 }

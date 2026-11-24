@@ -432,8 +432,8 @@ void    ammo_novabeam (userEntity_t *self)
 ///////////////////////////////////////////////////////////////////////////////
 void weapon_novabeam_register_func()
 {
-	gstate->RegisterFunc("novabeamuse",novabeam_use);
-	gstate->RegisterFunc("novabeamthink",novabeam_think);
-	gstate->RegisterFunc("novabeam_give",novabeam_give);
-	gstate->RegisterFunc("novabeam_select",novabeam_select);
+	gstate->RegisterFunc("novabeamuse",(void*)novabeam_use);
+	gstate->RegisterFunc("novabeamthink",(void*)novabeam_think);
+	gstate->RegisterFunc("novabeam_give",(void*)novabeam_give);
+	gstate->RegisterFunc("novabeam_select",(void*)novabeam_select);
 }

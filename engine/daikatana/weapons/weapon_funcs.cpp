@@ -5051,18 +5051,18 @@ userInventory_t *weapon_give_7( userEntity_t *self, int ammoCount ) { return wea
 */
 void weapon_funcs_register_func()
 {
-	gstate->RegisterFunc("weaponEntRemove", weaponEntRemove);
-	gstate->RegisterFunc("weaponEntThink", weaponEntThink);
-	gstate->RegisterFunc("weaponTouchDefault", weaponTouchDefault);
-	gstate->RegisterFunc("winfoDroppedItemThink", ammoTouchDefault);
-	gstate->RegisterFunc("ammoTouchDefault", ammoTouchDefault);
-	gstate->RegisterFunc("shotShellTouch", shotShellTouch);
-	gstate->RegisterFunc("shotShellThink", shotShellThink);
+	gstate->RegisterFunc("weaponEntRemove", (void*)weaponEntRemove);
+	gstate->RegisterFunc("weaponEntThink", (void*)weaponEntThink);
+	gstate->RegisterFunc("weaponTouchDefault", (void*)weaponTouchDefault);
+	gstate->RegisterFunc("winfoDroppedItemThink", (void*)ammoTouchDefault);
+	gstate->RegisterFunc("ammoTouchDefault", (void*)ammoTouchDefault);
+	gstate->RegisterFunc("shotShellTouch", (void*)shotShellTouch);
+	gstate->RegisterFunc("shotShellThink", (void*)shotShellThink);
 
-	gstate->RegisterFunc("touch_hook_save", touch_hook_save);
-	gstate->RegisterFunc("touch_hook_load", touch_hook_load);
-	gstate->RegisterFunc("ammo_touch_hook_save", ammo_touch_hook_save);
-	gstate->RegisterFunc("ammo_touch_hook_load", ammo_touch_hook_load);
+	gstate->RegisterFunc("touch_hook_save", (void*)touch_hook_save);
+	gstate->RegisterFunc("touch_hook_load", (void*)touch_hook_load);
+	gstate->RegisterFunc("ammo_touch_hook_save", (void*)ammo_touch_hook_save);
+	gstate->RegisterFunc("ammo_touch_hook_load", (void*)ammo_touch_hook_load);
 
 	// register e1 weapon funcs
 	weapon_c4_register_func();
@@ -5099,22 +5099,22 @@ void weapon_funcs_register_func()
 	// register misc "weapon" funcs
 
 	// SCG[12/7/99]: Consolidate weapon selection.
-	gstate->RegisterFunc("weapon_select_1", weapon_select_1);
-	gstate->RegisterFunc("weapon_select_2", weapon_select_2);
-	gstate->RegisterFunc("weapon_select_3", weapon_select_3);
-	gstate->RegisterFunc("weapon_select_4", weapon_select_4);
-	gstate->RegisterFunc("weapon_select_5", weapon_select_5);
-	gstate->RegisterFunc("weapon_select_6", weapon_select_6);
-	gstate->RegisterFunc("weapon_select_7", weapon_select_7);
+	gstate->RegisterFunc("weapon_select_1", (void*)weapon_select_1);
+	gstate->RegisterFunc("weapon_select_2", (void*)weapon_select_2);
+	gstate->RegisterFunc("weapon_select_3", (void*)weapon_select_3);
+	gstate->RegisterFunc("weapon_select_4", (void*)weapon_select_4);
+	gstate->RegisterFunc("weapon_select_5", (void*)weapon_select_5);
+	gstate->RegisterFunc("weapon_select_6", (void*)weapon_select_6);
+	gstate->RegisterFunc("weapon_select_7", (void*)weapon_select_7);
 
-	gstate->RegisterFunc("weapon_give_1", weapon_give_1);
-	gstate->RegisterFunc("weapon_give_2", weapon_give_2);
-	gstate->RegisterFunc("weapon_give_3", weapon_give_3);
-	gstate->RegisterFunc("weapon_give_4", weapon_give_4);
-	gstate->RegisterFunc("weapon_give_5", weapon_give_5);
-	gstate->RegisterFunc("weapon_give_6", weapon_give_6);
-	gstate->RegisterFunc("weapon_give_7", weapon_give_7);
-	gstate->RegisterFunc("Weapon_Respawn", Weapon_Respawn);
+	gstate->RegisterFunc("weapon_give_1", (void*)weapon_give_1);
+	gstate->RegisterFunc("weapon_give_2", (void*)weapon_give_2);
+	gstate->RegisterFunc("weapon_give_3", (void*)weapon_give_3);
+	gstate->RegisterFunc("weapon_give_4", (void*)weapon_give_4);
+	gstate->RegisterFunc("weapon_give_5", (void*)weapon_give_5);
+	gstate->RegisterFunc("weapon_give_6", (void*)weapon_give_6);
+	gstate->RegisterFunc("weapon_give_7", (void*)weapon_give_7);
+	gstate->RegisterFunc("Weapon_Respawn", (void*)Weapon_Respawn);
 
 }
 

@@ -6575,11 +6575,11 @@ void ai_parse_epairs( userEntity_t *self )
 ///////////////////////////////////////////////////////////////////////////////
 void world_ai_move_register_func()
 {
-//	gstate->RegisterFunc("ai_path_wander",ai_path_wander);
-//	gstate->RegisterFunc("ai_think_stub",ai_think_stub);
-//	gstate->RegisterFunc("ai_jump",ai_jump);
-//	gstate->RegisterFunc("ai_begin_pain",ai_begin_pain);
-//	gstate->RegisterFunc("ai_begin_body_pain",ai_begin_body_pain);
-//	gstate->RegisterFunc("ai_begin_die",ai_begin_die);
-//	gstate->RegisterFunc("ai_prethink",ai_prethink);
+//	gstate->RegisterFunc("ai_path_wander",(void*)ai_path_wander);
+//	gstate->RegisterFunc("ai_think_stub",(void*)ai_think_stub);
+//	gstate->RegisterFunc("ai_jump",(void*)ai_jump);
+//	gstate->RegisterFunc("ai_begin_pain",(void*)ai_begin_pain);
+//	gstate->RegisterFunc("ai_begin_body_pain",(void*)ai_begin_body_pain);
+//	gstate->RegisterFunc("ai_begin_die",(void*)ai_begin_die);
+//	gstate->RegisterFunc("ai_prethink",(void*)ai_prethink);
 }

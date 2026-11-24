@@ -385,10 +385,10 @@ void monster_fletcher( userEntity_t *self )
 ///////////////////////////////////////////////////////////////////////////////
 void world_ai_fletcher_register_func()
 {
-	gstate->RegisterFunc("fletcher_start_pain",fletcher_start_pain);
-	gstate->RegisterFunc("fletcher_start_die",fletcher_start_die);
+	gstate->RegisterFunc("fletcher_start_pain",(void*)fletcher_start_pain);
+	gstate->RegisterFunc("fletcher_start_die",(void*)fletcher_start_die);
 
-	gstate->RegisterFunc("fletcher_begin_attack",fletcher_begin_attack);
-	gstate->RegisterFunc("fletcher_ranged_attack",fletcher_ranged_attack);
-	gstate->RegisterFunc("AI_FletcherTakeCover",AI_FletcherTakeCover);
+	gstate->RegisterFunc("fletcher_begin_attack",(void*)fletcher_begin_attack);
+	gstate->RegisterFunc("fletcher_ranged_attack",(void*)fletcher_ranged_attack);
+	gstate->RegisterFunc("AI_FletcherTakeCover",(void*)AI_FletcherTakeCover);
 }

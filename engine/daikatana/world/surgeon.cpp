@@ -140,8 +140,8 @@ void monster_surgeon(userEntity_t *self)
 ///////////////////////////////////////////////////////////////////////////////
 void world_ai_surgeon_register_func()
 {
-	gstate->RegisterFunc("surgeon_StartPain",surgeon_StartPain);
-	gstate->RegisterFunc("SKINNYWORKER_StartCower",SKINNYWORKER_StartCower);
-	gstate->RegisterFunc("SKINNYWORKER_Cower",SKINNYWORKER_Cower);
-	gstate->RegisterFunc("AI_ParseEpairs",AI_ParseEpairs);
+	gstate->RegisterFunc("surgeon_StartPain",(void*)surgeon_StartPain);
+	gstate->RegisterFunc("SKINNYWORKER_StartCower",(void*)SKINNYWORKER_StartCower);
+	gstate->RegisterFunc("SKINNYWORKER_Cower",(void*)SKINNYWORKER_Cower);
+	gstate->RegisterFunc("AI_ParseEpairs",(void*)AI_ParseEpairs);
 }

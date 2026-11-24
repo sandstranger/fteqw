@@ -507,11 +507,11 @@ void monster_dwarf(userEntity_t *self)
 ///////////////////////////////////////////////////////////////////////////////
 void world_ai_dwarf_register_func()
 {
-	gstate->RegisterFunc("dwarf_start_pain",dwarf_start_pain);
-	gstate->RegisterFunc("dwarf_start_die",dwarf_start_die);
+	gstate->RegisterFunc("dwarf_start_pain",(void*)dwarf_start_pain);
+	gstate->RegisterFunc("dwarf_start_die",(void*)dwarf_start_die);
 
-	gstate->RegisterFunc("dwarf_begin_attack",dwarf_begin_attack);
-	gstate->RegisterFunc("dwarf_attack",dwarf_attack);
-	gstate->RegisterFunc("AI_DwarfTakeCover",AI_DwarfTakeCover);
-	gstate->RegisterFunc("dwarf_check_range",dwarf_check_range);
+	gstate->RegisterFunc("dwarf_begin_attack",(void*)dwarf_begin_attack);
+	gstate->RegisterFunc("dwarf_attack",(void*)dwarf_attack);
+	gstate->RegisterFunc("AI_DwarfTakeCover",(void*)AI_DwarfTakeCover);
+	gstate->RegisterFunc("dwarf_check_range",(void*)dwarf_check_range);
 }

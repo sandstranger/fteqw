@@ -2165,9 +2165,9 @@ void FISH_Update( userEntity_t *self)
 ///////////////////////////////////////////////////////////////////////////////
 void world_func2_register_func()
 {
-	gstate->RegisterFunc("Markers_Think",Markers_Think);
-	gstate->RegisterFunc("AI_ParseEpairs2",AI_ParseEpairs2);
-	gstate->RegisterFunc("FISH_ParseEpairs",FISH_ParseEpairs);
-	gstate->RegisterFunc("FISH_Update",FISH_Update);
-	gstate->RegisterFunc("FISH_Think",FISH_Think);
+	gstate->RegisterFunc("Markers_Think",(void*)Markers_Think);
+	gstate->RegisterFunc("AI_ParseEpairs2",(void*)AI_ParseEpairs2);
+	gstate->RegisterFunc("FISH_ParseEpairs",(void*)FISH_ParseEpairs);
+	gstate->RegisterFunc("FISH_Update",(void*)FISH_Update);
+	gstate->RegisterFunc("FISH_Think",(void*)FISH_Think);
 }

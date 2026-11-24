@@ -515,13 +515,13 @@ void misc_fountain(userEntity_t *self)
 ///////////////////////////////////////////////////////////////////////////////
 void world_hosportal_register_func()
 {
-	gstate->RegisterFunc("hosportal_recharge_think", hosportal_recharge_think );
-	gstate->RegisterFunc("hosportal_give_health_think", hosportal_give_health_think );
-	gstate->RegisterFunc("hosportal_use_charging", hosportal_use_charging );
-	gstate->RegisterFunc("hosportal_use", hosportal_use );
-	gstate->RegisterFunc("hosportal_hook_save", hosportal_hook_save );
-	gstate->RegisterFunc("hosportal_hook_load", hosportal_hook_load );
-	gstate->RegisterFunc("add_hosportal_use_fx", add_hosportal_use_fx );
-	gstate->RegisterFunc("add_fountain_use_fx", add_fountain_use_fx );
+	gstate->RegisterFunc("hosportal_recharge_think", (void*)hosportal_recharge_think );
+	gstate->RegisterFunc("hosportal_give_health_think", (void*)hosportal_give_health_think );
+	gstate->RegisterFunc("hosportal_use_charging", (void*)hosportal_use_charging );
+	gstate->RegisterFunc("hosportal_use", (void*)hosportal_use );
+	gstate->RegisterFunc("hosportal_hook_save", (void*)hosportal_hook_save );
+	gstate->RegisterFunc("hosportal_hook_load", (void*)hosportal_hook_load );
+	gstate->RegisterFunc("add_hosportal_use_fx", (void*)add_hosportal_use_fx );
+	gstate->RegisterFunc("add_fountain_use_fx", (void*)add_fountain_use_fx );
 }
 

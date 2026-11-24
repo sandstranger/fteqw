@@ -563,12 +563,12 @@ void    ammo_kineticore (userEntity_t *self)
 ///////////////////////////////////////////////////////////////////////////////
 void weapon_kineticore_register_func()
 {
-	gstate->RegisterFunc("kineticore_think",kineticore_think);
-	gstate->RegisterFunc("kineticore_usethink",kineticore_usethink);
-	gstate->RegisterFunc("kineticore_use",kineticore_use);
-	gstate->RegisterFunc("kineticore_iceMelt",iceMelt);
-	gstate->RegisterFunc("kineticore_iceThink",iceThink);
-	gstate->RegisterFunc("kineticore_give",kineticore_give);
-	gstate->RegisterFunc("kineticore_select",kineticore_select);
-	gstate->RegisterFunc("kcoreRemoveThink",kcoreRemoveThink);
+	gstate->RegisterFunc("kineticore_think",(void*)kineticore_think);
+	gstate->RegisterFunc("kineticore_usethink",(void*)kineticore_usethink);
+	gstate->RegisterFunc("kineticore_use",(void*)kineticore_use);
+	gstate->RegisterFunc("kineticore_iceMelt",(void*)iceMelt);
+	gstate->RegisterFunc("kineticore_iceThink",(void*)iceThink);
+	gstate->RegisterFunc("kineticore_give",(void*)kineticore_give);
+	gstate->RegisterFunc("kineticore_select",(void*)kineticore_select);
+	gstate->RegisterFunc("kcoreRemoveThink",(void*)kcoreRemoveThink);
 }

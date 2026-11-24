@@ -393,5 +393,5 @@ void SPAWN_Remove( const char *szUniqueId )
 ///////////////////////////////////////////////////////////////////////////////
 void world_spawn_register_func()
 {
-	gstate->RegisterFunc("SPAWN_RespawnThink",SPAWN_RespawnThink);
+	gstate->RegisterFunc("SPAWN_RespawnThink",(void*)SPAWN_RespawnThink);
 }

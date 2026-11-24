@@ -282,7 +282,7 @@ void weapon_disruptor(userEntity_t *self)
 ///////////////////////////////////////////////////////////////////////////////
 void weapon_disruptor_register_func()
 {
-	gstate->RegisterFunc("disruptorUse",disruptorUse);
-	gstate->RegisterFunc("disruptorGive",disruptorGive);
-	gstate->RegisterFunc("disruptorSelect",disruptorSelect);
+	gstate->RegisterFunc("disruptorUse",(void*)disruptorUse);
+	gstate->RegisterFunc("disruptorGive",(void*)disruptorGive);
+	gstate->RegisterFunc("disruptorSelect",(void*)disruptorSelect);
 }

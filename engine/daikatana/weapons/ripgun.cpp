@@ -531,10 +531,10 @@ void    ammo_ripgun(userEntity_t *self)
 ///////////////////////////////////////////////////////////////////////////////
 void weapon_ripgun_register_func()
 {
-	gstate->RegisterFunc("ripgunshootThink",ripgun_shootThink);
-	gstate->RegisterFunc("ripgunuse",ripgun_use);
-	gstate->RegisterFunc("ripgunremoveController",ripgun_removeController);
-	gstate->RegisterFunc("slug_think",ripgun_slug_think);
-	gstate->RegisterFunc("ripgun_give",ripgun_give);
-	gstate->RegisterFunc("ripgun_select",ripgun_select);
+	gstate->RegisterFunc("ripgunshootThink",(void*)ripgun_shootThink);
+	gstate->RegisterFunc("ripgunuse",(void*)ripgun_use);
+	gstate->RegisterFunc("ripgunremoveController",(void*)ripgun_removeController);
+	gstate->RegisterFunc("slug_think",(void*)ripgun_slug_think);
+	gstate->RegisterFunc("ripgun_give",(void*)ripgun_give);
+	gstate->RegisterFunc("ripgun_select",(void*)ripgun_select);
 }

@@ -639,9 +639,9 @@ void monster_thunderskeet( userEntity_t *self )
 ///////////////////////////////////////////////////////////////////////////////
 void world_ai_thunderskeet_register_func()
 {
-	gstate->RegisterFunc("THUNDERSKEET_Think",THUNDERSKEET_Think);
-	gstate->RegisterFunc("THUNDERSKEET_Begin_Attack",THUNDERSKEET_Begin_Attack);
-	gstate->RegisterFunc("THUNDERSKEET_Attack",THUNDERSKEET_Attack);
+	gstate->RegisterFunc("THUNDERSKEET_Think",(void*)THUNDERSKEET_Think);
+	gstate->RegisterFunc("THUNDERSKEET_Begin_Attack",(void*)THUNDERSKEET_Begin_Attack);
+	gstate->RegisterFunc("THUNDERSKEET_Attack",(void*)THUNDERSKEET_Attack);
 
-	gstate->RegisterFunc("AI_ParseEpairs",AI_ParseEpairs);	
+	gstate->RegisterFunc("AI_ParseEpairs",(void*)AI_ParseEpairs);	
 }

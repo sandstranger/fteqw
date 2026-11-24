@@ -1708,16 +1708,16 @@ void func_gib(userEntity_t *self)
 ///////////////////////////////////////////////////////////////////////////////
 void world_gib_register_func()
 {
-	gstate->RegisterFunc("AI_BloodThink",AI_BloodThink);
-	gstate->RegisterFunc("gib_touch_stopped",gib_touch_stopped);
-	gstate->RegisterFunc("gib_touch_moving",gib_touch_moving);
-	gstate->RegisterFunc("gib_shrink",gib_shrink);
-//	gstate->RegisterFunc("gib_spin",gib_spin);
-//	gstate->RegisterFunc("gib_rise",gib_rise);
-	gstate->RegisterFunc("gib_fadeout",gib_fadeout);
-	gstate->RegisterFunc("gib_think",gib_think);
-//	gstate->RegisterFunc("gib_percent_above_below",gib_percent_above_below);
-	gstate->RegisterFunc("fGib_Think",fGib_Think);
-	gstate->RegisterFunc("fGib_ParseEpairs",fGib_ParseEpairs);
-	gstate->RegisterFunc("fGib_Use",fGib_Use);
+	gstate->RegisterFunc("AI_BloodThink",(void*)AI_BloodThink);
+	gstate->RegisterFunc("gib_touch_stopped",(void*)gib_touch_stopped);
+	gstate->RegisterFunc("gib_touch_moving",(void*)gib_touch_moving);
+	gstate->RegisterFunc("gib_shrink",(void*)gib_shrink);
+//	gstate->RegisterFunc("gib_spin",(void*)gib_spin);
+//	gstate->RegisterFunc("gib_rise",(void*)gib_rise);
+	gstate->RegisterFunc("gib_fadeout",(void*)gib_fadeout);
+	gstate->RegisterFunc("gib_think",(void*)gib_think);
+//	gstate->RegisterFunc("gib_percent_above_below",(void*)gib_percent_above_below);
+	gstate->RegisterFunc("fGib_Think",(void*)fGib_Think);
+	gstate->RegisterFunc("fGib_ParseEpairs",(void*)fGib_ParseEpairs);
+	gstate->RegisterFunc("fGib_Use",(void*)fGib_Use);
 }

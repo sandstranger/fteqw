@@ -7749,15 +7749,15 @@ void mpath_hook_load( FILE *f, struct edict_s *ent );
 
 void world_client_register_func()
 {
-	gstate->RegisterFunc("client_warp_appear",client_warp_appear);
-	gstate->RegisterFunc("key_twist",key_twist);
-	gstate->RegisterFunc("intermission_find_target",intermission_find_target);
-	gstate->RegisterFunc("AI_SavePlayerHook",AI_SavePlayerHook);
-	gstate->RegisterFunc("AI_LoadPlayerHook",AI_LoadPlayerHook);
-	gstate->RegisterFunc("AI_SaveMonsterPlayerHook",AI_SaveMonsterPlayerHook);
-	gstate->RegisterFunc("AI_LoadMonsterPlayerHook",AI_LoadMonsterPlayerHook);
-	gstate->RegisterFunc("Client_Save",Client_Save);
-	gstate->RegisterFunc("Client_Load",Client_Load);
-	gstate->RegisterFunc("mpath_hook_save",mpath_hook_save);
-	gstate->RegisterFunc("mpath_hook_load",mpath_hook_load);
+	gstate->RegisterFunc("client_warp_appear",(void*)client_warp_appear);
+	gstate->RegisterFunc("key_twist",(void*)key_twist);
+	gstate->RegisterFunc("intermission_find_target",(void*)intermission_find_target);
+	gstate->RegisterFunc("AI_SavePlayerHook",(void*)AI_SavePlayerHook);
+	gstate->RegisterFunc("AI_LoadPlayerHook",(void*)AI_LoadPlayerHook);
+	gstate->RegisterFunc("AI_SaveMonsterPlayerHook",(void*)AI_SaveMonsterPlayerHook);
+	gstate->RegisterFunc("AI_LoadMonsterPlayerHook",(void*)AI_LoadMonsterPlayerHook);
+	gstate->RegisterFunc("Client_Save",(void*)Client_Save);
+	gstate->RegisterFunc("Client_Load",(void*)Client_Load);
+	gstate->RegisterFunc("mpath_hook_save",(void*)mpath_hook_save);
+	gstate->RegisterFunc("mpath_hook_load",(void*)mpath_hook_load);
 }

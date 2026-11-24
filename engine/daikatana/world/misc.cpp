@@ -4275,59 +4275,59 @@ void func_event_generator( userEntity_t *self );
 
 void misc_register_func()
 {
-	gstate->RegisterFunc("func_explosive_spawn",func_explosive_spawn);
-	gstate->RegisterFunc("func_explosive_use",func_explosive_use);
-	gstate->RegisterFunc("func_explosive_explode",func_explosive_explode);
+	gstate->RegisterFunc("func_explosive_spawn",(void*)func_explosive_spawn);
+	gstate->RegisterFunc("func_explosive_use",(void*)func_explosive_use);
+	gstate->RegisterFunc("func_explosive_explode",(void*)func_explosive_explode);
 
-	gstate->RegisterFunc("deco_die",deco_die);
-	gstate->RegisterFunc("deco_explode_die",deco_explode_die);
+	gstate->RegisterFunc("deco_die",(void*)deco_die);
+	gstate->RegisterFunc("deco_explode_die",(void*)deco_explode_die);
 
-	gstate->RegisterFunc("deco_explode_think",deco_explode_think);
+	gstate->RegisterFunc("deco_explode_think",(void*)deco_explode_think);
 
-	gstate->RegisterFunc("particlefield_toggle",particlefield_toggle);
-	gstate->RegisterFunc("particlefield_think",particlefield_think);
-	gstate->RegisterFunc("particlefield_touch",particlefield_touch);
-	gstate->RegisterFunc("particlefield_XY",particlefield_XY);
-	gstate->RegisterFunc("particlefield_XZ",particlefield_XZ);
-	gstate->RegisterFunc("particlefield_YZ",particlefield_YZ);
+	gstate->RegisterFunc("particlefield_toggle",(void*)particlefield_toggle);
+	gstate->RegisterFunc("particlefield_think",(void*)particlefield_think);
+	gstate->RegisterFunc("particlefield_touch",(void*)particlefield_touch);
+	gstate->RegisterFunc("particlefield_XY",(void*)particlefield_XY);
+	gstate->RegisterFunc("particlefield_XZ",(void*)particlefield_XZ);
+	gstate->RegisterFunc("particlefield_YZ",(void*)particlefield_YZ);
 
-	gstate->RegisterFunc("lavaball_glob_think",lavaball_glob_think);
-	gstate->RegisterFunc("lavaball_spawn",lavaball_spawn);
-	gstate->RegisterFunc("lavaball_random_toss",lavaball_random_toss);
-	gstate->RegisterFunc("lavaball_targetted_toss",lavaball_targetted_toss);
-	gstate->RegisterFunc("lavaball_find_target",lavaball_find_target);
-	gstate->RegisterFunc("lavaball_touch",lavaball_touch);
-	gstate->RegisterFunc("lavaball_shrink",lavaball_shrink);
-	gstate->RegisterFunc("lavaball_velocity_deform_think",lavaball_velocity_deform_think);
-	gstate->RegisterFunc("lavaball_velocity_deform",lavaball_velocity_deform);
+	gstate->RegisterFunc("lavaball_glob_think",(void*)lavaball_glob_think);
+	gstate->RegisterFunc("lavaball_spawn",(void*)lavaball_spawn);
+	gstate->RegisterFunc("lavaball_random_toss",(void*)lavaball_random_toss);
+	gstate->RegisterFunc("lavaball_targetted_toss",(void*)lavaball_targetted_toss);
+	gstate->RegisterFunc("lavaball_find_target",(void*)lavaball_find_target);
+	gstate->RegisterFunc("lavaball_touch",(void*)lavaball_touch);
+	gstate->RegisterFunc("lavaball_shrink",(void*)lavaball_shrink);
+	gstate->RegisterFunc("lavaball_velocity_deform_think",(void*)lavaball_velocity_deform_think);
+	gstate->RegisterFunc("lavaball_velocity_deform",(void*)lavaball_velocity_deform);
 
-	gstate->RegisterFunc("func_debris_use",func_debris_use);
-	gstate->RegisterFunc("func_debris_think",func_debris_think);
-	gstate->RegisterFunc("func_debris_find_target",func_debris_find_target);
-	gstate->RegisterFunc("debris_fall",debris_fall);
-	gstate->RegisterFunc("debris_fall2",debris_fall2);
-	gstate->RegisterFunc("debris_die",debris_die);
-	gstate->RegisterFunc("debris_StartFall",debris_StartFall);
-	gstate->RegisterFunc("func_debris_touch",func_debris_touch);
+	gstate->RegisterFunc("func_debris_use",(void*)func_debris_use);
+	gstate->RegisterFunc("func_debris_think",(void*)func_debris_think);
+	gstate->RegisterFunc("func_debris_find_target",(void*)func_debris_find_target);
+	gstate->RegisterFunc("debris_fall",(void*)debris_fall);
+	gstate->RegisterFunc("debris_fall2",(void*)debris_fall2);
+	gstate->RegisterFunc("debris_die",(void*)debris_die);
+	gstate->RegisterFunc("debris_StartFall",(void*)debris_StartFall);
+	gstate->RegisterFunc("func_debris_touch",(void*)func_debris_touch);
 
-// SCG[12/5/99]: 	gstate->RegisterFunc("func_talking_head_use",func_talking_head_use);
-// SCG[12/5/99]: 	gstate->RegisterFunc("func_talking_head_think",func_talking_head_think);
+// SCG[12/5/99]: 	gstate->RegisterFunc("func_talking_head_use",(void*)func_talking_head_use);
+// SCG[12/5/99]: 	gstate->RegisterFunc("func_talking_head_think",(void*)func_talking_head_think);
 
-	gstate->RegisterFunc( "func_event_generator_think", func_event_generator_think );
-	gstate->RegisterFunc( "func_event_generator_touch", func_event_generator_touch );
-	gstate->RegisterFunc( "func_event_generator_use", func_event_generator_use );
-	gstate->RegisterFunc( "func_event_generator", func_event_generator );
+	gstate->RegisterFunc( "func_event_generator_think", (void*)func_event_generator_think );
+	gstate->RegisterFunc( "func_event_generator_touch", (void*)func_event_generator_touch );
+	gstate->RegisterFunc( "func_event_generator_use", (void*)func_event_generator_use );
+	gstate->RegisterFunc( "func_event_generator", (void*)func_event_generator );
 
-	gstate->RegisterFunc( "debris_hook_save", debris_hook_save );
-	gstate->RegisterFunc( "debris_hook_load", debris_hook_load );
-	gstate->RegisterFunc( "particle_hook_save", particle_hook_save );
-	gstate->RegisterFunc( "particle_hook_load", particle_hook_load );
-	gstate->RegisterFunc( "lavaball_hook_save", lavaball_hook_save );
-	gstate->RegisterFunc( "lavaball_hook_load", lavaball_hook_load );
-	gstate->RegisterFunc( "func_explode_hook_save", func_explode_hook_save );
-	gstate->RegisterFunc( "func_explode_hook_load", func_explode_hook_load );
-	gstate->RegisterFunc( "deco_hook_save", deco_hook_save );
-	gstate->RegisterFunc( "deco_hook_load", deco_hook_load );
-	gstate->RegisterFunc( "speaker_hook_save", speaker_hook_save );
-	gstate->RegisterFunc( "speaker_hook_load", speaker_hook_load );
+	gstate->RegisterFunc( "debris_hook_save", (void*)debris_hook_save );
+	gstate->RegisterFunc( "debris_hook_load", (void*)debris_hook_load );
+	gstate->RegisterFunc( "particle_hook_save", (void*)particle_hook_save );
+	gstate->RegisterFunc( "particle_hook_load", (void*)particle_hook_load );
+	gstate->RegisterFunc( "lavaball_hook_save", (void*)lavaball_hook_save );
+	gstate->RegisterFunc( "lavaball_hook_load", (void*)lavaball_hook_load );
+	gstate->RegisterFunc( "func_explode_hook_save", (void*)func_explode_hook_save );
+	gstate->RegisterFunc( "func_explode_hook_load", (void*)func_explode_hook_load );
+	gstate->RegisterFunc( "deco_hook_save", (void*)deco_hook_save );
+	gstate->RegisterFunc( "deco_hook_load", (void*)deco_hook_load );
+	gstate->RegisterFunc( "speaker_hook_save", (void*)speaker_hook_save );
+	gstate->RegisterFunc( "speaker_hook_load", (void*)speaker_hook_load );
 }

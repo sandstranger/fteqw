@@ -177,7 +177,7 @@ void	P_RegisterFunc(char* name, void* func);
 //	p_phys.c
 ///////////////////////////////////////////////////////////////////////////////
 
-int		P_Push (edict_t *pusher, CVector &move, CVector &amove);
+int		P_Push (edict_t *pusher, const CVector &move, const CVector &amove);
 void	P_RunEntity (edict_t *ent, int run_think);
 void	P_CheckGround (edict_t *ent);
 qboolean P_RunThink (edict_t *ent, int run_think);

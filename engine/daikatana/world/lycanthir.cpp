@@ -801,9 +801,9 @@ void monster_lycanthir( userEntity_t *self )
 ///////////////////////////////////////////////////////////////////////////////
 void world_ai_lycanthir_register_func()
 {
-	gstate->RegisterFunc("lycanthir_start_pain",lycanthir_start_pain);
-	gstate->RegisterFunc("lycanthir_die_maybe",lycanthir_die_maybe);
+	gstate->RegisterFunc("lycanthir_start_pain",(void*)lycanthir_start_pain);
+	gstate->RegisterFunc("lycanthir_die_maybe",(void*)lycanthir_die_maybe);
 
-	gstate->RegisterFunc("lycanthir_begin_attack",lycanthir_begin_attack);
-	gstate->RegisterFunc("lycanthir_attack",lycanthir_attack);
+	gstate->RegisterFunc("lycanthir_begin_attack",(void*)lycanthir_begin_attack);
+	gstate->RegisterFunc("lycanthir_attack",(void*)lycanthir_attack);
 }

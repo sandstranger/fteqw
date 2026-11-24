@@ -804,14 +804,14 @@ void ammo_stavros (userEntity_t *self)
 ///////////////////////////////////////////////////////////////////////////////
 void weapon_stavros_register_func()
 {
-	gstate->RegisterFunc("stavrosstave_thinkk",stave_think);
-	gstate->RegisterFunc("stavrosmeteor_think",meteor_think);
-	gstate->RegisterFunc("stavrosUse",stavrosUse);
-	gstate->RegisterFunc("stavrosStavrosFlareThink",StavrosFlareThink);
-	gstate->RegisterFunc("stavrosZapFlareRotateThink",ZapFlareRotateThink);
-	gstate->RegisterFunc("stavrosmeteor_touch",meteor_touch);
-	gstate->RegisterFunc("stavrosstave_touch",stave_touch);
-	gstate->RegisterFunc("stavrosGive",stavrosGive);
-	gstate->RegisterFunc("stavrosSelect",stavrosSelect);
+	gstate->RegisterFunc("stavrosstave_thinkk",(void*)stave_think);
+	gstate->RegisterFunc("stavrosmeteor_think",(void*)meteor_think);
+	gstate->RegisterFunc("stavrosUse",(void*)stavrosUse);
+	gstate->RegisterFunc("stavrosStavrosFlareThink",(void*)StavrosFlareThink);
+	gstate->RegisterFunc("stavrosZapFlareRotateThink",(void*)ZapFlareRotateThink);
+	gstate->RegisterFunc("stavrosmeteor_touch",(void*)meteor_touch);
+	gstate->RegisterFunc("stavrosstave_touch",(void*)stave_touch);
+	gstate->RegisterFunc("stavrosGive",(void*)stavrosGive);
+	gstate->RegisterFunc("stavrosSelect",(void*)stavrosSelect);
 }
 

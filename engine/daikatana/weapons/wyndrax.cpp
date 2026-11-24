@@ -1120,16 +1120,16 @@ void WyndraxWisp_Attack(userEntity_t *self )
 ///////////////////////////////////////////////////////////////////////////////
 void weapon_wyndrax_register_func()
 {
-	gstate->RegisterFunc("wyndraxammoWispThink",ammoWispThink);
-	gstate->RegisterFunc("wyndraxammoWispRespawn",ammoWispRespawn);
-	gstate->RegisterFunc("wyndraxammoWispSpin",ammoWispSpin);
-//	gstate->RegisterFunc("wyndraxlightningThink",lightningThink);
-	gstate->RegisterFunc("wyndraxwispFade",wispFade);
-	gstate->RegisterFunc("wyndraxwyndraxWispThink",wyndraxWispThink);
-	gstate->RegisterFunc("wyndraxwyndraxWispTouch",wyndraxWispTouch);
-	gstate->RegisterFunc("wyndraxremoveWisp",removeWisp);
-//	gstate->RegisterFunc("wyndraxremoveLightning",removeLightning);
-	gstate->RegisterFunc("wyndraxWispPrethink",wyndraxWispPrethink);
-	gstate->RegisterFunc("wyndraxGive",wyndraxGive);
-	gstate->RegisterFunc("wyndraxSelect",wyndraxSelect);
+	gstate->RegisterFunc("wyndraxammoWispThink",(void*)ammoWispThink);
+	gstate->RegisterFunc("wyndraxammoWispRespawn",(void*)ammoWispRespawn);
+	gstate->RegisterFunc("wyndraxammoWispSpin",(void*)ammoWispSpin);
+//	gstate->RegisterFunc("wyndraxlightningThink",(void*)lightningThink);
+	gstate->RegisterFunc("wyndraxwispFade",(void*)wispFade);
+	gstate->RegisterFunc("wyndraxwyndraxWispThink",(void*)wyndraxWispThink);
+	gstate->RegisterFunc("wyndraxwyndraxWispTouch",(void*)wyndraxWispTouch);
+	gstate->RegisterFunc("wyndraxremoveWisp",(void*)removeWisp);
+//	gstate->RegisterFunc("wyndraxremoveLightning",(void*)removeLightning);
+	gstate->RegisterFunc("wyndraxWispPrethink",(void*)wyndraxWispPrethink);
+	gstate->RegisterFunc("wyndraxGive",(void*)wyndraxGive);
+	gstate->RegisterFunc("wyndraxSelect",(void*)wyndraxSelect);
 }

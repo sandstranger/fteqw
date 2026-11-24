@@ -430,5 +430,5 @@ void AI_TestBoar()
 ///////////////////////////////////////////////////////////////////////////////
 void world_ai_test_register_func()
 {
-	gstate->RegisterFunc("ECTS_TakeCoverThink",ECTS_TakeCoverThink);
+	gstate->RegisterFunc("ECTS_TakeCoverThink",(void*)ECTS_TakeCoverThink);
 }

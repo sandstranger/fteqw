@@ -637,7 +637,7 @@ void monster_skinnyworker(userEntity_t *self)
 ///////////////////////////////////////////////////////////////////////////////
 void world_ai_skinnyworker_register_func()
 {
-	gstate->RegisterFunc("SKINNYWORKER_StartPain",SKINNYWORKER_StartPain);
-	gstate->RegisterFunc("AI_ParseEpairs",AI_ParseEpairs);
+	gstate->RegisterFunc("SKINNYWORKER_StartPain",(void*)SKINNYWORKER_StartPain);
+	gstate->RegisterFunc("AI_ParseEpairs",(void*)AI_ParseEpairs);
 
 }

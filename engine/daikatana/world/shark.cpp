@@ -284,10 +284,10 @@ void monster_shark( userEntity_t *self )
 void world_ai_shark_register_func()
 {
 	// NSS[2/10/00]:Added these two functions
-	gstate->RegisterFunc("SHARK_ParseEpairs",SHARK_ParseEpairs);
-	gstate->RegisterFunc("SHARK_Think",SHARK_Think);
-	gstate->RegisterFunc("shark_begin_attack",shark_begin_attack);
-	gstate->RegisterFunc("shark_attack",shark_attack);
-	gstate->RegisterFunc("shark_start_pain",shark_start_pain);
+	gstate->RegisterFunc("SHARK_ParseEpairs",(void*)SHARK_ParseEpairs);
+	gstate->RegisterFunc("SHARK_Think",(void*)SHARK_Think);
+	gstate->RegisterFunc("shark_begin_attack",(void*)shark_begin_attack);
+	gstate->RegisterFunc("shark_attack",(void*)shark_attack);
+	gstate->RegisterFunc("shark_start_pain",(void*)shark_start_pain);
 }
 

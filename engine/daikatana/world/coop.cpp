@@ -865,7 +865,7 @@ void COOP_SpawnHacks(userEntity_t *self)
 
 void coop_register_func()
 {
-	gstate->RegisterFunc("pack_remove",pack_remove);
-	gstate->RegisterFunc("pack_touch",pack_touch);
+	gstate->RegisterFunc("pack_remove",(void*)pack_remove);
+	gstate->RegisterFunc("pack_touch",(void*)pack_touch);
 }
 

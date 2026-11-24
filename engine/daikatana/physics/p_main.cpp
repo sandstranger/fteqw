@@ -391,9 +391,9 @@ void P_InitDLLs (void)
 	P_InitFuncList();
 
 	// register functions
-	P_RegisterFunc("P_FreeEdict",P_FreeEdict);
-	P_RegisterFunc("P_PercentSubmerged",P_PercentSubmerged);
-	P_RegisterFunc("P_FlyMove",P_FlyMove);
+	P_RegisterFunc("P_FreeEdict",(void*)P_FreeEdict);
+	P_RegisterFunc("P_PercentSubmerged",(void*)P_PercentSubmerged);
+	P_RegisterFunc("P_FlyMove",(void*)P_FlyMove);
 
 	P_InitPerLevelCvars ();
 

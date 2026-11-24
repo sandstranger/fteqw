@@ -251,7 +251,7 @@ void monster_lasergat( userEntity_t *self )
 ///////////////////////////////////////////////////////////////////////////////
 void world_ai_lasergat_register_func()
 {
-	gstate->RegisterFunc( "lasergat_begin_attack", lasergat_begin_attack );
-	gstate->RegisterFunc( "lasergat_attack", lasergat_attack );
-	gstate->RegisterFunc( "AI_ParseEpairs", AI_ParseEpairs );
+	gstate->RegisterFunc( "lasergat_begin_attack", (void*)lasergat_begin_attack );
+	gstate->RegisterFunc( "lasergat_attack", (void*)lasergat_attack );
+	gstate->RegisterFunc( "AI_ParseEpairs", (void*)AI_ParseEpairs );
 }

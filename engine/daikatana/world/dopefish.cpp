@@ -266,10 +266,10 @@ void e_dopefish(userEntity_t *self)
 ///////////////////////////////////////////////////////////////////////////////
 void world_ai_dopefish_register_func()
 {
-	gstate->RegisterFunc("DOPEFISH_ParseEpairs",DOPEFISH_ParseEpairs);
-	gstate->RegisterFunc("FISH_Update",FISH_Update);
-	gstate->RegisterFunc("DOPEFISH_Think",DOPEFISH_Think);
-	gstate->RegisterFunc("dopefish_begin_attack",dopefish_begin_attack);
-	gstate->RegisterFunc("dopefish_attack",dopefish_attack);
+	gstate->RegisterFunc("DOPEFISH_ParseEpairs",(void*)DOPEFISH_ParseEpairs);
+	gstate->RegisterFunc("FISH_Update",(void*)FISH_Update);
+	gstate->RegisterFunc("DOPEFISH_Think",(void*)DOPEFISH_Think);
+	gstate->RegisterFunc("dopefish_begin_attack",(void*)dopefish_begin_attack);
+	gstate->RegisterFunc("dopefish_attack",(void*)dopefish_attack);
 
 }

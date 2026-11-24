@@ -3,7 +3,7 @@
 
 
 void	Client_SetCameraState (userEntity_t *ent, int state, int flags);
-void	Client_SetClientAngles (userEntity_t *ent, CVector &angle);
+void	Client_SetClientAngles (userEntity_t *ent, const CVector &angle);
 void	Client_SetInputEntity (userEntity_t *clientEntity, userEntity_t *inputEntity);
 void	Client_SetViewEntity (userEntity_t *clientEntity, userEntity_t *viewEntity);
 void	Client_Think (edict_t *ent, usercmd_t *ucmd);

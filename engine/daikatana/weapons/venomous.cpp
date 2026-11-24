@@ -503,9 +503,9 @@ void ammo_venomous(userEntity_t *self)
 ///////////////////////////////////////////////////////////////////////////////
 void weapon_venomous_register_func()
 {
-	gstate->RegisterFunc("venomouspoisonThink",poisonThink);
-	gstate->RegisterFunc("venomousUse",venomousUse);
-	gstate->RegisterFunc("venomouspoisonTouch",poisonTouch);
-	gstate->RegisterFunc("venomousGive",venomousGive);
-	gstate->RegisterFunc("venomousSelect",venomousSelect);
+	gstate->RegisterFunc("venomouspoisonThink",(void*)poisonThink);
+	gstate->RegisterFunc("venomousUse",(void*)venomousUse);
+	gstate->RegisterFunc("venomouspoisonTouch",(void*)poisonTouch);
+	gstate->RegisterFunc("venomousGive",(void*)venomousGive);
+	gstate->RegisterFunc("venomousSelect",(void*)venomousSelect);
 }

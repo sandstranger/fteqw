@@ -452,9 +452,9 @@ void monster_rat( userEntity_t *self, playerHook_t *hook )
 ///////////////////////////////////////////////////////////////////////////////
 void world_ai_prat_register_func()
 {
-	gstate->RegisterFunc("plague_rat_start_pain",plague_rat_start_pain);
-	gstate->RegisterFunc("plague_rat_start_die",plague_rat_start_die);
+	gstate->RegisterFunc("plague_rat_start_pain",(void*)plague_rat_start_pain);
+	gstate->RegisterFunc("plague_rat_start_die",(void*)plague_rat_start_die);
 
-	gstate->RegisterFunc("plague_rat_begin_attack",plague_rat_begin_attack);
-	gstate->RegisterFunc("plague_rat_attack",plague_rat_attack);
+	gstate->RegisterFunc("plague_rat_begin_attack",(void*)plague_rat_begin_attack);
+	gstate->RegisterFunc("plague_rat_attack",(void*)plague_rat_attack);
 }

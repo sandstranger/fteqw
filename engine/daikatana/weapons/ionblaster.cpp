@@ -415,11 +415,11 @@ void ammo_ionpack (userEntity_t *self)
 ///////////////////////////////////////////////////////////////////////////////
 void weapon_ionblaster_register_func()
 {
-	gstate->RegisterFunc("ionblaster_diethink",ionblaster_diethink);
-	gstate->RegisterFunc("ionblaster_touch",ionblaster_touch);
-	gstate->RegisterFunc("ionblaster_remove",ionblaster_remove);
-	gstate->RegisterFunc("ionblaster_think",ionblaster_think);
-	gstate->RegisterFunc("ionblaster_use",ionblaster_use);
-	gstate->RegisterFunc("ionblaster_give",ionblaster_give);
-	gstate->RegisterFunc("ionblaster_select",ionblaster_select);
+	gstate->RegisterFunc("ionblaster_diethink",(void*)ionblaster_diethink);
+	gstate->RegisterFunc("ionblaster_touch",(void*)ionblaster_touch);
+	gstate->RegisterFunc("ionblaster_remove",(void*)ionblaster_remove);
+	gstate->RegisterFunc("ionblaster_think",(void*)ionblaster_think);
+	gstate->RegisterFunc("ionblaster_use",(void*)ionblaster_use);
+	gstate->RegisterFunc("ionblaster_give",(void*)ionblaster_give);
+	gstate->RegisterFunc("ionblaster_select",(void*)ionblaster_select);
 }

@@ -372,14 +372,14 @@ void monster_protopod( userEntity_t *self )
 ///////////////////////////////////////////////////////////////////////////////
 void world_ai_protopod_register_func()
 {
-	gstate->RegisterFunc("protopod_hatch_now",protopod_hatch_now);
+	gstate->RegisterFunc("protopod_hatch_now",(void*)protopod_hatch_now);
 
-	gstate->RegisterFunc("PROTOPOD_WaitToHatch",PROTOPOD_WaitToHatch);
-	gstate->RegisterFunc("PROTOPOD_StartWaitToHatch",PROTOPOD_StartWaitToHatch);
-	gstate->RegisterFunc("protopod_start_idle",protopod_start_idle);
-	gstate->RegisterFunc("AI_ParseEpairs",AI_ParseEpairs);
-	gstate->RegisterFunc("PROTOPOD_Hatch",PROTOPOD_Hatch);
-	gstate->RegisterFunc("PROTOPOD_StartHatch",PROTOPOD_StartHatch);
-	gstate->RegisterFunc("Protpod_Hatch_It",Protpod_Hatch_It);
-	gstate->RegisterFunc("PROTOPOD_SpawnSkeeter",PROTOPOD_SpawnSkeeter);
+	gstate->RegisterFunc("PROTOPOD_WaitToHatch",(void*)PROTOPOD_WaitToHatch);
+	gstate->RegisterFunc("PROTOPOD_StartWaitToHatch",(void*)PROTOPOD_StartWaitToHatch);
+	gstate->RegisterFunc("protopod_start_idle",(void*)protopod_start_idle);
+	gstate->RegisterFunc("AI_ParseEpairs",(void*)AI_ParseEpairs);
+	gstate->RegisterFunc("PROTOPOD_Hatch",(void*)PROTOPOD_Hatch);
+	gstate->RegisterFunc("PROTOPOD_StartHatch",(void*)PROTOPOD_StartHatch);
+	gstate->RegisterFunc("Protpod_Hatch_It",(void*)Protpod_Hatch_It);
+	gstate->RegisterFunc("PROTOPOD_SpawnSkeeter",(void*)PROTOPOD_SpawnSkeeter);
 }

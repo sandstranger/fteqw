@@ -354,8 +354,8 @@ void monster_satyr( userEntity_t *self )
 ///////////////////////////////////////////////////////////////////////////////
 void world_ai_satyr_register_func()
 {
-	gstate->RegisterFunc("satyr_start_pain",satyr_start_pain);
-	gstate->RegisterFunc("satyr_begin_attack",satyr_begin_attack);
-	gstate->RegisterFunc("satyr_attack",satyr_attack);
-	gstate->RegisterFunc("satyr_check_range",satyr_check_range);
+	gstate->RegisterFunc("satyr_start_pain",(void*)satyr_start_pain);
+	gstate->RegisterFunc("satyr_begin_attack",(void*)satyr_begin_attack);
+	gstate->RegisterFunc("satyr_attack",(void*)satyr_attack);
+	gstate->RegisterFunc("satyr_check_range",(void*)satyr_check_range);
 }

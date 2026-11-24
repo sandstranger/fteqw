@@ -543,12 +543,12 @@ void weapThink(userEntity_t *entWeapon)
 ///////////////////////////////////////////////////////////////////////////////
 void weapon_sunflare_register_func()
 {
-	gstate->RegisterFunc("sunflareThink",sunflareThink);
-	gstate->RegisterFunc("sunflareflame_think2",flame_think2);
-	gstate->RegisterFunc("sunflareflame_doflames",flame_doflames);
-	gstate->RegisterFunc("sunflareUse",sunflareUse);
-	gstate->RegisterFunc("sunflareflame_die",flame_die);
-	gstate->RegisterFunc("sunflareTouch",sunflareTouch);
-	gstate->RegisterFunc("sunflareGive",sunflareGive);
-	gstate->RegisterFunc("sunflareSelect",sunflareSelect);
+	gstate->RegisterFunc("sunflareThink",(void*)sunflareThink);
+	gstate->RegisterFunc("sunflareflame_think2",(void*)flame_think2);
+	gstate->RegisterFunc("sunflareflame_doflames",(void*)flame_doflames);
+	gstate->RegisterFunc("sunflareUse",(void*)sunflareUse);
+	gstate->RegisterFunc("sunflareflame_die",(void*)flame_die);
+	gstate->RegisterFunc("sunflareTouch",(void*)sunflareTouch);
+	gstate->RegisterFunc("sunflareGive",(void*)sunflareGive);
+	gstate->RegisterFunc("sunflareSelect",(void*)sunflareSelect);
 }

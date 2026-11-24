@@ -519,10 +519,10 @@ void monster_psyclaw( userEntity_t *self )
 ///////////////////////////////////////////////////////////////////////////////
 void world_ai_psyclaw_register_func()
 {
-	gstate->RegisterFunc("psyclaw_start_pain",psyclaw_start_pain);
-	gstate->RegisterFunc("psyclaw_start_die",psyclaw_start_die);
-	gstate->RegisterFunc("Psyclaw_ParseEpairs",Psyclaw_ParseEpairs);
-	gstate->RegisterFunc("Psyclaw_Think",Psyclaw_Think);
-	gstate->RegisterFunc("psyclaw_doattack",psyclaw_doattack);
-	gstate->RegisterFunc("psyclaw_begin_attack",psyclaw_begin_attack);
+	gstate->RegisterFunc("psyclaw_start_pain",(void*)psyclaw_start_pain);
+	gstate->RegisterFunc("psyclaw_start_die",(void*)psyclaw_start_die);
+	gstate->RegisterFunc("Psyclaw_ParseEpairs",(void*)Psyclaw_ParseEpairs);
+	gstate->RegisterFunc("Psyclaw_Think",(void*)Psyclaw_Think);
+	gstate->RegisterFunc("psyclaw_doattack",(void*)psyclaw_doattack);
+	gstate->RegisterFunc("psyclaw_begin_attack",(void*)psyclaw_begin_attack);
 }

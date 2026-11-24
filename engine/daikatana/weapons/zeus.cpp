@@ -599,10 +599,10 @@ void ammo_zeus(userEntity_t *self)
 ///////////////////////////////////////////////////////////////////////////////
 void weapon_zeus_register_func()
 {
-	gstate->RegisterFunc("zeuschainLightning",chainLightning);
-//	gstate->RegisterFunc("zeusmonitorChain",monitorChain);
-	gstate->RegisterFunc("zeususe",use);
-	gstate->RegisterFunc("zeusboltRemove",boltRemove);
-	gstate->RegisterFunc("zeus_give",zeus_give);
-	gstate->RegisterFunc("zeus_select",zeus_select);
+	gstate->RegisterFunc("zeuschainLightning",(void*)chainLightning);
+//	gstate->RegisterFunc("zeusmonitorChain",(void*)monitorChain);
+	gstate->RegisterFunc("zeususe",(void*)use);
+	gstate->RegisterFunc("zeusboltRemove",(void*)boltRemove);
+	gstate->RegisterFunc("zeus_give",(void*)zeus_give);
+	gstate->RegisterFunc("zeus_select",(void*)zeus_select);
 }

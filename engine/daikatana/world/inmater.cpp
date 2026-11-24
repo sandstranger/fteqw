@@ -865,7 +865,7 @@ void monster_inmater( userEntity_t *self )
 ///////////////////////////////////////////////////////////////////////////////
 void world_ai_inmater_register_func()
 {
-	gstate->RegisterFunc( "inmater_begin_attack", inmater_begin_attack );
-	gstate->RegisterFunc( "inmater_attack", inmater_attack );
-	gstate->RegisterFunc( "AI_ParseEpairs", AI_ParseEpairs );
+	gstate->RegisterFunc( "inmater_begin_attack", (void*)inmater_begin_attack );
+	gstate->RegisterFunc( "inmater_attack", (void*)inmater_attack );
+	gstate->RegisterFunc( "AI_ParseEpairs", (void*)AI_ParseEpairs );
 }

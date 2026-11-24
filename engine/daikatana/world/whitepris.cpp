@@ -355,10 +355,10 @@ void monster_whiteprisoner (userEntity_t *self)
 ///////////////////////////////////////////////////////////////////////////////
 void world_ai_whitepris_register_func()
 {
-	gstate->RegisterFunc("whitepris_start_pain",whitepris_start_pain);
-	gstate->RegisterFunc("whitepris_start_die",whitepris_start_die);
+	gstate->RegisterFunc("whitepris_start_pain",(void*)whitepris_start_pain);
+	gstate->RegisterFunc("whitepris_start_die",(void*)whitepris_start_die);
 
-	gstate->RegisterFunc("whitepris_begin_attack",whitepris_begin_attack);
-	gstate->RegisterFunc("whitepris_attack",whitepris_attack);
-	gstate->RegisterFunc("whitepris_check_range",whitepris_check_range);
+	gstate->RegisterFunc("whitepris_begin_attack",(void*)whitepris_begin_attack);
+	gstate->RegisterFunc("whitepris_attack",(void*)whitepris_attack);
+	gstate->RegisterFunc("whitepris_check_range",(void*)whitepris_check_range);
 }

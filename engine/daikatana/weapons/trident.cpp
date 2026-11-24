@@ -550,10 +550,10 @@ void ammo_tritips (userEntity_t *self)
 ///////////////////////////////////////////////////////////////////////////////
 void weapon_trident_register_func()
 {
-	gstate->RegisterFunc("tridenttipThink",tipThink);
-	gstate->RegisterFunc("tridentUse",tridentUse);
-	gstate->RegisterFunc("tridenttipRemove",tipRemove);
-	gstate->RegisterFunc("tridenttipTouch",tipTouch);
-	gstate->RegisterFunc("tridentGive",tridentGive);
-	gstate->RegisterFunc("tridentSelect",tridentSelect);
+	gstate->RegisterFunc("tridenttipThink",(void*)tipThink);
+	gstate->RegisterFunc("tridentUse",(void*)tridentUse);
+	gstate->RegisterFunc("tridenttipRemove",(void*)tipRemove);
+	gstate->RegisterFunc("tridenttipTouch",(void*)tipTouch);
+	gstate->RegisterFunc("tridentGive",(void*)tridentGive);
+	gstate->RegisterFunc("tridentSelect",(void*)tridentSelect);
 }

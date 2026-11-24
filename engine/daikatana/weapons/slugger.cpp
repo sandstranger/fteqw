@@ -996,11 +996,11 @@ void    ammoTouchSlugger (userEntity_t *self, userEntity_t *other, cplane_t *pla
 ///////////////////////////////////////////////////////////////////////////////
 void weapon_slugger_register_func()
 {
-	gstate->RegisterFunc("ripguncordite_think",cordite_think);
-	gstate->RegisterFunc("ripgun_use",slugger_use);
-	gstate->RegisterFunc("ripguncordite_remove",cordite_remove);
-	gstate->RegisterFunc("ripguncordite_touch",cordite_touch);
-	gstate->RegisterFunc("ammoTouchSlugger",ammoTouchSlugger);
-	gstate->RegisterFunc("slugger_give",slugger_give);
-	gstate->RegisterFunc("slugger_select",slugger_select);
+	gstate->RegisterFunc("ripguncordite_think",(void*)cordite_think);
+	gstate->RegisterFunc("ripgun_use",(void*)slugger_use);
+	gstate->RegisterFunc("ripguncordite_remove",(void*)cordite_remove);
+	gstate->RegisterFunc("ripguncordite_touch",(void*)cordite_touch);
+	gstate->RegisterFunc("ammoTouchSlugger",(void*)ammoTouchSlugger);
+	gstate->RegisterFunc("slugger_give",(void*)slugger_give);
+	gstate->RegisterFunc("slugger_select",(void*)slugger_select);
 }

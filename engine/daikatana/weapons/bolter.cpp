@@ -546,12 +546,12 @@ void ammo_bolts (userEntity_t *self)
 ///////////////////////////////////////////////////////////////////////////////
 void weapon_bolter_register_func()
 {
-	gstate->RegisterFunc("bolt_remove",bolt_remove);
-	gstate->RegisterFunc("bolt_think",bolt_think);
-	gstate->RegisterFunc("boltFade",boltFade);
-	gstate->RegisterFunc("bolt_flight_think",bolt_flight_think);
-	gstate->RegisterFunc("bolter_use",bolter_use);
-	gstate->RegisterFunc("bolt_touch",bolt_touch);
-	gstate->RegisterFunc("bolter_give",bolter_give);
-	gstate->RegisterFunc("bolter_select",bolter_select);
+	gstate->RegisterFunc("bolt_remove",(void*)bolt_remove);
+	gstate->RegisterFunc("bolt_think",(void*)bolt_think);
+	gstate->RegisterFunc("boltFade",(void*)boltFade);
+	gstate->RegisterFunc("bolt_flight_think",(void*)bolt_flight_think);
+	gstate->RegisterFunc("bolter_use",(void*)bolter_use);
+	gstate->RegisterFunc("bolt_touch",(void*)bolt_touch);
+	gstate->RegisterFunc("bolter_give",(void*)bolter_give);
+	gstate->RegisterFunc("bolter_select",(void*)bolter_select);
 }

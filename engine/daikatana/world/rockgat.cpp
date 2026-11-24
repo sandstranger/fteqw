@@ -621,10 +621,10 @@ void monster_rockgat (userEntity_t *self)
 ///////////////////////////////////////////////////////////////////////////////
 void world_ai_rockgat_register_func()
 {
-	gstate->RegisterFunc("rockgat_think",rockgat_think);
-	gstate->RegisterFunc("rockgat_use",rockgat_use);
-	gstate->RegisterFunc("rockgat_pain",rockgat_pain);
-	gstate->RegisterFunc("rockgat_hook_save",rockgat_hook_save);
-	gstate->RegisterFunc("rockgat_hook_load",rockgat_hook_load);
-	gstate->RegisterFunc("rockgat_die",rockgat_die);
+	gstate->RegisterFunc("rockgat_think",(void*)rockgat_think);
+	gstate->RegisterFunc("rockgat_use",(void*)rockgat_use);
+	gstate->RegisterFunc("rockgat_pain",(void*)rockgat_pain);
+	gstate->RegisterFunc("rockgat_hook_save",(void*)rockgat_hook_save);
+	gstate->RegisterFunc("rockgat_hook_load",(void*)rockgat_hook_load);
+	gstate->RegisterFunc("rockgat_die",(void*)rockgat_die);
 }

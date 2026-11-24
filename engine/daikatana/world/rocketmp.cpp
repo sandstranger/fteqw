@@ -635,10 +635,10 @@ void monster_rocketmp( userEntity_t *self )
 ///////////////////////////////////////////////////////////////////////////////
 void world_ai_rocketmp_register_func()
 {
-	gstate->RegisterFunc("rocketmp_begin_attack",rocketmp_begin_attack);
-	gstate->RegisterFunc("rocketmp_attack",rocketmp_attack);
+	gstate->RegisterFunc("rocketmp_begin_attack",(void*)rocketmp_begin_attack);
+	gstate->RegisterFunc("rocketmp_attack",(void*)rocketmp_attack);
 
-	gstate->RegisterFunc("AI_RocketMpTakeCover",AI_RocketMpTakeCover);
-	gstate->RegisterFunc("rocketmp_chasing_attack",rocketmp_chasing_attack);
-	gstate->RegisterFunc("rocketmp_start_pain",rocketmp_start_pain);
+	gstate->RegisterFunc("AI_RocketMpTakeCover",(void*)AI_RocketMpTakeCover);
+	gstate->RegisterFunc("rocketmp_chasing_attack",(void*)rocketmp_chasing_attack);
+	gstate->RegisterFunc("rocketmp_start_pain",(void*)rocketmp_start_pain);
 }

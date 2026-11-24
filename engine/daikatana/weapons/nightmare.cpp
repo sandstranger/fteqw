@@ -1164,19 +1164,19 @@ void nightmareScaredStiff(userEntity_t *self)
 ///////////////////////////////////////////////////////////////////////////////
 void weapon_nightmare_register_func()
 {
-	gstate->RegisterFunc("nightmareUse",nightmareUse);
-	gstate->RegisterFunc("nightmaredoPentagram",doPentagram);
-	gstate->RegisterFunc("nightmareDeath",nightmareDeath);
-	gstate->RegisterFunc("nightmarelight_think",light_think);
-	gstate->RegisterFunc("removeremoveReaper",removeReaper);
-	gstate->RegisterFunc("nightmareAlmostDeath",nightmareAlmostDeath);
-	gstate->RegisterFunc("initReaperAttack",initReaperAttack);
-	gstate->RegisterFunc("nightmareControllerUpkeep",nightmareControllerUpkeep);
-	gstate->RegisterFunc("nightmareControllerBeatDown",nightmareControllerBeatDown);
-	gstate->RegisterFunc("nightmareControllerSearch",nightmareControllerSearch);
-	gstate->RegisterFunc("nightmareControllerTracePent",nightmareControllerTracePent);
-	gstate->RegisterFunc("nightmareControllerRemove",nightmareControllerRemove);
-	gstate->RegisterFunc("nightmareGive",nightmareGive);
-	gstate->RegisterFunc("nightmareSelect",nightmareSelect);
+	gstate->RegisterFunc("nightmareUse",(void*)nightmareUse);
+	gstate->RegisterFunc("nightmaredoPentagram",(void*)doPentagram);
+	gstate->RegisterFunc("nightmareDeath",(void*)nightmareDeath);
+	gstate->RegisterFunc("nightmarelight_think",(void*)light_think);
+	gstate->RegisterFunc("removeremoveReaper",(void*)removeReaper);
+	gstate->RegisterFunc("nightmareAlmostDeath",(void*)nightmareAlmostDeath);
+	gstate->RegisterFunc("initReaperAttack",(void*)initReaperAttack);
+	gstate->RegisterFunc("nightmareControllerUpkeep",(void*)nightmareControllerUpkeep);
+	gstate->RegisterFunc("nightmareControllerBeatDown",(void*)nightmareControllerBeatDown);
+	gstate->RegisterFunc("nightmareControllerSearch",(void*)nightmareControllerSearch);
+	gstate->RegisterFunc("nightmareControllerTracePent",(void*)nightmareControllerTracePent);
+	gstate->RegisterFunc("nightmareControllerRemove",(void*)nightmareControllerRemove);
+	gstate->RegisterFunc("nightmareGive",(void*)nightmareGive);
+	gstate->RegisterFunc("nightmareSelect",(void*)nightmareSelect);
 }
 

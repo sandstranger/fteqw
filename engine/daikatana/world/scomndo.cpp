@@ -372,10 +372,10 @@ void monster_sealcommando( userEntity_t *self )
 ///////////////////////////////////////////////////////////////////////////////
 void world_ai_scomndo_register_func()
 {
-	gstate->RegisterFunc("sealcommando_start_pain",sealcommando_start_pain);
-	gstate->RegisterFunc("sealcommando_start_die",sealcommando_start_die);
+	gstate->RegisterFunc("sealcommando_start_pain",(void*)sealcommando_start_pain);
+	gstate->RegisterFunc("sealcommando_start_die",(void*)sealcommando_start_die);
 
-	gstate->RegisterFunc("sealcommando_begin_attack",sealcommando_begin_attack);
-	gstate->RegisterFunc("sealcommando_ranged_attack",sealcommando_ranged_attack);
-	gstate->RegisterFunc("AI_SealCommandoTakeCover",AI_SealCommandoTakeCover);
+	gstate->RegisterFunc("sealcommando_begin_attack",(void*)sealcommando_begin_attack);
+	gstate->RegisterFunc("sealcommando_ranged_attack",(void*)sealcommando_ranged_attack);
+	gstate->RegisterFunc("AI_SealCommandoTakeCover",(void*)AI_SealCommandoTakeCover);
 }

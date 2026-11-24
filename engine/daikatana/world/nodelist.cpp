@@ -5147,6 +5147,6 @@ PATHNODE_PTR path_last_node(PATHNODE_PTR path)
 ///////////////////////////////////////////////////////////////////////////////
 void world_nodelist_register_func()
 {
-//	gstate->RegisterFunc("node_marker_think",node_marker_think);
+//	gstate->RegisterFunc("node_marker_think",(void*)node_marker_think);
 }
  

@@ -1184,8 +1184,8 @@ void	viewthing (userEntity_t *self)
 ///////////////////////////////////////////////////////////////////////////////
 void world_viewthing_register_func()
 {
-	gstate->RegisterFunc("vt_StepFrame",vt_StepFrame);
-	gstate->RegisterFunc("vt_Animate",vt_Animate);
-	gstate->RegisterFunc("vt_DelayThink",vt_DelayThink);
-	gstate->RegisterFunc("viewthing_init",viewthing_init);
+	gstate->RegisterFunc("vt_StepFrame",(void*)vt_StepFrame);
+	gstate->RegisterFunc("vt_Animate",(void*)vt_Animate);
+	gstate->RegisterFunc("vt_DelayThink",(void*)vt_DelayThink);
+	gstate->RegisterFunc("viewthing_init",(void*)viewthing_init);
 }

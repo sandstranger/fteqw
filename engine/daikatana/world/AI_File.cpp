@@ -364,7 +364,7 @@ static void AIATTRIBUTE_Remove( const char *szClassName )
 {
 	if ( szClassName )
 	{
-		mapNameToAttributes.RemoveKey( szClassName );
+		mapNameToAttributes.RemoveKey( (char *)szClassName );
 	}
 }
 

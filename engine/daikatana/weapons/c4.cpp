@@ -761,15 +761,15 @@ void ammo_c4 (userEntity_t *self)
 ///////////////////////////////////////////////////////////////////////////////
 void weapon_c4_register_func()
 {
-	gstate->RegisterFunc("c4Think",c4Think);
-	gstate->RegisterFunc("c4Explode",c4Explode);
-	gstate->RegisterFunc("c4Touch",c4Touch);
-//	gstate->RegisterFunc("c4Radiustouch",c4Radiustouch);
-	gstate->RegisterFunc("c4Use",c4Use);
-	gstate->RegisterFunc("c4Die",c4Die);
-	gstate->RegisterFunc("c4Remove",c4Remove);
-	gstate->RegisterFunc("c4TouchStuck",c4TouchStuck);
+	gstate->RegisterFunc("c4Think",(void*)c4Think);
+	gstate->RegisterFunc("c4Explode",(void*)c4Explode);
+	gstate->RegisterFunc("c4Touch",(void*)c4Touch);
+//	gstate->RegisterFunc("c4Radiustouch",(void*)c4Radiustouch);
+	gstate->RegisterFunc("c4Use",(void*)c4Use);
+	gstate->RegisterFunc("c4Die",(void*)c4Die);
+	gstate->RegisterFunc("c4Remove",(void*)c4Remove);
+	gstate->RegisterFunc("c4TouchStuck",(void*)c4TouchStuck);
 
-	gstate->RegisterFunc("c4Give",c4Give);
-	gstate->RegisterFunc("c4Select",c4Select);
+	gstate->RegisterFunc("c4Give",(void*)c4Give);
+	gstate->RegisterFunc("c4Select",(void*)c4Select);
 }

@@ -3889,29 +3889,29 @@ invenCommand_t artifact_inv_command(char *name)
 
 void artifact_register_func(void)
 {
-	gstate->RegisterFunc("item_bombpart_touch",item_bombpart_touch);
-	gstate->RegisterFunc("item_health_touch",item_health_touch);
-	gstate->RegisterFunc("item_armor_touch",item_armor_touch);
-	gstate->RegisterFunc("item_boost_touch",item_boost_touch);
-	gstate->RegisterFunc("item_key_touch",item_key_touch);
-	gstate->RegisterFunc("item_wraithorb_touch",item_wraithorb_touch);
-	gstate->RegisterFunc("boost_respawn",boost_respawn);
-	gstate->RegisterFunc("item_bomb_kapow",item_bomb_kapow);
-	gstate->RegisterFunc("item_bomb_countdown",item_bomb_countdown);
-	gstate->RegisterFunc("item_savegem_touch", item_savegem_touch);
-	gstate->RegisterFunc("item_add_to_inventory", item_add_to_inventory);
+	gstate->RegisterFunc("item_bombpart_touch",(void*)item_bombpart_touch);
+	gstate->RegisterFunc("item_health_touch",(void*)item_health_touch);
+	gstate->RegisterFunc("item_armor_touch",(void*)item_armor_touch);
+	gstate->RegisterFunc("item_boost_touch",(void*)item_boost_touch);
+	gstate->RegisterFunc("item_key_touch",(void*)item_key_touch);
+	gstate->RegisterFunc("item_wraithorb_touch",(void*)item_wraithorb_touch);
+	gstate->RegisterFunc("boost_respawn",(void*)boost_respawn);
+	gstate->RegisterFunc("item_bomb_kapow",(void*)item_bomb_kapow);
+	gstate->RegisterFunc("item_bomb_countdown",(void*)item_bomb_countdown);
+	gstate->RegisterFunc("item_savegem_touch", (void*)item_savegem_touch);
+	gstate->RegisterFunc("item_add_to_inventory", (void*)item_add_to_inventory);
 
-	gstate->RegisterFunc("item_hook_save", item_hook_save);
-	gstate->RegisterFunc("item_hook_load", item_hook_load);
+	gstate->RegisterFunc("item_hook_save", (void*)item_hook_save);
+	gstate->RegisterFunc("item_hook_load", (void*)item_hook_load);
 
-	gstate->RegisterFunc( "item_black_chest_use", item_black_chest_use );
-	gstate->RegisterFunc( "item_wood_chest_use", item_wood_chest_use );
+	gstate->RegisterFunc( "item_black_chest_use", (void*)item_black_chest_use );
+	gstate->RegisterFunc( "item_wood_chest_use", (void*)item_wood_chest_use );
 
-	gstate->RegisterFunc( "item_savegem_invuse", item_savegem_invuse);
-	gstate->RegisterFunc( "item_book_use", item_book_use);
-	gstate->RegisterFunc( "item_bombpart_use", item_bombpart_use);
-	gstate->RegisterFunc( "Item_Respawn", Item_Respawn);
-	gstate->RegisterFunc( "boost_nucleus_think", boost_nucleus_think);
+	gstate->RegisterFunc( "item_savegem_invuse", (void*)item_savegem_invuse);
+	gstate->RegisterFunc( "item_book_use", (void*)item_book_use);
+	gstate->RegisterFunc( "item_bombpart_use", (void*)item_bombpart_use);
+	gstate->RegisterFunc( "Item_Respawn", (void*)Item_Respawn);
+	gstate->RegisterFunc( "boost_nucleus_think", (void*)boost_nucleus_think);
 }
 
 void artifact_precache_sounds(void)

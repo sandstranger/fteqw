@@ -4950,73 +4950,73 @@ void	func_nodetrain (userEntity_t *self)
 */
 void door_register_func()
 {
-	gstate->RegisterFunc("door_blocked",door_blocked);
-	gstate->RegisterFunc("func_rotate_blocked",func_rotate_blocked);
-	gstate->RegisterFunc("train_blocked",train_blocked);
-	gstate->RegisterFunc("button_blocked",button_blocked);
-	gstate->RegisterFunc("secret_blocked",secret_blocked);
-	gstate->RegisterFunc("multi_button_blocked",multi_button_blocked);
-//	gstate->RegisterFunc("nodetrain_blocked",nodetrain_blocked);
+	gstate->RegisterFunc("door_blocked",(void*)door_blocked);
+	gstate->RegisterFunc("func_rotate_blocked",(void*)func_rotate_blocked);
+	gstate->RegisterFunc("train_blocked",(void*)train_blocked);
+	gstate->RegisterFunc("button_blocked",(void*)button_blocked);
+	gstate->RegisterFunc("secret_blocked",(void*)secret_blocked);
+	gstate->RegisterFunc("multi_button_blocked",(void*)multi_button_blocked);
+//	gstate->RegisterFunc("nodetrain_blocked",(void*)nodetrain_blocked);
 
-	gstate->RegisterFunc("areaportal_toggle",areaportal_toggle);
-	gstate->RegisterFunc("door_use",door_use);
-	gstate->RegisterFunc("func_rotate_use",func_rotate_use);
-	gstate->RegisterFunc("func_wall_use",func_wall_use);
-	gstate->RegisterFunc("train_use",train_use);
-	gstate->RegisterFunc("secret_use",secret_use);
-	gstate->RegisterFunc("multi_button_use",multi_button_use);
-// SCG[2/13/00]: 	gstate->RegisterFunc("nodetrain_use",nodetrain_use);
-	gstate->RegisterFunc("button_use",button_use);
-	gstate->RegisterFunc("button_touch",button_touch);
+	gstate->RegisterFunc("areaportal_toggle",(void*)areaportal_toggle);
+	gstate->RegisterFunc("door_use",(void*)door_use);
+	gstate->RegisterFunc("func_rotate_use",(void*)func_rotate_use);
+	gstate->RegisterFunc("func_wall_use",(void*)func_wall_use);
+	gstate->RegisterFunc("train_use",(void*)train_use);
+	gstate->RegisterFunc("secret_use",(void*)secret_use);
+	gstate->RegisterFunc("multi_button_use",(void*)multi_button_use);
+// SCG[2/13/00]: 	gstate->RegisterFunc("nodetrain_use",(void*)nodetrain_use);
+	gstate->RegisterFunc("button_use",(void*)button_use);
+	gstate->RegisterFunc("button_touch",(void*)button_touch);
 
-	gstate->RegisterFunc("plat_restore_touch",plat_restore_touch);
-	gstate->RegisterFunc("door_continuous_refire",door_continuous_refire);
-	gstate->RegisterFunc("door_close",door_close);
-	gstate->RegisterFunc("door_open",door_open);
-	gstate->RegisterFunc("door_init",door_init);
-	gstate->RegisterFunc("train_rotate_think",train_rotate_think);
-	gstate->RegisterFunc("train_next",train_next);
-	gstate->RegisterFunc("train_find",train_find);
-	gstate->RegisterFunc("train_wait",train_wait);
-	gstate->RegisterFunc("button_return",button_return);
-	gstate->RegisterFunc("secret_move2",secret_move2);
-	gstate->RegisterFunc("secret_move4",secret_move4);
-	gstate->RegisterFunc("secret_move6",secret_move6);
-// SCG[2/13/00]: 	gstate->RegisterFunc("nodetrain_find",nodetrain_find);
+	gstate->RegisterFunc("plat_restore_touch",(void*)plat_restore_touch);
+	gstate->RegisterFunc("door_continuous_refire",(void*)door_continuous_refire);
+	gstate->RegisterFunc("door_close",(void*)door_close);
+	gstate->RegisterFunc("door_open",(void*)door_open);
+	gstate->RegisterFunc("door_init",(void*)door_init);
+	gstate->RegisterFunc("train_rotate_think",(void*)train_rotate_think);
+	gstate->RegisterFunc("train_next",(void*)train_next);
+	gstate->RegisterFunc("train_find",(void*)train_find);
+	gstate->RegisterFunc("train_wait",(void*)train_wait);
+	gstate->RegisterFunc("button_return",(void*)button_return);
+	gstate->RegisterFunc("secret_move2",(void*)secret_move2);
+	gstate->RegisterFunc("secret_move4",(void*)secret_move4);
+	gstate->RegisterFunc("secret_move6",(void*)secret_move6);
+// SCG[2/13/00]: 	gstate->RegisterFunc("nodetrain_find",(void*)nodetrain_find);
 
-	gstate->RegisterFunc("plat_touch",plat_touch);
-	gstate->RegisterFunc("door_touch",door_touch);
-	gstate->RegisterFunc("plat_trigger_touch",plat_trigger_touch);
-	gstate->RegisterFunc("door_trigger_touch",door_trigger_touch);
-	gstate->RegisterFunc("secret_touch",secret_touch);
-	gstate->RegisterFunc("multi_button_touch",multi_button_touch);
+	gstate->RegisterFunc("plat_touch",(void*)plat_touch);
+	gstate->RegisterFunc("door_touch",(void*)door_touch);
+	gstate->RegisterFunc("plat_trigger_touch",(void*)plat_trigger_touch);
+	gstate->RegisterFunc("door_trigger_touch",(void*)door_trigger_touch);
+	gstate->RegisterFunc("secret_touch",(void*)secret_touch);
+	gstate->RegisterFunc("multi_button_touch",(void*)multi_button_touch);
 
-	gstate->RegisterFunc("secret_pain",secret_pain);
-	gstate->RegisterFunc("secret_die",secret_die);
-	gstate->RegisterFunc("door_killed",door_killed);
-	gstate->RegisterFunc("func_wall_die",func_wall_die);
-	gstate->RegisterFunc("train_die",train_die);
-	gstate->RegisterFunc("train_die_next",train_die_next);
-	gstate->RegisterFunc("button_killed",button_killed);
-	gstate->RegisterFunc("multi_button_killed",multi_button_killed);
+	gstate->RegisterFunc("secret_pain",(void*)secret_pain);
+	gstate->RegisterFunc("secret_die",(void*)secret_die);
+	gstate->RegisterFunc("door_killed",(void*)door_killed);
+	gstate->RegisterFunc("func_wall_die",(void*)func_wall_die);
+	gstate->RegisterFunc("train_die",(void*)train_die);
+	gstate->RegisterFunc("train_die_next",(void*)train_die_next);
+	gstate->RegisterFunc("button_killed",(void*)button_killed);
+	gstate->RegisterFunc("multi_button_killed",(void*)multi_button_killed);
 
-	gstate->RegisterFunc("door_hook_save", door_hook_save);
-	gstate->RegisterFunc("door_hook_load", door_hook_load);
-	gstate->RegisterFunc("areaportal_save", areaportal_save);
-	gstate->RegisterFunc("areaportal_load", areaportal_load);
+	gstate->RegisterFunc("door_hook_save", (void*)door_hook_save);
+	gstate->RegisterFunc("door_hook_load", (void*)door_hook_load);
+	gstate->RegisterFunc("areaportal_save", (void*)areaportal_save);
+	gstate->RegisterFunc("areaportal_load", (void*)areaportal_load);
 
-	gstate->RegisterFunc("button_done", button_done);
-	gstate->RegisterFunc("button_wait", button_wait);
-	gstate->RegisterFunc("door_fully_open", door_fully_open);
-	gstate->RegisterFunc("door_fully_closed", door_fully_closed);
+	gstate->RegisterFunc("button_done", (void*)button_done);
+	gstate->RegisterFunc("button_wait", (void*)button_wait);
+	gstate->RegisterFunc("door_fully_open", (void*)door_fully_open);
+	gstate->RegisterFunc("door_fully_closed", (void*)door_fully_closed);
 
-	gstate->RegisterFunc("secret_move1", secret_move1);
-	gstate->RegisterFunc("secret_move3", secret_move3);
-	gstate->RegisterFunc("secret_move5", secret_move5);
-	gstate->RegisterFunc("secret_done", secret_done);
+	gstate->RegisterFunc("secret_move1", (void*)secret_move1);
+	gstate->RegisterFunc("secret_move3", (void*)secret_move3);
+	gstate->RegisterFunc("secret_move5", (void*)secret_move5);
+	gstate->RegisterFunc("secret_done", (void*)secret_done);
 
-	gstate->RegisterFunc("multi_button_wait", multi_button_wait);
+	gstate->RegisterFunc("multi_button_wait", (void*)multi_button_wait);
 
-	gstate->RegisterFunc("func_train_init_from_save", func_train_init_from_save);
-	gstate->RegisterFunc("door_init_from_save", door_init_from_save);
+	gstate->RegisterFunc("func_train_init_from_save", (void*)func_train_init_from_save);
+	gstate->RegisterFunc("door_init_from_save", (void*)door_init_from_save);
 }

@@ -3520,9 +3520,9 @@ void BOT_Think( userEntity_t *self )
 ///////////////////////////////////////////////////////////////////////////////
 void world_bot_register_func()
 {
-	gstate->RegisterFunc("BOT_StartDie",BOT_StartDie);
-	gstate->RegisterFunc("BOT_Think",BOT_Think);
-	gstate->RegisterFunc("BOT_Pain",BOT_Pain);
-	gstate->RegisterFunc("BOT_PreThink",BOT_PreThink);
-	gstate->RegisterFunc("BOT_PostThink",BOT_PostThink);
+	gstate->RegisterFunc("BOT_StartDie",(void*)BOT_StartDie);
+	gstate->RegisterFunc("BOT_Think",(void*)BOT_Think);
+	gstate->RegisterFunc("BOT_Pain",(void*)BOT_Pain);
+	gstate->RegisterFunc("BOT_PreThink",(void*)BOT_PreThink);
+	gstate->RegisterFunc("BOT_PostThink",(void*)BOT_PostThink);
 }

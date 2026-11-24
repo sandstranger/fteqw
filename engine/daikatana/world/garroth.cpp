@@ -418,8 +418,8 @@ void	monster_garroth (userEntity_t *self)
 ///////////////////////////////////////////////////////////////////////////////
 void world_ai_garroth_register_func()
 {
-	gstate->RegisterFunc("garroth_start_die",garroth_start_die);
-	gstate->RegisterFunc("garroth_begin_attack",garroth_begin_attack);
-	gstate->RegisterFunc("garroth_attack",garroth_attack);
-	gstate->RegisterFunc("garroth_check_range",garroth_check_range);
+	gstate->RegisterFunc("garroth_start_die",(void*)garroth_start_die);
+	gstate->RegisterFunc("garroth_begin_attack",(void*)garroth_begin_attack);
+	gstate->RegisterFunc("garroth_attack",(void*)garroth_attack);
+	gstate->RegisterFunc("garroth_check_range",(void*)garroth_check_range);
 }

@@ -359,6 +359,6 @@ void monster_centurion( userEntity_t *self )
 ///////////////////////////////////////////////////////////////////////////////
 void world_ai_centurion_register_func()
 {
-	gstate->RegisterFunc("centurion_begin_attack",centurion_begin_attack);
-	gstate->RegisterFunc("centurion_attack",centurion_attack);
+	gstate->RegisterFunc("centurion_begin_attack",(void*)centurion_begin_attack);
+	gstate->RegisterFunc("centurion_attack",(void*)centurion_attack);
 }

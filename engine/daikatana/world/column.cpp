@@ -572,10 +572,10 @@ void monster_column( userEntity_t *self )
 ///////////////////////////////////////////////////////////////////////////////
 void world_ai_column_register_func()
 {
-	gstate->RegisterFunc("column_begin_attack",column_begin_attack);
-	gstate->RegisterFunc("column_attack",column_attack);
-	gstate->RegisterFunc("column_check_range",column_check_range);
-	gstate->RegisterFunc("column_start_idle",column_start_idle);
-	gstate->RegisterFunc("column_start_pain",column_start_pain);
+	gstate->RegisterFunc("column_begin_attack",(void*)column_begin_attack);
+	gstate->RegisterFunc("column_attack",(void*)column_attack);
+	gstate->RegisterFunc("column_check_range",(void*)column_check_range);
+	gstate->RegisterFunc("column_start_idle",(void*)column_start_idle);
+	gstate->RegisterFunc("column_start_pain",(void*)column_start_pain);
 }
 

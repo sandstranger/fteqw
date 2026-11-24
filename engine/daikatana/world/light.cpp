@@ -649,11 +649,11 @@ void	light_setstyles (void)
 ///////////////////////////////////////////////////////////////////////////////
 void world_light_register_func()
 {
-	gstate->RegisterFunc("light_flame_burn",light_flame_burn);
-	gstate->RegisterFunc("light_use",light_use);
-	gstate->RegisterFunc("light_flare_use",light_flare_use);
-	gstate->RegisterFunc("light_flame_die",light_flame_die);
+	gstate->RegisterFunc("light_flame_burn",(void*)light_flame_burn);
+	gstate->RegisterFunc("light_use",(void*)light_use);
+	gstate->RegisterFunc("light_flare_use",(void*)light_flare_use);
+	gstate->RegisterFunc("light_flame_die",(void*)light_flame_die);
 
-	gstate->RegisterFunc("light_hook_save", light_hook_save );
-	gstate->RegisterFunc("light_hook_load", light_hook_load );
+	gstate->RegisterFunc("light_hook_save", (void*)light_hook_save );
+	gstate->RegisterFunc("light_hook_load", (void*)light_hook_load );
 }

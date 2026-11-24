@@ -315,7 +315,7 @@ void    ammo_bullets (userEntity_t *self)
 ///////////////////////////////////////////////////////////////////////////////
 void weapon_glock_register_func()
 {
-	gstate->RegisterFunc("glock_use",glock_use);
-	gstate->RegisterFunc("glock_give",glock_give);
-	gstate->RegisterFunc("glock_select",glock_select);
+	gstate->RegisterFunc("glock_use",(void*)glock_use);
+	gstate->RegisterFunc("glock_give",(void*)glock_give);
+	gstate->RegisterFunc("glock_select",(void*)glock_select);
 }

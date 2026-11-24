@@ -899,12 +899,12 @@ void monster_kage( userEntity_t *self )
 ///////////////////////////////////////////////////////////////////////////////
 void world_ai_kage_register_func()
 {
-	gstate->RegisterFunc("kage_begin_attack",kage_begin_attack);
-	gstate->RegisterFunc("KAGE_Pain",KAGE_Pain);
-	gstate->RegisterFunc("kage_attack",kage_attack);
-	gstate->RegisterFunc("KAGE_ParseEpairs",kage_attack);
-	gstate->RegisterFunc("KAGE_Think",KAGE_Think);
-	gstate->RegisterFunc("KAGE_Die",KAGE_Die);
+	gstate->RegisterFunc("kage_begin_attack",(void*)kage_begin_attack);
+	gstate->RegisterFunc("KAGE_Pain",(void*)KAGE_Pain);
+	gstate->RegisterFunc("kage_attack",(void*)kage_attack);
+	gstate->RegisterFunc("KAGE_ParseEpairs",(void*)kage_attack);
+	gstate->RegisterFunc("KAGE_Think",(void*)KAGE_Think);
+	gstate->RegisterFunc("KAGE_Die",(void*)KAGE_Die);
 	
 }
 

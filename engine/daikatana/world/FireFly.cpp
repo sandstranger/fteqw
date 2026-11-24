@@ -624,13 +624,13 @@ void monster_firefly( userEntity_t *self )
 ///////////////////////////////////////////////////////////////////////////////
 void world_ai_firefly_register_func()
 {
-	gstate->RegisterFunc("FIREFLY_Think",FIREFLY_Think);
-	gstate->RegisterFunc("FIREFLY_InitThink",FIREFLY_InitThink);
-	gstate->RegisterFunc("FIREFLY_Monitor",FIREFLY_Monitor);
-	gstate->RegisterFunc("FIREFLY_Spawn",FIREFLY_Spawn);
-	gstate->RegisterFunc("FIREFLY_ParseEpairs",FIREFLY_ParseEpairs);
-	gstate->RegisterFunc( "firefly_master_hook_save", firefly_master_hook_save );
-	gstate->RegisterFunc( "firefly_master_hook_load", firefly_master_hook_load );
-	gstate->RegisterFunc( "firefly_hook_save", firefly_hook_save );
-	gstate->RegisterFunc( "firefly_hook_load", firefly_hook_load );
+	gstate->RegisterFunc("FIREFLY_Think",(void*)FIREFLY_Think);
+	gstate->RegisterFunc("FIREFLY_InitThink",(void*)FIREFLY_InitThink);
+	gstate->RegisterFunc("FIREFLY_Monitor",(void*)FIREFLY_Monitor);
+	gstate->RegisterFunc("FIREFLY_Spawn",(void*)FIREFLY_Spawn);
+	gstate->RegisterFunc("FIREFLY_ParseEpairs",(void*)FIREFLY_ParseEpairs);
+	gstate->RegisterFunc( "firefly_master_hook_save", (void*)firefly_master_hook_save );
+	gstate->RegisterFunc( "firefly_master_hook_load", (void*)firefly_master_hook_load );
+	gstate->RegisterFunc( "firefly_hook_save", (void*)firefly_hook_save );
+	gstate->RegisterFunc( "firefly_hook_load", (void*)firefly_hook_load );
 }

@@ -1294,7 +1294,7 @@ frameData_t *FRAMES_GetSequence( userEntity_t *self, const char *name )
 	if(!self->pMapAnimationToSequence)
 		return NULL;
 	else
-		return (frameData_t *)(*self->pMapAnimationToSequence)[name];
+		return (frameData_t *)(*self->pMapAnimationToSequence)[(char *)name];
 }
 
 // ----------------------------------------------------------------------------

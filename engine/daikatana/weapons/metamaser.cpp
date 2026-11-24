@@ -1210,17 +1210,17 @@ void    ammo_metamaser (userEntity_t *self)
 ///////////////////////////////////////////////////////////////////////////////
 void weapon_metamaser_register_func()
 {
-	gstate->RegisterFunc("metamaserthink",metamaser_think);
-	gstate->RegisterFunc("metamaserwait",metamaser_wait);
-	gstate->RegisterFunc("metamasertrack",metamaser_track);
-	gstate->RegisterFunc("metamaserdiethink",metamaser_diethink);
-	gstate->RegisterFunc("metamasermetaring_think",metaring_think);
-	gstate->RegisterFunc("metamaserlaser_t_think",metamaser_laser_target_think);
-	gstate->RegisterFunc("metamasersearch",metamaser_search);
-	gstate->RegisterFunc("metamaseruse",metamaser_use);
-	gstate->RegisterFunc("metamaserdie",metamaser_die);
-	gstate->RegisterFunc("metamaserpain",metamaser_pain);
-//	gstate->RegisterFunc("metamasertouch",metamaser_touch);
-	gstate->RegisterFunc("metamaser_give",metamaser_give);
-	gstate->RegisterFunc("metamaser_select",metamaser_select);
+	gstate->RegisterFunc("metamaserthink",(void*)metamaser_think);
+	gstate->RegisterFunc("metamaserwait",(void*)metamaser_wait);
+	gstate->RegisterFunc("metamasertrack",(void*)metamaser_track);
+	gstate->RegisterFunc("metamaserdiethink",(void*)metamaser_diethink);
+	gstate->RegisterFunc("metamasermetaring_think",(void*)metaring_think);
+	gstate->RegisterFunc("metamaserlaser_t_think",(void*)metamaser_laser_target_think);
+	gstate->RegisterFunc("metamasersearch",(void*)metamaser_search);
+	gstate->RegisterFunc("metamaseruse",(void*)metamaser_use);
+	gstate->RegisterFunc("metamaserdie",(void*)metamaser_die);
+	gstate->RegisterFunc("metamaserpain",(void*)metamaser_pain);
+//	gstate->RegisterFunc("metamasertouch",(void*)metamaser_touch);
+	gstate->RegisterFunc("metamaser_give",(void*)metamaser_give);
+	gstate->RegisterFunc("metamaser_select",(void*)metamaser_select);
 }

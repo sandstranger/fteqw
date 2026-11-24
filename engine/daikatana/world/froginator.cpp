@@ -695,17 +695,17 @@ void monster_froginator( userEntity_t *self )
 ///////////////////////////////////////////////////////////////////////////////
 void world_ai_froginator_register_func()
 {
-	gstate->RegisterFunc( "FROG_Think",FROG_Think);
-	gstate->RegisterFunc( "FROG_Pain",FROG_Pain);
+	gstate->RegisterFunc( "FROG_Think",(void*)FROG_Think);
+	gstate->RegisterFunc( "FROG_Pain",(void*)FROG_Pain);
 
-	gstate->RegisterFunc( "FROG_ParseEpairs", FROG_ParseEpairs);
-	gstate->RegisterFunc( "FROG_Begin_Attack", FROG_Begin_Attack);
-	gstate->RegisterFunc( "FROG_Attack", FROG_Attack);
-	gstate->RegisterFunc( "FROG_Jump", FROG_Jump);
-	gstate->RegisterFunc( "FROG_Start_Jump", FROG_Start_Jump);
-	gstate->RegisterFunc( "FROG_Chase", FROG_Chase);
-	gstate->RegisterFunc( "FROG_Start_Chase", FROG_Start_Chase);
-	gstate->RegisterFunc( "FROG_Attack_Think", FROG_Attack_Think);
-	gstate->RegisterFunc( "FROG_Start_Attack_Think", FROG_Start_Attack_Think);
-	gstate->RegisterFunc( "FROG_Touch", FROG_Touch);
+	gstate->RegisterFunc( "FROG_ParseEpairs", (void*)FROG_ParseEpairs);
+	gstate->RegisterFunc( "FROG_Begin_Attack", (void*)FROG_Begin_Attack);
+	gstate->RegisterFunc( "FROG_Attack", (void*)FROG_Attack);
+	gstate->RegisterFunc( "FROG_Jump", (void*)FROG_Jump);
+	gstate->RegisterFunc( "FROG_Start_Jump", (void*)FROG_Start_Jump);
+	gstate->RegisterFunc( "FROG_Chase", (void*)FROG_Chase);
+	gstate->RegisterFunc( "FROG_Start_Chase", (void*)FROG_Start_Chase);
+	gstate->RegisterFunc( "FROG_Attack_Think", (void*)FROG_Attack_Think);
+	gstate->RegisterFunc( "FROG_Start_Attack_Think", (void*)FROG_Start_Attack_Think);
+	gstate->RegisterFunc( "FROG_Touch", (void*)FROG_Touch);
 }

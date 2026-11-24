@@ -289,8 +289,8 @@ void monster_spider(userEntity_t *self)
 ///////////////////////////////////////////////////////////////////////////////
 void world_ai_spider_register_func()
 {
-	gstate->RegisterFunc("spider_begin_attack",spider_begin_attack);
-	gstate->RegisterFunc("spider_attack",spider_attack);
-	gstate->RegisterFunc("spider_start_pain",spider_start_pain);
+	gstate->RegisterFunc("spider_begin_attack",(void*)spider_begin_attack);
+	gstate->RegisterFunc("spider_attack",(void*)spider_attack);
+	gstate->RegisterFunc("spider_start_pain",(void*)spider_start_pain);
 }
 

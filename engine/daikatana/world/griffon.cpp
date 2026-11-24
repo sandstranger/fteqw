@@ -1054,8 +1054,8 @@ void monster_griffon( userEntity_t *self )
 ///////////////////////////////////////////////////////////////////////////////
 void world_ai_griffon_register_func()
 {
-	gstate->RegisterFunc("Griffon_Think",Griffon_Think);
-	gstate->RegisterFunc("GRIFFON_StartPain",GRIFFON_StartPain);
-	gstate->RegisterFunc("GRIFFON_Begin_Attack",GRIFFON_Begin_Attack);
-	gstate->RegisterFunc("GRIFFON_Attack",GRIFFON_Attack);
+	gstate->RegisterFunc("Griffon_Think",(void*)Griffon_Think);
+	gstate->RegisterFunc("GRIFFON_StartPain",(void*)GRIFFON_StartPain);
+	gstate->RegisterFunc("GRIFFON_Begin_Attack",(void*)GRIFFON_Begin_Attack);
+	gstate->RegisterFunc("GRIFFON_Attack",(void*)GRIFFON_Attack);
 }

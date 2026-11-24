@@ -443,9 +443,9 @@ void ammo_rockets (userEntity_t *self)
 ///////////////////////////////////////////////////////////////////////////////
 void weapon_sidewinder_register_func()
 {
-	gstate->RegisterFunc("sidewinder_think",sidewinder_think);
-	gstate->RegisterFunc("sidewinder_use",sidewinder_use);
-	gstate->RegisterFunc("sidewinder_touch",sidewinder_touch);
-	gstate->RegisterFunc("sidewinder_give",sidewinder_give);
-	gstate->RegisterFunc("sidewinder_select",sidewinder_select);
+	gstate->RegisterFunc("sidewinder_think",(void*)sidewinder_think);
+	gstate->RegisterFunc("sidewinder_use",(void*)sidewinder_use);
+	gstate->RegisterFunc("sidewinder_touch",(void*)sidewinder_touch);
+	gstate->RegisterFunc("sidewinder_give",(void*)sidewinder_give);
+	gstate->RegisterFunc("sidewinder_select",(void*)sidewinder_select);
 }

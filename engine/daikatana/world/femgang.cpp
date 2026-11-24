@@ -343,11 +343,11 @@ void monster_femgang (userEntity_t *self)
 ///////////////////////////////////////////////////////////////////////////////
 void world_ai_femgang_register_func()
 {
-	gstate->RegisterFunc("femgang_start_pain",femgang_start_pain);
-	gstate->RegisterFunc("femgang_start_die",femgang_start_die);
+	gstate->RegisterFunc("femgang_start_pain",(void*)femgang_start_pain);
+	gstate->RegisterFunc("femgang_start_die",(void*)femgang_start_die);
 
-	gstate->RegisterFunc("femgang_start_idle",femgang_start_idle);
-	gstate->RegisterFunc("femgang_begin_attack",femgang_begin_attack);
-	gstate->RegisterFunc("femgang_attack",femgang_attack);
-	gstate->RegisterFunc("femgang_check_range",femgang_check_range);
+	gstate->RegisterFunc("femgang_start_idle",(void*)femgang_start_idle);
+	gstate->RegisterFunc("femgang_begin_attack",(void*)femgang_begin_attack);
+	gstate->RegisterFunc("femgang_attack",(void*)femgang_attack);
+	gstate->RegisterFunc("femgang_check_range",(void*)femgang_check_range);
 }
