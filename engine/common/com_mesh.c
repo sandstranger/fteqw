@@ -5141,8 +5141,10 @@ static void *Q1MDL_LoadFrameGroup (galiasinfo_t *galias, dmdl_t *pq1inmodel, mod
 			verts = (vecV_t *)(pose+frame->numposes);
 #else
 			pose = (galiaspose_t *)ZG_Malloc(&loadmodel->memgroup, frame->numposes*(sizeof(galiaspose_t) + (sizeof(vecV_t)+sizeof(vec3_t)*3)*galias->numverts));
+			//every pose's verts first, then their normals: a pose's verts straight after the last's vec3_ts weren't
+			//16-byte aligned (as vecV_t is, off arm) unless numverts happened to be a multiple of 4
 			verts = (vecV_t *)(pose+frame->numposes);
-			normals = (vec3_t*)&verts[galias->numverts];
+			normals = (vec3_t*)&verts[galias->numverts*frame->numposes];
 			svec = &normals[galias->numverts];
 			tvec = &svec[galias->numverts];
 #endif
@@ -5207,13 +5209,11 @@ static void *Q1MDL_LoadFrameGroup (galiasinfo_t *galias, dmdl_t *pq1inmodel, mod
 					pinframe += pq1inmodel->numverts;
 				}
 
+				verts = &verts[galias->numverts];
 #ifndef SERVERONLY
-				verts = (vecV_t*)&tvec[galias->numverts];
-				normals = (vec3_t*)&verts[galias->numverts];
+				normals = &tvec[galias->numverts];
 				svec = &normals[galias->numverts];
 				tvec = &svec[galias->numverts];
-#else
-				verts = &verts[galias->numverts];
 #endif
 				pose++;
 			}

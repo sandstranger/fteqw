@@ -1734,7 +1734,8 @@ static void PR_ExpandTempStrings(progfuncs_t *progfuncs, size_t newmax)
 		ntable = progfuncs->funcs.parms->memalloc(sizeof(*ntable) * newmax);
 		memset(ntable+prinst.maxtempstrings, 0, sizeof(*ntable) * (newmax-prinst.maxtempstrings));
 	}
-	memcpy(ntable, prinst.tempstrings, sizeof(*ntable) * prinst.maxtempstrings);
+	if (prinst.maxtempstrings)	//(from no table at all: memcpy from null's undefined even of nothing)
+		memcpy(ntable, prinst.tempstrings, sizeof(*ntable) * prinst.maxtempstrings);
 	if (prinst.tempstrings)
 	{
 		if (prinst.tablewatch)
@@ -1752,7 +1753,8 @@ static void PR_ExpandTempStrings(progfuncs_t *progfuncs, size_t newmax)
 		ntable = progfuncs->funcs.parms->memalloc(sizeof(*ntable) * newmax);
 		memset(ntable+prinst.maxtempstrings, 0, sizeof(*ntable) * (newmax-prinst.maxtempstrings));
 	}
-	memcpy(ntable, prinst.tempstrings, sizeof(*ntable) * prinst.maxtempstrings);
+	if (prinst.maxtempstrings)	//(from no table at all: memcpy from null's undefined even of nothing)
+		memcpy(ntable, prinst.tempstrings, sizeof(*ntable) * prinst.maxtempstrings);
 	if (prinst.tempstrings)
 	{
 		if (prinst.tablemaplen)
@@ -1765,7 +1767,8 @@ static void PR_ExpandTempStrings(progfuncs_t *progfuncs, size_t newmax)
 	prinst.gctablevalid = 0;
 #else
 	ntable = progfuncs->funcs.parms->memalloc(sizeof(*ntable) * newmax);
-	memcpy(ntable, prinst.tempstrings, sizeof(*ntable) * prinst.maxtempstrings);
+	if (prinst.maxtempstrings)	//(from no table at all: memcpy from null's undefined even of nothing)
+		memcpy(ntable, prinst.tempstrings, sizeof(*ntable) * prinst.maxtempstrings);
 	memset(ntable+prinst.maxtempstrings, 0, sizeof(*ntable) * (newmax-prinst.maxtempstrings));
 	if (prinst.tempstrings)
 		progfuncs->funcs.parms->memfree(prinst.tempstrings);
@@ -2311,7 +2314,8 @@ static string_t PDECL PR_AllocTempStringLen			(pubprogfuncs_t *ppf, char **str, 
 	{
 		newmax = prinst.maxtempstrings + 1024;
 		ntable = progfuncs->funcs.parms->memalloc(sizeof(char*) * newmax);
-		memcpy(ntable, prinst.tempstrings, sizeof(char*) * prinst.numtempstrings);
+		if (prinst.numtempstrings)
+			memcpy(ntable, prinst.tempstrings, sizeof(char*) * prinst.numtempstrings);
 		prinst.maxtempstrings = newmax;
 		if (prinst.tempstrings)
 			progfuncs->funcs.parms->memfree(prinst.tempstrings);

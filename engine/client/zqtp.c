@@ -2987,9 +2987,9 @@ void TP_CheckPickupSound (char *s, vec3_t org, int seat)
 {
 	int entnum;
 	item_t	*item;
-	playerview_t *pv = &cl.playerview[seat];
+	playerview_t *pv = (seat >= 0 && seat < MAX_SPLITS)?&cl.playerview[seat]:NULL;	//(seat -1: someone else's pickup: it read playerview[-1])
 	//if we're spectating, we don't want to do any actual triggers, so pretend it was someone else.
-	if (pv->spectator)
+	if (pv && pv->spectator)
 		seat = -1;
 	if (!s)
 		return;

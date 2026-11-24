@@ -2931,6 +2931,52 @@ retry:
 		return false;
 	}
 
+	if (pr_progs->version == PROG_VERSION && fsz >= standard_dprograms_t_size)
+	{	//some compilers wrote the sections at unaligned offsets (the mission packs' progs). Their structs are read in
+		//place, which faults on strict-alignment cpus (armv7's ldrd/ldm, once optimised), so those sections get
+		//aligned copies, after a copy of the whole file (which stays as it was otherwise)
+		unsigned int *sofs[6];
+		size_t extra = 0, o, len;
+		int i, j;
+		sofs[0] = &pr_progs->ofs_statements;
+		sofs[1] = &pr_progs->ofs_globaldefs;
+		sofs[2] = &pr_progs->ofs_fielddefs;
+		sofs[3] = &pr_progs->ofs_functions;
+		sofs[4] = &pr_progs->ofs_strings;	//(chars: as they are)
+		sofs[5] = &pr_progs->ofs_globals;
+		for (i = 0; i < 6; i++)
+			if (i != 4 && (*sofs[i] & 3) && *sofs[i] < fsz)
+				extra += fsz - *sofs[i] + 4;
+		if (extra)
+		{
+			pbyte *n = PRHunkAlloc(progfuncs, fsz + extra + 4, "progs (realigned)");
+			dprograms_t *nh = (dprograms_t *)n;
+			unsigned int *nofs[6];
+			memcpy(n, pr_progs, fsz);
+			nofs[0] = &nh->ofs_statements;
+			nofs[1] = &nh->ofs_globaldefs;
+			nofs[2] = &nh->ofs_fielddefs;
+			nofs[3] = &nh->ofs_functions;
+			nofs[4] = &nh->ofs_strings;
+			nofs[5] = &nh->ofs_globals;
+			o = (fsz + 3) & ~(size_t)3;
+			for (i = 0; i < 6; i++)
+			{
+				if (i == 4 || !(*sofs[i] & 3) || *sofs[i] >= fsz)
+					continue;
+				len = fsz - *sofs[i];	//up to whichever section's next (or the end)
+				for (j = 0; j < 6; j++)
+					if (*sofs[j] > *sofs[i] && *sofs[j] - *sofs[i] < len)
+						len = *sofs[j] - *sofs[i];
+				memcpy(n + o, (pbyte *)pr_progs + *sofs[i], len);
+				*nofs[i] = o;
+				o = (o + len + 3) & ~(size_t)3;
+			}
+			pr_progs = nh;
+			fsz = o;
+		}
+	}
+
 	fnc = (dfunction_t *)((pbyte *)pr_progs + pr_progs->ofs_functions);
 	pr_strings = ((char *)pr_progs + pr_progs->ofs_strings);
 	current_progstate->globaldefs = *(void**)&gd16 = (void *)((pbyte *)pr_progs + pr_progs->ofs_globaldefs);

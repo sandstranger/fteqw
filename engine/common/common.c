@@ -1323,7 +1323,7 @@ int MSG_ReadSize16 (sizebuf_t *sb)
 								//down to 32 units below the origin, so corpses (Q2 sends solid 0) blocked prediction
 	else
 	{
-		int solid = (((ssolid>>7) & 0x1F8) - 32+32768)<<16;	/*up can be negative*/
+		int solid = (int)((unsigned int)(((ssolid>>7) & 0x1F8) - 32+32768)<<16);	/*up can be negative*/
 		solid|= ((ssolid & 0x1F)<<3);
 		solid|= ((ssolid & 0x3E0)<<6);
 		return solid;

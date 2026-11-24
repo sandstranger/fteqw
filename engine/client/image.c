@@ -9312,7 +9312,7 @@ static unsigned int * Image_GenerateNormalMap(qbyte *pixels, unsigned int *nmap,
 			/* The highest resolution mipmap level always has a
 			   unit length magnitude. */
 			height = bound(0, (pixels[i*wr + j]*offsetscale)+(255*(1-offsetscale)), 255);
-			nmap[i*w+j] = LittleLong((height << 24)|(b << 16)|(g << 8)|(r));	// <AWE> Added support for big endian.
+			nmap[i*w+j] = LittleLong(((unsigned int)height << 24)|(b << 16)|(g << 8)|(r));	// <AWE> Added support for big endian.
 		}
 	}
 
@@ -13640,7 +13640,7 @@ static qboolean Image_GenMip0(struct pendingtextureinfo *mips, unsigned int flag
 			static const unsigned ColorPercent[16] = {25, 51, 76, 102, 114, 127, 140, 153, 165, 178, 191, 204, 216, 229, 237, 247};
 			qbyte p = ((qbyte*)rawdata)[i];
 			rgbadata[i] = d_8to24rgbtable[ColorIndex[p>>4]] & 0x00ffffff;
-			rgbadata[i] |= ( int )ColorPercent[p&15] << 24;
+			rgbadata[i] |= ColorPercent[p&15] << 24;
 		}
 		if (freedata)
 			BZ_Free(rawdata);
