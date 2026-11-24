@@ -343,6 +343,19 @@ void CLDKF_AddEntity(void *model, const float *origin, const float *oldorigin, c
 	AngleVectors(ent->angles, ent->axis[0], ent->axis[1], ent->axis[2]);
 	VectorInverse(ent->axis[1]);
 	ent->model = model;
+	if (ent->model->type == mod_sprite && ent->model->meshinfo)
+	{	//its renderer wrapped sprites' frames (Quake II's R_DrawSpriteModel's %): FTE's draws the first past them
+		int n = ((msprite_t*)ent->model->meshinfo)->numframes;
+		if (n > 0)
+		{
+			frame %= n;
+			oldframe %= n;
+			if (frame < 0)
+				frame += n;
+			if (oldframe < 0)
+				oldframe += n;
+		}
+	}
 	ent->framestate.g[FS_REG].frame[0] = frame;
 	ent->framestate.g[FS_REG].frame[1] = oldframe;
 	ent->framestate.g[FS_REG].lerpweight[0] = 1-backlerp;
