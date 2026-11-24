@@ -6287,6 +6287,16 @@ static void CLQ2_ParseStartSoundPacket(void)
 		if (sfx->loadstate == SLS_FAILED)
 			sfx = S_PrecacheSound(va("players/male/%s", cl.sound_precache[sound_num]->name+1));
 	}
+#ifdef DAIKATANA
+	if (channel == 5/*its CHAN_LOOP*/ && ent > 0 && CLDK_IsDaikatana())
+	{	//its audio looped what's on it until a silent one stopped it
+		if (volume <= 0)
+			S_StopSound(ent, channel);
+		else
+			S_StartSound (ent, channel, sfx, pos, NULL, volume, attenuation, ofs, 0, CF_FORCELOOP);
+		return;
+	}
+#endif
 	S_StartSound (ent, channel, sfx, pos, NULL, volume, attenuation, ofs, 0, 0);
 }
 #endif

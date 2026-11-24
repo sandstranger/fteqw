@@ -2437,8 +2437,8 @@ qboolean CLQ2_BSPSoundOrigin(int entnum, vec3_t org)
 	return true;
 }
 
-//returns a list of all the ents currently trying to play a sound.
-unsigned int CLQ2_GatherSounds(vec3_t *positions, unsigned int *entnums, sfx_t **sounds, unsigned int max)
+//returns a list of all the ents currently trying to play a sound (volumes: 0-1, attenuations: inaudible at 1000/it).
+unsigned int CLQ2_GatherSounds(vec3_t *positions, unsigned int *entnums, sfx_t **sounds, float *volumes, float *attenuations, unsigned int max)
 {
 	entity_state_t		*s1;
 	sfx_t *sfx;
@@ -2463,6 +2463,12 @@ unsigned int CLQ2_GatherSounds(vec3_t *positions, unsigned int *entnums, sfx_t *
 				if (!CLQ2_BSPSoundOrigin(s1->number, positions[count]))
 					VectorCopy(s1->origin, positions[count]);
 				sounds[count] = sfx;
+				volumes[count] = 1;
+				attenuations[count] = 3;	//ATTN_STATIC
+#ifdef DAIKATANA
+				if (CLDK_IsDaikatana())	//its loops have their own volume and distances
+					CLDK_LoopSoundParams(s1->number, &volumes[count], &attenuations[count]);
+#endif
 				count++;
 			}
 		}

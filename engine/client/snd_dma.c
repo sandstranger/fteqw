@@ -3715,13 +3715,16 @@ static void S_Q2_AddEntitySounds(soundcardinfo_t *sc)
 	vec3_t positions[2048];
 	int entnums[countof(positions)];
 	sfx_t *sounds[countof(positions)];
+	float volumes[countof(positions)], attenuations[countof(positions)];
 	unsigned int count;
 	unsigned int j;
 	channel_t *c;
 
+	for (j = 0; j < countof(positions); j++)
+		volumes[j] = 1, attenuations[j] = 3;	//(what doesn't say: full, ATTN_STATIC)
 #ifdef Q2CLIENT
 	if (cls.protocol == CP_QUAKE2)
-		count = CLQ2_GatherSounds(positions, entnums, sounds, countof(sounds));
+		count = CLQ2_GatherSounds(positions, entnums, sounds, volumes, attenuations, countof(sounds));
 	else
 #endif
 #ifdef VM_CG
@@ -3779,6 +3782,8 @@ static void S_Q2_AddEntitySounds(soundcardinfo_t *sc)
 				c->vol[j] = 0;
 			c->sfx = NULL;
 		}
+		c->dist_mult = attenuations[count] / snd_nominaldistance.value;
+		c->master_vol = bound(0, 255 * volumes[count], 255);
 		if (sc->ChannelUpdate)
 		{	//hardware mixing doesn't support merging
 			VectorCopy(positions[count], c->origin);

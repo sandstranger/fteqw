@@ -137,6 +137,22 @@ void CLDK_ParseEntState(void)
 	}
 }
 
+//its entity's looping sound (its audio's autosounds): its volume, full to dist_min, nothing past dist_max (FTE's
+//attenuation fades from the entity to 1000/attenuation, so to dist_max)
+extern "C" void CLDK_LoopSoundParams(int entnum, float *volume, float *attenuation)
+{
+	const entity_state_t *s;
+	float dmax;
+	if (entnum <= 0 || entnum >= MAX_EDICTS)
+		return;
+	s = &dkstate[entnum];
+	*volume = s->volume?s->volume:1.0f;
+	dmax = s->dist_max?s->dist_max:ATTN_NORM_MAX;
+	*attenuation = (dmax > 0)?1000.0f/dmax:0;
+	if (*attenuation > 4)
+		*attenuation = 4;
+}
+
 static void SetState(entity_state_t *s, const cldk_estate_t *e)
 {
 	s->origin.Set(e->origin[0], e->origin[1], e->origin[2]);
