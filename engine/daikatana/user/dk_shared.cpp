@@ -758,7 +758,9 @@ char *Info_ValueForKey( char *s, char *key )
 		{
 			if (!*s)
 				return (value[valueindex][0] = 0, value[valueindex]);
-			*o++ = *s++;
+			if (o < pkey + sizeof(pkey) - 1)	//FTE: its userinfo has longer ones than it had
+				*o++ = *s;
+			s++;
 		}
 		*o = 0;
 		s++;
@@ -769,7 +771,9 @@ char *Info_ValueForKey( char *s, char *key )
 		{
 			if (!*s)
 				return (value[valueindex][0] = 0, value[valueindex]);
-			*o++ = *s++;
+			if (o < value[valueindex] + sizeof(value[0]) - 1)
+				*o++ = *s;
+			s++;
 		}
 		*o = 0;
 
@@ -813,7 +817,9 @@ void Info_RemoveKey( char *s, char *key )
 			{
 				return;
 			}
-			*o++ = *s++;
+			if (o < pkey + sizeof(pkey) - 1)	//FTE: its userinfo has longer ones than it had
+				*o++ = *s;
+			s++;
 		}
 		*o = 0;
 		s++;
@@ -825,13 +831,15 @@ void Info_RemoveKey( char *s, char *key )
 			{
 				return;
 			}
-			*o++ = *s++;
+			if (o < value + sizeof(value) - 1)
+				*o++ = *s;
+			s++;
 		}
 		*o = 0;
 
 		if (!strcmp (key, pkey) )
 		{
-			strcpy (start, s);	// remove this part
+			memmove (start, s, strlen(s) + 1);	// remove this part (FTE: strcpy's overlapping copy garbled it)
 			return;
 		}
 

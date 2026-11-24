@@ -3041,7 +3041,7 @@ static void CL_SendUserinfoUpdate(void)
 		if (cls.protocol_q2 == PROTOCOL_VERSION_Q2EX)
 		{
 			extern size_t Q2EX_UserInfoToString(char *infostring, size_t maxsize, const char **ignore, int seats);
-			Q2EX_UserInfoToString(userinfo, sizeof(userinfo), NULL, cl.splitclients);
+			Q2EX_UserInfoToString(userinfo, sizeof(userinfo), NULL, max(1, cl.splitclients));	//(none yet before the serverdata: it'd be empty, and the server'd have no name for us)
 
 			MSG_WriteByte (&cls.netchan.message, clcq2_userinfo);
 			MSG_WriteString (&cls.netchan.message, userinfo+(*userinfo=='\\'?1:0));
