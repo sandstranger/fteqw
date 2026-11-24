@@ -1308,10 +1308,12 @@ static void OpenAL_ChannelUpdate(soundcardinfo_t *sc, channel_t *chan, chanupdat
 		palSourcef(src, AL_PITCH, pitch);
 
 #ifdef USEEFX
+		//(through its pointer, as everything else here: there's no prototype for the real one, an implicit
+		//declaration's call through the wrong type, and nothing links to the library itself)
 		if (chan->flags & CF_NOREVERB)	//don't do the underwater thing on static sounds. it sounds like arse with all those sources.
-			alSource3i(src, AL_AUXILIARY_SEND_FILTER, 0, 0, AL_FILTER_NULL);
+			palSource3i(src, AL_AUXILIARY_SEND_FILTER, 0, 0, AL_FILTER_NULL);
 		else
-			alSource3i(src, AL_AUXILIARY_SEND_FILTER, oali->effectslot, 0, AL_FILTER_NULL);
+			palSource3i(src, AL_AUXILIARY_SEND_FILTER, oali->effectslot, 0, AL_FILTER_NULL);
 #endif
 
 		palSourcei(src, AL_LOOPING, (!stream && ((chan->flags & CF_FORCELOOP)||(sfx->loopstart>=0&&!stream)))?AL_TRUE:AL_FALSE);
