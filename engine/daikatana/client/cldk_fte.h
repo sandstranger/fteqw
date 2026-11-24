@@ -45,6 +45,8 @@ const char	*CLDKF_ModelName(int modelindex);			//"" if there's none
 void		*CLDKF_LoadFile(const char *name, int *length);
 void		CLDKF_FreeFile(void *buf);
 void		CLDKF_Music(const char *name, int loop);		//null: stop
+void		CLDKF_PlayStream(const char *name, int chan, float volume, int loop);	//a sound of its own channel, everywhere
+void		CLDKF_StopStream(int chan);
 
 //its scene
 void		*CLDKF_RegisterModel(const char *name);

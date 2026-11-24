@@ -459,17 +459,37 @@ static void CLDK_S_StartMusic(const char *name, int chan)
 	CL_MusicPath(path, sizeof(path), name);
 	CLDKF_Music(path, true);
 }
+//its MP3 channels: the music's is FTE's music track; the rest (voices: sounds/voices/...) play as sounds of their own
+//channels, heard everywhere (FTE decodes mp3 as sounds: snd_minimp3.c)
+static int dkmusicchan = -1;
+static bool CL_IsMusic(const char *name)
+{
+	return !strncasecmp(name, "music/", 6) || !strncasecmp(name, "data/music/", 11) || !strchr(name, '/');
+}
 static void CLDK_S_StartMP3(const char *name, int chan, float vol, int play_count, qboolean bRestart)
 {
 	char path[MAX_QPATH];
 	if (!name || !*name)
 		return;
-	CL_MusicPath(path, sizeof(path), name);
-	CLDKF_Music(path, play_count <= 0);
+	if (CL_IsMusic(name))
+	{
+		CL_MusicPath(path, sizeof(path), name);
+		CLDKF_Music(path, play_count <= 0);
+		dkmusicchan = chan;
+		return;
+	}
+	snprintf(path, sizeof(path), "%s", strncasecmp(name, "data/", 5)?name:name+5);
+	CLDKF_PlayStream(path, chan, vol, play_count <= 0);
 }
 static void CLDK_S_StopMP3(int chan)
 {
-	CLDKF_Music(NULL, false);
+	if (chan == dkmusicchan)
+	{
+		CLDKF_Music(NULL, false);
+		dkmusicchan = -1;
+	}
+	else
+		CLDKF_StopStream(chan);
 }
 void (*S_StartMusic)(const char *name, int chan) = CLDK_S_StartMusic;
 void (*S_StartMP3)(const char *name, int chan, float fvol, int play_count, qboolean bRestart) = CLDK_S_StartMP3;

@@ -136,6 +136,21 @@ void CLDKF_FreeFile(void *buf)
 {
 	BZ_Free(buf);
 }
+//its MP3 channels past the music's (voices): sounds of their own channels, everywhere
+#define CLDK_STREAMCHANNEL	(1024)
+void CLDKF_PlayStream(const char *name, int chan, float volume, int loop)
+{
+	sfx_t *sfx = S_PrecacheSound(name);
+	Con_DPrintf("Daikatana: mp3 channel %i: %s%s\n", chan, name, sfx?"":" (no sound)");
+	if (!sfx)
+		return;
+	S_StopSound(0, CLDK_STREAMCHANNEL + chan);
+	S_StartSound(0, CLDK_STREAMCHANNEL + chan, sfx, NULL, NULL, (volume > 0)?volume:1, ATTN_NONE, 0, 0, loop?CF_FORCELOOP:0);
+}
+void CLDKF_StopStream(int chan)
+{
+	S_StopSound(0, CLDK_STREAMCHANNEL + chan);
+}
 void CLDKF_Music(const char *name, int loop)
 {
 	if (!name)
