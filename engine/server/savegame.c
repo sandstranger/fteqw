@@ -211,6 +211,53 @@ pbool PDECL SV_ExtendedSaveData(pubprogfuncs_t *progfuncs, void *loadctx, const 
 	return true;
 }
 
+/*
+The menu's preview of a saved game: saves/<name>/screeny.tga, whichever format the game itself was
+written in. The view is rendered again without the menu or the console and read before anything is
+presented, so it does not depend on what the window holds after a swap (ANGLE keeps nothing there).
+Legacy (.sav) saves used to get none: vanilla Quake's progs save in that format by default, so its
+saves never had a picture while mods that use the FTE format had one.
+*/
+static void SV_SaveScreenshot(const char *savename)
+{
+#ifdef HAVE_CLIENT
+	char savefilename[MAX_OSPATH];
+	Q_snprintfz(savefilename, sizeof(savefilename), "saves/%s/screeny.%s", savename, "tga");//scr_sshot_type.string);
+	FS_Remove(savefilename, FS_GAMEONLY);
+	if (cls.state == ca_active && qrenderer > QR_NONE && qrenderer != QR_VULKAN/*FIXME*/)
+	{
+		int stride;
+		int width = vid.pixelwidth;
+		int height = vid.pixelheight;
+		image_t *img;
+		uploadfmt_t format;
+		void *rgbbuffer = SCR_ScreenShot_Capture(width, height, &stride, &format, false, false);
+		if (rgbbuffer)
+		{
+//			extern cvar_t	scr_sshot_type;
+			FS_CreatePath(savefilename, FS_GAMEONLY);	//a legacy save has no saves/<name>/ of its own
+			SCR_ScreenShot(savefilename, FS_GAMEONLY, &rgbbuffer, 1, stride, width, height, format, false);
+			BZ_Free(rgbbuffer);
+
+			//if any menu code has the shader loaded, we want to avoid them using a cache.
+			//hopefully the menu code will unload as it goes, because these screenshots could be truely massive, as they're taken at screen resolution.
+			//should probably use a smaller fbo or something, but whatever.
+			img = Image_FindTexture(savefilename, NULL, 0);
+			if (img)
+			{
+				if (Image_UnloadTexture(img))
+				{
+					//and then reload it so that any shaders using it don't get confused
+					Image_GetTexture(savefilename, NULL, 0, NULL, NULL, 0, 0, TF_INVALID);
+				}
+			}
+		}
+	}
+#else
+	(void)savename;
+#endif
+}
+
 #ifndef QUAKETC
 static qboolean SV_LegacySavegame (const char *savename, qboolean verbose)
 {
@@ -368,6 +415,13 @@ static qboolean SV_LegacySavegame (const char *savename, qboolean verbose)
 	VFS_CLOSE(f);
 
 	FS_FlushFSHashWritten(name);
+
+	//the menu's slot is the file's name without .sav
+	{
+		char slot[MAX_QPATH];
+		COM_StripExtension(name, slot, sizeof(slot));
+		SV_SaveScreenshot(slot);
+	}
 
 	Q_strncpyz(sv.loadgame_on_restart, savename, sizeof(sv.loadgame_on_restart));
 	return true;
@@ -1388,40 +1442,8 @@ void SV_Savegame (const char *savename, qboolean mapchange)
 
 	VFS_CLOSE(f);
 
-#ifdef HAVE_CLIENT
 	//try to save screenshots automagically.
-	Q_snprintfz(comment, sizeof(comment), "saves/%s/screeny.%s", savename, "tga");//scr_sshot_type.string);
-	savefilename = comment;
-	FS_Remove(savefilename, FS_GAMEONLY);
-	if (cls.state == ca_active && qrenderer > QR_NONE && qrenderer != QR_VULKAN/*FIXME*/)
-	{
-		int stride;
-		int width = vid.pixelwidth;
-		int height = vid.pixelheight;
-		image_t *img;
-		uploadfmt_t format;
-		void *rgbbuffer = SCR_ScreenShot_Capture(width, height, &stride, &format, false, false);
-		if (rgbbuffer)
-		{
-//			extern cvar_t	scr_sshot_type;
-			SCR_ScreenShot(savefilename, FS_GAMEONLY, &rgbbuffer, 1, stride, width, height, format, false);
-			BZ_Free(rgbbuffer);
-
-			//if any menu code has the shader loaded, we want to avoid them using a cache.
-			//hopefully the menu code will unload as it goes, because these screenshots could be truely massive, as they're taken at screen resolution.
-			//should probably use a smaller fbo or something, but whatever.
-			img = Image_FindTexture(va("saves/%s/screeny.%s", savename, "tga"), NULL, 0);
-			if (img)
-			{
-				if (Image_UnloadTexture(img))
-				{
-					//and then reload it so that any shaders using it don't get confused
-					Image_GetTexture(va("saves/%s/screeny.%s", savename, "tga"), NULL, 0, NULL, NULL, 0, 0, TF_INVALID);
-				}
-			}
-		}
-	}
-#endif
+	SV_SaveScreenshot(savename);
 
 #ifdef Q2SERVER
 	//save the player's inventory and other map-persistant state that is owned by the gamecode.
@@ -2468,7 +2490,11 @@ void SV_DeleteSavegame_f (void)
 	if (FS_FLocateFile(fname, FSLF_IGNORELINKS|FSLF_DONTREFERENCE, &loc))
 	{
 		if (loc.search->handle->RemoveFile && loc.search->handle->RemoveFile(loc.search->handle, fname))
+		{
 			Con_Printf("Removed %s\n", fname);
+			if (!FS_FLocateFile(va("saves/%s/info.fsv", savename), FSLF_IGNORELINKS|FSLF_DONTREFERENCE, &loc))
+				FS_Remove(va("saves/%s/screeny.tga", savename), FS_GAMEONLY);	//its preview (SV_SaveScreenshot)
+		}
 		else
 			Con_Printf("Unable to remove %s\n", fname);
 	}
