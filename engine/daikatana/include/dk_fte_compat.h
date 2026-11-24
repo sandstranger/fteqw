@@ -61,6 +61,8 @@ template<class A, class B> static inline A dk_max(A a, B b) {return (a > b)?a:(A
 #include "dk_rename_user.h"
 #elif defined(DK_MODULE_FTE)
 #include "dk_rename_fte.h"
+#elif defined(DK_MODULE_CLIENT)
+#include "dk_rename_client.h"
 #endif
 
 #endif

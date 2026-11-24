@@ -3091,6 +3091,9 @@ static qbyte *ReadRawBMPFile(qbyte *buf, int length, int *width, int *height, si
 		{
 			pal[i] = data[i*4+2] + (data[i*4+1]<<8) + (data[i*4+0]<<16) + (255u/*data[i*4+3]*/<<24);
 		}
+		//Daikatana's 8bit bmps (its fonts, HUD icons): the last colour, pure magenta, is see-through
+		if (h.NumofColorIndices == 256 && pal[255] == 0xffff00ffu)
+			pal[255] = 0;
 
 		if (OffsetofBMPBits)
 			buf += OffsetofBMPBits;

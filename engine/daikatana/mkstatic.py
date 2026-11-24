@@ -7,7 +7,7 @@ one for DK_MODULE_<MODULE>):
 - everything with C linkage or a global variable (which g++ doesn't mangle) is renamed in all of them, so none of
   it meets FTE's own names (deathmatch, developer...), whatever FTE has now or later;
 and in every module, what it uses of another's under that one's name (weapons used world's, as it linked with
-world.lib; all of them IonCommon; fte, the glue, physics').
+world.lib; all of them IonCommon; fte, the glue, physics'). client is its client's code (HUD, effects) on FTE's client.
 What world and weapons exported (extern "C", which GetProcAddress found by name) goes into fte/dk_exports.cpp's
 tables, for physics' DLL_FindFunction.
 
@@ -16,9 +16,10 @@ names are obj/<module>_<path>.o."""
 import os, re, sys, collections
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-MODULES = ('physics', 'world', 'weapons', 'user', 'fte')
-PREFIX = {'physics': 'dkph_', 'world': 'dkwo_', 'weapons': 'dkwp_', 'user': 'dkus_'}
+MODULES = ('physics', 'world', 'weapons', 'user', 'fte', 'client')
+PREFIX = {'physics': 'dkph_', 'world': 'dkwo_', 'weapons': 'dkwp_', 'user': 'dkus_', 'client': 'dkcl_'}
 KEEP = set()		#names that stay as they are
+KEEPPREFIX = ('CLDK_', 'SVDK_')	#and FTE's calls into it (client/, fte/)
 
 def split(sym):
     """(identifier, mangled): extern "C" ones and globals are as they are, C++ functions from their mangled
@@ -59,7 +60,7 @@ def main():
     refs = collections.defaultdict(set)		# module -> identifiers it uses
     cfuncs = collections.defaultdict(set)	# module -> extern "C" functions
     for line in open(sys.argv[1], encoding='utf-8', errors='replace'):
-        m = re.match(r'(?:.*/)?obj/(physics|world|weapons|user|fte)_(.+?)\.o:\s*([0-9a-f]*)\s+(\w)\s+(\S+)$', line.strip())
+        m = re.match(r'(?:.*/)?obj/(physics|world|weapons|user|fte|client)_(.+?)\.o:\s*([0-9a-f]*)\s+(\w)\s+(\S+)$', line.strip())
         if not m:
             continue
         mod, f, addr, typ, sym = m.groups()
@@ -101,7 +102,7 @@ def main():
 
     def renamed(mod, name):
         """what mod's name is called, as mod defines it"""
-        if mod not in PREFIX or name in KEEP:
+        if mod not in PREFIX or name in KEEP or name.startswith(KEEPPREFIX):
             return name
         d = defs[name]
         if d[mod]:		#unmangled: C linkage, or a global variable

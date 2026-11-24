@@ -9640,7 +9640,16 @@ isillegible:
 		case svcq2_serverdata:	//12			// [long] protocol ...
 			Cbuf_Execute ();		// make sure any stuffed commands are done
 			CLQ2_ParseServerData ();
+#ifdef DAIKATANA
+			if (CLDK_IsDaikatana())
+				CLDK_Reset();
+#endif
 			break;
+#ifdef DAIKATANA
+		case svcq2dk_message:	//FTE's: Daikatana's own (its HUD's, its effects...), for its client code
+			CLDK_ParseServerMessage();
+			break;
+#endif
 		case svcq2_configstring:	//13		// [short] [string]
 			CLQ2_ParseConfigString();
 			break;

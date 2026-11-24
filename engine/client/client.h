@@ -2046,6 +2046,14 @@ const char *Media_Send_GetProperty(cin_t *cin, const char *key);
 void Media_SaveTracks(vfsfile_t *outcfg);
 void Media_Init(void);
 qboolean Media_NamedTrack(const char *initialtrack, const char *looptrack);	//new background music interface
+
+#if defined(Q2CLIENT) && defined(DAIKATANA)
+//cldk_fte.c: Daikatana's client code (daikatana/client)
+qboolean CLDK_IsDaikatana(void);
+qboolean CLDK_DrawHUDArea(int seat, const vrect_t *area);
+void CLDK_ParseServerMessage(void);
+void CLDK_Reset(void);
+#endif
 void Media_NumberedTrack(unsigned int initialtrack, unsigned int looptrack);				//legacy cd interface for protocols that only support numbered tracks.
 void Media_EndedTrack(void);	//cd is no longer running, media code needs to pick a new track (cd track or faketrack)
 

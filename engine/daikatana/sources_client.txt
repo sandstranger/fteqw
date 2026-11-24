@@ -1,0 +1,3 @@
+client/cldk_main.cpp
+client/cl_hud.cpp
+client/cl_hudmsg.cpp

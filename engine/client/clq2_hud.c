@@ -615,6 +615,10 @@ void CLQ2_DrawHUD(int seat, const vrect_t *area)
 	q2player_state_t *ps = &cl.q2frame.seat[seat].playerstate;
 	int playernum = cl.q2frame.seat[seat].clientnum;
 
+#ifdef DAIKATANA
+	if (CLDK_DrawHUDArea(seat, area))	//its own (daikatana/client)
+		return;
+#endif
 	if (CLQ2CG_DrawHUD(seat, area))
 	{	//the rerelease's own hud, and KEX's weapon wheel
 		CLQ2CG_WheelDraw(seat, area);

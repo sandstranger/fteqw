@@ -586,6 +586,9 @@ enum svcq2_ops_e
 	svcq2ex_muzzleflash3 = 32,
 	svcq2ex_achievement = 33,
 
+	//FTE's own, past Q2EX's: Daikatana's messages (daikatana/fte/dk_fteproto.h), [short length][its protocol]
+	svcq2dk_message = 64,
+
 
 	svcr1q2_zpacket = 21,
 	svcr1q2_zdownload = 22,

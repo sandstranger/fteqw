@@ -27,7 +27,9 @@ GPL v2 or later.
 #include "physics.h"		//the engine's view: edict_t is the part of userEntity_t it knows
 #include "client_string.h"
 #include "l__language.h"
+#include "vertnormals.h"
 #include "svdk_q2.h"
+#include "dk_fteproto.h"
 
 extern "C" game_export_t *GetGameAPI (game_import_t *import);	//physics' (p_main.cpp)
 extern edict_t *g_edicts;									//physics' too: freed here between levels
@@ -45,6 +47,7 @@ static int					shadowmax;
 static int					dkmaxclients;
 static bool					dklevelloaded;	//a level's been spawned (so the next needs the last's cleared away)
 static unsigned char		dkbegun[256];	//which clients the game's begun (only those does it disconnect)
+static bool					dksentvalid[256];	//DK_SendStats has sent them their stats
 
 #define DKEDICT(i)		((edict_t *)((char *)dkge->edicts + (size_t)(i)*dkge->edict_size))
 #define DKNUM(e)		((int)(((char *)(e) - (char *)dkge->edicts) / dkge->edict_size))
@@ -789,7 +792,16 @@ static void DKGI_WriteLong(int c)	{unsigned char b[4] = {(unsigned char)(c&0xff)
 static void DKGI_WriteFloat(float f)	{union {float f; int i;} u; u.f = f; DKGI_WriteLong(u.i);}
 static void DKGI_WriteString(char *s)	{if (!s) s = (char *)""; DK_MsgWrite(s, (int)strlen(s)+1);}
 static void DKGI_WritePosition(const CVector &p)	{DKGI_WriteShort((int)(p.x*8)); DKGI_WriteShort((int)(p.y*8)); DKGI_WriteShort((int)(p.z*8));}
-static void DKGI_WriteDir(const CVector &p)	{DK_MsgWrite("\0", 1);}	//FIXME: Daikatana's byte directions
+static CVertexNormals dkvertexnormals;	//its own 255 (MSG_WriteDir's)
+static void DKGI_WriteDir(const CVector &p)
+{
+	int best;
+	if (!p.x && !p.y && !p.z)
+		best = NUMVERTEXNORMALS;
+	else
+		best = dkvertexnormals.GetClosestVertNormal(p);
+	DKGI_WriteByte(best);
+}
 static void DKGI_WriteAngle(float f)	{DKGI_WriteShort((int)(f*65536/360) & 65535);}	//MSG_WriteAngle16
 
 //a reader of what's been written
@@ -885,13 +897,42 @@ static bool DK_TranslateMessage(void)
 		case SVC_NOP:
 			break;
 		default:
-			//Daikatana's own: what Quake II's clients can't take, all of the message from here on
-			if (svc >= 0 && svc < 64 && !dkdropped[svc]++)
-				DK_Printf("Daikatana: message %i dropped (%i bytes)\n", svc, r.len - start);
-			return any;
+			//Daikatana's own, all of the message from here on: as it is, for FTE's clients' Daikatana code
+			//(daikatana/client), in an svc of FTE's own with its length
+			fgi->WriteByte(svcq2dk_message);
+			fgi->WriteShort(r.len - start);
+			for (; start < r.len; start++)
+				fgi->WriteByte(r.data[start]);
+			return true;
 		}
 	}
 	return any;
+}
+
+//what Quake II's player state has no room for: its stats are longs (experience points...), sent when they change
+static long dksentstats[256][MAX_STATS];
+static void DK_SendStats(void)
+{
+	int i, k;
+	for (i = 1; i <= dkmaxclients && i < 256 && i < shadowmax; i++)
+	{
+		edict_t *de = DKEDICT(i);
+		if (!de->inuse || !de->client || !dkbegun[i])
+		{
+			dksentvalid[i] = false;
+			continue;
+		}
+		if (dksentvalid[i] && !memcmp(dksentstats[i], de->client->ps.stats, sizeof(dksentstats[i])))
+			continue;
+		memcpy(dksentstats[i], de->client->ps.stats, sizeof(dksentstats[i]));
+		dksentvalid[i] = true;
+		fgi->WriteByte(svcq2dk_message);
+		fgi->WriteShort(1 + MAX_STATS*4);
+		fgi->WriteByte(svcdk_fte_stats);
+		for (k = 0; k < MAX_STATS; k++)
+			fgi->WriteLong((int)de->client->ps.stats[k]);
+		fgi->unicast(&shadow[i], true);
+	}
 }
 
 static void DKGI_multicast(const CVector &origin, multicast_t to)
@@ -1441,7 +1482,7 @@ static void FQ2_VARGS DK3_ClientBegin(fq2::edict_t *ent)
 	DK_PreCall();
 	dkge->ClientBegin(DK_FromShadow(ent), false);
 	if (n > 0 && n < 256)
-		dkbegun[n] = true;
+		dkbegun[n] = true, dksentvalid[n] = false;
 	DK_SyncAll();
 }
 static void FQ2_VARGS DK3_ClientUserinfoChanged(fq2::edict_t *ent, char *userinfo)
@@ -1552,6 +1593,7 @@ static void FQ2_VARGS DK3_RunFrame(void)
 	DK_PreCall();
 	dkge->RunFrame();
 	DK_SyncAll();
+	DK_SendStats();
 }
 static void FQ2_VARGS DK3_ServerCommand(void)
 {

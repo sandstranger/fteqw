@@ -733,44 +733,52 @@ SET(FTE_SERVER_FILES
 SET(FTE_GAME_DAIKATANA true CACHE BOOL "Include Daikatana's game code (C++).")
 IF(FTE_GAME_DAIKATANA)
 	ENABLE_LANGUAGE(CXX)
-	FILE(STRINGS engine/daikatana/sources.txt DK_SOURCES)
-	SET(DK_FILES)
-	FOREACH(dksrc ${DK_SOURCES})
-		STRING(STRIP "${dksrc}" dksrc)
-		IF(dksrc)
-			STRING(REGEX REPLACE "/.*" "" dkmodule "${dksrc}")
-			STRING(TOUPPER "${dkmodule}" dkmodule)
-			SET(dksrc engine/daikatana/${dksrc})
-			GET_FILENAME_COMPONENT(dkdir ${dksrc} DIRECTORY)
-			SET_SOURCE_FILES_PROPERTIES(${dksrc} PROPERTIES
-				COMPILE_DEFINITIONS "DK_MODULE_${dkmodule}"
-				INCLUDE_DIRECTORIES "${CMAKE_CURRENT_SOURCE_DIR}/${dkdir}")
-			LIST(APPEND DK_FILES ${dksrc})
-		ENDIF()
-	ENDFOREACH()
-	ADD_LIBRARY(dkgame STATIC ${DK_FILES})
-	TARGET_COMPILE_DEFINITIONS(dkgame PRIVATE TONGUE_ENGLISH C_ONLY)
-	TARGET_INCLUDE_DIRECTORIES(dkgame BEFORE PRIVATE
-		engine/daikatana/user
-		engine/daikatana/include
-		engine/daikatana/physics
-		engine/daikatana/world
-		engine/daikatana/weapons
-		engine/daikatana/fte)
-	IF(MSVC)
-		TARGET_COMPILE_OPTIONS(dkgame PRIVATE /FI${CMAKE_CURRENT_SOURCE_DIR}/engine/daikatana/include/dk_fte_compat.h /w)
-	ELSE()
-		TARGET_COMPILE_OPTIONS(dkgame PRIVATE -include ${CMAKE_CURRENT_SOURCE_DIR}/engine/daikatana/include/dk_fte_compat.h -std=gnu++11 -w -fno-strict-aliasing)
-		IF(CMAKE_CXX_COMPILER_ID MATCHES "Clang")
-			TARGET_COMPILE_OPTIONS(dkgame PRIVATE -fms-extensions)	#what MSVC let through (Android's NDK is clang)
+	#its sources (a list of them), as a library: dkgame the game (and IonCommon), dkclient its client's code
+	FUNCTION(FTE_DK_LIBRARY name sourcelist)
+		FILE(STRINGS engine/daikatana/${sourcelist} DK_SOURCES)
+		SET(DK_FILES)
+		FOREACH(dksrc ${DK_SOURCES})
+			STRING(STRIP "${dksrc}" dksrc)
+			IF(dksrc)
+				STRING(REGEX REPLACE "/.*" "" dkmodule "${dksrc}")
+				STRING(TOUPPER "${dkmodule}" dkmodule)
+				SET(dksrc engine/daikatana/${dksrc})
+				GET_FILENAME_COMPONENT(dkdir ${dksrc} DIRECTORY)
+				SET_SOURCE_FILES_PROPERTIES(${dksrc} PROPERTIES
+					COMPILE_DEFINITIONS "DK_MODULE_${dkmodule}"
+					INCLUDE_DIRECTORIES "${CMAKE_CURRENT_SOURCE_DIR}/${dkdir}")
+				LIST(APPEND DK_FILES ${dksrc})
+			ENDIF()
+		ENDFOREACH()
+		ADD_LIBRARY(${name} STATIC ${DK_FILES})
+		TARGET_COMPILE_DEFINITIONS(${name} PRIVATE TONGUE_ENGLISH C_ONLY)
+		TARGET_INCLUDE_DIRECTORIES(${name} BEFORE PRIVATE
+			engine/daikatana/user
+			engine/daikatana/include
+			engine/daikatana/physics
+			engine/daikatana/world
+			engine/daikatana/weapons
+			engine/daikatana/fte
+			engine/daikatana/client)
+		IF(MSVC)
+			TARGET_COMPILE_OPTIONS(${name} PRIVATE /FI${CMAKE_CURRENT_SOURCE_DIR}/engine/daikatana/include/dk_fte_compat.h /w)
 		ELSE()
-			TARGET_COMPILE_OPTIONS(dkgame PRIVATE -fpermissive)
+			TARGET_COMPILE_OPTIONS(${name} PRIVATE -include ${CMAKE_CURRENT_SOURCE_DIR}/engine/daikatana/include/dk_fte_compat.h -std=gnu++11 -w -fno-strict-aliasing)
+			IF(CMAKE_CXX_COMPILER_ID MATCHES "Clang")
+				TARGET_COMPILE_OPTIONS(${name} PRIVATE -fms-extensions)	#what MSVC let through (Android's NDK is clang)
+			ELSE()
+				TARGET_COMPILE_OPTIONS(${name} PRIVATE -fpermissive)
+			ENDIF()
 		ENDIF()
-	ENDIF()
-	SET_TARGET_PROPERTIES(dkgame PROPERTIES POSITION_INDEPENDENT_CODE ON)
+		SET_TARGET_PROPERTIES(${name} PROPERTIES POSITION_INDEPENDENT_CODE ON)
+	ENDFUNCTION()
+	FTE_DK_LIBRARY(dkgame sources.txt)
+	FTE_DK_LIBRARY(dkclient sources_client.txt)
+	TARGET_LINK_LIBRARIES(dkclient dkgame)	#IonCommon
 	SET(FTE_SERVER_FILES ${FTE_SERVER_FILES} engine/server/svdk_fte.c)
+	SET(FTE_DK_CLIENT_FILES engine/client/cldk_fte.c)	#(FTE_CLIENT_FILES is set below)
 	SET(FTE_LIB_DEFINES ${FTE_LIB_DEFINES};DAIKATANA)
-	SET(FTE_LIBS ${FTE_LIBS} dkgame)
+	SET(FTE_LIBS ${FTE_LIBS} dkclient dkgame)
 	SET(FTESV_LIBS ${FTESV_LIBS} dkgame)
 ENDIF()
 
@@ -869,6 +877,7 @@ SET(FTE_CLIENT_FILES
 	${FTE_GL_FILES}
 	${FTE_VK_FILES}
 )
+SET(FTE_CLIENT_FILES ${FTE_CLIENT_FILES} ${FTE_DK_CLIENT_FILES})	#Daikatana's, if it's in
 
 SET(FTE_Q3_FILES
 	plugins/quake3/botlib/be_aas_bspq3.c
