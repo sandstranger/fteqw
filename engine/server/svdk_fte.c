@@ -84,6 +84,17 @@ void SVDK_ReliableWrite(int playernum, const void *data, int len)
 		ClientReliable_FinishWrite(cl);
 	}
 }
+//how many more back buffers a client (0-based) has room for (what's more than they have room for drops them)
+int SVDK_ReliableRoom(int playernum)
+{
+	client_t *cl;
+	if (playernum < 0 || playernum >= svs.allocated_client_slots)
+		return 0;
+	cl = &svs.clients[playernum];
+	if (cl->state < cs_connected || cl->protocol == SCP_BAD || cl->controller)
+		return 0;
+	return MAX_BACK_BUFFERS - cl->num_backbuf;
+}
 
 //which of the map's planes a trace hit (traces have copies of them): by a hash of them, made as the map changes
 #define DKPLANEHASH 4096

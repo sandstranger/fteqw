@@ -1240,21 +1240,41 @@ static void DK_SendEntX(void)
 	DKX_Flush();
 }
 //all of it, to a client that's begun (fresh: its client starts over with each level); its client syncs the
-//frames of what it hasn't had from the frame Quake II's entity state has
-static void DK_SendAllEntX(int playernum)
+//frames of what it hasn't had from the frame Quake II's entity state has. A big level's is more than FTE's back
+//buffers have room for at once (it'd drop them), so it goes as they've room, from frame to frame
+//(DK_ContinueAllEntX); what changes meanwhile has gone to everyone, and what's sent is what's there then
+static int dkallentx[256];	//the next entity a client (0-based) has yet to have it of; 0: none
+#define DKX_ROOM	4		//back buffers left them
+static void DK_ContinueAllEntX(void)
 {
-	int i, n;
+	int p, n;
 	if (!dkge || !dkge->edicts || !dkentx)
 		return;
 	n = dkge->num_edicts;
 	if (n > shadowmax)
 		n = shadowmax;
-	dkxto = playernum;
-	for (i = 1; i < n; i++)
-		if (DKEDICT(i)->inuse)
-			DKX_Write(i, &dkentxnull, &dkentx[i], false, false, 0);
-	DKX_Flush();
-	dkxto = -1;
+	for (p = 0; p < 256; p++)
+	{
+		if (!dkallentx[p])
+			continue;
+		dkxto = p;
+		while (dkallentx[p] < n && SVDK_ReliableRoom(p) > DKX_ROOM)
+		{
+			int i = dkallentx[p]++;
+			if (DKEDICT(i)->inuse)
+				DKX_Write(i, &dkentxnull, &dkentx[i], false, false, 0);
+		}
+		DKX_Flush();
+		dkxto = -1;
+		if (dkallentx[p] >= n)
+			dkallentx[p] = 0;
+	}
+}
+static void DK_SendAllEntX(int playernum)
+{
+	if (playernum >= 0 && playernum < 256)
+		dkallentx[playernum] = 1;
+	DK_ContinueAllEntX();
 }
 
 static void DKGI_multicast(const CVector &origin, multicast_t to)
@@ -1966,6 +1986,7 @@ static void FQ2_VARGS DK3_SpawnEntities(const char *mapname, const char *entstri
 	char *ents;
 	DK_PreCall();
 	CIN_Stop(NULL);	//(its client's, changing map)
+	memset(dkallentx, 0, sizeof(dkallentx));	//(its clients begin again)
 	if (dklevelloaded && !dkloadinggame)
 	{	//its engine went through these for each level after the first (not for a saved game's: it's just read)
 		dkge->LevelExit();
@@ -2094,6 +2115,8 @@ static void FQ2_VARGS DK3_ClientDisconnect(fq2::edict_t *ent)
 {
 	int n = SHADOWNUM(ent);
 	//its engine only told the game of clients that had begun (spawned): before that they've no hook
+	if (n > 0 && n <= 256)
+		dkallentx[n-1] = 0;
 	if (n <= 0 || n >= 256 || !dkbegun[n])
 		return;
 	dkbegun[n] = false;
@@ -2202,6 +2225,7 @@ static void FQ2_VARGS DK3_RunFrame(void)
 	DK_SyncAll();
 	DK_SendStats();
 	DK_SendEntX();
+	DK_ContinueAllEntX();
 }
 static void FQ2_VARGS DK3_ServerCommand(void)
 {

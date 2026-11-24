@@ -269,6 +269,7 @@ extern "C"
 	const char	*SVDK_ExeArgv(int i);
 	int			SVDK_IsLocalClient(int playernum);	//-1: no one there
 	void		SVDK_ReliableWrite(int playernum, const void *data, int len);	//playernum -1: everyone connected
+	int			SVDK_ReliableRoom(int playernum);	//back buffers they've room for
 	int			SVDK_PlaneIndex(const float *normal, float dist);	//the map's plane that is; -1 if none
 }
 
