@@ -330,9 +330,9 @@ void CLQ2CG_Start(void)
 		return;
 
 	memset(&cgi, 0, sizeof(cgi));
-	cgi.tick_rate = 10;
-	cgi.frame_time_s = 0.1;
-	cgi.frame_time_ms = 100;
+	cgi.tick_rate = cl.q2svnetrate;	//the server's (Q2EX says: the rerelease's 40, as KEX)
+	cgi.frame_time_s = 1.0f / cl.q2svnetrate;
+	cgi.frame_time_ms = 1000 / cl.q2svnetrate;
 	cgi.Com_Print = CGI_Com_Print;
 	cgi.get_configstring = CGI_get_configstring;
 	cgi.Com_Error = CGI_Com_Error;

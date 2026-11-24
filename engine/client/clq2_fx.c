@@ -300,6 +300,11 @@ void CLQ2FX_TeleporterParticles(const vec3_t origin)
 {
 	Q2FX_TeleporterParticles(origin);
 }
+//the rerelease's effects past bit 31: 0 EF_TELEPORTER2, 1 EF_HOLOGRAM, 2 EF_BARREL_EXPLODING
+void CLQ2FX_RereleaseParticles(int effect, const vec3_t origin)
+{
+	Q2FX_RereleaseParticles(effect, origin);
+}
 
 //before the packet entities: the time and view the trails they leave are stamped with
 void CLQ2FX_BeginFrame(void)

@@ -14,10 +14,12 @@ void SV_BuildClientFrame (client_t *client)
 #else
 
 q2entity_state_t *svs_client_entities;//[Q2UPDATE_BACKUP*MAX_PACKET_ENTITIES];
+q2entityex_t *svs_client_entities_ex;	//the rerelease's extras for each of those (alpha, scale, effects 32-63)
 int svs_num_client_entities;
 int svs_next_client_entities;
 
 q2entity_state_t	sv_baselines[Q2MAX_EDICTS];
+q2entityex_t		sv_baselines_ex[Q2MAX_EDICTS];
 
 /*
 =============================================================================
@@ -44,9 +46,11 @@ Writes part of a packetentities message.
 Can delta from either a baseline or a previous packet_entity
 ==================
 */
-void MSGQ2_WriteDeltaEntity (q2entity_state_t *from, q2entity_state_t *to, sizebuf_t *msg, qboolean force, qboolean newentity, qboolean q2ex)
+void MSGQ2_WriteDeltaEntity (q2entity_state_t *from, q2entity_state_t *to, const q2entityex_t *fromx, const q2entityex_t *tox, sizebuf_t *msg, qboolean force, qboolean newentity, qboolean q2ex)
 {
+	static const q2entityex_t nullex;
 	quint64_t		bits;
+	quint64_t		fromfx, tofx;	//64 bits of effects for Q2EX (the rerelease's), game API 3's 32 otherwise
 
 	if (!to->number)
 		Sys_Error ("Unset entity number");
@@ -91,20 +95,31 @@ void MSGQ2_WriteDeltaEntity (q2entity_state_t *from, q2entity_state_t *to, sizeb
 			bits |= Q2U_FRAME16;
 	}
 
-	if ( to->effects != from->effects )
+	if (!fromx)
+		fromx = &nullex;
+	if (!tox)
+		tox = &nullex;
+	fromfx = from->effects;
+	tofx = to->effects;
+	if (q2ex)
 	{
-		if ((uint64_t)to->effects > 0xffffffffu)
+		fromfx |= (quint64_t)fromx->effects_hi<<32;
+		tofx |= (quint64_t)tox->effects_hi<<32;
+	}
+	if ( tofx != fromfx )
+	{
+		if (tofx > 0xffffffffu)
 		{	//this encoding is weird, Q2UEX_EFFECTS64 without any of the other flags is equivelent to the 8|16==32bit flags, so is pointless without the extra ones.
-			if (to->effects < (uint64_t)256<<32)
+			if (tofx < (quint64_t)256<<32)
 				bits |= Q2U_EFFECTS8|Q2UEX_EFFECTS64;
-			else if (to->effects < (uint64_t)0x8000<<32)
+			else if (tofx < (quint64_t)0x8000<<32)
 				bits |= Q2U_EFFECTS16|Q2UEX_EFFECTS64;
 			else
 				bits |= Q2U_EFFECTS8|Q2U_EFFECTS16|Q2UEX_EFFECTS64;
 		}
-		else if (to->effects < 256)
+		else if (tofx < 256)
 			bits |= Q2U_EFFECTS8;
-		else if (to->effects < 0x8000)
+		else if (tofx < 0x8000)
 			bits |= Q2U_EFFECTS16;
 		else
 			bits |= Q2U_EFFECTS8|Q2U_EFFECTS16;
@@ -160,8 +175,10 @@ void MSGQ2_WriteDeltaEntity (q2entity_state_t *from, q2entity_state_t *to, sizeb
 	}
 
 
-//	if (to->alpha != from->alpha) bits |= Q2UEX_ALPHA;
-//	if (to->scale != from->scale)bits |= Q2UEX_SCALE;
+	if (q2ex && tox->alpha != fromx->alpha)
+		bits |= Q2UEX_ALPHA;
+	if (q2ex && tox->scale != fromx->scale)
+		bits |= Q2UEX_SCALE;
 //	if (to->instance != from->instance) bits |= Q2UEX_INSTANCE;
 //	if (to->owner != from->owner) bits |= Q2UEX_OWNER;
 //	if (to->oldframe != from->oldframe) bits |= Q2UEX_OLDFRAME;
@@ -260,23 +277,23 @@ void MSGQ2_WriteDeltaEntity (q2entity_state_t *from, q2entity_state_t *to, sizeb
 		MSG_WriteShort (msg, to->skinnum);
 
 	if (bits & Q2UEX_EFFECTS64)
-	{
-		MSG_WriteLong (msg, to->effects);
+	{	//the low 32 bits, then the high ones in the 8/16/32 bits' way
+		MSG_WriteLong (msg, tofx);
 		if ( (bits & (Q2U_EFFECTS8|Q2U_EFFECTS16)) == (Q2U_EFFECTS8|Q2U_EFFECTS16) )
-			MSG_WriteLong (msg, (quint64_t)to->effects>>32);
+			MSG_WriteLong (msg, tofx>>32);
 		else if (bits & Q2U_EFFECTS8)
-			MSG_WriteByte (msg, (quint64_t)to->effects>>32);
+			MSG_WriteByte (msg, tofx>>32);
 		else if (bits & Q2U_EFFECTS16)
-			MSG_WriteShort (msg, (quint64_t)to->effects>>32);
+			MSG_WriteShort (msg, tofx>>32);
 	}
 	else
 	{
 		if ( (bits & (Q2U_EFFECTS8|Q2U_EFFECTS16)) == (Q2U_EFFECTS8|Q2U_EFFECTS16) )
-			MSG_WriteLong (msg, to->effects);
+			MSG_WriteLong (msg, tofx);
 		else if (bits & Q2U_EFFECTS8)
-			MSG_WriteByte (msg, to->effects);
+			MSG_WriteByte (msg, tofx);
 		else if (bits & Q2U_EFFECTS16)
-			MSG_WriteShort (msg, to->effects);
+			MSG_WriteShort (msg, tofx);
 	}
 
 	if ( (bits & (Q2U_RENDERFX8|Q2U_RENDERFX16)) == (Q2U_RENDERFX8|Q2U_RENDERFX16) )
@@ -388,8 +405,8 @@ void MSGQ2_WriteDeltaEntity (q2entity_state_t *from, q2entity_state_t *to, sizeb
 				MSG_WriteSize16(msg, to->solid);
 		}
 
-	if (bits & Q2UEX_ALPHA)		MSG_WriteByte(msg, 0);
-	if (bits & Q2UEX_SCALE)		MSG_WriteByte(msg, 0);
+	if (bits & Q2UEX_ALPHA)		MSG_WriteByte(msg, tox->alpha);	//0 is the default (opaque), as the rerelease's
+	if (bits & Q2UEX_SCALE)		MSG_WriteByte(msg, tox->scale);	//16ths, 0 the default (1)
 	if (bits & Q2UEX_INSTANCE)	MSG_WriteByte(msg, 0);
 	if (bits & Q2UEX_OWNER)		MSG_WriteShort(msg, 0);
 	if (bits & Q2UEX_OLDFRAME)	MSG_WriteShort(msg, 0);
@@ -406,6 +423,7 @@ Writes a delta update of an entity_state_t list to the message.
 void SVQ2_EmitPacketEntities (q2client_frame_t *from, q2client_frame_t *to, sizebuf_t *msg, qboolean q2ex)
 {
 	q2entity_state_t	*oldent, *newent;
+	q2entityex_t		*oldx, *newx;
 	int		oldindex, newindex;
 	int		oldnum, newnum;
 	int		from_num_entities;
@@ -425,22 +443,26 @@ void SVQ2_EmitPacketEntities (q2client_frame_t *from, q2client_frame_t *to, size
 		if (newindex >= to->num_entities)
 		{
 			newent = NULL;	//shh compiler, shh...
+			newx = NULL;
 			newnum = 9999;
 		}
 		else
 		{
 			newent = &svs_client_entities[(to->first_entity+newindex)%svs_num_client_entities];
+			newx = &svs_client_entities_ex[(to->first_entity+newindex)%svs_num_client_entities];
 			newnum = newent->number;
 		}
 
 		if (oldindex >= from_num_entities)
 		{
 			oldent = NULL;	//shh compiler, shh...
+			oldx = NULL;
 			oldnum = 9999;
 		}
 		else
 		{
 			oldent = &svs_client_entities[(from->first_entity+oldindex)%svs_num_client_entities];
+			oldx = &svs_client_entities_ex[(from->first_entity+oldindex)%svs_num_client_entities];
 			oldnum = oldent->number;
 		}
 
@@ -451,9 +473,12 @@ void SVQ2_EmitPacketEntities (q2client_frame_t *from, q2client_frame_t *to, size
 			// note that players are always 'newentities', this updates their oldorigin always
 			// and prevents warping
 			if (msg->cursize+128 > msg->maxsize)
-				memcpy(newent, oldent, sizeof(*newent));	//too much data, so set the ent up as the same as the old, so it's sent next frame
+			{	//too much data, so set the ent up as the same as the old, so it's sent next frame
+				memcpy(newent, oldent, sizeof(*newent));
+				memcpy(newx, oldx, sizeof(*newx));
+			}
 			else
-				MSGQ2_WriteDeltaEntity (oldent, newent, msg, false, newent->number <= svs.allocated_client_slots, q2ex);
+				MSGQ2_WriteDeltaEntity (oldent, newent, oldx, newx, msg, false, newent->number <= svs.allocated_client_slots, q2ex);
 			oldindex++;
 			newindex++;
 			continue;
@@ -467,10 +492,11 @@ void SVQ2_EmitPacketEntities (q2client_frame_t *from, q2client_frame_t *to, size
 				//so strip out this ent, we can add it next frame if it's still relevent
 				to->num_entities--;
 				memmove(newent, newent+1, sizeof(*newent) * (to->num_entities-newindex));
+				memmove(newx, newx+1, sizeof(*newx) * (to->num_entities-newindex));
 			}
 			else
 			{
-				MSGQ2_WriteDeltaEntity (&sv_baselines[newnum], newent, msg, true, true, q2ex);
+				MSGQ2_WriteDeltaEntity (&sv_baselines[newnum], newent, &sv_baselines_ex[newnum], newx, msg, true, true, q2ex);
 				newindex++;
 			}
 			continue;
@@ -1023,6 +1049,7 @@ void SVQ2_BuildClientFrame (client_t *client)
 	q2edict_t	*ent;
 	q2client_frame_t	*frame;
 	q2entity_state_t	*state;
+	q2entityex_t		ex;
 	int		l;
 	int		seat;
 	int		c_fullsend;
@@ -1111,13 +1138,19 @@ void SVQ2_BuildClientFrame (client_t *client)
 		if (ent->svflags & SVF_NOCLIENT)
 			continue;
 
+		SVQ2RR_EntityExtras(ent, &ex);	//(the rerelease's game's)
+
 		// ignore ents without visible models unless they have an effect
-		if (!ent->s.modelindex && !ent->s.effects && !ent->s.sound
+		if (!ent->s.modelindex && !ent->s.effects && !ex.effects_hi && !ent->s.sound
 			&& !ent->s.event)
 			continue;
 
 		for (seat = 0; seat < seats; seat++)
 		{
+			//the rerelease's instanced entities: not for these players
+			if (ex.instance_bits && frame->clientnum[seat] < 8 && (ex.instance_bits & (1u<<frame->clientnum[seat])))
+				continue;
+
 			// ignore if not touching a PV leaf
 			if (ent != clent[seat])
 			{
@@ -1189,6 +1222,7 @@ void SVQ2_BuildClientFrame (client_t *client)
 			ent->s.number = e;
 		}
 		*state = ent->s;
+		svs_client_entities_ex[svs_next_client_entities%svs_num_client_entities] = ex;
 
 		// don't mark players missiles as solid
 		if (ent->owner == clent[seat])
@@ -1213,7 +1247,8 @@ void SVQ2_BuildBaselines(void)
 		ent = Q2EDICT_NUM(e);
 		base = &ent->s;
 
-		if (base->modelindex || base->sound || base->effects)
+		SVQ2RR_EntityExtras(ent, &sv_baselines_ex[e]);
+		if (base->modelindex || base->sound || base->effects || sv_baselines_ex[e].effects_hi)
 			sv_baselines[e] = *base;
 	}
 }
@@ -1225,6 +1260,7 @@ void SVQ2_Ents_Init(void)
 	{
 		svs_num_client_entities = maxclients.value*Q2UPDATE_BACKUP*64;
 		svs_client_entities = Z_Malloc (sizeof(entity_state_t)*svs_num_client_entities);
+		svs_client_entities_ex = Z_Malloc (sizeof(*svs_client_entities_ex)*svs_num_client_entities);
 	}
 }
 void SVQ2_Ents_Shutdown(void)
@@ -1232,7 +1268,9 @@ void SVQ2_Ents_Shutdown(void)
 	if (svs_client_entities)
 	{
 		Z_Free(svs_client_entities);
+		Z_Free(svs_client_entities_ex);
 		svs_client_entities = NULL;
+		svs_client_entities_ex = NULL;
 		svs_num_client_entities = 0;
 	}
 }

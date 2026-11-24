@@ -69,6 +69,9 @@ the objects with nm; Q2FX_* (../q2fx_sys.h) keep their names.
 #define CL_TagTrail q2fx_CL_TagTrail
 #define CL_TeleportParticles q2fx_CL_TeleportParticles
 #define CL_TeleporterParticles q2fx_CL_TeleporterParticles
+#define CL_TeleporterParticles2 q2fx_CL_TeleporterParticles2
+#define CL_HologramParticles q2fx_CL_HologramParticles
+#define CL_BarrelExplodingParticles q2fx_CL_BarrelExplodingParticles
 #define CL_TrackerTrail q2fx_CL_TrackerTrail
 #define CL_Tracker_Explode q2fx_CL_Tracker_Explode
 #define CL_Tracker_Shell q2fx_CL_Tracker_Shell

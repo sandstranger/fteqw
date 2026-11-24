@@ -1360,6 +1360,7 @@ typedef struct entity_state_s
 			qbyte				instance;		//q2ex (splitcreen, so specific seats see it or not)
 			unsigned short		owner;			//q2ex for splitscreen prediction I guess (can't just network it as non-solid).
 			unsigned short		oldframe;		//q2ex
+			unsigned int		effects2;		//q2ex: effects bits 32-63
 		} q2;
 #endif
 		struct

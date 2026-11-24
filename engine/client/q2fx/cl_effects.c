@@ -3004,3 +3004,110 @@ CL_BlasterTrail2(vec3_t start, vec3_t end)
 	}
 }
 
+
+/*
+ * The rerelease's (KEX) entity effects past bit 31, as Q2REPRO's newfx.c has them:
+ * EF_TELEPORTER2 (the N64 teleporter), EF_HOLOGRAM (the N64 hologram), EF_BARREL_EXPLODING.
+ */
+static cparticle_t *
+CL_NewParticle(void)
+{
+	cparticle_t *p;
+
+	if (!free_particles)
+	{
+		return NULL;
+	}
+
+	p = free_particles;
+	free_particles = p->next;
+	p->next = active_particles;
+	active_particles = p;
+	return p;
+}
+
+void
+CL_TeleporterParticles2(vec3_t org)
+{
+	int i;
+	cparticle_t *p;
+	vec3_t dir;
+
+	for (i = 0; i < 8; i++)
+	{
+		if (!(p = CL_NewParticle()))
+		{
+			return;
+		}
+
+		p->time = (float)cl.time;
+		p->color = 0xdb;
+
+		VectorSet(dir, crandk(), crandk(), crandk());
+		VectorNormalize(dir);
+		VectorMA(org, 30.0f, dir, p->org);
+		p->org[2] += 20.0f;
+		VectorScale(dir, -25.0f, p->vel);
+
+		VectorClear(p->accel);
+		p->alpha = 1.0f;
+		p->alphavel = -0.8f;
+	}
+}
+
+void
+CL_HologramParticles(vec3_t org)
+{
+	int i;
+	cparticle_t *p;
+	vec3_t angles, forward, right, up, dir;
+	float ltime = (float)cl.time * 0.03f;
+
+	VectorSet(angles, ltime, ltime, 0);
+	AngleVectors(angles, forward, right, up);	/* the axis: forward, left, up */
+
+	for (i = 0; i < NUMVERTEXNORMALS; i++)
+	{
+		if (!(p = CL_NewParticle()))
+		{
+			return;
+		}
+
+		p->time = (float)cl.time;
+		p->color = 0xd0;
+
+		dir[0] = DotProduct(bytedirs[i], forward);
+		dir[1] = -DotProduct(bytedirs[i], right);
+		dir[2] = DotProduct(bytedirs[i], up);
+		VectorMA(org, 100.0f, dir, p->org);
+
+		VectorClear(p->vel);
+		VectorClear(p->accel);
+		p->alpha = 1.0f;
+		p->alphavel = INSTANT_PARTICLE;
+	}
+}
+
+void
+CL_BarrelExplodingParticles(vec3_t org)
+{
+	static vec3_t ofs[6] = {
+		{-10, 0, 40}, {10, 0, 40}, {0, 16, 30}, {16, 0, 25}, {0, -16, 20}, {-16, 0, 15}
+	};
+	static vec3_t dir[6] = {
+		{0, 0, 1}, {0, 0, 1}, {0, 1, 0}, {1, 0, 0}, {0, -1, 0}, {-1, 0, 0}
+	};
+	static const int color[4] = {52, 64, 96, 112};
+	int i, j;
+	vec3_t p;
+
+	for (i = 0; i < 6; i++)
+	{
+		VectorAdd(org, ofs[i], p);
+
+		for (j = 0; j < 4; j++)
+		{
+			CL_ParticleSmokeEffect(p, dir[i], color[j], 5, 40);
+		}
+	}
+}

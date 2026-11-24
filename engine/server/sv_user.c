@@ -922,7 +922,7 @@ void SV_New_f (void)
 	{
 		ClientReliableWrite_Byte (host_client, 0);	//demo mode.
 		if (host_client->protocol==SCP_QUAKE2EX)
-			ClientReliableWrite_Byte (host_client, 10);	//tick rate.
+			ClientReliableWrite_Byte (host_client, SVQ2_TickRate());	//tick rate (the rerelease's game's 40, the original's 10)
 	}
 	ClientReliableWrite_String (host_client, gamedir);
 
@@ -1615,6 +1615,7 @@ void SVQ2_BaseLines_f (void)
 	q2entity_state_t	*base;
 
 	extern q2entity_state_t	sv_baselines[Q2MAX_EDICTS];
+	extern q2entityex_t		sv_baselines_ex[Q2MAX_EDICTS];
 
 	Con_DPrintf ("Baselines() from %s\n", host_client->name);
 
@@ -1642,10 +1643,10 @@ void SVQ2_BaseLines_f (void)
 		&& start < Q2MAX_EDICTS)
 	{
 		base = &sv_baselines[start];
-		if (base->modelindex || base->sound || base->effects)
+		if (base->modelindex || base->sound || base->effects || sv_baselines_ex[start].effects_hi)
 		{
 			MSG_WriteByte (&host_client->netchan.message, svcq2_spawnbaseline);
-			MSGQ2_WriteDeltaEntity (&nullstate, base, &host_client->netchan.message, true, true, host_client->protocol==SCP_QUAKE2EX);
+			MSGQ2_WriteDeltaEntity (&nullstate, base, NULL, &sv_baselines_ex[start], &host_client->netchan.message, true, true, host_client->protocol==SCP_QUAKE2EX);
 		}
 		start++;
 	}

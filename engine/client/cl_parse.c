@@ -4436,7 +4436,10 @@ static void CLQ2_ParseServerData (void)
 	/*cl.attractloop =*/ MSG_ReadByte ();
 
 	if (cls.protocol_q2 == PROTOCOL_VERSION_Q2EX)
+	{
 		rate = MSG_ReadByte();
+		Con_DPrintf("Server ticks %i times a second\n", rate);
+	}
 	else
 		rate = 10;	//fixed to a poopy 10hz.
 

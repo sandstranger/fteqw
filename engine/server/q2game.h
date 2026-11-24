@@ -145,6 +145,14 @@ typedef struct q2entity_state_s
 							// events only go out for a single frame, they
 							// are automatically cleared each frame
 } q2entity_state_t;
+
+typedef struct
+{	//the Quake II rerelease's entity_state_t past game API 3's (server/svq2_rerelease.c), for Q2EX clients
+	unsigned int	effects_hi;		//effects bits 32-63
+	qbyte			alpha;			//in 255ths; 0: the default (opaque, or as the effects have it)
+	qbyte			scale;			//in 16ths; 0: the default (1)
+	qbyte			instance_bits;	//the players (by number, the first 8) who can't see it
+} q2entityex_t;
 #endif
 #if defined(Q2SERVER)
 

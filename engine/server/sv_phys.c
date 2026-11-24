@@ -2726,7 +2726,7 @@ qboolean SV_Physics (void)
 		)	//make tics multiples of sv_maxtic (defaults to 0.1)
 	{
 		if (svs.gametype == GT_QUAKE2)
-			mintic = maxtic = 0.1;	//fucking fuckity fuck. we should warn about this.
+			mintic = maxtic = 1.0/SVQ2_TickRate();	//the original's 10 a second, the rerelease's sv_fps
 		mintic = max(mintic, 1/1000.0);
 
 		for(;;)

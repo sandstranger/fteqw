@@ -1405,13 +1405,15 @@ void SVQ2RR_PrepFrame(void);
 void SVQ2RR_SetLevelTransition(qboolean transition);
 void SVQ2RR_ExtendedStats(struct q2edict_s *ent, short *out32);
 void SVQ2RR_ExtendedPmove(struct q2edict_s *ent, q2expmove_state_t *out);
+void SVQ2RR_EntityExtras(struct q2edict_s *ent, q2entityex_t *out);
+int SVQ2_TickRate(void);
 #endif
 
 //svq2_ents.c
 void SVQ2_BuildClientFrame (client_t *client);
 void SVQ2_WriteFrameToClient (client_t *client, sizebuf_t *msg);
 #ifdef Q2SERVER
-void MSGQ2_WriteDeltaEntity (q2entity_state_t *from, q2entity_state_t *to, sizebuf_t *msg, qboolean force, qboolean newentity, qboolean q2ex);
+void MSGQ2_WriteDeltaEntity (q2entity_state_t *from, q2entity_state_t *to, const q2entityex_t *fromx, const q2entityex_t *tox, sizebuf_t *msg, qboolean force, qboolean newentity, qboolean q2ex);
 void SVQ2_BuildBaselines(void);
 #endif
 

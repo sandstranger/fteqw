@@ -83,6 +83,15 @@ float LerpAngle (float a2, float a1, float frac)
 
 #define Q2MAX_STATS	32
 
+//the rerelease's effects 32-63 (entity_state_t's u.q2.effects2)
+#define Q2EXEF2_DUALFIRE			(1u<<0)		//EF_DUALFIRE: a light green shell
+#define Q2EXEF2_HOLOGRAM			(1u<<1)		//EF_HOLOGRAM: the N64 hologram's particles
+#define Q2EXEF2_FLASHLIGHT			(1u<<2)		//EF_FLASHLIGHT: lights where the player looks
+#define Q2EXEF2_BARREL_EXPLODING	(1u<<3)		//EF_BARREL_EXPLODING: smoke
+#define Q2EXEF2_TELEPORTER2			(1u<<4)		//EF_TELEPORTER2: the N64 teleporter's particles
+#define Q2EXEF2_GRENADE_LIGHT		(1u<<5)		//EF_GRENADE_LIGHT: a yellow light
+#define Q2EXRF_STAIRSTEP			(1u<<26)	//RF_STAIR_STEP: a monster stepped up (or down) a stair, smooth it out
+
 typedef struct q2centity_s
 {
 	entity_state_t	baseline;		// delta from this if not from a previous frame
@@ -98,6 +107,9 @@ typedef struct q2centity_s
 	vec3_t		lerp_origin;		// for trails (variable hz)
 	int			oldframe;
 	float		oldframetime;
+	float		stair_height;		// the rerelease's RF_STAIR_STEP: the step still to smooth out
+	double		stair_time;
+	float		flashlightfrac;		// EF_FLASHLIGHT: how far its light is, smoothed
 
 	float		fly_stoptime;
 } q2centity_t;
@@ -289,7 +301,7 @@ void CLQ2_WriteDemoBaselines(sizebuf_t *buf)
 		}
 
 		MSG_WriteByte (buf, svcq2_spawnbaseline);
-		MSGQ2_WriteDeltaEntity(&nullstate, &es, buf, true, true, cls.protocol_q2==PROTOCOL_VERSION_Q2EX);
+		MSGQ2_WriteDeltaEntity(&nullstate, &es, NULL, NULL, buf, true, true, cls.protocol_q2==PROTOCOL_VERSION_Q2EX);
 	}
 }
 #endif
@@ -1055,19 +1067,27 @@ static void CLQ2_ParseDelta (entity_state_t *from, entity_state_t *to, int numbe
 
 	if (bits & (Q2U_EFFECTS8|Q2U_EFFECTS16|Q2UEX_EFFECTS64))
 	{
-		unsigned int lo = 0;
+		unsigned int lo = 0, v;
 		if (bits&Q2UEX_EFFECTS64)
 			lo = MSG_ReadLong();
 
 		if ( (bits & (Q2U_EFFECTS8|Q2U_EFFECTS16)) == (Q2U_EFFECTS8|Q2U_EFFECTS16) )
-			to->effects = MSG_ReadLong();
+			v = MSG_ReadLong();
 		else if (bits & Q2U_EFFECTS16)
-			to->effects = MSG_ReadUInt16();
+			v = MSG_ReadUInt16();
 		else
-			to->effects = MSG_ReadByte();
+			v = MSG_ReadByte();
 
 		if (bits&Q2UEX_EFFECTS64)
-			to->effects = ((quint64_t)to->effects<<32) | lo;
+		{	//the low 32 bits came first, these are the high ones
+			to->effects = lo;
+			to->u.q2.effects2 = v;
+		}
+		else
+		{
+			to->effects = v;
+			to->u.q2.effects2 = 0;
+		}
 	}
 
 	if ( (bits & (Q2U_RENDERFX8|Q2U_RENDERFX16)) == (Q2U_RENDERFX8|Q2U_RENDERFX16) )
@@ -1186,9 +1206,17 @@ static void CLQ2_ParseDelta (entity_state_t *from, entity_state_t *to, int numbe
 	}
 
 	if (bits & Q2UEX_ALPHA)
+	{	//255ths, with 0 the rerelease's default (opaque)
 		to->trans = MSG_ReadByte();
+		if (!to->trans)
+			to->trans = 255;
+	}
 	if (bits & Q2UEX_SCALE)
+	{	//16ths, with 0 the rerelease's default (1)
 		to->scale = MSG_ReadByte();
+		if (!to->scale)
+			to->scale = 16;
+	}
 	if (bits & Q2UEX_INSTANCE)
 		to->u.q2.instance = MSG_ReadByte();
 	if (bits & Q2UEX_OWNER)
@@ -1262,12 +1290,23 @@ static void CLQ2_DeltaEntity (q2frame_t *frame, int newnum, entity_state_t *old,
 		}
 		CLQ2FX_EntityReset(state->number, ent->lerp_origin);	//yquake2's trails start over from here
 
-		ent->oldframe = state->u.q2.oldframe;
+		ent->oldframe = state->frame;	//nothing to lerp from
 		ent->oldframetime = cl.oldgametime;
+		ent->stair_height = 0;
+		ent->stair_time = 0;
 	}
 	else
 	{	// shuffle the last state to previous
 		ent->prev = ent->current;
+
+		if (cl.q2svnetrate > 10 && (state->u.q2.renderfx & Q2EXRF_STAIRSTEP))
+		{	//the rerelease's monsters, stepping faster than 10 a second: smooth the step out over 100ms (as Q2REPRO, after Q3A)
+			float step = state->origin[2] - ent->current.origin[2];
+			double delta = realtime - ent->stair_time;
+			float old_step = (delta < 0.1)?ent->stair_height * (0.1 - delta) / 0.1:0;
+			ent->stair_height = bound(-32, old_step + step, 32);
+			ent->stair_time = realtime;
+		}
 
 		if (old->frame != state->frame)
 		{
@@ -1760,6 +1799,11 @@ void CLQ2_FireEntityEvents (q2frame_t *frame)
 		// EF_TELEPORTER acts like an event, but is not cleared each frame
 		if (s1->effects & Q2EF_TELEPORTER)
 			CLQ2FX_TeleporterParticles (s1->origin);
+		// the rerelease's two more of those
+		if (s1->u.q2.effects2 & Q2EXEF2_TELEPORTER2)
+			CLQ2FX_RereleaseParticles (0, s1->origin);
+		if (s1->u.q2.effects2 & Q2EXEF2_BARREL_EXPLODING)
+			CLQ2FX_RereleaseParticles (2, s1->origin);
 	}
 }
 
@@ -1901,8 +1945,8 @@ void CLQ2_ParseFrame (int extrabits)
 	// clamp time 
 	if (cl.time > cl.q2frame.servertime/1000.0)
 		cl.time = cl.q2frame.servertime/1000.0;
-	else if (cl.time < (cl.q2frame.servertime - 100)/1000.0)
-		cl.time = (cl.q2frame.servertime - 100)/1000.0;
+	else if (cl.time < (cl.q2frame.servertime - 1000/cl.q2svnetrate)/1000.0)
+		cl.time = (cl.q2frame.servertime - 1000/cl.q2svnetrate)/1000.0;
 
 	if (cls.protocol_q2 == PROTOCOL_VERSION_Q2EX)
 	{
@@ -2241,6 +2285,7 @@ static void CLQ2_AddPacketEntities (q2frame_t *frame)
 //	q2clientinfo_t		*ci;
 	player_info_t		*player;
 	unsigned int		effects, renderfx;
+	qboolean			dualfire;
 	float back, fwds;
 	struct itemtimer_s **timerlink, *timer;
 
@@ -2347,8 +2392,19 @@ static void CLQ2_AddPacketEntities (q2frame_t *frame)
 		}
 // pmm
 //======
+		dualfire = !!(s1->u.q2.effects2 & Q2EXEF2_DUALFIRE);
+		if (dualfire)	//the rerelease's: a light green shell
+			effects |= Q2EF_COLOR_SHELL;
+
 		ent.framestate.g[FS_REG].frame[1] = cent->prev.frame;
 		ent.framestate.g[FS_REG].lerpweight[0] = cl.lerpfrac;
+		if (cl.q2svnetrate > 10 && cent->oldframe != s1->frame && ent.framestate.g[FS_REG].frame[0] == s1->frame)
+		{	//ticks faster than the models animate (the rerelease's 40 a second, its models' 10): a frame change lerps
+			//over the 100ms from the tick before the one it came in, not over the tick (as Q2REPRO does for KEX)
+			float frac = (cl.time - cent->oldframetime) / 0.1;
+			ent.framestate.g[FS_REG].frame[1] = cent->oldframe;
+			ent.framestate.g[FS_REG].lerpweight[0] = bound(0, frac, 1);
+		}
 
 		if ((renderfx & Q2RF_BEAM) && cl.q2frame.serverframe - cent->serverframe_created >= 2)
 		{	//yquake2: a laser that has been there for two frames moves smoothly, both of its ends
@@ -2368,8 +2424,13 @@ static void CLQ2_AddPacketEntities (q2frame_t *frame)
 		{	// interpolate origin
 			for (i=0 ; i<3 ; i++)
 			{
-				ent.origin[i] = ent.oldorigin[i] = cent->prev.origin[i] + cl.lerpfrac * 
+				ent.origin[i] = ent.oldorigin[i] = cent->prev.origin[i] + cl.lerpfrac *
 					(cent->current.origin[i] - cent->prev.origin[i]);
+			}
+
+			if (cent->stair_height && realtime - cent->stair_time < 0.1)
+			{	//the rerelease's RF_STAIR_STEP: the step's height comes over 100ms
+				ent.origin[2] = ent.oldorigin[2] = cent->current.origin[2] - cent->stair_height * (0.1 - (realtime - cent->stair_time)) / 0.1;
 			}
 		}
 
@@ -2550,6 +2611,32 @@ static void CLQ2_AddPacketEntities (q2frame_t *frame)
 				V_AddLight (ent.keynum, ent.origin, 225, -0.2, -0.2, -0.2);	//PGM
 		}
 
+		if (s1->u.q2.effects2 & Q2EXEF2_FLASHLIGHT)
+		{	//the rerelease's flashlight: a light where it shines, 256 units out at most (Q2REPRO's, without per-pixel lights)
+			vec3_t start, end, forward;
+			trace_t tr;
+			if (s1->number == cl.playerview[0].playernum+1)
+			{	//ours: from the view
+				VectorCopy(cl.playerview[0].simorg, start);
+				AngleVectors(cl.playerview[0].simangles, forward, NULL, NULL);
+			}
+			else
+			{
+				VectorCopy(ent.origin, start);
+				AngleVectors(ent.angles, forward, NULL, NULL);
+			}
+			VectorMA(start, 256, forward, end);
+			cl.worldmodel->funcs.NativeTrace(cl.worldmodel, 0, NULLFRAMESTATE, NULL, start, end, vec3_origin, vec3_origin, false, FTECONTENTS_SOLID, &tr);
+			//smooth out its jumps in distance
+			cent->flashlightfrac += bound(-host_frametime, tr.fraction - cent->flashlightfrac, host_frametime);
+			VectorMA(start, 256*cent->flashlightfrac, forward, end);
+			V_AddLight (0, end, 256, 0.2, 0.2, 0.2);
+		}
+		if (s1->u.q2.effects2 & Q2EXEF2_GRENADE_LIGHT)
+			V_AddLight (0, ent.origin, 100, 0.2, 0.2, 0);
+		if (s1->u.q2.effects2 & Q2EXEF2_HOLOGRAM)
+			CLQ2FX_RereleaseParticles (1, ent.origin);
+
 		// if set to invisible, skip
 		if (!s1->modelindex)
 			continue;
@@ -2648,9 +2735,23 @@ static void CLQ2_AddPacketEntities (q2frame_t *frame)
 			// pmm
 			ent.flags = renderfx;
 			ent.shaderRGBAf[3] = 0.30;	//yquake2's shell alpha
-			ent.shaderRGBAf[0] = (!!(renderfx & Q2RF_SHELL_RED));
-			ent.shaderRGBAf[1] = (!!(renderfx & Q2RF_SHELL_GREEN));
-			ent.shaderRGBAf[2] = (!!(renderfx & Q2RF_SHELL_BLUE));
+			//the colours as the renderers (id's, yquake2's, Q2REPRO's) mix them
+			VectorClear(ent.shaderRGBAf);
+			if (dualfire)
+				VectorSet(ent.shaderRGBAf, 0.56, 0.93, 0.56);
+			if (renderfx & Q2RF_SHELL_HALF_DAM)
+				VectorSet(ent.shaderRGBAf, 0.56, 0.59, 0.45);
+			if (renderfx & Q2RF_SHELL_DOUBLE)
+			{
+				ent.shaderRGBAf[0] = 0.9;
+				ent.shaderRGBAf[1] = 0.7;
+			}
+			if (renderfx & Q2RF_SHELL_RED)
+				ent.shaderRGBAf[0] = 1;
+			if (renderfx & Q2RF_SHELL_GREEN)
+				ent.shaderRGBAf[1] = 1;
+			if (renderfx & Q2RF_SHELL_BLUE)
+				ent.shaderRGBAf[2] = 1;
 			ent.forcedshader = R_RegisterCustom(NULL, "q2/shell", SUF_NONE, Shader_DefaultSkinShell, NULL);
 			ent.fatness = 2;
 			V_AddEntity (&ent);

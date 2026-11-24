@@ -208,6 +208,18 @@ void Q2FX_TeleporterParticles(const float *origin)
 	CL_TeleporterParticles(&es);
 }
 
+void Q2FX_RereleaseParticles(int effect, const float *origin)
+{
+	vec3_t org;
+	VectorCopy(origin, org);
+	switch (effect)
+	{
+	case 0:	CL_TeleporterParticles2(org);		break;
+	case 1:	CL_HologramParticles(org);			break;
+	case 2:	CL_BarrelExplodingParticles(org);	break;
+	}
+}
+
 void Q2FX_EntityReset(int entnum, const float *origin)
 {	/* yquake2's CL_DeltaEntity, for an entity that wasn't in the last frame */
 	centity_t *cent = CL_AllocEntity(entnum);

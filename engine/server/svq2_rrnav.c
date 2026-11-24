@@ -957,7 +957,7 @@ void RRNav_Frame(const char *mapname, rr_game_import_t *gi, rr_game_export_t *ge
 	if (!nav.nodes)
 		return;
 
-	if (++nav.nav_frame > 10)	//a second in (once the map's entities have settled)
+	if (++nav.nav_frame > max(10, gi->tick_rate))	//a second in (once the map's entities have settled)
 		if (!nav.setup_entities)
 			Nav_SetupEntities();
 

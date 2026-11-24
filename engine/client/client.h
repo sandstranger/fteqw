@@ -1942,6 +1942,7 @@ void CLQ2FX_EntityReset(int entnum, const vec3_t origin);
 void CLQ2FX_EntityEffects(int entnum, int effects, int frame, const vec3_t origin);
 void CLQ2FX_EntityEvent(int entnum, int event, const vec3_t origin);
 void CLQ2FX_TeleporterParticles(const vec3_t origin);
+void CLQ2FX_RereleaseParticles(int effect, const vec3_t origin);
 void CLQ2FX_BeginFrame(void);
 void CLQ2FX_AddEntities(void);
 void CLQ2FX_ClearState(void);

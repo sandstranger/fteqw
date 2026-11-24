@@ -14,7 +14,9 @@ with the rerelease game's own:
   BoxEdicts' filters, localised prints (svc_locprint), local sounds, JSON saves, configstring remapping...;
 - its messages go out as they are: they are the rerelease's protocol, which FTE's clients speak (Q2EX, 2023).
 
-The game runs at FTE's Quake II tick (10 a second), which the rerelease's game handles (gi.tick_rate).
+The game runs at sv_fps ticks a second (40, as KEX; the original game's 10 still), which the rerelease's game
+handles (gi.tick_rate), and Q2EX tells the clients. What game API 3's entity_state_t has no room for (alpha, scale,
+effects 32-63, instanced entities) goes to Q2EX's entity deltas beside it (SVQ2RR_EntityExtras).
 
 GPL v2 or later.
 */
@@ -34,6 +36,7 @@ static struct q2gclient_s *shadowcl;	//and of its clients
 static int				shadowmax;
 static int				rrmaxclients;
 static uint32_t			rrframenum;
+static int				rrtickrate;		//ticks a second (sv_fps when the game was loaded)
 static qboolean			rrtransition;	//WriteLevel is for a level change
 
 #define RREDICT(i)		((rr_edict_t *)((char *)rrge->edicts + (size_t)(i)*rrge->edict_size))
@@ -963,6 +966,27 @@ void SVQ2RR_ExtendedStats(q2edict_t *ent, short *out32)
 	for (i = 0; i < 32; i++)
 		out32[i] = re->client->ps.stats[32+i];
 }
+//the Quake II server's ticks a second: the rerelease's game's sv_fps, the original's 10
+int SVQ2_TickRate(void)
+{
+	return (rrge && rrtickrate)?rrtickrate:10;
+}
+
+//the rerelease's entity_state_t past game API 3's: alpha, scale, effects 32-63, who can't see it
+void SVQ2RR_EntityExtras(q2edict_t *ent, q2entityex_t *out)
+{
+	rr_edict_t *re = (rrge && shadow)?RR_FromShadow(ent):NULL;
+	memset(out, 0, sizeof(*out));
+	if (!re)
+		return;
+	out->effects_hi = (uint32_t)(re->s.effects >> 32);
+	if (re->s.alpha > 0)	//0 is the default: opaque, or as the effects have it
+		out->alpha = bound(1, (int)(re->s.alpha*255 + 0.5f), 255);
+	if (re->s.scale > 0)	//0 is the default: 1
+		out->scale = bound(1, (int)(re->s.scale*16 + 0.5f), 255);
+	out->instance_bits = re->s.instance_bits;
+}
+
 //the rerelease's pmove_state_t as it is (game API 3's is rounded), for Q2EX clients to predict with the rerelease's own pmove
 void SVQ2RR_ExtendedPmove(q2edict_t *ent, q2expmove_state_t *out)
 {
@@ -993,9 +1017,14 @@ void *SVQ2RR_GetGameAPI(void *GetGameAPIptr, void *fteimport)
 
 	fgi = fteimport;
 	memset(&rrgi, 0, sizeof(rrgi));
-	rrgi.tick_rate = 10;			//FTE's Quake II tick
-	rrgi.frame_time_s = 0.1;
-	rrgi.frame_time_ms = 100;
+	//KEX ticks 40 times a second; the rerelease's game works at any rate that divides a second into whole ms
+	rrtickrate = Cvar_Get("sv_fps", "40", CVAR_MAPLATCH, "Quake2 game variables")->ival;
+	rrtickrate = bound(10, rrtickrate, 100);
+	while (1000 % rrtickrate)
+		rrtickrate--;
+	rrgi.tick_rate = rrtickrate;
+	rrgi.frame_time_s = 1.0f / rrtickrate;
+	rrgi.frame_time_ms = 1000 / rrtickrate;
 	rrgi.Broadcast_Print = RRGI_Broadcast_Print;
 	rrgi.Com_Print = RRGI_Com_Print;
 	rrgi.Client_Print = RRGI_Client_Print;
