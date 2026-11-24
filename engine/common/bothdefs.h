@@ -341,6 +341,11 @@ Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
     #define NO_GNUTLS
     #undef VKQUAKE
     #undef AVAIL_OPENAL
+    //no quake 3 game on android (its gamecode never ran properly here): its maps' format (Q3BSPS) stays, other
+    //games use it
+    #undef Q3CLIENT
+    #undef Q3SERVER
+    #undef AVAIL_BOTLIB
 #endif
 #if (defined(_MSC_VER) && (_MSC_VER < 1500)) || defined(FTE_SDL)
 	#undef AVAIL_WASAPI	//wasapi is available in the vista sdk, while that's compatible with earlier versions, its not really expected until 2008

@@ -98,7 +98,6 @@ ENDIF()
 set(CMAKE_CXX_VISIBILITY_PRESET hidden)
 set(CMAKE_C_VISIBILITY_PRESET hidden)
 
-if (NOT ANDROID)
 IF(${CMAKE_VERSION} VERSION_LESS "3.9.0")
 	MESSAGE(STATUS "no LTO - old cmake.")
 ELSE()
@@ -117,11 +116,14 @@ ELSE()
 		MESSAGE(STATUS "no LTO - debug.")
 	ENDIF()
 ENDIF()
-endif ()
 
 if (ANDROID)
     include_directories(${OGG_INCLUDE_DIR})
-    add_compile_options(-Xclang -disable-llvm-passes -fno-lto)
+	#optimised for size, with LTO (above), as other platforms are: it was all off here (no llvm passes at all),
+	#because of crashes that were undefined behaviour in the code, which is what's been fixed instead
+	IF(NOT CMAKE_BUILD_TYPE MATCHES "Debug")
+		add_compile_options(-Os)
+	ENDIF()
 endif ()
 
 # Added these to solve some build issues I ran into - Brad
@@ -948,7 +950,7 @@ ENDIF()
 
 
 SET(FTE_PLUG_QUAKE3 true CACHE BOOL "Compile Quake3 plugin.")
-IF(FTE_PLUG_QUAKE3)
+IF(FTE_PLUG_QUAKE3 AND NOT ANDROID)	#(no quake 3 game on android: bothdefs.h)
 	IF (0)
 		SET(FTE_DEFINES ${FTE_DEFINES};${Q3_DEFINES})
 		SET(FTE_LIBS ${FTE_LIBS} quake3)
