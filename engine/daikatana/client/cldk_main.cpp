@@ -265,23 +265,20 @@ static void *RE_RegisterSkin(const char *name, resource_t resource)
 	return NULL;
 }
 //a surface's point (its hierarchical models' hardpoints, hr_*): FTE's models don't say yet, so the entity's own
-static void RE_GetModelHardpoint(char *pSurfName, int curFrame, int lastFrame, entity_t &ent, CVector &hardPt)
-{
-	hardPt = ent.origin;
-}
-//surface sprites (bullet holes, blood, scorch marks): not yet
-static void RE_AddSurfaceSprite(CVector &vOrigin, CVector &vEntOrigin, CVector &vEntAngles, void *pHitModel, int nIndex,
-	void *pSpriteModel, int nFrame, float fRoll, float fScale, byte nFlags)
-{
-}
+void CLDK_GetModelHardpoint(char *pSurfName, int curFrame, int lastFrame, entity_t &ent, CVector &hardPt);	//cldk_models.cpp
+void CLDK_ModelsReset(void);
+//surface sprites (bullet holes, blood, scorch marks: cldk_surfsprites.cpp)
+void CLDK_AddSurfaceSprite(CVector &vOrigin, CVector &vEntOrigin, CVector &vEntAngles, void *pHitModel, int nIndex,
+	void *pSpriteModel, int nFrame, float fRoll, float fScale, byte nFlags);
+void CLDK_SurfSpritesReset(void);
 
 refexport_t re;	//what of it there is here: CLDK_InitRefExport
 static void CLDK_InitRefExport(void)
 {
 	re.RegisterModel = RE_RegisterModel;
 	re.RegisterSkin = RE_RegisterSkin;
-	re.GetModelHardpoint = RE_GetModelHardpoint;
-	re.AddSurfaceSprite = RE_AddSurfaceSprite;
+	re.GetModelHardpoint = CLDK_GetModelHardpoint;
+	re.AddSurfaceSprite = CLDK_AddSurfaceSprite;
 	re.RegisterPic = RE_RegisterPic;
 	re.LoadFont = RE_LoadFont;
 	re.DrawPic = RE_DrawPic;
@@ -437,6 +434,8 @@ extern "C" void CLDK_Reset(void)
 {
 	CLDK_Init();
 	CLDK_SceneReset();
+	CLDK_ModelsReset();
+	CLDK_SurfSpritesReset();
 	dkstatsvalid = false;
 	memset(dkstats, 0, sizeof(dkstats));
 	cl.sidekicks_active = 0;

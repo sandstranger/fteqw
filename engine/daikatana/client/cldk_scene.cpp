@@ -33,6 +33,7 @@ void CLDK_AddEntities(void);
 void CLDK_RegisterBeams(void);	//cldk_beams.cpp's
 void CLDK_DrawBeams(void);
 void CLDK_DrawEntityBeam(entity_t *e);
+void CLDK_DrawSurfaceSprites(void);	//cldk_surfsprites.cpp's
 
 /*
 =====================================================================
@@ -379,6 +380,7 @@ extern "C" void CLDK_AddScene(void)
 	CL_AddComParticles();
 	CL_AddTrackEnts();
 	CLDK_DrawBeams();
+	CLDK_DrawSurfaceSprites();
 
 	if (numparts)
 		CLDKF_AddTriangles(pshader, numparts*3, pxyz, pst, prgba);

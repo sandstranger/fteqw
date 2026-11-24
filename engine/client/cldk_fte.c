@@ -150,6 +150,10 @@ void *CLDKF_ModelForIndex(int modelindex)
 		return NULL;
 	return cl.model_precache[modelindex];
 }
+const char *CLDKF_ModelPath(void *model)
+{
+	return model?((model_t *)model)->name:"";
+}
 //its renderfx: some Quake II's in other bits
 #define DKRF_MINLIGHT		0x00000001
 #define DKRF_VIEWERMODEL	0x00000002
@@ -304,6 +308,39 @@ void *CLDKF_RegisterBeamShader(const char *texture)
 				"alphagen vertex\n"
 			"}\n"
 		"}\n", texture?texture:"$whiteimage"));
+}
+void *CLDKF_RegisterDecalShader(const char *texture)
+{	//its surface sprites' (gl_surfsprite.cpp): bullet holes, scorch marks, blood on the walls
+	return R_RegisterShader(va("dkdecal:%s", texture), SUF_NONE,
+		va("{\n"
+			"cull disable\n"
+			"polygonoffset\n"
+			"{\n"
+				"clampmap %s\n"
+				"blendfunc blend\n"
+				"rgbgen vertex\n"
+				"alphagen vertex\n"
+			"}\n"
+		"}\n", texture));
+}
+int CLDKF_PlaneNormal(int planeindex, float *normal)
+{
+	if (!cl.worldmodel || planeindex < 0 || planeindex >= cl.worldmodel->numplanes || !cl.worldmodel->planes)
+		return false;
+	VectorCopy(cl.worldmodel->planes[planeindex].normal, normal);
+	return true;
+}
+void CLDKF_LightPoint(const float *point, float *rgb)
+{
+	vec3_t diffuse, ambient, dir;
+	if (!cl.worldmodel || !cl.worldmodel->funcs.LightPointValues)
+	{
+		VectorSet(rgb, 1, 1, 1);
+		return;
+	}
+	cl.worldmodel->funcs.LightPointValues(cl.worldmodel, point, diffuse, ambient, dir);
+	VectorAdd(diffuse, ambient, rgb);
+	VectorScale(rgb, 1/255.0, rgb);
 }
 void *CLDKF_RegisterSound(const char *name)
 {

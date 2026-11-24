@@ -85,6 +85,53 @@ void SVDK_ReliableWrite(int playernum, const void *data, int len)
 	}
 }
 
+//which of the map's planes a trace hit (traces have copies of them): by a hash of them, made as the map changes
+#define DKPLANEHASH 4096
+static struct
+{
+	model_t *model;
+	mplane_t *planes;
+	int *first;		//[DKPLANEHASH]
+	int *next;		//[numplanes]
+} dkplanes;
+static unsigned int SVDK_PlaneHash(const float *normal, float dist)
+{
+	int n[4] = {(int)floor(normal[0]*64+0.5), (int)floor(normal[1]*64+0.5), (int)floor(normal[2]*64+0.5), (int)floor(dist+0.5)};
+	return ((unsigned)n[0]*73856093u ^ (unsigned)n[1]*19349663u ^ (unsigned)n[2]*83492791u ^ (unsigned)n[3]*2654435761u) % DKPLANEHASH;
+}
+int SVDK_PlaneIndex(const float *normal, float dist)
+{
+	model_t *m = sv.world.worldmodel;
+	int i;
+	if (!m || !m->planes || m->numplanes <= 0)
+		return -1;
+	if (dkplanes.model != m || dkplanes.planes != m->planes)
+	{
+		BZ_Free(dkplanes.first);
+		BZ_Free(dkplanes.next);
+		dkplanes.model = m;
+		dkplanes.planes = m->planes;
+		dkplanes.first = BZ_Malloc(sizeof(int)*DKPLANEHASH);
+		dkplanes.next = BZ_Malloc(sizeof(int)*m->numplanes);
+		for (i = 0; i < DKPLANEHASH; i++)
+			dkplanes.first[i] = -1;
+		for (i = m->numplanes; i-- > 0; )
+		{
+			unsigned int h = SVDK_PlaneHash(m->planes[i].normal, m->planes[i].dist);
+			dkplanes.next[i] = dkplanes.first[h];
+			dkplanes.first[h] = i;
+		}
+	}
+	for (i = dkplanes.first[SVDK_PlaneHash(normal, dist)]; i >= 0; i = dkplanes.next[i])
+	{
+		const mplane_t *p = &m->planes[i];
+		if (fabs(p->dist - dist) < 0.01 && fabs(p->normal[0] - normal[0]) < 0.001
+			&& fabs(p->normal[1] - normal[1]) < 0.001 && fabs(p->normal[2] - normal[2]) < 0.001)
+			return i;
+	}
+	return -1;
+}
+
 //the game to run, by the files there are
 qboolean SVDK_IsDaikatana(void)
 {

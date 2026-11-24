@@ -32,12 +32,16 @@ void		CLDKF_Music(const char *name, int loop);		//null: stop
 //its scene
 void		*CLDKF_RegisterModel(const char *name);
 void		*CLDKF_ModelForIndex(int modelindex);
+const char	*CLDKF_ModelPath(void *model);				//its file's
 void		CLDKF_AddEntity(void *model, const float *origin, const float *oldorigin, const float *angles, int frame, int oldframe,
 				float backlerp, int skinnum, float alpha, float scale, const float *rgb, unsigned int dkrenderfx);
 void		CLDKF_AddLight(const float *origin, float radius, float r, float g, float b);
 void		CLDKF_AddTriangles(void *shader, int numverts, const float *xyz, const float *st, const float *rgba);
 void		*CLDKF_RegisterParticleShader(void);
 void		*CLDKF_RegisterBeamShader(const char *texture);	//blended, vertex colours, both sides; null: untextured
+void		*CLDKF_RegisterDecalShader(const char *texture);	//as a beam's, offset onto the surface under it
+int			CLDKF_PlaneNormal(int planeindex, float *normal);	//the map's; false if there's no such plane
+void		CLDKF_LightPoint(const float *point, float *rgb);	//the map's light there (0 to 1ish)
 void		*CLDKF_RegisterSound(const char *name);
 void		CLDKF_StartSound(void *sfx, const float *origin, int entnum, int channel, float volume, float attenuation, float timeofs);
 float		CLDKF_Trace(const float *start, const float *end, int passent, int mask, float *endpos, float *normal, int *entnum, int *contents);

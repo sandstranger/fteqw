@@ -593,6 +593,11 @@ static trace_t DK_Trace(const fq2::trace_t &t)
 	o.plane.dist = t.plane.dist;
 	o.plane.type = t.plane.type;
 	o.plane.signbits = t.plane.signbits;
+	if (t.fraction < 1)
+	{	//its engine's: which of the map's planes it hit (its client puts the surface sprites the server tags on it)
+		int pi = SVDK_PlaneIndex(t.plane.normal, t.plane.dist);
+		o.plane.planeIndex = (pi < 0)?0xffff:pi;
+	}
 	o.surface = DK_Surface(t.surface);
 	o.contents = t.contents;
 	o.ent = DK_FromShadow(t.ent);
