@@ -1109,6 +1109,7 @@ qboolean Shader_ParseSkySides (char *shadername, char *texturename, texid_t *ima
 		"%s%s",
 		"env/%s%s",
 		"gfx/env/%s%s",
+		"env/32bit/%s%s",		//Daikatana's (its 32bit renderer's, it had env/%s%s.pcx for the rest)
 		"skybox/%s%s",			//nettest: Source/GoldSrc skyboxes live under materials/skybox/<name><side>.vtf
 		"materials/skybox/%s%s"	//nettest: explicit materials/ prefix (matches how Source .vpk paths are mounted)
 	};
