@@ -757,7 +757,8 @@ void Sbar_Start (void)	//if one of these fails, skip the entire status bar.
 void Sbar_Init (void)
 {
 #ifdef Q2CLIENT
-	CLQ2_InitHUD();
+	CLQ2_InitHUD();	//yquake2's hud's cvars
+	CLQ2FX_Init();	//and its effects'
 #endif
 	Cvar_Register(&scr_scoreboard_drawtitle, "Scoreboard settings");
 	Cvar_Register(&scr_scoreboard_forcecolors, "Scoreboard settings");

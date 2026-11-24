@@ -667,6 +667,7 @@ int CLQ2_RegisterTEntModels (void)
 //		if (!CL_CheckOrDownloadFile(q2tentmodels[i].modelname, false))
 //			return false;
 
+	CLQ2FX_RegisterMedia();	//yquake2's effects' models and sounds
 	return true;
 }
 #endif
@@ -702,6 +703,9 @@ CL_ClearTEnts
 void CL_ClearTEnts (void)
 {
 	int i;
+#ifdef Q2CLIENT
+	CLQ2FX_ClearState();	//yquake2's effects keep their own
+#endif
 	CL_ClearTEntParticleState();
 	CL_ShutdownTEnts();
 
@@ -2655,6 +2659,9 @@ void CLQ2_ParseTEnt (void)
 //	explosion_t	*ex;
 
 	type = MSG_ReadByte ();
+
+	if (CLQ2FX_ParseTEnt(type))
+		return;	//vanilla Quake 2's temp entities are yquake2's (clq2_fx.c); the rest are handled below
 
 	if (type <= Q2TE_MAX)
 	{

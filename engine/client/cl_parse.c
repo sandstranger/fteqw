@@ -9537,11 +9537,11 @@ isillegible:
 
 	//known to game
 		case svcq2_muzzleflash:
-			CLQ2_ParseMuzzleFlash();
+			CLQ2FX_ParseMuzzleFlash();	//yquake2's (clq2_fx.c)
 			break;
 		case svcq2_muzzleflash2:
-			CLQ2_ParseMuzzleFlash2();
-			return;
+			CLQ2FX_ParseMuzzleFlash2();
+			break;	//was a return: everything after a monster's muzzle flash in the packet was dropped
 		case svcq2_temp_entity:
 			CLQ2_ParseTEnt();
 			break;

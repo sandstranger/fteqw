@@ -764,7 +764,7 @@ ifeq ($(FTE_TARGET),SDL2)
 	BASE_CFLAGS+=-DLIBJPEG_STATIC -DLIBJPEG_STATIC -DLIBPNG_STATIC -DOPUS_STATIC -DSPEEX_STATIC -DFREETYPE_STATIC -DLIBVORBISFILE_STATIC
 endif
 
-VPATH := $(BASE_DIR) : $(CLIENT_DIR) : $(GL_DIR) : $(SW_DIR) : $(COMMON_DIR) : $(SERVER_DIR) : $(HTTP_DIR) : $(QUX_DIR) : $(PROGS_DIR) : $(D3D_DIR) : $(VK_DIR) : $(BASE_DIR)/web
+VPATH := $(BASE_DIR) : $(CLIENT_DIR) : $(CLIENT_DIR)/q2fx : $(GL_DIR) : $(SW_DIR) : $(COMMON_DIR) : $(SERVER_DIR) : $(HTTP_DIR) : $(QUX_DIR) : $(PROGS_DIR) : $(D3D_DIR) : $(VK_DIR) : $(BASE_DIR)/web
 
 PROFILE_CFLAGS=-pg
 DX7SDK=-I./libs/dxsdk7/include/
@@ -781,6 +781,15 @@ CLIENT_OBJS = \
 	cl_ents.o	\
 	clq2_ents.o	\
 	clq2_hud.o	\
+	clq2_fx.o	\
+	cl_effects.o	\
+	cl_tempentities.o	\
+	cl_particles.o	\
+	cl_lights.o	\
+	flash.o	\
+	rand.o	\
+	q2fx_shared.o	\
+	q2fx_bridge.o	\
 	cl_input.o	\
 	in_generic.o	\
 	cl_receipt.o	\

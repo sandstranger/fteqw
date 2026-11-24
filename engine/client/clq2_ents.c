@@ -224,6 +224,16 @@ void CLQ2_FlyEffect(q2centity_t *ent, vec3_t org)
 static q2centity_t cl_entities[MAX_Q2EDICTS];
 entity_state_t	clq2_parse_entities[MAX_PARSE_ENTITIES];
 
+//where a client entity is now, for yquake2's effects (muzzle flashes come from their entity)
+qboolean CLQ2_GetEntityOrigin(int entnum, vec3_t origin, vec3_t angles)
+{
+	if (entnum < 0 || entnum >= MAX_Q2EDICTS)
+		return false;
+	VectorCopy(cl_entities[entnum].current.origin, origin);
+	VectorCopy(cl_entities[entnum].current.angles, angles);
+	return true;
+}
+
 void CL_SmokeAndFlash(vec3_t origin);
 
 void CL_GetNumberedEntityInfo (int num, float *org, float *ang)
@@ -1250,6 +1260,7 @@ static void CLQ2_DeltaEntity (q2frame_t *frame, int newnum, entity_state_t *old,
 			VectorCopy (state->u.q2.old_origin, ent->prev.origin);
 			VectorCopy (state->u.q2.old_origin, ent->lerp_origin);
 		}
+		CLQ2FX_EntityReset(state->number, ent->lerp_origin);	//yquake2's trails start over from here
 
 		ent->oldframe = state->u.q2.oldframe;
 		ent->oldframetime = cl.oldgametime;
@@ -1723,12 +1734,13 @@ void CLQ2_FireEntityEvents (q2frame_t *frame)
 	{
 		num = (frame->parse_entities + pnum)&(MAX_PARSE_ENTITIES-1);
 		s1 = &clq2_parse_entities[num];
+		//yquake2's (clq2_fx.c): footsteps, falls, teleports, item respawns
 		if (s1->u.q2.event)
-			CLQ2_EntityEvent (s1);
+			CLQ2FX_EntityEvent (s1->number, s1->u.q2.event, s1->origin);
 
 		// EF_TELEPORTER acts like an event, but is not cleared each frame
 		if (s1->effects & Q2EF_TELEPORTER)
-			CLQ2_TeleporterParticles (s1);
+			CLQ2FX_TeleporterParticles (s1->origin);
 	}
 }
 
@@ -2176,8 +2188,6 @@ static void CLQ2_AddPacketEntities (q2frame_t *frame)
 	player_info_t		*player;
 	unsigned int		effects, renderfx;
 	float back, fwds;
-
-	float timestep = cl.gametime-cl.oldgametime;
 	struct itemtimer_s **timerlink, *timer;
 
 	// bonus items rotate at a fixed rate
@@ -2669,169 +2679,10 @@ static void CLQ2_AddPacketEntities (q2frame_t *frame)
 			V_AddEntity (&ent);
 		}
 
-		// add automatic particle trails
-		if ( (effects&~Q2EF_ROTATE) )
-		{
-			if (effects & Q2EF_ROCKET)
-			{
-				//FIXME: cubemap orientation
-				if (P_ParticleTrail(cent->lerp_origin, ent.origin, pt_q2[Q2RT_ROCKET], timestep, ent.keynum, NULL, &cent->trailstate))
-					if (P_ParticleTrail(cent->lerp_origin, ent.origin, rt_rocket, timestep, ent.keynum, NULL, &cent->trailstate))
-					{
-						P_ParticleTrailIndex(cent->lerp_origin, ent.origin, P_INVALID, timestep, 0xdc, 4, &cent->trailstate);
-						V_AddLight (ent.keynum, ent.origin, 200, 0.2, 0.1, 0.05);
-					}
-			}
-			// PGM - Do not reorder EF_BLASTER and EF_HYPERBLASTER. 
-			// EF_BLASTER | EF_TRACKER is a special case for EF_BLASTER2... Cheese!
-			else if (effects & Q2EF_BLASTER)
-			{
-//PGM
-				if (effects & Q2EF_TRACKER)	// lame... problematic?
-				{
-					if (P_ParticleTrail(cent->lerp_origin, ent.origin, pt_q2[Q2RT_BLASTERTRAIL2], timestep, ent.keynum, NULL, &cent->trailstate))
-					{
-						P_ParticleTrailIndex(cent->lerp_origin, ent.origin, P_INVALID, timestep, 0xd0, 1, &cent->trailstate);
-						V_AddLight (ent.keynum, ent.origin, 200, 0, 0.2, 0);
-					}
-				}
-				else
-				{
-					if (P_ParticleTrail(cent->lerp_origin, ent.origin, pt_q2[Q2RT_BLASTERTRAIL], timestep, ent.keynum, NULL, &cent->trailstate))
-					{
-						P_ParticleTrailIndex(cent->lerp_origin, ent.origin, P_INVALID, timestep, 0xe0, 1, &cent->trailstate);
-						V_AddLight (ent.keynum, ent.origin, 200, 0.2, 0.2, 0);
-					}
-				}
-//PGM
-			}
-			else if (effects & Q2EF_HYPERBLASTER)
-			{
-				if (effects & Q2EF_TRACKER)						// PGM	overloaded for blaster2.
-					V_AddLight (ent.keynum, ent.origin, 200, 0, 0.2, 0);		// PGM
-				else											// PGM
-					V_AddLight (ent.keynum, ent.origin, 200, 0.2, 0.2, 0);
-			}
-			else if (effects & Q2EF_GIB)
-			{
-				if (P_ParticleTrail(cent->lerp_origin, ent.origin, pt_q2[Q2RT_GIB], timestep, ent.keynum, NULL, &cent->trailstate))
-					if (P_ParticleTrail(cent->lerp_origin, ent.origin, rt_blood, timestep, ent.keynum, NULL, &cent->trailstate))
-						P_ParticleTrailIndex(cent->lerp_origin, ent.origin, P_INVALID, timestep, 0xe8, 8, &cent->trailstate);
-			}
-			else if (effects & Q2EF_GRENADE)
-			{
-				if (P_ParticleTrail(cent->lerp_origin, ent.origin, pt_q2[Q2RT_GRENADE], timestep, ent.keynum, NULL, &cent->trailstate))
-					if (P_ParticleTrail(cent->lerp_origin, ent.origin, rt_grenade, timestep, ent.keynum, NULL, &cent->trailstate))
-						P_ParticleTrailIndex(cent->lerp_origin, ent.origin, P_INVALID, timestep, 4, 8, &cent->trailstate);
-			}
-			else if (effects & Q2EF_FLIES)
-			{
-				CLQ2_FlyEffect (cent, ent.origin);
-			}
-			else if (effects & Q2EF_BFG)
-			{
-				static int bfg_lightramp[6] = {300, 400, 600, 300, 150, 75};
-
-				if (effects & Q2EF_ANIM_ALLFAST)
-				{
-					CLQ2_BfgParticles (cent, ent.origin);
-					i = 200;
-				}
-				else
-				{
-					i = bfg_lightramp[s1->frame];
-				}
-				V_AddLight (ent.keynum, ent.origin, i, 0, 0.2, 0);
-			}
-			// RAFAEL
-			else if (effects & Q2EF_TRAP)
-			{
-				ent.origin[2] += 32;
-				P_ParticleTrail(cent->lerp_origin, ent.origin, pt_q2[Q2RT_TRAP], timestep, ent.keynum, NULL, &cent->trailstate);
-			}
-			else if (effects & Q2EF_FLAG1)
-			{
-				if (P_ParticleTrail(cent->lerp_origin, ent.origin, pt_q2[Q2RT_FLAG1], timestep, ent.keynum, NULL, &cent->trailstate))
-				{
-					P_ParticleTrailIndex(cent->lerp_origin, ent.origin, P_INVALID, timestep, 242, 1, &cent->trailstate);
-					V_AddLight (ent.keynum, ent.origin, 225, 0.2, 0.05, 0.05);
-				}
-			}
-			else if (effects & Q2EF_FLAG2)
-			{
-				if (P_ParticleTrail(cent->lerp_origin, ent.origin, pt_q2[Q2RT_FLAG2], timestep, ent.keynum, NULL, &cent->trailstate))
-				{
-					P_ParticleTrailIndex(cent->lerp_origin, ent.origin, P_INVALID, timestep, 115, 1, &cent->trailstate);
-					V_AddLight (ent.keynum, ent.origin, 225, 0.05, 0.05, 0.2);
-				}
-			}
-//======
-//ROGUE
-			else if (effects & Q2EF_TAGTRAIL)
-			{
-				if (P_ParticleTrail(cent->lerp_origin, ent.origin, pt_q2[Q2RT_TAGTRAIL], timestep, ent.keynum, NULL, &cent->trailstate))
-				{
-					P_ParticleTrailIndex(cent->lerp_origin, ent.origin, P_INVALID, timestep, 220, 1, &cent->trailstate);
-					V_AddLight (ent.keynum, ent.origin, 225, 0.2, 0.2, 0.0);
-				}
-			}
-			else if (effects & Q2EF_TRACKERTRAIL)
-			{
-				if (effects & Q2EF_TRACKER)
-				{
-					float intensity;
-
-					intensity = 50 + (500 * (sin(cl.time*2.0) + 1.0));	//yquake2's sin(cl.time/500) counts milliseconds
-
-					// FIXME - check out this effect in rendition
-					V_AddLight (ent.keynum, ent.origin, intensity, -0.2, -0.2, -0.2);
-				}
-				else
-				{
-					CLQ2_Tracker_Shell (cent, cent->lerp_origin);
-					V_AddLight (ent.keynum, ent.origin, 155, -0.2, -0.2, -0.2);
-				}
-			}
-			else if (effects & Q2EF_TRACKER)
-			{
-				if (P_ParticleTrail(cent->lerp_origin, ent.origin, pt_q2[Q2RT_TRACKER], timestep, ent.keynum, NULL, &cent->trailstate))
-				{
-					P_ParticleTrailIndex(cent->lerp_origin, ent.origin, P_INVALID, timestep, 0, 1, &cent->trailstate);
-					V_AddLight (ent.keynum, ent.origin, 200, -0.2, -0.2, -0.2);
-				}
-			}
-//ROGUE
-//======
-			// RAFAEL
-			else if (effects & Q2EF_GREENGIB)
-			{
-				if (P_ParticleTrail(cent->lerp_origin, ent.origin, pt_q2[Q2RT_GREENGIB], timestep, ent.keynum, NULL, &cent->trailstate))
-					P_ParticleTrailIndex(cent->lerp_origin, ent.origin, P_INVALID, timestep, 219, 8, &cent->trailstate);
-			}
-			// RAFAEL
-			else if (effects & Q2EF_IONRIPPER)
-			{
-				if (P_ParticleTrail(cent->lerp_origin, ent.origin, pt_q2[Q2RT_IONRIPPER], timestep, ent.keynum, NULL, &cent->trailstate))
-				{
-					P_ParticleTrailIndex(cent->lerp_origin, ent.origin, P_INVALID, timestep, 228, 4, &cent->trailstate);
-					V_AddLight (ent.keynum, ent.origin, 100, 0.2, 0.1, 0.1);
-				}
-			}
-			// RAFAEL
-			else if (effects & Q2EF_BLUEHYPERBLASTER)
-			{
-				V_AddLight (ent.keynum, ent.origin, 200, 0, 0, 0.2);
-			}
-			// RAFAEL
-			else if (effects & Q2EF_PLASMA)
-			{
-				if (effects & Q2EF_ANIM_ALLFAST)
-				{
-					P_ParticleTrail(cent->lerp_origin, ent.origin, pt_q2[Q2RT_PLASMA], timestep, ent.keynum, NULL, &cent->trailstate);
-				}
-				V_AddLight (ent.keynum, ent.origin, 130, 0.2, 0.1, 0.1);
-			}
-		}
+		// add automatic particle trails: yquake2's (clq2_fx.c), with their lights. It keeps where each entity
+		// was for them itself. Not for us: yquake2 skips the player's own entity before its trails.
+		if (s1->number != cl.playerview[0].playernum+1)
+			CLQ2FX_EntityEffects(s1->number, effects, s1->frame, ent.origin);
 
 		VectorCopy (ent.origin, cent->lerp_origin);
 	}
@@ -2999,10 +2850,12 @@ void CLQ2_AddEntities (void)
 
 	for (seat = 0; seat < cl.splitclients; seat++)
 		CLQ2_CalcViewValues (seat);
+	CLQ2FX_BeginFrame ();	//yquake2's effects: the time and view the trails are stamped with
 	CLQ2_AddPacketEntities (&cl.q2frame);
 #if 0
 	CLQ2_AddProjectiles ();
 #endif
+	CLQ2FX_AddEntities ();	//yquake2's temp entities, explosions, beams, lasers, particles, dlights
 	CL_UpdateTEnts ();
 
 #ifdef _DEBUG

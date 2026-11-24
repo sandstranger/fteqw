@@ -1860,6 +1860,20 @@ float CLQ2_MenuScale(void);	//yquake2's r_menuscale, for the whole screen (in pi
 void CLQ2_GetPicSize(const char *name, int *w, int *h);	//yquake2's pic naming: name, or /path/name.ext
 void CLQ2_DrawPicScaled(float x, float y, const char *name, float scale);	//screen pixels
 void CLQ2_DrawCharScaled(float x, float y, int num, float scale);			//screen pixels, Quake 2 charset
+
+//clq2_fx.c: yquake2's effects (engine/client/q2fx): particles, trails, temp entities, muzzle flashes, dlights
+void CLQ2FX_Init(void);
+qboolean CLQ2FX_ParseTEnt(int type);	//true when the effects took this (vanilla) temp entity
+void CLQ2FX_ParseMuzzleFlash(void);
+void CLQ2FX_ParseMuzzleFlash2(void);
+void CLQ2FX_EntityReset(int entnum, const vec3_t origin);
+void CLQ2FX_EntityEffects(int entnum, int effects, int frame, const vec3_t origin);
+void CLQ2FX_EntityEvent(int entnum, int event, const vec3_t origin);
+void CLQ2FX_TeleporterParticles(const vec3_t origin);
+void CLQ2FX_BeginFrame(void);
+void CLQ2FX_AddEntities(void);
+void CLQ2FX_ClearState(void);
+void CLQ2FX_RegisterMedia(void);
 #endif
 
 #ifdef HLCLIENT

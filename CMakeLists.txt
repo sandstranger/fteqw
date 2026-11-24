@@ -740,6 +740,15 @@ SET(FTE_CLIENT_FILES
 	engine/client/clq2_cin.c
 	engine/client/clq2_ents.c
 	engine/client/clq2_hud.c
+	engine/client/clq2_fx.c
+	engine/client/q2fx/cl_effects.c
+	engine/client/q2fx/cl_tempentities.c
+	engine/client/q2fx/cl_particles.c
+	engine/client/q2fx/cl_lights.c
+	engine/client/q2fx/flash.c
+	engine/client/q2fx/rand.c
+	engine/client/q2fx/q2fx_shared.c
+	engine/client/q2fx/q2fx_bridge.c
 	engine/client/console.c
 	engine/client/fragstats.c
 	engine/client/image.c
