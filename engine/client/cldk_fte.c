@@ -51,6 +51,15 @@ static void CLDK_ToggleQuickConsole_f(void)
 {	//its small console (default_keys.cfg's `), FTE's
 	Cbuf_InsertText("toggleconsole\n", Cmd_ExecLevel, false);
 }
+static void CLDK_WriteConfig_f(void)
+{	//its config menu's cl_writeconfig <name>: FTE's cfg_save, to <name>.cfg
+	char name[MAX_QPATH];
+	Q_strncpyz(name, Cmd_Argv(1), sizeof(name));
+	if (!*name || strstr(name, "..") || strchr(name, '"') || strchr(name, ';'))
+		return;
+	COM_DefaultExtension(name, ".cfg", sizeof(name));
+	Cbuf_InsertText(va("cfg_save \"%s\"\n", name), Cmd_ExecLevel, false);
+}
 qboolean CLDK_IsDaikatana(void)
 {
 	static qboolean commands;
@@ -74,6 +83,8 @@ qboolean CLDK_IsDaikatana(void)
 			Cmd_AddCommand("togglequickconsole", CLDK_ToggleQuickConsole_f);
 		if (!Cmd_Exists("cldk_saveshot"))
 			Cmd_AddCommand("cldk_saveshot", CLDK_SaveShot_f);
+		if (!Cmd_Exists("cl_writeconfig"))
+			Cmd_AddCommand("cl_writeconfig", CLDK_WriteConfig_f);
 	}
 	return true;
 }
@@ -906,10 +917,60 @@ static void CLDK_MenuArea(void)
 	cldkarea.w = vid.width / cldkarea.scale;
 	cldkarea.h = vid.height / cldkarea.scale;
 }
+//its menus are the mouse's: a pad's left stick and dpad move the pointer (CLDK_MenuPadPointer), A clicks, B, start
+//and back are escape
+static float cldkpadaxis[2];
+static qboolean CLDK_MenuJoyAxis(menu_t *m, unsigned int devid, int axis, float value)
+{
+	if (axis == GPAXIS_LT_RIGHT || axis == GPAXIS_LT_DOWN)
+	{
+		cldkpadaxis[axis == GPAXIS_LT_DOWN] = value;
+		return true;
+	}
+	return false;
+}
+static void CLDK_MenuPadPointer(void)
+{
+	static double last;
+	float v[2], dt = last?(realtime - last):0;
+	int i;
+	last = realtime;
+	if (dt <= 0 || dt > 0.25)
+		return;
+	for (i = 0; i < 2; i++)	//(a deadzone, then from nothing up)
+		v[i] = (fabs(cldkpadaxis[i]) > 0.2)?(cldkpadaxis[i] - (cldkpadaxis[i] > 0?0.2:-0.2)) / 0.8:0;
+	if (keydown[K_GP_DPAD_LEFT])	v[0] -= 1;
+	if (keydown[K_GP_DPAD_RIGHT])	v[0] += 1;
+	if (keydown[K_GP_DPAD_UP])		v[1] -= 1;
+	if (keydown[K_GP_DPAD_DOWN])	v[1] += 1;
+	if (!v[0] && !v[1])
+		return;
+	mousecursor_x = bound(0, mousecursor_x + v[0] * vid.height * dt, vid.width - 1);	//(a screen's height a second)
+	mousecursor_y = bound(0, mousecursor_y + v[1] * vid.height * dt, vid.height - 1);
+}
 static qboolean CLDK_MenuKeyEvent(menu_t *m, qboolean isdown, unsigned int devid, int key, int unicode)
 {
 	int dk;
 	CLDK_MenuArea();
+	switch (key)
+	{	//a pad's
+	case K_GP_A:
+		key = K_MOUSE1;
+		break;
+	case K_GP_B:
+	case K_GP_START:
+	case K_GP_BACK:	//back to the game, as its resume button (its escape only did with its console on)
+		if (isdown && cls.state == ca_active)
+		{
+			CLDK_MenuKey(-1, true);
+			if (!CLDK_MenuActive())
+				CLDKF_CloseMenu();
+		}
+		return true;
+	case K_GP_DPAD_UP:	case K_GP_DPAD_DOWN:	case K_GP_DPAD_LEFT:	case K_GP_DPAD_RIGHT:
+	case K_GP_LEFT_THUMB_UP:	case K_GP_LEFT_THUMB_DOWN:	case K_GP_LEFT_THUMB_LEFT:	case K_GP_LEFT_THUMB_RIGHT:
+		return true;	//(the pointer: CLDK_MenuPadPointer)
+	}
 	if (key == K_TOUCHTAP)
 		key = K_MOUSE1;
 	if (isdown && unicode >= 32 && unicode < 127 && !keydown[K_LCTRL] && !keydown[K_RCTRL])
@@ -932,6 +993,7 @@ static void CLDK_MenuDrawMenu(menu_t *m)
 {
 	int x, y;
 	CLDK_MenuArea();
+	CLDK_MenuPadPointer();
 	CLDKF_MousePos(&x, &y);
 	CLDK_MenuMouse(x, y);
 	CLDK_MenuDraw();
@@ -964,6 +1026,7 @@ qboolean CLDK_OpenMenuAt(int button)
 	if (!CLDK_IsDaikatana())
 		return false;
 	cldk_menu.keyevent = CLDK_MenuKeyEvent;
+	cldk_menu.joyaxis = CLDK_MenuJoyAxis;
 	cldk_menu.drawmenu = CLDK_MenuDrawMenu;
 	cldk_menu.release = CLDK_MenuRelease;
 	cldk_menu.cursor = &key_customcursor[kc_console];	//absolute pointer

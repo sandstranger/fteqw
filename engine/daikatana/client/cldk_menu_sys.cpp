@@ -352,7 +352,7 @@ bool CLDK_CanSave(void)
 	return !Cvar_VariableValue("deathmatch") && !Cvar_VariableValue("coop") && CLDKF_Stat(STAT_HEALTH) > 0
 		&& !(CLDKF_RDFlags() & RDF_LETTERBOX);
 }
-void CL_WriteConfiguration(char *name)	{CLDKF_AddCommand("writeconfig\n");}
+void CL_WriteConfiguration(char *name)	{CLDKF_AddCommand("cfg_save\n");}	//(FTE's: its writeconfig wasn't)
 void CL_SaveLastConfiguration(void)		{}
 bool LoadBitmapPalette(const char *file_name, byte palette[128])	{return false;}	//(FTE's true colour)
 

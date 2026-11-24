@@ -3793,9 +3793,11 @@ void IN_MoveJoystick(struct joy_s *joy, float *movements, int pnum, float framet
 	}
 
 #ifdef QUAKESTATS
-	if (IN_WeaponWheelAccumulate(joy->qdeviceid, jstrafe[1]*50, -jstrafe[0]*50, 20))
+	//the player's (pnum, which this device is), not the device's number: a pad that isn't device 0 (often, on
+	//android) never reached player 0's wheel (the quake 2 rerelease's only takes player 0's)
+	if (IN_WeaponWheelAccumulate(pnum, jstrafe[1]*50, -jstrafe[0]*50, 20))
 		jstrafe[0] = jstrafe[1] = 0;
-	if (IN_WeaponWheelAccumulate(joy->qdeviceid, jlook[1]*50, jlook[0]*50, 20))
+	if (IN_WeaponWheelAccumulate(pnum, jlook[1]*50, jlook[0]*50, 20))
 		jlook[0] = jlook[1] = 0;
 #endif
 

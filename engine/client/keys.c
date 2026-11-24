@@ -4112,6 +4112,18 @@ void Key_Unbind_f (void)
 	Key_SetBinding (b, modifier, NULL, Cmd_ExecLevel);
 }
 
+void IN_KeyEvent(unsigned int devid, int down, int keycode, int unicode);
+static void Key_SimKey_f (void)
+{	//as a device sends it: through the input queue, so it's handled between frames as a real one is
+	int modifier, key = Key_StringToKeynum(Cmd_Argv(1), &modifier);
+	if (key <= 0 || key >= K_MAX)
+	{
+		Con_Printf("in_simkey: no key \"%s\"\n", Cmd_Argv(1));
+		return;
+	}
+	IN_KeyEvent(0, (Cmd_Argc() < 3)?1:atoi(Cmd_Argv(2)), key, 0);
+}
+
 void Key_Unbindall_f (void)
 {
 	int		i;
@@ -4573,6 +4585,7 @@ void Key_Init (void)
 	Cmd_AddCommand ("bindlevel",Key_Bind_f);
 	Cmd_AddCommandAD ("unbind",Key_Unbind_f, Key_Bind_c, NULL);
 	Cmd_AddCommandD ("unbindall",Key_Unbindall_f, "A dangerous command that forgets ALL your key settings. For use only in default.cfg.");
+	Cmd_AddCommandD ("in_simkey", Key_SimKey_f, "in_simkey <key> <1|0>: a press (or release) of the key as a device would send it, for testing (gamepad buttons, say, without a gamepad).");
 	//FTESurf Patch 213: the arrow-key completion gate, measured rather than asserted.
 	Cmd_AddCommandD ("con_edittest", Key_ConEditTest_f, "FTESurf Patch 1642: presses the console's text-box keys (selection, Ctrl+A, word deletes, Home/End) through Key_Console and checks the line. `con_edittest clip` also tests Ctrl+C/Ctrl+X, which write the clipboard. Restores the input line.");
 	Cmd_AddCommandD ("con_selftest", Key_ConSelfTest_f, "Verifies the console completion dropdown's Up/Down gate, highlighted argument acceptance, the window grip clamps and lenient map completion. Restores every value it touches.");
@@ -4617,6 +4630,66 @@ On some systems, keys and (uni)char codes will be entirely separate events.
   still held came to game code as presses: a held Enter sent the chat draft it
   had just pasted into (the review).  A press of it by a device ends this too.*/
 int key_pasteanswer;
+
+/*
+A gamepad button's default, for what's unbound, in the game being played: quake 2's, the rerelease's (its weapon and
+powerup wheels), daikatana's. NULL for quake's own (Key_Event's).
+*/
+static const char *Key_GamepadDefault(int key)
+{
+#ifdef Q2CLIENT
+	if (cls.protocol != CP_QUAKE2)
+		return NULL;
+#ifdef DAIKATANA
+	if (CLDK_IsDaikatana())
+	{	//its default_keys.cfg's commands
+		switch (key)
+		{
+		case K_GP_RIGHT_TRIGGER:	return "+attack";
+		case K_GP_LEFT_TRIGGER:		return "+use";
+		case K_GP_A:				return "+moveup";		//jump
+		case K_GP_B:				return "+movedown";		//crouch
+		case K_GP_X:				return "inv_use";
+		case K_GP_Y:				return "hud_cycle";		//its sidekicks' commands
+		case K_GP_LEFT_SHOULDER:	return "weapprev";
+		case K_GP_RIGHT_SHOULDER:	return "weapnext";
+		case K_GP_DPAD_LEFT:		return "inv_prev";
+		case K_GP_DPAD_RIGHT:		return "inv_next";
+		case K_GP_DPAD_UP:			return "hud_previous";
+		case K_GP_DPAD_DOWN:		return "hud_next";
+		case K_GP_LEFT_STICK:		return "+speed";
+		case K_GP_RIGHT_STICK:		return "hud_use";
+		case K_GP_BACK:				return "scoreboard";
+		case K_GP_START:
+		case K_GP_GUIDE:			return "togglemenu";
+		}
+		return NULL;
+	}
+#endif
+	switch (key)
+	{
+	case K_GP_RIGHT_TRIGGER:	return "+attack";
+	case K_GP_LEFT_TRIGGER:		return "+movedown";		//crouch
+	case K_GP_A:				return "+moveup";		//jump
+	case K_GP_B:				return "cmd invuse";
+	case K_GP_X:				return CLQ2CG_Active()?"+wheel2":"cmd inven";	//the rerelease's powerup wheel
+	case K_GP_Y:				return CLQ2CG_Active()?"+wheel":"cl_weapnext";	//and its weapon wheel
+	case K_GP_LEFT_SHOULDER:	return "cl_weapprev";
+	case K_GP_RIGHT_SHOULDER:	return "cl_weapnext";
+	case K_GP_DPAD_LEFT:		return "cmd invprev";
+	case K_GP_DPAD_RIGHT:		return "cmd invnext";
+	case K_GP_DPAD_UP:			return "cmd inven";
+	case K_GP_DPAD_DOWN:		return "cmd score";
+	case K_GP_LEFT_STICK:		return "+speed";
+	case K_GP_RIGHT_STICK:		return "centerview";
+	case K_GP_BACK:				return "cmd help";
+	case K_GP_START:
+	case K_GP_GUIDE:			return "togglemenu";
+	}
+#endif
+	return NULL;
+}
+
 void Key_Event (unsigned int devid, int key, unsigned int unicode, qboolean down)
 {
 	unsigned int devbit = 1u<<devid;
@@ -4729,6 +4802,15 @@ void Key_Event (unsigned int devid, int key, unsigned int unicode, qboolean down
 		CSQC_KeyPress(key, unicode, down, devid);
 #endif
 	}
+
+#if defined(Q2CLIENT) && defined(DAIKATANA)
+	//a pad's start, A or B skips Daikatana's cinematics too, as its escape does (below)
+	if (down && (key == K_GP_START || key == K_GP_A || key == K_GP_B) && !Key_Dest_Has(~kdm_game) && CLDK_InCinematic())
+	{
+		Cbuf_AddText("cmd cin_skip\n", RESTRICT_LOCAL);
+		return;
+	}
+#endif
 
 //
 // handle escape specialy, so the user can never unbind it
@@ -4994,25 +5076,49 @@ void Key_Event (unsigned int devid, int key, unsigned int unicode, qboolean down
 
 		//gamepad buttons should get fallbacks out of the box, even if they're not initially listed on the binds menu.
 		//these may be redefined later...
-		case K_GP_LEFT_SHOULDER:	dc = "+jump";			goto defaultedbind;	//qs: impulse 12 (should be 11 for qw...)
-		case K_GP_RIGHT_SHOULDER:	dc = "+weaponwheel";	goto defaultedbind;	//qs: impulse 10
-		case K_GP_LEFT_TRIGGER:		dc = "+button3";		goto defaultedbind;	//qs: jump
-		case K_GP_RIGHT_TRIGGER:	dc = "+attack";			goto defaultedbind;	//qs: +attack
-		case K_GP_START:			dc = "togglemenu";		goto defaultedbind;
-		case K_GP_A:				dc = "impulse 10";		goto defaultedbind;
-		case K_GP_B:				dc = "+button4";		goto defaultedbind;
-		case K_GP_X:				dc = "+button5";		goto defaultedbind;
-		case K_GP_Y:				dc = "+button6";		goto defaultedbind;
-		case K_GP_BACK:				dc = "+showscores";		goto defaultedbind;
-		case K_GP_UNKNOWN:			dc = "+button8";		goto defaultedbind;
-		case K_GP_DPAD_UP:			dc = "+forward";		goto defaultedbind;
-		case K_GP_DPAD_DOWN:		dc = "+back";			goto defaultedbind;
-		case K_GP_DPAD_LEFT:		dc = "+moveleft";		goto defaultedbind;
-		case K_GP_DPAD_RIGHT:		dc = "+moveright";		goto defaultedbind;
-		case K_GP_GUIDE:			dc = "togglemenu";		goto defaultedbind;
-
-		case K_GP_LEFT_STICK:		dc = "+movedown";		goto defaultedbind;
+		case K_GP_LEFT_SHOULDER:
+		case K_GP_RIGHT_SHOULDER:
+		case K_GP_LEFT_TRIGGER:
+		case K_GP_RIGHT_TRIGGER:
+		case K_GP_START:
+		case K_GP_A:
+		case K_GP_B:
+		case K_GP_X:
+		case K_GP_Y:
+		case K_GP_BACK:
+		case K_GP_DPAD_UP:
+		case K_GP_DPAD_DOWN:
+		case K_GP_DPAD_LEFT:
+		case K_GP_DPAD_RIGHT:
+		case K_GP_GUIDE:
+		case K_GP_LEFT_STICK:
 		case K_GP_RIGHT_STICK:
+			dc = Key_GamepadDefault(key);	//quake 2's (and the rerelease's), daikatana's: quake's below are no use to them
+			if (dc)
+				goto defaultedbind;
+			if (key == K_GP_RIGHT_STICK)
+				break;
+			switch (key)
+			{	//quake's
+			case K_GP_LEFT_SHOULDER:	dc = "+jump";			goto defaultedbind;	//qs: impulse 12 (should be 11 for qw...)
+			case K_GP_RIGHT_SHOULDER:	dc = "+weaponwheel";	goto defaultedbind;	//qs: impulse 10
+			case K_GP_LEFT_TRIGGER:		dc = "+button3";		goto defaultedbind;	//qs: jump
+			case K_GP_RIGHT_TRIGGER:	dc = "+attack";			goto defaultedbind;	//qs: +attack
+			case K_GP_START:			dc = "togglemenu";		goto defaultedbind;
+			case K_GP_A:				dc = "impulse 10";		goto defaultedbind;
+			case K_GP_B:				dc = "+button4";		goto defaultedbind;
+			case K_GP_X:				dc = "+button5";		goto defaultedbind;
+			case K_GP_Y:				dc = "+button6";		goto defaultedbind;
+			case K_GP_BACK:				dc = "+showscores";		goto defaultedbind;
+			case K_GP_DPAD_UP:			dc = "+forward";		goto defaultedbind;
+			case K_GP_DPAD_DOWN:		dc = "+back";			goto defaultedbind;
+			case K_GP_DPAD_LEFT:		dc = "+moveleft";		goto defaultedbind;
+			case K_GP_DPAD_RIGHT:		dc = "+moveright";		goto defaultedbind;
+			case K_GP_GUIDE:			dc = "togglemenu";		goto defaultedbind;
+			case K_GP_LEFT_STICK:		dc = "+movedown";		goto defaultedbind;
+			}
+			break;
+		case K_GP_UNKNOWN:			dc = "+button8";		goto defaultedbind;
 		default:
 			break;
 		}
