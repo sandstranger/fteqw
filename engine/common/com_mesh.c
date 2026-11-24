@@ -6252,6 +6252,332 @@ static qboolean QDECL Mod_LoadQ2Model (model_t *mod, void *buffer, size_t fsize)
 
 #endif
 
+#ifdef MD2MODELS
+////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+//Daikatana's models (dkm): Quake 2's, in surfaces (each with its skin), with packed 11/10/11 bit vertices in
+//version 2, and their own glcmds: each strip or fan says its skin and surface, each vertex is xyz, s, t.
+
+#define DKM_IDENT		"DKMD",4
+#define DKM_VERSION1	1
+#define DKM_VERSION2	2
+#define DKM_MAXVERTS	12288
+#define DKM_MAXTRIS		8192
+
+typedef struct
+{
+	int ident, version;
+	float org[3];
+	int framesize, num_skins, num_xyz, num_st, num_tris, num_glcmds, num_frames, num_surfaces;
+	int ofs_skins, ofs_st, ofs_tris, ofs_frames, ofs_glcmds, ofs_surfaces, ofs_end;
+	int num_sequences, ofs_sequences;
+} dkmheader_t;
+typedef struct
+{
+	char name[32];
+	int flags;
+	int skinindex;
+	int skinwidth, skinheight;
+	int num_uvframes;
+} dkmsurface_t;
+typedef struct
+{
+	int xyz;
+	float s, t;
+} dkmvert_t;
+
+static int DKM_MatchVert(dkmvert_t *list, int *count, const dkmvert_t *v)
+{
+	int i;
+	for (i = 0; i < *count; i++)
+		if (list[i].xyz == v->xyz && list[i].s == v->s && list[i].t == v->t)
+			return i;
+	if (*count >= DKM_MAXVERTS)
+		return 0;
+	list[*count] = *v;
+	return (*count)++;
+}
+
+//surfaces Daikatana's renderer doesn't draw (its loader's name rules)
+static qboolean DKM_SurfaceHidden(const char *name)
+{
+	return strstr(name, "nd_") || strstr(name, "hp_") || strstr(name, "remove");
+}
+
+static qboolean QDECL Mod_LoadDaikatanaModel (model_t *mod, void *buffer, size_t fsize)
+{
+	dkmheader_t h;
+	const dkmsurface_t *insurf;
+	int i, j, surf, nummeshes, version, vertsize, n;
+	galiasinfo_t *root, *galias, *prev = NULL;
+	galiasanimation_t *anims;
+	const int *cmd, *cmdend;
+	dkmvert_t *tmpvert;
+	int (*tri)[3];
+	vec3_t min, max;
+#ifndef SERVERONLY
+	galiasskin_t *skins;
+#endif
+
+	mod->engineflags |= MDLF_NEEDOVERBRIGHT;
+
+	if (fsize < sizeof(h))
+		return false;
+	for (i = 0; i < sizeof(h)/4; i++)
+		((int*)&h)[i] = LittleLong(((int*)buffer)[i]);
+	version = h.version;
+	if (version != DKM_VERSION1 && version != DKM_VERSION2)
+	{
+		Con_Printf (CON_ERROR "%s has wrong version number (%i should be %i or %i)\n", mod->name, version, DKM_VERSION1, DKM_VERSION2);
+		return false;
+	}
+	vertsize = (version == DKM_VERSION2)?5:4;
+	if (h.num_frames < 1 || h.num_xyz < 3 || h.num_surfaces < 1 || h.num_skins < 0 ||
+		h.ofs_end > fsize || h.ofs_glcmds + (size_t)h.num_glcmds*4 > fsize || h.ofs_surfaces + (size_t)h.num_surfaces*sizeof(dkmsurface_t) > fsize ||
+		h.ofs_frames + (size_t)h.num_frames*h.framesize > fsize || h.framesize < 40 + h.num_xyz*vertsize ||
+		h.ofs_skins + (size_t)h.num_skins*64 > fsize)
+	{
+		Con_Printf (CON_ERROR "%s: invalid or truncated\n", mod->name);
+		return false;
+	}
+	insurf = (const dkmsurface_t*)((qbyte*)buffer + h.ofs_surfaces);
+
+	//one mesh per drawn surface
+	for (surf = 0, nummeshes = 0; surf < h.num_surfaces; surf++)
+		if (!DKM_SurfaceHidden(insurf[surf].name))
+			nummeshes++;
+	if (!nummeshes)
+		nummeshes = 1;	//(all hidden: an empty one, for its frames)
+
+	root = ZG_Malloc(&mod->memgroup, sizeof(galiasinfo_t)*nummeshes + sizeof(galiasanimation_t)*h.num_frames*nummeshes
+#ifndef SERVERONLY
+		+ sizeof(galiasskin_t)*nummeshes
+#endif
+		);
+	anims = (galiasanimation_t*)(root + nummeshes);
+#ifndef SERVERONLY
+	skins = (galiasskin_t*)(anims + h.num_frames*nummeshes);
+#endif
+
+	tmpvert = BZ_Malloc(sizeof(*tmpvert)*DKM_MAXVERTS);
+	tri = BZ_Malloc(sizeof(*tri)*DKM_MAXTRIS);
+	ClearBounds(mod->mins, mod->maxs);
+
+	for (surf = 0, galias = root; surf < h.num_surfaces && galias < root+nummeshes; surf++)
+	{
+		int numverts = 0, numtri = 0;
+		galiaspose_t *pose;
+		vecV_t *verts;
+#ifndef SERVERONLY
+		vec2_t *st;
+		vec3_t *normals;
+#endif
+		index_t *indexes;
+
+		if (DKM_SurfaceHidden(insurf[surf].name) && nummeshes > 1)
+			continue;
+
+		Mod_DefaultMesh(galias, mod->name, galias-root);
+		Q_strncpyz(galias->surfacename, insurf[surf].name, sizeof(galias->surfacename));
+		galias->ofsanimations = anims + (galias-root)*h.num_frames;
+		galias->shares_verts = galias-root;
+		if (prev)
+			prev->nextsurf = galias;
+		prev = galias;
+
+#ifndef SERVERONLY
+		{	//its skin
+			int s = LittleLong(insurf[surf].skinindex);
+			galiasskin_t *skin = &skins[galias-root];
+			skinframe_t *frame = ZG_Malloc(&mod->memgroup, sizeof(*frame));
+			skin->frame = frame;
+			skin->numframes = 1;
+			if (s >= 0 && s < h.num_skins)
+			{
+				char *name = (char*)buffer + h.ofs_skins + s*64;
+				Q_strncpyz(frame->shadername, name, min(sizeof(frame->shadername), 64));
+				COM_CleanUpPath(frame->shadername);
+			}
+			galias->ofsskins = skin;
+			galias->numskins = 1;		}
+#endif
+
+		//the strips and fans of this surface, as triangles
+		cmd = (const int*)((qbyte*)buffer + h.ofs_glcmds);
+		cmdend = cmd + h.num_glcmds;
+		while (cmd + 3 <= cmdend)
+		{
+			dkmvert_t v[3];
+			const int *vert;
+			int count = LittleLong(cmd[0]), fan = count < 0, cmdsurf = LittleLong(cmd[2]);
+			if (!count)
+				break;
+			if (fan)
+				count = -count;
+			vert = cmd + 3;
+			if (vert + count*3 > cmdend)
+				break;
+			if (cmdsurf == surf || (nummeshes == 1 && DKM_SurfaceHidden(insurf[surf].name)))
+			{
+				int first, second, third;
+				for (i = 0; i < count; i++)
+				{
+					v[0].xyz = LittleLong(vert[i*3+0]);
+					v[0].s = LittleFloat(((const float*)vert)[i*3+1]);
+					v[0].t = LittleFloat(((const float*)vert)[i*3+2]);
+					if (v[0].xyz < 0 || v[0].xyz >= h.num_xyz)
+						v[0].xyz = 0;
+					third = DKM_MatchVert(tmpvert, &numverts, &v[0]);
+					if (i == 0)
+						first = third;
+					else if (i == 1)
+						second = third;
+					else if (numtri < DKM_MAXTRIS)
+					{
+						if (fan)
+						{
+							tri[numtri][0] = first;
+							tri[numtri][1] = second;
+							tri[numtri][2] = third;
+							second = third;
+						}
+						else
+						{
+							if (i&1)
+							{
+								tri[numtri][0] = second;
+								tri[numtri][1] = first;
+							}
+							else
+							{
+								tri[numtri][0] = first;
+								tri[numtri][1] = second;
+							}
+							tri[numtri][2] = third;
+							first = second;
+							second = third;
+						}
+						if (tri[numtri][0] != tri[numtri][1] && tri[numtri][0] != tri[numtri][2] && tri[numtri][1] != tri[numtri][2])
+							numtri++;
+					}
+				}
+			}
+			cmd = vert + count*3;
+		}
+
+		galias->numverts = numverts;
+		galias->numindexes = numtri*3;
+		galias->ofs_indexes = indexes = ZG_Malloc(&mod->memgroup, sizeof(*indexes)*galias->numindexes + 1);
+		for (i = 0; i < numtri; i++)
+		{
+			indexes[i*3+0] = tri[i][0];
+			indexes[i*3+1] = tri[i][1];
+			indexes[i*3+2] = tri[i][2];
+		}
+#ifndef SERVERONLY
+		galias->ofs_st_array = st = ZG_Malloc(&mod->memgroup, sizeof(*st)*numverts + 1);
+		for (i = 0; i < numverts; i++)
+		{
+			st[i][0] = tmpvert[i].s;
+			st[i][1] = tmpvert[i].t;
+		}
+#endif
+
+		//frames
+		pose = ZG_Malloc(&mod->memgroup, (sizeof(galiaspose_t) + sizeof(vecV_t)*numverts
+#ifndef SERVERONLY
+			+ sizeof(vec3_t)*3*numverts
+#endif
+			)*h.num_frames + 1);
+		verts = (vecV_t*)(pose + h.num_frames);
+#ifndef SERVERONLY
+		normals = (vec3_t*)(verts + h.num_frames*numverts);
+#endif
+		for (n = 0; n < h.num_frames; n++, pose++)
+		{
+			const qbyte *inframe = (const qbyte*)buffer + h.ofs_frames + n*h.framesize;
+			const qbyte *inverts = inframe + 40;
+			galiasanimation_t *anim = &galias->ofsanimations[n];
+			float scale[3], translate[3];
+
+			for (j = 0; j < 3; j++)
+			{
+				scale[j] = LittleFloat(((const float*)inframe)[j]);
+				translate[j] = LittleFloat(((const float*)inframe)[3+j]);
+			}
+			anim->poseofs = pose;
+			anim->numposes = 1;
+			anim->action = -1;
+			anim->actionweight = 0;
+			Q_strncpyz(anim->name, (const char*)inframe + 24, min(sizeof(anim->name), 16+1));
+			galias->numanimations++;
+
+			pose->ofsverts = verts;
+#ifndef SERVERONLY
+			pose->ofsnormals = normals;
+			pose->ofssvector = &normals[numverts];
+			pose->ofstvector = &normals[numverts*2];
+#endif
+			for (i = 0; i < numverts; i++)
+			{
+				const qbyte *in = inverts + tmpvert[i].xyz*vertsize;
+				float x, y, z;
+				int lni;
+				if (version == DKM_VERSION2)
+				{	//11, 10 and 11 bits of a little endian int
+					unsigned int p = in[0] | (in[1]<<8) | (in[2]<<16) | ((unsigned int)in[3]<<24);
+					x = p >> 21;
+					y = (p >> 11) & 1023;
+					z = p & 2047;
+					lni = in[4];
+				}
+				else
+				{
+					x = in[0];
+					y = in[1];
+					z = in[2];
+					lni = in[3];
+				}
+				verts[i][0] = translate[0] + scale[0]*x;
+				verts[i][1] = translate[1] + scale[1]*y;
+				verts[i][2] = translate[2] + scale[2]*z;
+				AddPointToBounds(verts[i], mod->mins, mod->maxs);
+#ifndef SERVERONLY
+				VectorCopy(bytedirs[(lni < NUMVERTEXNORMALS)?lni:0], normals[i]);
+#endif
+			}
+			verts += numverts;
+#ifndef SERVERONLY
+			normals += numverts*3;
+#endif
+		}
+		Mod_CompileTriangleNeighbours(mod, galias);
+		Mod_BuildTextureVectors(galias);
+		galias++;
+	}
+	BZ_Free(tmpvert);
+	BZ_Free(tri);
+
+	if (mod->mins[0] > mod->maxs[0])
+	{	//nothing: a box at the origin
+		VectorSet(min, -16, -16, -16);
+		VectorSet(max, 16, 16, 16);
+		AddPointToBounds(min, mod->mins, mod->maxs);
+		AddPointToBounds(max, mod->mins, mod->maxs);
+	}
+	mod->radius = RadiusFromBounds(mod->mins, mod->maxs);
+	Mod_ClampModelSize(mod);
+	Mesh_HandleFramegroupsFile(mod, root);
+	Mod_ParseModelEvents(mod, root->ofsanimations, root->numanimations);
+
+	mod->meshinfo = root;
+	mod->numframes = h.num_frames;
+	mod->type = mod_alias;
+	mod->funcs.NativeTrace = Mod_Trace;
+	return true;
+}
+#endif
+
+
 #ifdef MODELFMT_MDX
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////////////////
@@ -11927,6 +12253,7 @@ void Alias_Register(void)
 #endif
 #ifdef MD2MODELS
 	Mod_RegisterModelFormatMagic(NULL, "Quake2 Model (md2)",				MD2IDALIASHEADER,						Mod_LoadQ2Model);
+	Mod_RegisterModelFormatMagic(NULL, "Daikatana Model (dkm)",			DKM_IDENT,								Mod_LoadDaikatanaModel);
 #endif
 #ifdef MODELFMT_MDX
 	Mod_RegisterModelFormatMagic(NULL, "Kingpin Model (mdx)",				MDX_IDENT,								Mod_LoadKingpinModel);

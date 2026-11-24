@@ -13,6 +13,8 @@ typedef struct
 
 	char	name[MAX_QPATH];
 	unsigned int		filepos, filelen;
+	unsigned int		compresslen;	//Daikatana's: what's stored, when compressed
+	unsigned int		compresstype;	//Daikatana's: 0 stored, 1 its run-length/back-reference coding
 } mpackfile_t;
 
 typedef struct pack_s
@@ -36,6 +38,13 @@ typedef struct
 	char	name[56];
 	unsigned int		filepos, filelen;
 } dpackfile_t;
+
+typedef struct
+{	//Daikatana's paks: Quake's, with room for compression
+	char	name[56];
+	unsigned int		filepos, filelen;
+	unsigned int		compresslen, compresstype;
+} dkpackfile_t;
 
 typedef struct
 {
@@ -250,13 +259,102 @@ static qboolean QDECL VFSPAK_Close(vfsfile_t *vfs)
 	Z_Free(vfsp);	//free ourselves.
 	return true;
 }
+//Daikatana's compression (its FS_LoadFile): codes of runs, zeroes, repeats and copies from what's been written
+static qboolean FSPAK_DKDecompress(const qbyte *in, size_t inlen, qbyte *out, size_t outlen)
+{
+	size_t s = 0, d = 0;
+	int i, code;
+	while (s < inlen)
+	{
+		code = in[s++];
+		if (code == 255)
+			return d == outlen;	//terminator
+		else if (code < 64)
+		{	//code+1 bytes as they are
+			for (i = -1; i < code; i++)
+			{
+				if (s >= inlen || d >= outlen)
+					return false;
+				out[d++] = in[s++];
+			}
+		}
+		else if (code < 128)
+		{	//code-62 zeroes
+			for (i = 62; i < code; i++)
+			{
+				if (d >= outlen)
+					return false;
+				out[d++] = 0;
+			}
+		}
+		else if (code < 192)
+		{	//code-126 of the next byte
+			if (s >= inlen)
+				return false;
+			for (i = 126; i < code; i++)
+			{
+				if (d >= outlen)
+					return false;
+				out[d++] = in[s];
+			}
+			s++;
+		}
+		else if (code < 254)
+		{	//code-190 bytes from offset+2 back
+			int offset;
+			if (s >= inlen)
+				return false;
+			offset = in[s++];
+			for (i = 190; i < code; i++)
+			{
+				if (d >= outlen || d < (size_t)offset+2)
+					return false;
+				out[d] = out[d - offset - 2];
+				d++;
+			}
+		}
+		else
+			return false;	//254: unused
+	}
+	return false;	//no terminator
+}
+
 static vfsfile_t *QDECL FSPAK_OpenVFS(searchpathfuncs_t *handle, flocation_t *loc, const char *mode)
 {
 	pack_t *pack = (pack_t*)handle;
 	vfspack_t *vfs;
+	mpackfile_t *pf = loc->fhandle;
 
 	if (strcmp(mode, "rb"))
 		return NULL; //urm, unable to write/append
+
+	if (pf && pf->compresstype)
+	{	//Daikatana's compressed files: unpacked whole, into memory
+		vfsfile_t *temp = NULL;
+		qbyte *in = BZ_Malloc(pf->compresslen), *out = BZ_Malloc(pf->filelen?pf->filelen:1);
+		int read = 0;
+		if (Sys_LockMutex(pack->mutex))
+		{
+			VFS_SEEK(pack->handle, pf->filepos);
+			read = VFS_READ(pack->handle, in, pf->compresslen);
+			pack->filepos = pf->filepos + ((read>0)?read:0);
+			Sys_UnlockMutex(pack->mutex);
+		}
+		if (read == (int)pf->compresslen && FSPAK_DKDecompress(in, pf->compresslen, out, pf->filelen))
+		{
+			temp = FS_OpenTemp();
+			if (temp)
+			{
+				VFS_WRITE(temp, out, pf->filelen);
+				VFS_SEEK(temp, 0);
+			}
+		}
+		else
+			Con_Printf(CON_WARNING"%s: couldn't unpack %s\n", pack->descname, pf->name);
+		BZ_Free(in);
+		BZ_Free(out);
+		return temp;
+	}
 
 	vfs = Z_Malloc(sizeof(vfspack_t));
 
@@ -333,6 +431,37 @@ searchpathfuncs_t *QDECL FSPAK_LoadArchive (vfsfile_t *file, searchpathfuncs_t *
 	header.dirofs = LittleLong (header.dirofs);
 	header.dirlen = LittleLong (header.dirlen);
 
+	if (header.dirlen % sizeof(dkpackfile_t) == 0 && header.dirlen % sizeof(dpackfile_t) != 0)
+	{	//Daikatana's: 72 bytes a file, with how it's compressed
+		qofs_t paklen = VFS_GETLEN(packhandle);
+		dkpackfile_t dkinfo;
+		numpackfiles = header.dirlen / sizeof(dkpackfile_t);
+		newfiles = (mpackfile_t*)Z_Malloc (numpackfiles * sizeof(mpackfile_t));
+		VFS_SEEK(packhandle, header.dirofs);
+		for (i=0 ; i<numpackfiles ; i++)
+		{
+			if (VFS_READ(packhandle, &dkinfo, sizeof(dkinfo)) != sizeof(dkinfo))
+				break;
+			memcpy(newfiles[i].name, dkinfo.name, sizeof(dkinfo.name));
+			newfiles[i].name[min(sizeof(dkinfo.name), MAX_QPATH-1)] = 0;
+			COM_CleanUpPath(newfiles[i].name);
+			newfiles[i].filepos = LittleLong(dkinfo.filepos);
+			newfiles[i].filelen = LittleLong(dkinfo.filelen);
+			newfiles[i].compresslen = LittleLong(dkinfo.compresslen);
+			newfiles[i].compresstype = LittleLong(dkinfo.compresstype);
+			if (newfiles[i].compresstype > 1 || (qofs_t)newfiles[i].filepos + (newfiles[i].compresstype?newfiles[i].compresslen:newfiles[i].filelen) > paklen)
+				break;	//not one
+		}
+		if (i < numpackfiles)
+		{
+			Con_Printf("%s: not a Daikatana pak after all (file %i)\n", desc, i);
+			Z_Free(newfiles);
+			return NULL;
+		}
+		pack = (pack_t*)Z_Malloc (sizeof (pack_t));
+		goto parsed;
+	}
+
 	numpackfiles = header.dirlen / sizeof(dpackfile_t);
 
 	newfiles = (mpackfile_t*)Z_Malloc (numpackfiles * sizeof(mpackfile_t));
@@ -362,6 +491,7 @@ searchpathfuncs_t *QDECL FSPAK_LoadArchive (vfsfile_t *file, searchpathfuncs_t *
 	if (crc != PAK0_CRC || numpackfiles != PAK0_COUNT)
 		com_modified = true;
 */
+parsed:
 	strcpy (pack->descname, desc);
 	pack->handle = packhandle;
 	pack->numfiles = numpackfiles;

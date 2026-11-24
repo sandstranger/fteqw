@@ -8089,6 +8089,28 @@ qbyte *ReadRawImageFile(qbyte *buf, int len, int *width, int *height, uploadfmt_
 #endif
 
 #ifdef Q2BSPS
+	if (len >= sizeof(dkmiptex_t) && buf[0] == DKMIPTEX_VERSION)
+	{	//Daikatana's WALs (its skins, as well as its walls): their own palette
+		const dkmiptex_t *wal = (const dkmiptex_t *)buf;
+		int iw = LittleLong(wal->width), ih = LittleLong(wal->height);
+		size_t ofs = LittleLong(wal->offsets[0]);
+		if (iw > 0 && ih > 0 && Image_SafeSize(iw, ih, 4) && ofs >= sizeof(*wal) && ofs + (size_t)iw*ih <= (size_t)len)
+		{
+			const qbyte *in = buf + ofs;
+			data = BZ_Malloc(iw * ih * 4);
+			for (i = 0; i < iw * ih; i++)
+			{
+				data[i*4+0] = wal->palette[in[i]*3+0];
+				data[i*4+1] = wal->palette[in[i]*3+1];
+				data[i*4+2] = wal->palette[in[i]*3+2];
+				data[i*4+3] = 255;
+			}
+			*width = iw;
+			*height = ih;
+			*format = PTI_RGBX8;
+			return data;
+		}
+	}
 	if (len >= sizeof(q2miptex_t))	//.lmp has no magic id. guess at it.
 	{
 		const q2miptex_t *wal = (const q2miptex_t *)buf;

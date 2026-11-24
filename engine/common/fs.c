@@ -85,6 +85,7 @@ static char *vidfilenames[] =	//list of filenames to check to see if graphics st
 
 #define HLCFG "plug_load ffmpeg\n"
 #define HL2CFG "plug_load ode;plug_load hl2\n"
+#define DKCFG Q2CFG "set com_gamedirnativecode 0\nset r_imageextensions \"tga png jpg pcx wal bmp\"\n"	/*its models' skins are WALs named .bmp*/
 
 #ifndef UPDATEURL
 	#ifdef HAVE_SSL
@@ -163,6 +164,8 @@ static const gamemode_info_t gamemode_info[] = {
 	{"-quake2",		"q2",		"Quake2",				{"baseq2/pak0.pak"},			Q2CFG,	{"baseq2",						"*fteq2"},	"Quake II",							UPDATEURL(Q2)},
 	//mods of the above that should generally work.
 	{"-dday",		"dday",		"Quake2",				{"dday/pak0.pak"},				Q2CFG,	{"baseq2",	"dday",				"*fteq2"},	"D-Day: Normandy"},
+	//Ion Storm's Daikatana (2000): its own Quake II engine, game and formats (pak, BSP 41, DKM, its WALs)
+	{"-daikatana",	"daikatana","FTE-Daikatana",		{"data/aidata.vsc", "data/mapnames.vsc"},	DKCFG,	{"data",				"*ftedk"},	"Daikatana"},
 #endif
 
 	//quake's mission packs technically have their own protocol (thanks to stat_items). copyrights mean its best to keep them separate, too.

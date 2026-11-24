@@ -1379,8 +1379,41 @@ static texture_t *Mod_LoadWall(model_t *loadmodel, char *mapname, char *texname,
 	q2miptex_t *wal;
 	image_t *base;
 
+	size_t walsize;
 	Q_snprintfz (name, sizeof(name), "textures/%s.wal", texname);
-	wal = (void *)FS_LoadMallocFile (name, NULL);
+	wal = (void *)FS_LoadMallocFile (name, &walsize);
+	if (wal && walsize >= sizeof(dkmiptex_t) && ((qbyte*)wal)[0] == DKMIPTEX_VERSION)
+	{	//Daikatana's: its own layout and palette
+		dkmiptex_t *dk = (dkmiptex_t*)wal;
+		unsigned int w = LittleLong(dk->width), h = LittleLong(dk->height), m, ofs[4];
+		qbyte *out, *pal;
+		size_t size = 0;
+		for (m = 0; m < 4; m++)
+		{
+			ofs[m] = LittleLong(dk->offsets[m]);
+			if (!(w>>m) || !(h>>m) || ofs[m] + (size_t)(w>>m)*(h>>m) > walsize)
+				break;
+			size += (size_t)(w>>m)*(h>>m);
+		}
+		tex = ZG_Malloc(&loadmodel->memgroup, sizeof(texture_t));
+		tex->vwidth = tex->srcwidth = w;
+		tex->vheight = tex->srcheight = h;
+		if (m == 4 && w && h)
+		{
+			pal = ZG_Malloc(&loadmodel->memgroup, 768);
+			memcpy(pal, dk->palette, 768);
+			tex->palette = pal;
+			tex->srcdata = out = BZ_Malloc(size);
+			tex->srcfmt = TF_MIP4_8PAL24_T255;
+			for (m = 0; m < 4; m++)
+			{
+				memcpy(out, (qbyte*)dk + ofs[m], (w>>m)*(h>>m));
+				out += (w>>m)*(h>>m);
+			}
+		}
+		BZ_Free(wal);
+		return tex;
+	}
 	if (!wal)
 	{
 		wal = &replacementwal;
@@ -2013,20 +2046,21 @@ static qboolean CModQ2_LoadBrushes (model_t *mod, qbyte *mod_base, lump_t *l)
 CMod_LoadLeafs
 =================
 */
-static qboolean CModQ2_LoadLeafs (model_t *mod, qbyte *mod_base, lump_t *l, qboolean isbig)
+static qboolean CModQ2_LoadLeafs (model_t *mod, qbyte *mod_base, lump_t *l, qboolean isbig, qboolean dk)
 {
 	int			i, j;
 	mleaf_t		*out;
 	q2dsleaf_t 	*ins;
 	q2dlleaf_t 	*inl;
 	int			count;
+	size_t		insize = sizeof(*ins) + (dk?4:0);	//Daikatana's leafs end with a brush number
 
-	if (l->filelen % (isbig?sizeof(*inl):sizeof(*ins)))
+	if (l->filelen % (isbig?sizeof(*inl):insize))
 	{
 		Con_Printf (CON_ERROR "MOD_LoadBmodel: funny lump size\n");
 		return false;
 	}
-	count = l->filelen / (isbig?sizeof(*inl):sizeof(*ins));
+	count = l->filelen / (isbig?sizeof(*inl):insize);
 
 	if (count < 1)
 	{
@@ -2078,7 +2112,7 @@ static qboolean CModQ2_LoadLeafs (model_t *mod, qbyte *mod_base, lump_t *l, qboo
 	else
 	{
 		ins = (void *)(mod_base + l->fileofs);
-		for ( i=0 ; i<count ; i++, ins++, out++)
+		for ( i=0 ; i<count ; i++, ins = (q2dsleaf_t*)((qbyte*)ins + insize), out++)
 		{
 			for (j=0 ; j<3 ; j++)
 			{
@@ -5073,6 +5107,7 @@ static cmodel_t *CM_LoadMap (model_t *mod, qbyte *filein, size_t filelen, qboole
 #ifdef Q2BSPS
 	case BSPVERSION_Q2:
 	case BSPVERSION_Q2W:
+	case BSPVERSION_DK:
 		isbig = *mod_base == 'Q';	//'qbism'
 
 		mod->lightmaps.width = LMBLOCK_SIZE_MAX;
@@ -5090,6 +5125,14 @@ static cmodel_t *CM_LoadMap (model_t *mod, qbyte *filein, size_t filelen, qboole
 			header.lumps[i].filelen = LittleLong (header.lumps[i].filelen);
 			header.lumps[i].fileofs = LittleLong (header.lumps[i].fileofs);
 			i++;
+		}
+		else if (header.version == BSPVERSION_DK)
+		{	//Daikatana's surface colours and plane polys (the renderer doesn't need them)
+			for (; i < DKHEADER_LUMPS; i++)
+			{
+				header.lumps[i].filelen = LittleLong (header.lumps[i].filelen);
+				header.lumps[i].fileofs = LittleLong (header.lumps[i].fileofs);
+			}
 		}
 		bspx = BSPX_Setup(mod, mod_base, filelen, header.lumps, i);
 
@@ -5131,7 +5174,7 @@ static cmodel_t *CM_LoadMap (model_t *mod, qbyte *filein, size_t filelen, qboole
 			noerrors = noerrors && CModQ2_LoadBrushSides	(mod, mod_base, &header.lumps[Q2LUMP_BRUSHSIDES], isbig);
 			noerrors = noerrors && CModQ2_LoadBrushes		(mod, mod_base, &header.lumps[Q2LUMP_BRUSHES]);
 			noerrors = noerrors && CModQ2_LoadLeafBrushes	(mod, mod_base, &header.lumps[Q2LUMP_LEAFBRUSHES], isbig);
-			noerrors = noerrors && CModQ2_LoadLeafs			(mod, mod_base, &header.lumps[Q2LUMP_LEAFS], isbig);
+			noerrors = noerrors && CModQ2_LoadLeafs			(mod, mod_base, &header.lumps[Q2LUMP_LEAFS], isbig, header.version == BSPVERSION_DK);
 			noerrors = noerrors && CModQ2_LoadNodes			(mod, mod_base, &header.lumps[Q2LUMP_NODES], isbig);
 			noerrors = noerrors && CModQ2_LoadSubmodels		(mod, mod_base, &header.lumps[Q2LUMP_MODELS]);
 			noerrors = noerrors && CModQ2_LoadAreas			(mod, mod_base, &header.lumps[Q2LUMP_AREAS]);
@@ -5157,7 +5200,7 @@ static cmodel_t *CM_LoadMap (model_t *mod, qbyte *filein, size_t filelen, qboole
 			noerrors = noerrors && CModQ2_LoadBrushSides	(mod, mod_base, &header.lumps[Q2LUMP_BRUSHSIDES], isbig);
 			noerrors = noerrors && CModQ2_LoadBrushes		(mod, mod_base, &header.lumps[Q2LUMP_BRUSHES]);
 			noerrors = noerrors && CModQ2_LoadLeafBrushes	(mod, mod_base, &header.lumps[Q2LUMP_LEAFBRUSHES], isbig);
-			noerrors = noerrors && CModQ2_LoadLeafs			(mod, mod_base, &header.lumps[Q2LUMP_LEAFS], isbig);
+			noerrors = noerrors && CModQ2_LoadLeafs			(mod, mod_base, &header.lumps[Q2LUMP_LEAFS], isbig, header.version == BSPVERSION_DK);
 			noerrors = noerrors && CModQ2_LoadNodes			(mod, mod_base, &header.lumps[Q2LUMP_NODES], isbig);
 			noerrors = noerrors && CModQ2_LoadSubmodels		(mod, mod_base, &header.lumps[Q2LUMP_MODELS]);
 			noerrors = noerrors && CModQ2_LoadAreas			(mod, mod_base, &header.lumps[Q2LUMP_AREAS]);

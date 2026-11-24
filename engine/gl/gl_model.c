@@ -931,6 +931,7 @@ void Mod_Init (qboolean initial)
 #ifdef Q2BSPS
 		Mod_RegisterModelFormatMagic(NULL, "Quake2 Map (bsp)",				"IBSP\46\0\0\0",8,						Mod_LoadQ2BrushModel);
 		Mod_RegisterModelFormatMagic(NULL, "Quake2World Map (bsp)",			"IBSP\105\0\0\0",8,						Mod_LoadQ2BrushModel);
+		Mod_RegisterModelFormatMagic(NULL, "Daikatana Map (bsp)",			"IBSP\51\0\0\0",8,						Mod_LoadQ2BrushModel);
 		Mod_RegisterModelFormatMagic(NULL, "Qbism (Quake2) Map (bsp)",		"QBSP\46\0\0\0",8,						Mod_LoadQ2BrushModel);
 #endif
 #ifdef RFBSPS

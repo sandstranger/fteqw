@@ -368,6 +368,21 @@ typedef struct q2miptex_s
 	int			value;
 } q2miptex_t;
 
+#define DKMIPTEX_VERSION	3
+#define DKMIPLEVELS			9
+typedef struct
+{	//Daikatana's WALs: a version, 9 mips, and their own palette
+	qbyte		version;
+	char		name[32];
+	unsigned	width, height;
+	unsigned	offsets[DKMIPLEVELS];
+	char		animname[32];
+	int			flags;
+	int			contents;
+	qbyte		palette[768];
+	int			value;
+} dkmiptex_t;
+
 
 
 /*
@@ -383,6 +398,10 @@ typedef struct q2miptex_s
 
 #define BSPVERSION_Q2	38
 #define BSPVERSION_Q2W	69 
+#define BSPVERSION_DK	41	//Daikatana's: Quake 2's, a brush number in its leafs, and its surface colours and plane polys lumps
+#define DKLUMP_EXTSURFINFO	19
+#define DKLUMP_PLANEPOLYS	20
+#define DKHEADER_LUMPS		21
 #define BSPVERSION_Q3	46
 #define BSPVERSION_RTCW	47
 #define BSPVERSION_RBSP 1	//also fbsp(just bigger internal lightmaps)
