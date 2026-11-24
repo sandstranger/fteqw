@@ -6184,6 +6184,7 @@ static void CLQ2_ParseStartSoundPacket(void)
 	int		flags;
 	float	ofs;
 	sfx_t	*sfx;
+	qboolean bad = false;
 
 	flags = MSG_ReadByte ();
 	if (flags & Q2SND_EXTRABITS)
@@ -6216,8 +6217,12 @@ static void CLQ2_ParseStartSoundPacket(void)
 		else
 			channel = MSG_ReadShort();
 		ent = channel>>3;
-		if (ent > MAX_EDICTS)
-			Host_EndGame ("CL_ParseStartSoundPacket: ent = %i", ent);
+		if (ent < 0 || ent >= MAX_Q2EDICTS)
+		{	//yquake2: a broken sound is dropped, not the game (the rest of it is still read)
+			Con_DPrintf ("CL_ParseStartSoundPacket: ent = %i\n", ent);
+			bad = true;
+			ent = 0;
+		}
 
 		channel &= 7;
 	}
@@ -6240,8 +6245,17 @@ static void CLQ2_ParseStartSoundPacket(void)
 		CL_GetNumberedEntityInfo(ent, pos, NULL);
 	}
 
+	if (bad)
+		return;
+	if (sound_num < 0 || sound_num >= MAX_PRECACHE_SOUNDS)
+	{
+		Con_DPrintf ("CL_ParseStartSoundPacket: sound = %i\n", sound_num);
+		return;
+	}
 	if (!cl.sound_precache[sound_num])
 		return;
+	if (ent > 0)
+		CLQ2_BSPSoundOrigin(ent, pos);	//a brush model's sound from the model, not its origin (s_bsp_soundpos)
 
 	sfx = cl.sound_precache[sound_num];
 	if (sfx->name[0] == '*')

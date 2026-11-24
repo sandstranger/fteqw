@@ -1834,6 +1834,7 @@ extern	qboolean care_f_modified;
 
 #ifdef Q2CLIENT
 unsigned int CLQ2_GatherSounds(vec3_t *positions, unsigned int *entnums, sfx_t **sounds, unsigned int max);
+qboolean CLQ2_BSPSoundOrigin(int entnum, vec3_t org);	//s_bsp_soundpos: a brush model's sounds come from the model
 void CLQ2_ParseTEnt (void);
 void CLQ2_AddEntities (void);
 void CLQ2_ParseBaseline (void);

@@ -6320,6 +6320,10 @@ void CL_Init (void)
 	Cvar_Register (&msg,						cl_controlgroup);
 #ifdef Q2CLIENT
 	Cvar_Register (&hand,						cl_controlgroup);
+	{
+		extern cvar_t s_bsp_soundpos;
+		Cvar_Register (&s_bsp_soundpos,			"Sound options");
+	}
 #endif
 	Cvar_Register (&noaim,						cl_controlgroup);
 	Cvar_Register (&b_switch,					cl_controlgroup);

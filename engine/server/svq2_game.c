@@ -347,7 +347,10 @@ void VARGS PFQ2_Configstring (int i, const char *val)
 	int q2exremap;
 	client_t *cl;
 	if (i < 0 || i >= Q2MAX_CONFIGSTRINGS)
-		Host_EndGame ("configstring: bad index %i\n", i);
+	{	//yquake2: a warning, not the end of the game
+		Con_Printf ("configstring: bad index %i\n", i);
+		return;
+	}
 
 	if (!val)
 		val = "";
@@ -405,6 +408,30 @@ void VARGS PFQ2_Configstring (int i, const char *val)
 			}
 		}
 	}
+}
+
+/*
+yquake2: a model, sound or image beyond the configstrings' room is a warning (once per name and map), and
+the game gets index 0 (nothing) for it, instead of the game ending
+*/
+static int SVQ2_IndexOverflow (const char *name)
+{
+	static char overflowed[32][MAX_QPATH];
+	static int numoverflowed, spawncount = -1;
+	int i;
+
+	if (spawncount != svs.spawncount)
+	{
+		spawncount = svs.spawncount;
+		numoverflowed = 0;
+	}
+	for (i = 0; i < numoverflowed; i++)
+		if (!strcmp(overflowed[i], name))
+			return 0;
+	if (numoverflowed < countof(overflowed))
+		Q_strncpyz(overflowed[numoverflowed++], name, sizeof(overflowed[0]));
+	Con_Printf ("Failed to load %s: configstrings overflowed\n", name);
+	return 0;
 }
 
 static int SVQ2_FindIndex (const char *name, int start, int max, int overflowtype)
@@ -476,7 +503,7 @@ static int SVQ2_FindIndex (const char *name, int start, int max, int overflowtyp
 					return i;
 			}
 		}
-		Host_EndGame ("*Index: overflow");
+		return SVQ2_IndexOverflow(name);
 	}
 
 	PFQ2_Configstring(start + i, name);

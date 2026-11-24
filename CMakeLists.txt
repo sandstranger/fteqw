@@ -562,6 +562,7 @@ SET(FTE_COMMON_FILES
 	engine/common/qkupdate.c
 	engine/common/LzmaDec.c
 	engine/common/gl_q2bsp.c
+	engine/common/q2mapfixes.c
 	engine/common/huff.c
 	engine/common/log.c
 	engine/common/mathlib.c

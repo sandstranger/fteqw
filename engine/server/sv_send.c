@@ -591,6 +591,16 @@ MULTICAST_ONE	sent to a single client.
 MULTICAST_INIT	sent to clients when they first connect. for completeness.
 =================
 */
+//whether a client at pos can see or hear what goes on in a multicast's pvs/phs (mask, area1)
+static qboolean SV_MulticastReaches(vec3_t pos, qbyte *mask, int area1)
+{
+	int area2, cluster = sv.world.worldmodel->funcs.ClusterForPoint (sv.world.worldmodel, pos, &area2);
+	if (cluster>= 0 && (!(mask[cluster>>3] & (1<<(cluster&7)) ) ||
+		(sv.world.worldmodel->funcs.AreasConnected && !sv.world.worldmodel->funcs.AreasConnected (sv.world.worldmodel, area1, area2))))
+		return false;
+	return true;
+}
+
 void SV_MulticastProtExt(vec3_t origin, multicast_t to, int dimension_mask, int with, int without)
 {
 	client_t	*client;
@@ -771,10 +781,19 @@ void SV_MulticastProtExt(vec3_t origin, multicast_t to, int dimension_mask, int 
 							break;
 					}
 
-					cluster = sv.world.worldmodel->funcs.ClusterForPoint (sv.world.worldmodel, pos, &area2);
-					if (cluster>= 0 && (!(mask[cluster>>3] & (1<<(cluster&7)) ) ||
-						(sv.world.worldmodel->funcs.AreasConnected && !sv.world.worldmodel->funcs.AreasConnected (sv.world.worldmodel, area1, area2))))
+					if (!SV_MulticastReaches(pos, mask, area1))
 					{
+#ifdef Q2SERVER
+						//yquake2: a Quake 2 player half in opaque water has his origin under it and his eyes above
+						//it, so also try a little higher up, or what happens above the water (an explosion, a
+						//shot) neither shows nor sounds for him
+						if (!svprogfuncs && ge && (sv.world.worldmodel->funcs.PointContents(sv.world.worldmodel, NULL, pos) & (Q2CONTENTS_WATER|Q2CONTENTS_SLIME|Q2CONTENTS_LAVA)))
+						{
+							pos[2] += 32;
+							if (SV_MulticastReaches(pos, mask, area1))
+								break;
+						}
+#endif
 		//				Con_Printf ("PVS supressed multicast\n");
 						continue;
 					}

@@ -1036,6 +1036,7 @@ COMMON_OBJS = \
 	qvm.o	\
 	r_d3.o	\
 	gl_q2bsp.o		\
+	q2mapfixes.o	\
 	glmod_doom.o 	\
 	world.o 		\
 	sv_phys.o 		\

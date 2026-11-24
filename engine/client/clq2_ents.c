@@ -2039,6 +2039,40 @@ struct model_s *S_RegisterSexedModel (entity_state_t *ent, char *base)
 
 */
 
+/*
+yquake2's s_bsp_soundpos: the sounds of a brush model (a door, a lift, a train) come from the middle of it (1)
+or from its point nearest the listener (2), not from the entity's origin -- which for most of them is the
+world's origin, so their loop sounds played from the middle of the map (0, as vanilla Quake 2 does).
+*/
+cvar_t s_bsp_soundpos = CVARD("s_bsp_soundpos", "1", "Quake 2: where a brush model's (a door's, a lift's) sounds come from: 0 its origin (vanilla, usually the middle of the map), 1 its middle, 2 its point nearest the listener.");
+qboolean CLQ2_BSPSoundOrigin(int entnum, vec3_t org)
+{
+	q2centity_t *ent;
+	model_t *mod;
+	int mi, i;
+	vec3_t mins, maxs;
+	float *listener = cl.playerview[0].audio.origin;
+
+	if (!s_bsp_soundpos.ival || entnum <= 0 || entnum >= MAX_Q2EDICTS)
+		return false;
+	ent = &cl_entities[entnum];
+	mi = ent->current.modelindex;
+	mod = (mi > 0 && mi < MAX_PRECACHE_MODELS) ? cl.model_precache[mi] : NULL;
+	if (!mod || *mod->name != '*' || mod->loadstate != MLS_LOADED)
+		return false;	//only the map's own brush models, as yquake2's cl.model_clip
+
+	VectorAdd(mod->mins, ent->lerp_origin, mins);
+	VectorAdd(mod->maxs, ent->lerp_origin, maxs);
+	for (i = 0; i < 3; i++)
+	{
+		if (s_bsp_soundpos.ival < 2)
+			org[i] = (mins[i] + maxs[i]) * 0.5;
+		else	//ClosestPointOnBounds
+			org[i] = bound(mins[i], listener[i], maxs[i]);
+	}
+	return true;
+}
+
 //returns a list of all the ents currently trying to play a sound.
 unsigned int CLQ2_GatherSounds(vec3_t *positions, unsigned int *entnums, sfx_t **sounds, unsigned int max)
 {
@@ -2062,7 +2096,8 @@ unsigned int CLQ2_GatherSounds(vec3_t *positions, unsigned int *entnums, sfx_t *
 				}
 				//fixme: sexed sounds
 				entnums[count] = s1->number;
-				VectorCopy(s1->origin, positions[count]);
+				if (!CLQ2_BSPSoundOrigin(s1->number, positions[count]))
+					VectorCopy(s1->origin, positions[count]);
 				sounds[count] = sfx;
 				count++;
 			}

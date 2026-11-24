@@ -3360,6 +3360,7 @@ qboolean Mod_LoadEntitiesBlob(struct model_s *mod, const char *entdata, size_t e
 	char value[1024];
 	char *ents = NULL, *k;
 	int t;
+	unsigned int q2crc = 0;
 
 	Mod_SetEntitiesString(mod, NULL, false);
 	if (!entdatasize)
@@ -3376,6 +3377,16 @@ qboolean Mod_LoadEntitiesBlob(struct model_s *mod, const char *entdata, size_t e
 			ents = FS_LoadMallocFile(fname, &sz);
 		}
 	}
+	if (mod_loadentfiles.value && !ents && mod->fromgame == fg_quake2)
+	{	//yquake2's map fixes: maps/<name>@<crc>.ent, the crc (yquake2's CRC_Block) being of the map's own
+		//entity lump less its last byte, so a fix only ever replaces the lump it was written against
+		char crcname[16];	//not va: maps load on worker threads
+		q2crc = CalcHashInt(&hash_crc16, entdata, entdatasize-1);
+		Q_snprintfz(crcname, sizeof(crcname), "@%04x.ent", q2crc);
+		COM_StripExtension(mod->name, fname, sizeof(fname));
+		Q_strncatz(fname, crcname, sizeof(fname));
+		ents = FS_LoadMallocFile(fname, &sz);
+	}
 	if (mod_loadentfiles.value && !ents)
 	{
 		COM_StripExtension(mod->name, fname, sizeof(fname));
@@ -3389,6 +3400,13 @@ qboolean Mod_LoadEntitiesBlob(struct model_s *mod, const char *entdata, size_t e
 		Q_strncatz(fname, mod_modifier, sizeof(fname));
 		Q_strncatz(fname, ".edo", sizeof(fname));
 		ents = FS_LoadMallocFile(fname, &sz);
+	}
+	if (mod_loadentfiles.value && !ents && mod->fromgame == fg_quake2 && !*mod_modifier)
+	{	//no file: yquake2's own fixes, built in (q2mapfixes.c)
+		extern char *Mod_Q2MapFix(const char *modelname, unsigned int crc, size_t *size);
+		ents = Mod_Q2MapFix(mod->name, q2crc, &sz);
+		if (ents)
+			Con_DPrintf("%s: yquake2's map fixes (@%04x)\n", mod->name, q2crc);
 	}
 	if (!ents)
 	{
