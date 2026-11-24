@@ -15,22 +15,13 @@ sizebuf_t		net_message;
 int				scr_draw_progress;
 qboolean		override_showhuds;
 void			*con_font;
+int				scr_centerstring_bottom;	//(FTE's centerprint's its own: the scoreboard's not kept below it)
+float			scr_centertime_off;
+void			*scoreboard_font;			//dk_scoreboard.cpp's (cl_scrn.cpp had it)
 
-typedef struct team_color_info_s
-{
-	float r, g, b, a;
-} team_color_info_t;
-team_color_info_t cInfo[] =
-{	//dk_scoreboard.cpp's
-	{1.0,	0.0,	0.0,	0.075},				// red
-	{0.0,	0.0,	1.0,	0.075},				// blue
-	{0.7,	0.7,	0.7,	0.075},				// chrome
-	{0.5,	0.5,	0.5,	0.075},				// metal
-	{0.0,	1.0,	0.0,	0.075},				// green
-	{0.8,	0.4,	0.2,	0.075},				// orange
-	{1.0,	0.0,	1.0,	0.075},				// purple
-	{1.0,	1.0,	0.25,	0.075}				// yellow
-};
+void			sb_InitScoreboard(void);			//dk_scoreboard.cpp
+void			sb_ParseScoreboardMessage(void);
+void			sb_DrawScoreboard(void);
 
 static long		dkstats[MAX_STATS];		//the server's (svcdk_fte_stats)
 static bool		dkstatsvalid;
@@ -60,7 +51,7 @@ static void CLDK_S_StartLocalSound(const char *name)	{CLDKF_LocalSound(name);}
 void (*S_StartLocalSound)(const char *s) = CLDK_S_StartLocalSound;
 void Cbuf_AddText(const char *text)						{CLDKF_AddCommand(text);}
 int CL_ModelIndex(char *name)							{return CLDKF_ModelIndex(name);}
-int CIN_RunningWithView(void)							{return 0;}
+int CIN_RunningWithView(void)							{return 0;}	//(CIN_Running's the server's: fte/cin_main.cpp)
 
 int CL_Episode(void)
 {	//its maps are e<episode>m<map><letter>
@@ -523,6 +514,7 @@ extern "C" void CLDK_Reset(void)
 	CLDK_SceneReset();
 	CLDK_ModelsReset();
 	CLDK_SurfSpritesReset();
+	sb_InitScoreboard();	//(its client's at its start: here too, so one that's up doesn't stay up into the next)
 	dkstatsvalid = false;
 	memset(dkstats, 0, sizeof(dkstats));
 	cl.sidekicks_active = 0;
@@ -628,6 +620,7 @@ extern "C" void CLDK_ParseMessage(const unsigned char *data, int length)
 		case svc_clientrespawn:		CL_ClientRespawn();				break;
 		case svc_nop:												break;
 		case svc_crosshair:			CL_ParseCrosshairMessage();		break;
+		case svc_scoreboard:		sb_ParseScoreboardMessage();	break;
 		case svc_end_of_game:		CL_InformClientTheEnd();		break;
 		case svc_ammo_count_update:	CL_ParseAmmoUpdate();			break;
 		case svc_sidekick_weapon_status: CL_ParseSidekickWeaponStatus(); break;
@@ -755,5 +748,6 @@ extern "C" void CLDK_DrawHUD(void)
 	SCR_DrawCrosshair();
 	CLDK_DrawHUDModels();	//(its renderer drew them with the scene, under the HUD)
 	SCR_DrawStats();
+	sb_DrawScoreboard();
 	CL_Boost_Icons_Think();
 }

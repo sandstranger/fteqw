@@ -36,3 +36,4 @@ client/menu/dk_menu_savegame.cpp
 client/menu/dk_menu_sound.cpp
 client/menu/dk_menu_video.cpp
 client/menu/dk_menu_weapons.cpp
+client/dk_scoreboard.cpp

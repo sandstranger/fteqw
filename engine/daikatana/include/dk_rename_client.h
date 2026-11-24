@@ -31,6 +31,7 @@
 #define active_comparticles dkcl_active_comparticles
 #define active_particles dkcl_active_particles
 #define anisotropic dkcl_anisotropic
+#define autoAim dkcl_autoAim
 #define backframe dkcl_backframe
 #define beamList dkcl_beamList
 #define bindings dkcl_bindings
@@ -147,6 +148,8 @@
 #define frontframe dkcl_frontframe
 #define gHeadData dkcl_gHeadData
 #define g_KickView dkcl_g_KickView
+#define g_MultiScoreboard dkcl_g_MultiScoreboard
+#define g_SingleScoreboard dkcl_g_SingleScoreboard
 #define gl_driver_info dkcl_gl_driver_info
 #define gl_driver_info_count dkcl_gl_driver_info_count
 #define global_fog_state dkcl_global_fog_state
@@ -203,6 +206,9 @@
 #define sb_info_text dkcl_sb_info_text
 #define sbar_font_g dkcl_sbar_font_g
 #define sbar_font_r dkcl_sbar_font_r
+#define scoreboard_font dkcl_scoreboard_font
+#define scr_centerstring_bottom dkcl_scr_centerstring_bottom
+#define scr_centertime_off dkcl_scr_centertime_off
 #define scr_draw_progress dkcl_scr_draw_progress
 #define scr_viewsize dkcl_scr_viewsize
 #define segList dkcl_segList
