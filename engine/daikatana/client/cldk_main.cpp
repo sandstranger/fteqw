@@ -493,6 +493,15 @@ extern "C" void CLDK_ParseMessage(const unsigned char *data, int length)
 	while (net_message.readcount < net_message.cursize && !msg_badread)
 	{
 		svc = MSG_ReadByte(&net_message);
+		if (CLDKF_CvarValue("cl_dkshownet", "0"))
+		{	//debugging: its svcs (and temp events), as they come
+			char line[64];
+			if (svc == svc_temp_entity && net_message.readcount < net_message.cursize)
+				snprintf(line, sizeof(line), "echo dk svc %i te %i\n", svc, net_message.data[net_message.readcount]);
+			else
+				snprintf(line, sizeof(line), "echo dk svc %i\n", svc);
+			CLDKF_AddCommand(line);
+		}
 		switch(svc)
 		{
 		case svcdk_fte_stats:

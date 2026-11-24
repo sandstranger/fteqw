@@ -1039,7 +1039,7 @@ static void S_LoadSoundWorker (void *ctx, void *ctxdata, size_t forcedecode, siz
 	{
 	//Con_Printf ("S_LoadSound: %x\n", (int)stackbuf);
 	// load it in
-		const char *prefixes[] = {"sound/", ""};
+		const char *prefixes[] = {"sound/", "", "sounds/"};	//(sounds/: Daikatana's)
 		const char *extensions[] = {
 			".wav", 
 #ifdef AVAIL_OGGOPUS
