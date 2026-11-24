@@ -1940,6 +1940,14 @@ void R2D_DrawCrosshair(void)
 	float size;
     const int crosshair_value = crosshair.ival;
 
+#ifdef Q2CLIENT
+	if (cls.protocol == CP_QUAKE2)
+	{	//yquake2's: the ch1-ch3 pics, scaled by crosshair_scale and tinted by crosshair_color_r/g/b
+		CLQ2_DrawCrosshair(&r_refdef.vrect);
+		return;
+	}
+#endif
+
 	if (crosshair_value == 0)
 		return;
 

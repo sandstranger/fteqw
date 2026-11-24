@@ -2552,6 +2552,14 @@ void SCR_CheckDrawCenterString (void)
 
 	Key_Dest_Remove(kdm_centerprint);
 
+#ifdef Q2CLIENT
+	if (cls.protocol == CP_QUAKE2)
+	{	//yquake2's centerprint (clq2_hud.c), which svcq2_centerprint goes to
+		CLQ2_DrawCenterString();
+		return;
+	}
+#endif
+
 	for (pnum = 0; pnum < cl.splitclients; pnum++)
 	{
 #ifdef QUAKESTATS
@@ -3436,6 +3444,13 @@ void SCR_DrawNet (void)
 {
 	if (realtime - cls.netchan.last_received < scr_neticontimeout.value)
 		return;
+#ifdef Q2CLIENT
+	if (cls.protocol == CP_QUAKE2 && !cls.demoplayback)
+	{	//Quake 2's "net" plaque, where yquake2 puts it (scr_net is Quake's wad pic)
+		CLQ2_DrawNet(&scr_vrect);
+		return;
+	}
+#endif
 	if (cls.demoplayback || !scr_net)
 		return;
 
@@ -3619,6 +3634,14 @@ void SCR_DrawPause (void)
 
 	if (Key_Dest_Has(kdm_menu))
 		return;
+
+#ifdef Q2CLIENT
+	if (cls.protocol == CP_QUAKE2)
+	{	//Quake 2's "pause" plaque where yquake2 puts it (gfx/pause.lmp is Quake's)
+		CLQ2_DrawPause();
+		return;
+	}
+#endif
 
 	pic = R2D_SafeCachePic ("gfx/pause.lmp");
 	if (pic)

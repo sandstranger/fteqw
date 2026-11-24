@@ -5753,9 +5753,11 @@ parsesoundindex:
 		Z_StrDupPtr(&cl.item_name[i], s);
 	}
 	else if (i >= Q2EXCS_GENERAL && i < Q2EXCS_GENERAL+Q2EXMAX_GENERAL)
-	{
+	{	//after the player skins, where Get_Q2ConfigString reads them: they were stored on top of the skins,
+		//so stat_string (CTF's id view, among others) read back nothing
 		i -= Q2EXCS_GENERAL;
-		if ((unsigned int)i >= Q2MAX_CLIENTS)//countof(cl.configstring_general))
+		i += Q2EXMAX_CLIENTS;
+		if ((unsigned int)i >= countof(cl.configstring_general))
 			return;
 		Z_StrDupPtr(&cl.configstring_general[i], s);
 	}
@@ -9613,7 +9615,7 @@ isillegible:
 #ifdef PLUGINS
 			if (Plug_CenterPrintMessage(s, seat))
 #endif
-				SCR_CenterPrint (seat, s, false);
+				CLQ2_CenterPrint (s);	//yquake2's: plain text, 40 columns, echoed to the console between rules
 			break;
 		case svcq2_download:		//16		// [short] size [size bytes]
 			CL_ParseDownload(false);

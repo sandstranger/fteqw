@@ -780,6 +780,7 @@ CLIENT_OBJS = \
 	cl_demo.o	\
 	cl_ents.o	\
 	clq2_ents.o	\
+	clq2_hud.o	\
 	cl_input.o	\
 	in_generic.o	\
 	cl_receipt.o	\

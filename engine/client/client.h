@@ -1056,7 +1056,7 @@ typedef struct
 
 #ifdef Q2CLIENT
 	char		q2airaccel[16];
-	char		q2statusbar[1024];
+	char		q2statusbar[24*64];	//its configstring spills over the 24 slots before CS_AIRACCEL (64 bytes each)
 	char		q2layout[MAX_SPLITS][1024];
 	int			q2mapchecksum;
 	int parse_entities;
@@ -1846,6 +1846,20 @@ void CLQ2EX_ParseMuzzleFlash3 (void);
 void CLQ2_ParseInventory (int seat);
 int CLQ2_RegisterTEntModels (void);
 void CLQ2_WriteDemoBaselines(sizebuf_t *buf);
+
+//clq2_hud.c: yquake2's status bar, layouts, inventory, crosshair, centerprint and plaques
+void CLQ2_InitHUD(void);
+void CLQ2_DrawHUD(int seat, const vrect_t *area);
+void CLQ2_DrawCrosshair(const vrect_t *view);
+void CLQ2_CenterPrint(const char *str);
+void CLQ2_DrawCenterString(void);
+void CLQ2_ClearCenterString(void);
+void CLQ2_DrawPause(void);
+void CLQ2_DrawNet(const vrect_t *view);
+float CLQ2_MenuScale(void);	//yquake2's r_menuscale, for the whole screen (in pixels)
+void CLQ2_GetPicSize(const char *name, int *w, int *h);	//yquake2's pic naming: name, or /path/name.ext
+void CLQ2_DrawPicScaled(float x, float y, const char *name, float scale);	//screen pixels
+void CLQ2_DrawCharScaled(float x, float y, int num, float scale);			//screen pixels, Quake 2 charset
 #endif
 
 #ifdef HLCLIENT

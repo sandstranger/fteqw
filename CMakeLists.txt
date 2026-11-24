@@ -739,6 +739,7 @@ SET(FTE_CLIENT_FILES
 #	engine/client/clhl_game.c
 	engine/client/clq2_cin.c
 	engine/client/clq2_ents.c
+	engine/client/clq2_hud.c
 	engine/client/console.c
 	engine/client/fragstats.c
 	engine/client/image.c
