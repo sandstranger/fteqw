@@ -278,6 +278,7 @@ typedef struct
 	struct {
 		qbyte				areabits[MAX_Q2MAP_AREAS/8];		// portalarea visibility bits
 		q2player_state_t	playerstate;
+		short				exstats[32];	// Q2EX's stats 32-63 (the rerelease's hud, keys, weapon wheel...)
 		int					clientnum;
 	} seat[MAX_SPLITS];
 	int				num_entities;
@@ -1861,6 +1862,20 @@ float CLQ2_MenuScale(void);	//yquake2's r_menuscale, for the whole screen (in pi
 void CLQ2_GetPicSize(const char *name, int *w, int *h);	//yquake2's pic naming: name, or /path/name.ext
 void CLQ2_DrawPicScaled(float x, float y, const char *name, float scale);	//screen pixels
 void CLQ2_DrawCharScaled(float x, float y, int num, float scale);			//screen pixels, Quake 2 charset
+qboolean CLQ2_CGBegin(const vrect_t *area, int *w, int *h);				//the rerelease cgame's drawing (clq2_hud.c)
+qboolean CLQ2_CGPicSize(const char *name, int *w, int *h);
+void CLQ2_CGPic(float x, float y, float w, float h, const char *name, const float *rgba);
+float CLQ2_CGChar(float x, float y, float size, unsigned int codepoint, const float *rgba);
+//the Quake II rerelease's cgame (clq2_cgame.c): its hud
+void CLQ2CG_Init(void);
+void CLQ2CG_Start(void);
+void CLQ2CG_Stop(void);
+void CLQ2CG_LibraryUnloading(void);
+qboolean CLQ2CG_Active(void);
+void CLQ2CG_ConfigString(int q2exindex, const char *s);
+qboolean CLQ2CG_CenterPrint(int seat, const char *str, qboolean instant);
+qboolean CLQ2CG_DrawHUD(int seat, const vrect_t *area);
+qboolean CLQ2CG_HideCrosshair(int seat);
 #ifdef HEXEN2
 void CLH2_InitHUD(void);									//uHexen2's status bar and its commands (clh2_hud.c)
 void CLH2_ResetHUD(void);									//a new map: no inventory yet

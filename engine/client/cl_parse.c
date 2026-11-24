@@ -4570,6 +4570,9 @@ static void CLQ2_ParseServerData (void)
 
 	Surf_PreNewMap();
 	CL_CheckServerInfo();
+
+	if (cls.protocol_q2 == PROTOCOL_VERSION_Q2EX)
+		CLQ2CG_Start();	//the rerelease's cgame (its hud), if its game library is about
 }
 #endif
 
@@ -5624,6 +5627,7 @@ static void CLQ2_UpdateConfigString (unsigned int i, char *s)
 
 	if ((unsigned int)i >= Q2EXMAX_CONFIGSTRINGS)
 		Host_EndGame ("configstring %i > Q2EXMAX_CONFIGSTRINGS", i);
+	CLQ2CG_ConfigString(i, s);	//as the rerelease's cgame numbers them
 
 //	strncpy (olds, cl.configstrings[i], sizeof(olds));
 //	olds[sizeof(olds) - 1] = 0;
@@ -9319,6 +9323,8 @@ static void CLQ2EX_LocPrint(int targetseat)
 
 	TL_Reformat(com_language, formatted, sizeof(formatted), a, arg);
 
+	if ((level == 4 || level == 5) && CLQ2CG_CenterPrint(targetseat, CLQ2EX_ReformatBinds(targetseat, formatted, inputs, sizeof(inputs)), level == 5))
+		return;	//the rerelease's cgame draws its centerprints
 	if (level == 4)
 	{	//'typewriter'...
 		for (seat = (broadcast?0:targetseat); (broadcast?(seat < cl.splitclients):(seat==targetseat)); seat++)

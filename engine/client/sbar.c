@@ -640,6 +640,7 @@ void Sbar_Init (void)
 {
 #ifdef Q2CLIENT
 	CLQ2_InitHUD();	//yquake2's hud's cvars
+	CLQ2CG_Init();	//the rerelease's cgame's
 	CLQ2FX_Init();	//and its effects'
 #endif
 	Cvar_Register(&scr_scoreboard_drawtitle, "Scoreboard settings");

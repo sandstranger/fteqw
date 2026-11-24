@@ -946,6 +946,19 @@ qboolean SVQ2RR_Active(void)
 {
 	return rrge != NULL;
 }
+//the rerelease's stats past game API 3's 32 (keys, health bars, the weapon wheel's...), for Q2EX clients
+void SVQ2RR_ExtendedStats(q2edict_t *ent, short *out32)
+{
+	rr_edict_t *re = (rrge && shadow)?RR_FromShadow(ent):NULL;
+	int i;
+	if (!re || !re->client)
+	{
+		memset(out32, 0, sizeof(*out32)*32);
+		return;
+	}
+	for (i = 0; i < 32; i++)
+		out32[i] = re->client->ps.stats[32+i];
+}
 
 /*
 The rerelease's GetGameAPI, from its library: FTE gets game API 3 exports for it.

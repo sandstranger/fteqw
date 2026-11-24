@@ -783,6 +783,7 @@ CLIENT_OBJS = \
 	clq2_hud.o	\
 	clh2_hud.o	\
 	clh2_fx.o	\
+	clq2_cgame.o	\
 	clq2_fx.o	\
 	cl_effects.o	\
 	cl_tempentities.o	\

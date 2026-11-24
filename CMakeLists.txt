@@ -745,6 +745,7 @@ SET(FTE_CLIENT_FILES
 	engine/client/clq2_hud.c
 	engine/client/clh2_hud.c
 	engine/client/clh2_fx.c
+	engine/client/clq2_cgame.c
 	engine/client/clq2_fx.c
 	engine/client/q2fx/cl_effects.c
 	engine/client/q2fx/cl_tempentities.c

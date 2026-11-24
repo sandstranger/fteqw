@@ -1444,11 +1444,13 @@ void CLQ2_ParsePlayerstate (int seat, q2frame_t *oldframe, q2frame_t *newframe, 
 	if (oldframe)
 	{
 		*state = oldframe->seat[seat].playerstate;
+		memcpy(newframe->seat[seat].exstats, oldframe->seat[seat].exstats, sizeof(newframe->seat[seat].exstats));
 		newframe->seat[seat].clientnum = oldframe->seat[seat].clientnum;
 	}
 	else
 	{
 		memset (state, 0, sizeof(*state));
+		memset(newframe->seat[seat].exstats, 0, sizeof(newframe->seat[seat].exstats));
 		newframe->seat[seat].clientnum = cl.playerview[seat].playernum;
 	}
 
@@ -1692,13 +1694,10 @@ void CLQ2_ParsePlayerstate (int seat, q2frame_t *oldframe, q2frame_t *newframe, 
 		// parse stats
 		statbits = MSG_ReadLong ();
 		if (statbits)
-		{
-			for (i=0 ; i<Q2MAX_STATS-32 ; i++)
-				if (statbits & (1<<i) )
-					state->stats[32+i] = MSG_ReadShort();
-			for ( ; i<32 ; i++)
-				if (statbits & (1<<i) )
-					MSG_ReadShort();
+		{	//stats 32-63
+			for (i=0 ; i<32 ; i++)
+				if (statbits & (1u<<i) )
+					newframe->seat[seat].exstats[i] = MSG_ReadShort();
 		}
 
 		if (flags & Q2EXPS_DAMAGEBLEND)

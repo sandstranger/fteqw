@@ -843,15 +843,15 @@ void SVQ2_WritePlayerstateToClient (client_t *client, int seat, int extflags, q2
 			MSG_WriteShort (msg, ps->stats[i]);
 
 	if (q2e)
-	{
+	{	//stats 32-63
 		statbits = 0;
-		for (i=0 ; i<Q2MAX_STATS-32 ; i++)
-			if (ps->stats[32+i] != ops->stats[32+i])
-				statbits |= 1<<i;
+		for (i=0 ; i<32 ; i++)
+			if (to->exstats[seat][i] != (from?from->exstats[seat][i]:0))
+				statbits |= 1u<<i;
 		MSG_WriteLong (msg, statbits);
-		for (i=0 ; i<Q2MAX_STATS-32 ; i++)
-			if (statbits & (1<<i) )
-				MSG_WriteShort (msg, ps->stats[32+i]);
+		for (i=0 ; i<32 ; i++)
+			if (statbits & (1u<<i) )
+				MSG_WriteShort (msg, to->exstats[seat][i]);
 
 		if (pflags & Q2EXPS_DAMAGEBLEND)
 		{
@@ -1024,6 +1024,7 @@ void SVQ2_BuildClientFrame (client_t *client)
 			clientphs = sv.world.worldmodel->funcs.ClusterPHS (sv.world.worldmodel, clientcluster, NULL);
 
 		frame->ps[seat] = clent[seat]->client->ps;
+		SVQ2RR_ExtendedStats(clent[seat], frame->exstats[seat]);	//the rerelease's game has 64
 		if (sv.paused)
 			frame->ps[seat].pmove.pm_type = Q2PM_FREEZE;
 	}
@@ -1031,6 +1032,7 @@ void SVQ2_BuildClientFrame (client_t *client)
 	for (; seat < MAX_SPLITS; seat++)
 	{
 		memset(&frame->ps[seat], 0, sizeof(frame->ps[seat]));
+		memset(frame->exstats[seat], 0, sizeof(frame->exstats[seat]));
 		frame->clientnum[seat] = 0xff;	//invalid
 	}
 

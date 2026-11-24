@@ -552,11 +552,61 @@ static void Q2S_DrawInventory(int seat, q2player_state_t *ps)
 	}
 }
 
+/*
+=====================================================================
+For the rerelease's cgame (clq2_cgame.c): it draws in units of the HUD's scale (r_hudscale) within the area,
+as Q2REPRO hands it a pre-scaled rect.
+=====================================================================
+*/
+static float q2cgscale = 1;
+//the area, and its size in the cgame's units. false when the hud is hidden (r_hudscale 0)
+qboolean CLQ2_CGBegin(const vrect_t *area, int *w, int *h)
+{
+	Q2S_SetArea(area->x, area->y, area->width, area->height);
+	if (!r_hudscale.value)
+		return false;
+	q2cgscale = Q2S_Scale(&r_hudscale);
+	*w = q2s.w / q2cgscale;
+	*h = q2s.h / q2cgscale;
+	return true;
+}
+qboolean CLQ2_CGPicSize(const char *name, int *w, int *h)
+{
+	return Q2S_FindPic(name, w, h) != NULL;
+}
+void CLQ2_CGPic(float x, float y, float w, float h, const char *name, const float *rgba)
+{
+	int pw, ph;
+	mpic_t *pic = Q2S_FindPic(name, &pw, &ph);
+	if (!pic)
+		return;
+	R2D_ImageColours(rgba[0], rgba[1], rgba[2], rgba[3]);
+	R2D_ScalePic(q2s.vx + x*q2cgscale*q2s.sx, q2s.vy + y*q2cgscale*q2s.sy, w*q2cgscale*q2s.sx, h*q2cgscale*q2s.sy, pic);
+	R2D_ImageColours(1, 1, 1, 1);
+}
+//a character (a unicode codepoint, or 0xe0xx for Quake 2's charset) size*size of the cgame's units
+float CLQ2_CGChar(float x, float y, float size, unsigned int codepoint, const float *rgba)
+{
+	float px, py;
+	vec4_t c;
+	Vector4Copy(rgba, c);
+	Font_InvalidateColour(c);
+	Font_BeginScaledString(font_default, q2s.vx + x*q2cgscale*q2s.sx, q2s.vy + y*q2cgscale*q2s.sy, size*q2cgscale*q2s.sx, size*q2cgscale*q2s.sy, &px, &py);
+	Font_DrawScaleChar(px, py, CON_WHITEMASK, codepoint);
+	Font_EndString(font_default);
+	Vector4Set(c, 1, 1, 1, 1);
+	Font_InvalidateColour(c);
+	return size;
+}
+
 //the status bar, the layout (when the server says to show it) and the inventory, for one seat
 void CLQ2_DrawHUD(int seat, const vrect_t *area)
 {
 	q2player_state_t *ps = &cl.q2frame.seat[seat].playerstate;
 	int playernum = cl.q2frame.seat[seat].clientnum;
+
+	if (CLQ2CG_DrawHUD(seat, area))
+		return;	//the rerelease's own hud
 
 	Q2S_SetArea(area->x, area->y, area->width, area->height);
 	R2D_ImageColours(1, 1, 1, 1);
@@ -581,6 +631,8 @@ void CLQ2_DrawCrosshair(const vrect_t *view)
 
 	if (n <= 0)
 		return;
+	if (CLQ2CG_HideCrosshair(0))
+		return;	//the rerelease's cgame says not now (cameras, intermissions, menus)
 	if (n > 3)
 		n = 3;	//Quake 2 has three
 	Q_snprintfz(pic, sizeof(pic), "ch%i", n);
@@ -612,6 +664,9 @@ void CLQ2_CenterPrint(const char *str)
 {
 	const char *s;
 	static const char border[] = "\n\n\35\36\36\36\36\36\36\36\36\36\36\36\36\36\36\36\36\36\36\36\36\36\36\36\36\36\36\36\36\36\36\36\36\36\36\36\37\n\n";
+
+	if (CLQ2CG_CenterPrint(0, str, false))
+		return;	//the rerelease's cgame draws it
 
 	Q_strncpyz(q2_centerstring, str, sizeof(q2_centerstring));
 	q2_centertime_off = scr_centertime.value;

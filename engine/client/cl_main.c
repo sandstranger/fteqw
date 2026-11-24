@@ -2414,6 +2414,9 @@ void CL_ClearState (qboolean gamestart)
 	CLH2_ClearCenterString();	//nor the last map's plaque
 	CLH2FX_ClearState();		//nor effects or particles
 #endif
+#ifdef Q2CLIENT
+	CLQ2CG_Stop();				//the quake 2 rerelease's cgame: it starts again with the level's serverdata
+#endif
 
 	/*FTESurf Patch 202: throw away any open input journal, WITHOUT writing it.  This
 	  is reached by both paths that matter -- the map-change ParseServerData calls and

@@ -29,6 +29,9 @@ dllhandle_t *q2gamedll;
 void SVQ2_UnloadGame (void)
 {
 	ge = NULL;
+#ifdef HAVE_CLIENT
+	CLQ2CG_LibraryUnloading();	//the rerelease's cgame is in the same library
+#endif
 	if (q2gamedll)
 		Sys_CloseLibrary(q2gamedll);
 	q2gamedll = NULL;
