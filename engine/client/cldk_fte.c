@@ -440,6 +440,78 @@ int CLDKF_PlayerNum(void)
 	return cl.playerview[0].playernum;
 }
 
+//models on its HUD: a view of no world, orthographic, over the area, as clq2_menu.c's player preview
+void CLDKF_DrawIcons(float x, float y, float w, float h, int num, const cldk_icon_t *icons)
+{
+	static refdef_t saved;
+	entity_t ent;
+	int i, any = 0;
+	if (num <= 0 || w <= 0 || h <= 0)
+		return;
+	for (i = 0; i < num; i++)
+		if (icons[i].model && icons[i].alpha > 0)
+			any++;
+	if (!any)
+		return;
+	if (R2D_Flush)
+		R2D_Flush();
+	memcpy(&saved, &r_refdef, sizeof(saved));
+	CL_ClearEntityLists();
+	for (i = 0; i < num; i++)
+	{
+		const cldk_icon_t *ic = &icons[i];
+		vec3_t f, r, u;
+		if (!ic->model || ic->alpha <= 0)
+			continue;
+		V_ClearEntity(&ent);
+		ent.model = ic->model;
+		//the view's a unit to the HUD's
+		ent.origin[0] = 512;
+		ent.origin[1] = -(ic->x - w/2);
+		ent.origin[2] = -(ic->y - h/2);
+		VectorCopy(ent.origin, ent.oldorigin);
+		//its axes in its view (x right, y down, z out) to FTE's (x in, y left, z up), mirrored sideways (that
+		//keeps it a rotation, its own view being a mirror)
+		AngleVectors(ic->angles, f, r, u);
+		VectorSet(ent.axis[0], -f[2], f[0], -f[1]);
+		VectorSet(ent.axis[1], r[2], -r[0], r[1]);	//(left, of right)
+		VectorSet(ent.axis[2], -u[2], u[0], -u[1]);
+		ent.scale = ic->scale;
+		ent.framestate.g[FS_REG].frame[0] = ic->frame;
+		ent.framestate.g[FS_REG].frame[1] = ic->oldframe;
+		ent.framestate.g[FS_REG].lerpweight[0] = 1 - ic->backlerp;
+		ent.framestate.g[FS_REG].lerpweight[1] = ic->backlerp;
+		ent.flags = RF_FULLBRIGHT|RF_NOSHADOW;
+		Vector4Set(ent.shaderRGBAf, 1, 1, 1, bound(0, ic->alpha, 1));
+		if (ic->alpha < 1)
+			ent.flags |= RF_TRANSLUCENT;
+		VectorSet(ent.glowmod, 1, 1, 1);
+		V_AddEntity(&ent);
+	}
+
+	VectorClear(r_refdef.vieworg);
+	VectorClear(r_refdef.viewangles);
+	VectorSet(r_refdef.viewaxis[0], 1, 0, 0);
+	VectorSet(r_refdef.viewaxis[1], 0, 1, 0);
+	VectorSet(r_refdef.viewaxis[2], 0, 0, 1);
+	r_refdef.flags = RDF_NOWORLDMODEL;
+	r_refdef.fovv_x = r_refdef.fov_x = w;
+	r_refdef.fovv_y = r_refdef.fov_y = h;
+	r_refdef.vrect.x = cldkarea.x + x*cldkarea.scale;
+	r_refdef.vrect.y = cldkarea.y + y*cldkarea.scale;
+	r_refdef.vrect.width = w*cldkarea.scale;
+	r_refdef.vrect.height = h*cldkarea.scale;
+	r_refdef.time = cl.time;
+	r_refdef.useperspective = false;
+	r_refdef.mindist = 1;
+	r_refdef.maxdist = 2048;
+	r_refdef.playerview = &cl.playerview[0];
+	memset(&r_refdef.globalfog, 0, sizeof(r_refdef.globalfog));
+	r_refdef.areabitsknown = false;
+	R_RenderView();
+	memcpy(&r_refdef, &saved, sizeof(saved));
+}
+
 //the status bar and the rest of its HUD, for the first seat (it had no splitscreen)
 qboolean CLDK_DrawHUDArea(int seat, const vrect_t *area)
 {

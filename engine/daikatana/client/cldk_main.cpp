@@ -543,9 +543,11 @@ extern "C" void CLDK_ParseMessage(const unsigned char *data, int length)
 	}
 }
 
+void CLDK_DrawHUDModels(void);	//cldk_icons.cpp
 extern "C" void CLDK_DrawHUD(void)
 {
 	CLDK_Frame();
+	CLDK_DrawHUDModels();	//(its renderer drew them with the scene, under the HUD)
 	SCR_DrawStats();
 	CL_Boost_Icons_Think();
 }

@@ -63,6 +63,18 @@ float		CLDKF_LerpFrac(void);
 float		CLDKF_FrameTime(void);
 int			CLDKF_PlayerNum(void);
 
+//models on the HUD (its inventory's, its boosts'), as its renderer drew them: in an orthographic view of the area
+//(x, y, w, h, the HUD's units), each where it is in it, a unit of it scale of the HUD's
+typedef struct
+{
+	void	*model;
+	float	x, y;			//in the area
+	float	angles[3];		//its renderer's (x right, y down, z out of the screen)
+	int		frame, oldframe;
+	float	backlerp, alpha, scale;
+} cldk_icon_t;
+void		CLDKF_DrawIcons(float x, float y, float w, float h, int num, const cldk_icon_t *icons);
+
 //the game's client code, for FTE's
 void		CLDK_ParseMessage(const unsigned char *data, int length);	//an svcq2dk_message's
 void		CLDK_DrawHUD(void);
