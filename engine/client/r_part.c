@@ -1187,59 +1187,59 @@ void P_DefaultTrail (unsigned int entityeffects, unsigned int modelflags, int *t
 		*trailpalidx = 154;
 	}
 #ifdef HEXEN2
-	else if (modelflags & MFH2_BLOODSHOT)	//these are the hexen2 ones.
+	else if (modelflags & MFH2_BLOODSHOT)	//these are the hexen2 ones: h2part's trails (named so the set loads, which classic alone lacked: no trails at all)
 	{
-		*trailid = P_FindParticleType("tr_bloodshot");
+		*trailid = P_FindParticleType("h2part.tr_bloodshot");
 		*trailpalidx = 136;
 	}
 	else if (modelflags & MFH2_FIREBALL)
 	{
-		*trailid = P_FindParticleType("tr_fireball");
+		*trailid = P_FindParticleType("h2part.tr_fireball");
 		*trailpalidx = 424;
 	}
 	else if (modelflags & MFH2_ACIDBALL)
 	{
-		*trailid = P_FindParticleType("tr_acidball");
+		*trailid = P_FindParticleType("h2part.tr_acidball");
 		*trailpalidx = 440;
 	}
 	else if (modelflags & MFH2_ICE)
 	{
-		*trailid = P_FindParticleType("tr_ice");
+		*trailid = P_FindParticleType("h2part.tr_ice");
 		*trailpalidx = 408;
 	}
 	else if (modelflags & MFH2_SPIT)
 	{
-		*trailid = P_FindParticleType("tr_spit");
+		*trailid = P_FindParticleType("h2part.tr_spit");
 		*trailpalidx = 260;
 	}
 	else if (modelflags & MFH2_SPELL)
 	{
-		*trailid = P_FindParticleType("tr_spell");
+		*trailid = P_FindParticleType("h2part.tr_spell");
 		*trailpalidx = 260;
 	}
 	else if (modelflags & MFH2_VORP_MISSILE)
 	{
-		*trailid = P_FindParticleType("tr_vorpmissile");
+		*trailid = P_FindParticleType("h2part.tr_vorpmissile");
 		*trailpalidx = 302;
 	}
 	else if (modelflags & MFH2_SET_STAFF)
 	{
-		*trailid = P_FindParticleType("tr_setstaff");
+		*trailid = P_FindParticleType("h2part.tr_setstaff");
 		*trailpalidx = 424;
 	}
 	else if (modelflags & MFH2_MAGICMISSILE)
 	{
-		*trailid = P_FindParticleType("tr_magicmissile");
+		*trailid = P_FindParticleType("h2part.tr_magicmissile");
 		*trailpalidx = 149;
 	}
 	else if (modelflags & MFH2_BONESHARD)
 	{
-		*trailid = P_FindParticleType("tr_boneshard");
+		*trailid = P_FindParticleType("h2part.tr_boneshard");
 		*trailpalidx = 384;
 	}
 	else if (modelflags & MFH2_SCARAB)
 	{
-		*trailid = P_FindParticleType("tr_scarab");
+		*trailid = P_FindParticleType("h2part.tr_scarab");
 		*trailpalidx = 254;
 	}
 	else if (modelflags & MFH2_SPIDERBLOOD)
