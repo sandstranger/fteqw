@@ -246,13 +246,14 @@ void CLDK_AddEntities(void)
 	{	//debugging: the frame's entities as its client has them, once
 		char line[256];
 		CLDKF_CvarSet("cl_dkshowents", "0");
-		snprintf(line, sizeof(line), "%i entities, player %i, pmflags %x\n", cl.frame.num_entities, cl.playernum, cldk_pmflags);
+		snprintf(line, sizeof(line), "%i entities, player %i, pmflags %x, rdflags %x, view %.0f %.0f %.0f\n", cl.frame.num_entities,
+			cl.playernum, cldk_pmflags, CLDKF_RDFlags(), cl.refdef.vieworg.x, cl.refdef.vieworg.y, cl.refdef.vieworg.z);
 		CLDKF_Print(line);
 		for (i = 0; i < cl.frame.num_entities; i++)
 		{
 			entity_state_t *s = &cl_parse_entities[i];
-			snprintf(line, sizeof(line), "%4i m%i:%s f%i rf %08x ef %08x ef2 %08x m2 %x m3 %x ff %x %i-%i a %.2f sc %.2f\n",
-				s->number, s->modelindex, CLDKF_ModelName(s->modelindex), s->frame, s->renderfx, s->effects, s->effects2,
+			snprintf(line, sizeof(line), "%4i (%.0f %.0f %.0f) m%i:%s f%i rf %08x ef %08x ef2 %08x m2 %x m3 %x ff %x %i-%i a %.2f sc %.2f\n",
+				s->number, s->origin.x, s->origin.y, s->origin.z, s->modelindex, CLDKF_ModelName(s->modelindex), s->frame, s->renderfx, s->effects, s->effects2,
 				s->modelindex2, s->modelindex3, s->frameInfo.frameFlags, s->frameInfo.startFrame, s->frameInfo.endFrame,
 				s->alpha, s->render_scale.x);
 			CLDKF_Print(line);

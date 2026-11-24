@@ -217,6 +217,38 @@ void CLDKF_SetFog(int active, float r, float g, float b, float start, float end)
 	f->colour[2] = SRGBf(b);
 	f->alpha = 1;
 }
+//its view in water (cl_ents.cpp's CL_CalcViewValues): fogged in the water's colour (CMDK_SurfaceColour) from 32 to
+//1024 (FTE's water fog, which it has in water). Its tint of the colour lasted only the frame the view went in (the
+//server's blend replaced it each frame after), so there's none: nor FTE's own
+qboolean CLDK_ContentsColour(int contents, cshift_t *shift)
+{
+	vec3_t rgb, c;
+	fogstate_t *f = &cl.fog[FOGTYPE_WATER];
+	int i;
+	if (!(contents & (FTECONTENTS_WATER|FTECONTENTS_SLIME|FTECONTENTS_LAVA)) || !CLDK_IsDaikatana())
+		return false;
+	if (!CMDK_SurfaceColour(cl.worldmodel, r_refdef.vieworg, rgb))
+		return false;
+	for (i = 0; i < 3; i++)
+	{
+		shift->destcolor[i] = rgb[i]*255;
+		c[i] = SRGBf(rgb[i]);
+	}
+	shift->percent = 0;
+	if (f->density != 1024 || f->depthbias != 32 || f->alpha != 1 || !VectorCompare(f->colour, c))
+	{
+		f->density = 1024;
+		f->depthbias = 32;
+		VectorCopy(c, f->colour);
+		f->alpha = 1;
+		f->time = realtime;
+		VectorCopy(c, cl.oldfog[FOGTYPE_WATER].colour);	//(no fading from what it was)
+		cl.oldfog[FOGTYPE_WATER].density = f->density;
+		cl.oldfog[FOGTYPE_WATER].depthbias = f->depthbias;
+		cl.oldfog[FOGTYPE_WATER].alpha = 1;
+	}
+	return true;
+}
 const char *CLDKF_PlayerSkinString(int player)
 {	//(cl_parse.c keeps them at the start of the general ones)
 	if (player >= 0 && player < Q2MAX_CLIENTS && player < countof(cl.configstring_general) && cl.configstring_general[player])

@@ -779,6 +779,13 @@ void V_SetContentsColor (int contents)
 		pv->cshifts[CSHIFT_CONTENTS].percent = 0;
 		return;
 	}
+#if defined(Q2CLIENT) && defined(DAIKATANA)
+	if (CLDK_ContentsColour(contents, &pv->cshifts[CSHIFT_CONTENTS]))
+	{	//Daikatana's: its water's own colour
+		pv->cshifts[CSHIFT_CONTENTS].percent *= v_contentblend.value;
+		return;
+	}
+#endif
 
 	if (contents & FTECONTENTS_LAVA)
 		v = &v_cshift_lava;

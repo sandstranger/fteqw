@@ -1307,6 +1307,13 @@ void player_set_pos( userEntity_t *self )
 	{
 		self->s.origin = pos;
 		self->s.old_origin = pos;
+		if (self->client)
+		{	//FTE: and where its player movement has them, which is what its client's view is from
+			self->client->ps.pmove.origin[0] = (short)(pos.x*8);
+			self->client->ps.pmove.origin[1] = (short)(pos.y*8);
+			self->client->ps.pmove.origin[2] = (short)(pos.z*8);
+		}
+		gstate->LinkEntity(self);
 	}
 }
 

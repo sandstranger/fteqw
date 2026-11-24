@@ -8100,17 +8100,46 @@ qbyte *ReadRawImageFile(qbyte *buf, int len, int *width, int *height, uploadfmt_
 		if (iw > 0 && ih > 0 && Image_SafeSize(iw, ih, 4) && ofs >= sizeof(*wal) && ofs + (size_t)iw*ih <= (size_t)len)
 		{
 			const qbyte *in = buf + ofs;
+			qboolean see = false;
 			data = BZ_Malloc(iw * ih * 4);
 			for (i = 0; i < iw * ih; i++)
 			{
 				data[i*4+0] = wal->palette[in[i]*3+0];
 				data[i*4+1] = wal->palette[in[i]*3+1];
 				data[i*4+2] = wal->palette[in[i]*3+2];
-				data[i*4+3] = 255;
+				if (in[i] == 255)
+				{	//see-through, as its renderer had it (its midtextures' holes: what's opaque says IF_NOALPHA)
+					data[i*4+3] = 0;
+					see = true;
+				}
+				else
+					data[i*4+3] = 255;
+			}
+			if (see)
+			{	//what's see-through takes its opaque neighbours' colour, not its own (magenta), for the filtering
+				//at its edges
+				int x, y, k, n, c[3];
+				static const int dx[4] = {-1, 1, 0, 0}, dy[4] = {0, 0, -1, 1};
+				for (y = 0; y < ih; y++)
+					for (x = 0; x < iw; x++)
+					{
+						qbyte *p = data + (y*iw + x)*4;
+						if (p[3])
+							continue;
+						n = c[0] = c[1] = c[2] = 0;
+						for (k = 0; k < 4; k++)
+						{
+							const qbyte *q = data + ((((y+dy[k]+ih)%ih)*iw) + (x+dx[k]+iw)%iw)*4;
+							if (q[3])
+								c[0] += q[0], c[1] += q[1], c[2] += q[2], n++;
+						}
+						if (n)
+							p[0] = c[0]/n, p[1] = c[1]/n, p[2] = c[2]/n;
+					}
 			}
 			*width = iw;
 			*height = ih;
-			*format = PTI_RGBX8;
+			*format = see?PTI_RGBA8:PTI_RGBX8;
 			return data;
 		}
 	}

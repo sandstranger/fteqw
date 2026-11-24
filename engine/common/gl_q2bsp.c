@@ -384,6 +384,7 @@ typedef struct cminfo_s
 #ifdef HAVE_CLIENT
 	int			oldclusters[2];
 	qbyte		*oldvis;
+	qbyte		*dksurfcolours;	//Daikatana's (DKLUMP_EXTSURFINFO): rgb for each texinfo
 #endif
 
 //	struct bihnode_s *bihnodes;
@@ -1370,6 +1371,27 @@ static qboolean CModQ2_LoadSurfaces (model_t *mod, qbyte *mod_base, lump_t *l)
 
 	return true;
 }
+
+#if defined(HAVE_CLIENT) && defined(DAIKATANA)
+//Daikatana's surface colours, a float r, g, b (0-255) for each texinfo (its client tinted and fogged the view in
+//water in its water's)
+static void CModDK_LoadSurfaceColours (model_t *mod, qbyte *mod_base, lump_t *l)
+{
+	cminfo_t	*prv = (cminfo_t*)mod->meshinfo;
+	const float	*in = (const float *)(mod_base + l->fileofs);
+	int			i, count = l->filelen / (sizeof(float)*3);
+	if (count > mod->numtexinfo)
+		count = mod->numtexinfo;
+	if (count <= 0)
+		return;
+	prv->dksurfcolours = ZG_Malloc(&mod->memgroup, mod->numtexinfo*3);
+	for (i = 0; i < count*3; i++)
+	{
+		float f = LittleFloat(in[i]);
+		prv->dksurfcolours[i] = bound(0, f, 255);
+	}
+}
+#endif
 #ifdef HAVE_CLIENT
 static texture_t *Mod_LoadWall(model_t *loadmodel, char *mapname, char *texname, char *shadername, unsigned int imageflags)
 {
@@ -1495,7 +1517,8 @@ static texture_t *Mod_LoadWall(model_t *loadmodel, char *mapname, char *texname,
 	return tex;
 }
 
-static qboolean CModQ2_LoadTexInfo (model_t *mod, qbyte *mod_base, lump_t *l, char *mapname)	//yes I know these load from the same place
+#define DKSURF_MIDTEXTURE	0x00080000	//Daikatana's: its 8-bit textures' index 255 is see-through (its renderer alpha tested them)
+static qboolean CModQ2_LoadTexInfo (model_t *mod, qbyte *mod_base, lump_t *l, char *mapname, qboolean dk)	//yes I know these load from the same place
 {
 	q2texinfo_t *in;
 	mtexinfo_t *out;
@@ -1563,6 +1586,13 @@ static qboolean CModQ2_LoadTexInfo (model_t *mod, qbyte *mod_base, lump_t *l, ch
 			Q_strncatz(sname, "#ALPHA=0.66", sizeof(sname));
 		else if (out->flags & TI_TRANS33)
 			Q_strncatz(sname, "#ALPHA=0.33", sizeof(sname));
+		else if (dk)
+		{	//Daikatana's flags are its own past TI_NODRAW (0x1000's its stone, 1<<25 its sand)
+			if (out->flags & DKSURF_MIDTEXTURE)
+				Q_strncatz(sname, "#MASK=0.666#MASKLT", sizeof(sname));
+			else if (out->flags & (TI_WARP))
+				Q_strncatz(sname, "#ALPHA=1", sizeof(sname));
+		}
 		else if (out->flags & (TI_KINGPIN_ALPHATEST|TI_Q2EX_ALPHATEST)) //kingpin...
 			Q_strncatz(sname, "#MASK=0.666#MASKLT", sizeof(sname));
 		else if (out->flags & (TI_WARP))
@@ -1591,7 +1621,7 @@ static qboolean CModQ2_LoadTexInfo (model_t *mod, qbyte *mod_base, lump_t *l, ch
 				if (*lwr >= 'A' && *lwr <= 'Z')
 					*lwr = *lwr - 'A' + 'a';
 			}
-			out->texture = Mod_LoadWall (mod, mapname, in->texture, sname, (out->flags&TEX_SPECIAL)?0:IF_NOALPHA);
+			out->texture = Mod_LoadWall (mod, mapname, in->texture, sname, ((out->flags&TEX_SPECIAL) || strstr(sname, "#MASK"))?0:IF_NOALPHA);	//(alpha tested ones need theirs)
 			if (!out->texture || !out->texture->srcwidth || !out->texture->srcheight)
 			{
 				out->texture = ZG_Malloc(&mod->memgroup, sizeof(texture_t) + 16*16+8*8+4*4+2*2);
@@ -5189,8 +5219,12 @@ static cmodel_t *CM_LoadMap (model_t *mod, qbyte *filein, size_t filelen, qboole
 			noerrors = noerrors && Mod_LoadEdges			(mod, mod_base, &header.lumps[Q2LUMP_EDGES], isbig?sb_long2:sb_none);
 			noerrors = noerrors && Mod_LoadSurfedges		(mod, mod_base, &header.lumps[Q2LUMP_SURFEDGES]);
 			noerrors = noerrors && CModQ2_LoadSurfaces		(mod, mod_base, &header.lumps[Q2LUMP_TEXINFO]);
+#ifdef DAIKATANA
+			if (noerrors && header.version == BSPVERSION_DK)
+				CModDK_LoadSurfaceColours					(mod, mod_base, &header.lumps[DKLUMP_EXTSURFINFO]);
+#endif
 			noerrors = noerrors && CModQ2_LoadPlanes		(mod, mod_base, &header.lumps[Q2LUMP_PLANES]);
-			noerrors = noerrors && CModQ2_LoadTexInfo		(mod, mod_base, &header.lumps[Q2LUMP_TEXINFO], loadname);
+			noerrors = noerrors && CModQ2_LoadTexInfo		(mod, mod_base, &header.lumps[Q2LUMP_TEXINFO], loadname, header.version == BSPVERSION_DK);
 			if (noerrors)
 				Mod_LoadEntities							(mod, mod_base, &header.lumps[Q2LUMP_ENTITIES]);
 			noerrors = noerrors && CModQ2_LoadFaces			(mod, mod_base, &header.lumps[Q2LUMP_FACES], &header.lumps[Q2LUMP_LIGHTING], header.version == BSPVERSION_Q2W, bspx, isbig);
@@ -5521,6 +5555,52 @@ static int CM_PointLeafnum (model_t *mod, const vec3_t p)
 	if (!mod || mod->loadstate != MLS_LOADED)
 		return 0;		// sound may call this without map loaded
 	return CM_PointLeafnum_r (mod, p, 0);
+}
+#endif
+
+#if defined(HAVE_CLIENT) && defined(DAIKATANA)
+//its client's CM_ContentsColor: the colour of the surface of a side of a brush of the leaf the point's in (its
+//client took the first brush's first side's, which can be a detail brush's with no texinfo: the first fluid's first
+//textured one, here, then any); false if the map hasn't them
+qboolean CMDK_SurfaceColour(model_t *mod, const vec3_t point, vec3_t rgb)
+{
+	cminfo_t	*prv;
+	mleaf_t		*leaf;
+	q2cbrush_t	*brush;
+	ptrdiff_t	idx;
+	unsigned int b, s, pass;
+	if (!mod || mod->loadstate != MLS_LOADED || mod->fromgame != fg_quake2)
+		return false;
+	prv = (cminfo_t*)mod->meshinfo;
+	if (!prv || !prv->dksurfcolours || !prv->leafbrushes || !mod->leafs)
+		return false;
+	leaf = &mod->leafs[CM_PointLeafnum_r(mod, point, 0)];
+	if (leaf->firstleafbrush + (size_t)leaf->numleafbrushes > (size_t)prv->numleafbrushes)
+		return false;
+	for (pass = 0; pass < 2; pass++)
+	{
+		for (b = 0; b < leaf->numleafbrushes; b++)
+		{
+			brush = prv->leafbrushes[leaf->firstleafbrush + b];
+			if (!brush || !brush->brushside)
+				continue;
+			if (!pass && !(brush->contents & (FTECONTENTS_WATER|FTECONTENTS_SLIME|FTECONTENTS_LAVA)))
+				continue;
+			for (s = 0; s < (unsigned int)brush->numsides; s++)
+			{
+				if (!brush->brushside[s].surface)
+					continue;
+				idx = brush->brushside[s].surface - prv->surfaces;
+				if (idx < 0 || idx >= mod->numtexinfo)
+					continue;	//(nullsurface)
+				rgb[0] = prv->dksurfcolours[idx*3+0] / 255.0;
+				rgb[1] = prv->dksurfcolours[idx*3+1] / 255.0;
+				rgb[2] = prv->dksurfcolours[idx*3+2] / 255.0;
+				return true;
+			}
+		}
+	}
+	return false;
 }
 #endif
 

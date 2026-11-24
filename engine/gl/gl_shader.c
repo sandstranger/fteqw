@@ -8717,6 +8717,31 @@ void Shader_DefaultBSPQ2(parsestate_t *ps, const char *shortname, const void *ar
 				"}\n"
 			);
 	}
+	else if (Shader_FloatArgument(ps->s, "MASK"))
+	{	//alpha tested (gl_q2bsp.c's #MASK: Kingpin's, Daikatana's midtextures), as Shader_DefaultBSPQ1's '{' ones:
+		//without, the masked texels drew as their colour (Daikatana's grates, magenta)
+		if (sh_config.progs_supported)
+			Shader_DefaultScript(ps, shortname,
+					"{\n"
+						"fte_program defaultwall#MASK=0.666#MASKLT\n"
+					"}\n"
+				);
+		else
+			Shader_DefaultScript(ps, shortname,
+					"{\n"
+						"{\n"
+							"map $diffuse\n"
+							"tcgen base\n"
+							"alphafunc ge128\n"
+						"}\n"
+						"{\n"
+							"map $lightmap\n"
+							"blendfunc gl_dst_color gl_zero\n"
+							"depthfunc equal\n"
+						"}\n"
+					"}\n"
+				);
+	}
 	else
 		Shader_DefaultBSPLM(ps, shortname, args);
 }
