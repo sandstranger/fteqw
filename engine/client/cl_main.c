@@ -168,11 +168,11 @@ qboolean forcesaveprompt;
 extern int			total_loading_size, current_loading_size, loading_stage;
 
 #ifdef ANDROID
-static float gTargetFPS = 60.0f;
+static int gTargetFPS = 60;	//set on the java side's thread, read on the game's: atomically
 
 __attribute__((used)) __attribute__((visibility("default")))
 void setTargetFPS(const int targetFPS){
-	gTargetFPS = targetFPS;
+	__atomic_store_n(&gTargetFPS, targetFPS, __ATOMIC_RELAXED);
 }
 #endif
 
@@ -7750,7 +7750,7 @@ double Host_Frame (double time)
 #endif
 
 #ifdef ANDROID
-    maxfps = gTargetFPS;
+    maxfps = (float)__atomic_load_n(&gTargetFPS, __ATOMIC_RELAXED);
 #endif
 
 #ifdef HAVE_SERVER

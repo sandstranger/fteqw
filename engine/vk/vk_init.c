@@ -38,18 +38,18 @@ extern cvar_t vid_srgb, vid_vsync, vid_triplebuffer, r_stereo_method, vid_multis
 texid_t r_blackcubeimage, r_whitecubeimage;
 
 #ifdef ANDROID
+//Set by destroyVulkanSwapChain()/recreateVulkanSwapChain() on the java side's thread, read by the renderer: atomically
 static bool paused = false;
 static bool needToRecreaseVulkanSurfaces = false;
 extern void VKSDL_RecreateSurface();
 
 __attribute__((used)) __attribute__((visibility("default")))
 void destroyVulkanSwapChain() {
-    paused = true;
+    __atomic_store_n(&paused, true, __ATOMIC_RELEASE);
 }
 __attribute__((used)) __attribute__((visibility("default")))
 void recreateVulkanSwapChain() {
-    needToRecreaseVulkanSurfaces = paused;
-    paused = false;
+    __atomic_store_n(&needToRecreaseVulkanSurfaces, __atomic_exchange_n(&paused, false, __ATOMIC_ACQ_REL), __ATOMIC_RELEASE);
 }
 #endif
 
@@ -943,13 +943,12 @@ static qboolean VK_CreateSwapChain(void)
 		free(surffmts);
 
 #if ANDROID
-        if (paused){
+        if (__atomic_load_n(&paused, __ATOMIC_ACQUIRE)){
             return false;
         }
 
-        if (needToRecreaseVulkanSurfaces){
+        if (__atomic_exchange_n(&needToRecreaseVulkanSurfaces, false, __ATOMIC_ACQ_REL)){
             VKSDL_RecreateSurface();
-            needToRecreaseVulkanSurfaces = false;
         }
 #endif
 		if (vid_isfullscreen)	//nvidia really doesn't like this. its fine when windowed though.

@@ -367,11 +367,11 @@ static const struct {int w, h;} dkmodes[] =
 	{1600, 1200}, {1920, 1080}, {2560, 1440}, {3840, 2160},
 };
 int VID_GetModeCount(void)		{return sizeof(dkmodes)/sizeof(dkmodes[0]);}
-char *VID_GetModeDescription(int mode)
+const char *VID_GetModeDescription(int mode)	//(const, as its menu declares it: two return types for one function broke the ODR)
 {
 	static char s[32];
 	if (mode < 0 || mode >= VID_GetModeCount())
-		return (char *)"";
+		return "";
 	snprintf(s, sizeof(s), "%i x %i", dkmodes[mode].w, dkmodes[mode].h);
 	return s;
 }

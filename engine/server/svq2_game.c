@@ -12,12 +12,12 @@ qboolean SVQ2_InitGameProgs(void)
 #if ANDROID
 static const char *gamename[2] = {"", nullptr};
 
+//Set on the java side's thread: a new copy is published atomically, the old one is not freed (the server may be loading the
+//library by it right now), and a null String (JNA passes null) is an empty name rather than strdup(null)
 __attribute__((used)) __attribute__((visibility("default")))
 void setQuake2LibraryName (const char *targetLibraryName){
-	if (gamename[0] && gamename[0][0] != '\0') {
-		free((void*)gamename[0]);
-	}
-	gamename[0] = strdup(targetLibraryName);
+	const char *copy = strdup(targetLibraryName ? targetLibraryName : "");
+	__atomic_exchange_n(&gamename[0], copy, __ATOMIC_ACQ_REL);
 }
 
 #endif
@@ -104,7 +104,7 @@ void *SVQ2_GetGameAPI (void *parms)
 			{
 				extern char *Sys_MakeDLLPath(const char *libname, char path[], int max_length);
 				char dllName[MAX_OSPATH];
-				Sys_MakeDLLPath(gamename[o], dllName, MAX_OSPATH);
+				Sys_MakeDLLPath(__atomic_load_n(&gamename[o], __ATOMIC_ACQUIRE), dllName, MAX_OSPATH);
 				Q_snprintfz(name, sizeof(name), "%s", dllName);
 			}
 #else

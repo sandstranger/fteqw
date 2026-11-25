@@ -81,11 +81,13 @@ static void QDECL R2D_CrosshairImage_Callback(struct cvar_s *var, char *oldvalue
 static void QDECL R2D_CrosshairColor_Callback(struct cvar_s *var, char *oldvalue);
 
 #if ANDROID
-static float g_uiScale = 3.5f;
+static float g_uiScale = 3.5f;	//set on the java side's thread, read on the game's: atomically
 
 __attribute__((used)) __attribute__((visibility("default")))
 void setUIScale(float uiScale){
-    g_uiScale = uiScale;
+    if (!(uiScale > 0 && uiScale < 1000))	//(a NaN, a negative or absurd scale is not taken)
+        return;
+    __atomic_store(&g_uiScale, &uiScale, __ATOMIC_RELAXED);
 }
 #endif
 
@@ -1378,7 +1380,11 @@ void R2D_Console_Resize(void)
 	cheight = vid_conheight.value;
 
 #ifdef ANDROID
-    xratio = g_uiScale;
+    {
+        float uiScale;
+        __atomic_load(&g_uiScale, &uiScale, __ATOMIC_RELAXED);
+        xratio = uiScale;
+    }
 #else
 	xratio = vid_conautoscale.value;
 #endif

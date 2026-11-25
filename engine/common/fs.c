@@ -4013,8 +4013,9 @@ char * Sys_MakeDLLPath(const char *libname, char path[], int max_length)
 
     memset(path, 0, max_length);
     extern char * g_dllDefaultPath;
-    if(g_dllDefaultPath && g_dllDefaultPath[0])
-        snprintf(path, max_length - 1, "%s/%s", g_dllDefaultPath, dllName);
+    const char *dllDefaultPath = __atomic_load_n(&g_dllDefaultPath, __ATOMIC_ACQUIRE);   //(set on the java side's thread)
+    if(dllDefaultPath && dllDefaultPath[0])
+        snprintf(path, max_length - 1, "%s/%s", dllDefaultPath, dllName);
     else
         snprintf(path, max_length - 1, "%s", dllName);
     return path;
@@ -11801,7 +11802,7 @@ static unsigned int FS_Cache_HashName(const char *s)
 static unsigned int FS_Cache_AddonSig(void)
 {
 	unsigned int h = 2166136261u;
-	qofs_t sz = 0, i;
+	size_t sz = 0, i;	//(size_t, as FS_LoadMallocFile writes it: a qofs_t is 8 bytes and size_t 4 on 32 bit targets)
 	qbyte *f = FS_LoadMallocFile(FS_ADDONS_FILE, &sz);
 	if (f)
 	{

@@ -652,7 +652,9 @@ typedef struct te_tracker_s {
 } te_tracker_t;
 
 // crosshair auto-aim info
-typedef struct autoAim_s {
+// (the client's own: its struct had the game's tag, autoAim_s of user/hooks.h, which is another layout - an ODR violation
+// once both are linked into one program)
+typedef struct clientAutoAim_s {
    float xofs,yofs;
    entity_state_t *ent;
    short item;

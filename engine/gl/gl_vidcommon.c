@@ -3406,12 +3406,12 @@ union programhandle_u GLSlang_CreateProgram(program_t *prog, const char *name, i
 
 #if ANDROID
 __attribute__((used)) __attribute__((visibility("default")))
-void setUseGLES2_0State (const bool useGLES2_0){
-    g_useGLES2_0 = useGLES2_0;
+void setUseGLES2_0State (const int useGLES2_0){	//(an int: JNA passes a java 'boolean' as a 32 bit int)
+    __atomic_store_n(&g_useGLES2_0, useGLES2_0 != 0, __ATOMIC_RELAXED);	//(set on the java side's thread)
 }
 
 bool useGLes2_0Version(){
-    return g_useGLES2_0;
+    return __atomic_load_n(&g_useGLES2_0, __ATOMIC_RELAXED);
 }
 #endif
 

@@ -1426,6 +1426,8 @@ void Sys_CloseTerminal (void)
 #endif
 
 #if ANDROID
+//Set by the launcher through JNA, on the java side's thread; read on the game's with __atomic_load_n (atomic publication).
+//The engine keeps the pointers (parms.basedir, the dll path), so a setter publishes a new copy and never frees the old one.
 static char *g_pathToHomeDirectory = nullptr;
 static char *g_pathToBaseGameDirectory = nullptr;
 char *g_dllDefaultPath= nullptr;
@@ -1433,11 +1435,14 @@ char *g_pathToSDLControllerDB = nullptr;
 
 static void freeChars(char **targetChars)
 {
-    if (targetChars && *targetChars)
-    {
-        free(*targetChars);
-        *targetChars = nullptr;
-    }
+    if (targetChars)
+        free(__atomic_exchange_n(targetChars, (char*)nullptr, __ATOMIC_ACQ_REL));
+}
+
+static void publishChars(char **targetChars, const char *value)
+{
+    char *copy = strdup(value ? value : "");    //(JNA passes null for a null String: strdup(null) crashed)
+    __atomic_exchange_n(targetChars, copy, __ATOMIC_ACQ_REL);   //(the old copy is not freed: the engine may still hold it)
 }
 #endif
 
@@ -1475,9 +1480,10 @@ int QDECL main(int argc, char **argv)
 	parms.binarydir = SDL_GetBasePath();
 #else
     const char *pathToHomeDirectory = getenv("PATH_TO_HOME_DIRECTORY");
-    parms.basedir = g_pathToBaseGameDirectory;
-    parms.binarydir = g_pathToHomeDirectory;
-    chdir(g_pathToHomeDirectory);
+    parms.basedir = __atomic_load_n(&g_pathToBaseGameDirectory, __ATOMIC_ACQUIRE);
+    parms.binarydir = __atomic_load_n(&g_pathToHomeDirectory, __ATOMIC_ACQUIRE);
+    if (parms.binarydir)
+        chdir(parms.binarydir);
 #endif
 	parms.argc = argc;
 	parms.argv = (const char**)argv;
@@ -2174,35 +2180,45 @@ vfsfile_t *Sys_ForkServer(void)
 #endif
 
 #if ANDROID
+//What the java side asks about the game's state, worked out on the game's thread every frame (Sys_SendKeyEvents): the
+//queries read topmenu and the key destinations themselves, on the java side's thread, while the game changed them.
+static int g_javaShowScreenControls = 1;
+static int g_javaInvokeMouseButtonsEvents = 0;
+
+void Sys_UpdateJavaQueries(void)
+{
+    const int showScreenControls = (topmenu == nullptr);
+    __atomic_store_n(&g_javaShowScreenControls, showScreenControls, __ATOMIC_RELAXED);
+    //engine and menuqc menus sit in topmenu, csqc interfaces only ask for a free cursor
+    __atomic_store_n(&g_javaInvokeMouseButtonsEvents, (!showScreenControls || Key_MouseShouldBeFree()) ? 1 : 0, __ATOMIC_RELAXED);
+}
+
 __attribute__((used)) __attribute__((visibility("default")))
 void onNativeResume() {
 }
 __attribute__((used)) __attribute__((visibility("default")))
 void onNativePause() {
 }
+//The queries return an int: JNA reads a java 'boolean' result as a 32 bit int, and of a returned C 'bool' only the low byte is
+//defined on arm64 (AAPCS64 leaves the rest of the register unspecified).
 __attribute__((used)) __attribute__((visibility("default")))
-bool needToShowScreenControls() {
-    return topmenu == nullptr;
+int needToShowScreenControls() {
+    return __atomic_load_n(&g_javaShowScreenControls, __ATOMIC_RELAXED);
 }
 __attribute__((used)) __attribute__((visibility("default")))
-bool needToInvokeMouseButtonsEvents(){
-    //engine and menuqc menus sit in topmenu, csqc interfaces only ask for a free cursor
-    return !needToShowScreenControls() || Key_MouseShouldBeFree();
+int needToInvokeMouseButtonsEvents(){
+    return __atomic_load_n(&g_javaInvokeMouseButtonsEvents, __ATOMIC_RELAXED);
 }
 __attribute__((used)) __attribute__((visibility("default")))
 void setPathsToResources (const char *pathToHomeDirectory, const char *pathToBaseDirectory,
                           const char *dllDefaultPath) {
-    freeChars(&g_pathToHomeDirectory);
-    freeChars(&g_pathToBaseGameDirectory);
-    freeChars(&g_dllDefaultPath);
-    g_pathToHomeDirectory = strdup(pathToHomeDirectory);
-    g_pathToBaseGameDirectory = strdup(pathToBaseDirectory);
-    g_dllDefaultPath = strdup(dllDefaultPath);
+    publishChars(&g_pathToHomeDirectory, pathToHomeDirectory);
+    publishChars(&g_pathToBaseGameDirectory, pathToBaseDirectory);
+    publishChars(&g_dllDefaultPath, dllDefaultPath);
 }
 
 __attribute__((used)) __attribute__((visibility("default")))
 void setPathToSDLControllerDB (const char *pathToSDLControllerDB){
-    freeChars(&g_pathToSDLControllerDB);
-    g_pathToSDLControllerDB = strdup(pathToSDLControllerDB);
+    publishChars(&g_pathToSDLControllerDB, pathToSDLControllerDB);
 }
 #endif

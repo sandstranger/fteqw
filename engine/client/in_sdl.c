@@ -27,6 +27,7 @@ extern qboolean vid_isfullscreen;
 
 #if ANDROID
 static bool controlsWereReinit = false;
+static int g_rescanGameControllersRequested = 0;	//set by rescanGameControllersForced (java side's thread)
 typedef void (*forceLandScapeActivityOrientationDelegate)();
 static forceLandScapeActivityOrientationDelegate activityOrientationChangerInstance = nullptr;
 #endif
@@ -39,7 +40,7 @@ cvar_t sys_osk = CVARD("sys_osk", "0", "Enables support for text input. This wil
 #if ANDROID
 __attribute__((used)) __attribute__((visibility("default")))
 void registerForceLandscapeActivityOrientationCallback (forceLandScapeActivityOrientationDelegate instance) {
-    activityOrientationChangerInstance = instance;
+    __atomic_store_n(&activityOrientationChangerInstance, instance, __ATOMIC_RELEASE);  //(the callback is called on the game's thread)
 }
 #endif
 
@@ -1898,6 +1899,15 @@ void Sys_SendKeyEvents(void)
 	SDL_Event event;
 	int axis, j;
 
+#if ANDROID
+	{
+		void Sys_UpdateJavaQueries(void);
+		Sys_UpdateJavaQueries();
+		if (__atomic_exchange_n(&g_rescanGameControllersRequested, 0, __ATOMIC_ACQ_REL))
+			rescanGameControllers();
+	}
+#endif
+
 #ifdef HAVE_SERVER
 	if (isDedicated)
 	{
@@ -1931,13 +1941,25 @@ void Sys_SendKeyEvents(void)
 		int which;
 
 #if ANDROID
-        if (event.type == SDL_APP_DIDENTERFOREGROUND && activityOrientationChangerInstance!= nullptr){
-            activityOrientationChangerInstance();
+        if (event.type == SDL_APP_DIDENTERFOREGROUND){
+            forceLandScapeActivityOrientationDelegate callback = __atomic_load_n(&activityOrientationChangerInstance, __ATOMIC_ACQUIRE);
+            if (callback)
+                callback();
         }
 #endif
 
 		switch(event.type)
 		{
+#ifdef ANDROID
+		//The lifecycle event watch (AndroidLifeCycleEventFilter) sees these first, on the java side's thread: vid.activeapp
+		//is the game's, so it follows them here, on the game's thread.
+		case SDL_APP_WILLENTERBACKGROUND:
+			vid.activeapp = false;
+			break;
+		case SDL_APP_DIDENTERFOREGROUND:
+			vid.activeapp = true;
+			break;
+#endif
 #if SDL_VERSION_ATLEAST(2,0,0)
 		case SDL_WINDOWEVENT:
 			switch(event.window.event)
@@ -2254,7 +2276,7 @@ void INS_Shutdown (void)
 	#endif
 #endif
 #if ANDROID
-    controlsWereReinit = true;
+    __atomic_store_n(&controlsWereReinit, true, __ATOMIC_RELEASE);   //(taken by needToReInitGameControllers, on the java side's thread)
 	SDL_DelEventWatch(AndroidLifeCycleEventFilter, nullptr);
 #endif
 }
@@ -2291,10 +2313,11 @@ void INS_ReInit (void)
     SDL_InitSubSystem(SDL_INIT_JOYSTICK|SDL_INIT_GAMECONTROLLER);
 #ifdef ANDROID
     extern char *g_pathToSDLControllerDB;
-    if (SDL_GameControllerAddMappingsFromFile(g_pathToSDLControllerDB) < 0) {
+    const char *pathToSDLControllerDB = __atomic_load_n(&g_pathToSDLControllerDB, __ATOMIC_ACQUIRE);  //(set on the java side's thread)
+    if (!pathToSDLControllerDB || SDL_GameControllerAddMappingsFromFile(pathToSDLControllerDB) < 0) {
         SDL_Log("Couldn't load mappings: %s\n", SDL_GetError());
     } else{
-        SDL_Log("Custom controller db was loaded from: %s", g_pathToSDLControllerDB);
+        SDL_Log("Custom controller db was loaded from: %s", pathToSDLControllerDB);
     }
 #endif
 	#endif
@@ -2317,30 +2340,26 @@ void INS_ReInit (void)
 }
 
 #if ANDROID
+//Returns an int: JNA reads a java 'boolean' result as a 32 bit int, and of a returned C 'bool' only the low byte is defined
+//on arm64. Taken and cleared in one go: the game's thread sets it (INS_Shutdown).
 __attribute__((used)) __attribute__((visibility("default")))
-bool needToReInitGameControllers (){
-    bool needToReInitControllers = controlsWereReinit;
-    if (needToReInitControllers){
-        controlsWereReinit = false;
-    }
-    return needToReInitControllers;
+int needToReInitGameControllers (){
+    return __atomic_exchange_n(&controlsWereReinit, false, __ATOMIC_ACQ_REL) ? 1 : 0;
 }
 
 __attribute__((used)) __attribute__((visibility("default")))
 void rescanGameControllersForced(){
-    rescanGameControllers();
+    //Only a request: the game's thread does the rescan (Sys_SendKeyEvents); here, on the java side's thread, it closed and
+    //opened the controllers the game was reading.
+    __atomic_store_n(&g_rescanGameControllersRequested, 1, __ATOMIC_RELEASE);
 }
 
 static int SDLCALL AndroidLifeCycleEventFilter(void*, SDL_Event* event)
 {
+	//SDL calls this on the java side's thread: vid.activeapp follows the same events on the game's thread instead
+	//(Sys_SendKeyEvents), only the low memory flag is raised here
 	switch (event->type)
 	{
-		case SDL_APP_WILLENTERBACKGROUND:
-			vid.activeapp = false;
-			break;
-		case SDL_APP_DIDENTERFOREGROUND:
-			vid.activeapp = true;
-			break;
 #ifdef GLQUAKE
 		case SDL_APP_LOWMEMORY:
 			//may arrive on the java thread: this only raises a flag; the renderer thread releases the shader
