@@ -2645,6 +2645,19 @@ static void QCBUILTIN PF_m_downloadmap(pubprogfuncs_t *prinst, struct globalvars
 		}
 	}
 
+#ifdef HAVE_SERVER
+	if (sv.state)
+	{	//FTESurf Patch 1670: during a local game, from the web mirror (cl_parse.c) -- except the map that game runs,
+		//whose world the server holds in the model cache it shares with us: 3, "after this game" (menu P1094).
+		if (!Q_strcasecmp(name, svs.name))
+		{
+			G_FLOAT(OFS_RETURN) = 3;
+			return;
+		}
+		flags |= DLLF_WEBONLY;
+	}
+#endif
+
 	//CL_CheckOrEnqueDownloadFile returns TRUE for "do not wait" -- already held, a
 	//local server, or the enqueue failed -- and FALSE once it is really queued.
 	if (!CL_CheckOrEnqueDownloadFile(rel, rel, flags))
@@ -2710,6 +2723,95 @@ static void QCBUILTIN PF_m_fs_addonstate(pubprogfuncs_t *prinst, struct globalva
 	G_FLOAT(OFS_RETURN) = (spec && strlen(spec) < MAX_OSPATH) ? FS_AddonState(spec) : -1;
 }
 
+/*
+  FTESurf Patch 1739: a game's own art from the player's Steam client cache, for the map browser's mount-game icons.
+  steam_libraryimage(imagename, appid, kind) loads <steam>/appcache/librarycache/<appid>/ "icon" (the one 40-hex
+  .jpg there, Steam's 32x32 app icon; the older layout's <appid>_icon.jpg) or "logo" (logo.png) into a texture
+  named imagename, for drawpic.  1 loaded, 0 not.  Read off the disk, never through the VFS; nothing is shipped.
+*/
+vfsfile_t *QDECL VFSOS_Open(const char *osname, const char *mode);	//fs.h
+static qboolean PF_m_ishex(char c)
+{
+	return (c >= '0' && c <= '9') || (c >= 'a' && c <= 'f') || (c >= 'A' && c <= 'F');
+}
+static int QDECL PF_m_steamicon_pick(const char *fname, qofs_t fsize, time_t mtime, void *parm, searchpathfuncs_t *spath)
+{
+	char *best = parm;
+	const char *base = COM_SkipPath(fname);
+	size_t i;
+	if (strlen(base) != 44 || Q_strcasecmp(base + 40, ".jpg"))
+		return true;
+	for (i = 0; i < 40; i++)
+		if (!PF_m_ishex(base[i]))
+			return true;
+	if (fsize > 0 && fsize < 256*1024 && (!*best || Q_strcasecmp(base, best) < 0))	//one a game; the lowest name if more
+		Q_strncpyz(best, base, MAX_OSPATH);
+	return true;
+}
+static void QCBUILTIN PF_m_steam_libraryimage(pubprogfuncs_t *prinst, struct globalvars_s *pr_globals)
+{
+	const char *imagename = PR_GetStringOfs(prinst, OFS_PARM0);
+	int appid = G_FLOAT(OFS_PARM1);
+	const char *kind = PR_GetStringOfs(prinst, OFS_PARM2);
+	char root[MAX_OSPATH], dir[MAX_OSPATH], path[MAX_OSPATH], pick[MAX_OSPATH];
+	vfsfile_t *f;
+	qofs_t len;
+	qbyte *data;
+	texid_t tid;
+	unsigned int flags;
+	G_FLOAT(OFS_RETURN) = 0;
+	if (!imagename || !*imagename || strlen(imagename) >= MAX_QPATH || appid <= 0 || appid > 99999999 || !kind)
+		return;
+	if (!FS_SteamClientRoot(root, sizeof(root)))
+		return;
+	Q_snprintfz(dir, sizeof(dir), "%s/appcache/librarycache/%i", root, appid);
+	if (!strcmp(kind, "logo"))
+		Q_snprintfz(path, sizeof(path), "%s/logo.png", dir);
+	else if (!strcmp(kind, "icon"))
+	{
+		*pick = 0;
+		Sys_EnumerateFiles(dir, "*.jpg", PF_m_steamicon_pick, pick, NULL);
+		if (*pick)
+			Q_snprintfz(path, sizeof(path), "%s/%s", dir, pick);
+		else
+			Q_snprintfz(path, sizeof(path), "%s/appcache/librarycache/%i_icon.jpg", root, appid);
+	}
+	else
+		return;
+	f = VFSOS_Open(path, "rb");     //the size is checked before anything is read
+	if (!f)
+		return;
+	len = VFS_GETLEN(f);
+	if (len <= 0 || len > 8*1024*1024)
+	{
+		VFS_CLOSE(f);
+		return;
+	}
+	data = BZ_Malloc(len);
+	if (VFS_READ(f, data, len) != len)
+	{
+		VFS_CLOSE(f);
+		BZ_Free(data);
+		return;
+	}
+	VFS_CLOSE(f);
+	//the flags Shader_Default2D asks for, so drawpic's lookup (Image_FindTexture matches CLAMP and PREMULTIPLYALPHA)
+	//finds this texture whether the pic was drawn before or after; NOPURGE, or a map load's Image_Purge would unload
+	//an icon no row has drawn yet, and drawpic would then look for it in the VFS
+	flags = IF_UIPIC|IF_NOPICMIP|IF_NOMIPMAP|IF_CLAMP|IF_HIGHPRIORITY|IF_NOPURGE | (Shader_2DPicPremul()?IF_PREMULTIPLYALPHA:0);
+	tid = Image_FindTexture(imagename, NULL, flags);
+	if (!TEXVALID(tid))
+		tid = Image_CreateTexture(imagename, NULL, flags);
+	if (!TEXVALID(tid))
+	{
+		BZ_Free(data);
+		return;
+	}
+	tid->flags |= IF_NOPURGE;
+	//Image_LoadMipsFromMemory frees data whether or not it decodes
+	G_FLOAT(OFS_RETURN) = Image_LoadTextureFromMemory(tid, tid->flags, tid->ident, imagename, data, len) ? 1 : 0;
+}
+
 qboolean CL_FriendsSign(const char *nonce, const char *op, const char *who, char *out, size_t outlen);
 static void QCBUILTIN PF_m_friends_sign(pubprogfuncs_t *prinst, struct globalvars_s *pr_globals)
 {
@@ -2720,6 +2822,7 @@ static void QCBUILTIN PF_m_friends_sign(pubprogfuncs_t *prinst, struct globalvar
 		RETURN_TSTRING(out);
 }
 
+static void QCBUILTIN PF_m_sys_openfiledialog(pubprogfuncs_t *prinst, struct globalvars_s *pr_globals);	//FTESurf Patch 1746
 static struct {
 	char *name;
 	builtin_t bifunc;
@@ -3125,6 +3228,7 @@ static struct {
 	{"downloadmap",				PF_m_downloadmap,			0},	//FTESurf Patch 465
 	{"mapfilekb",				PF_m_mapfilekb,				0},	//FTESurf Patch 466
 	{"fs_addonstate",			PF_m_fs_addonstate,			0},	//FTESurf Patch 480
+	{"steam_libraryimage",		PF_m_steam_libraryimage,	0},	//FTESurf Patch 1739
 															//gap
 	{"uri_escape",				PF_uri_escape,				510},
 	{"uri_unescape",			PF_uri_unescape,			511},
@@ -3133,6 +3237,9 @@ static struct {
 	{"num_for_edict",			PF_etof,					512},
 	{"uri_get",					PF_uri_get,					513},
 	{"uri_post",				PF_uri_get,					513},
+	{"uri_postfile",			PF_uri_postfile,			0},	//FTESurf Patch 1746: menu only (a file body)
+	{"uri_progress",			PF_uri_progress,			0},
+	{"sys_openfiledialog",		PF_m_sys_openfiledialog,	0},	//FTESurf Patch 1746
 	{"tokenize_console",		PF_tokenize_console,		514},
 	{"argv_start_index",		PF_argv_start_index,		515},
 	{"argv_end_index",			PF_argv_end_index,			516},
@@ -3815,6 +3922,214 @@ qboolean MP_ConsoleCommand(const char *cmdtext)
 	return G_FLOAT(OFS_RETURN);
 }
 
+
+/*FTESurf Patch 1746: while the menu has the keys and asks for files (ui_dropfiles nonzero and a Menu_FileDropped
+  function), a map, picture or zone file dropped on the window or picked with sys_openfiledialog is copied to
+  dropped/<name> -- beside data/, where a server's CSQC cannot write -- and the menu is told on the next frame,
+  instead of the engine running it. True when taken.*/
+#define MP_DROP_MAX ((qofs_t)1<<30)
+typedef struct {char path[MAX_QPATH]; char name[MAX_QPATH];} mp_dropped_t;
+static void MP_FileDropped_Call(int iarg, void *data)
+{
+	mp_dropped_t *d = data;
+	void *pr_globals;
+	func_t f;
+	if (!menu_world.progs || !(f = PR_FindFunction(menu_world.progs, "Menu_FileDropped", PR_ANY)))
+		return;
+	if (setjmp(mp_abort))
+		return;
+	inmenuprogs++;
+	pr_globals = PR_globals(menu_world.progs, PR_CURRENT);
+	(((string_t *)pr_globals)[OFS_PARM0] = PR_TempString(menu_world.progs, d->path));
+	(((string_t *)pr_globals)[OFS_PARM1] = PR_TempString(menu_world.progs, d->name));
+	PR_ExecuteProgram(menu_world.progs, f);
+	inmenuprogs--;
+}
+qboolean MP_FileDropped(const char *fname, int nlen, vfsfile_t **file)
+{
+	cvar_t *want = Cvar_FindVar("ui_dropfiles");
+	char path[MAX_OSPATH], base[64], ext[16];
+	const char *b, *e;
+	mp_dropped_t d;
+	vfsfile_t *in, *out;
+	qofs_t len, done = 0;
+	char buf[65536];
+	int got, i, n;
+
+	if (!menu_world.progs || !want || !want->ival || !Key_Dest_Has(kdm_menu)	//a server can set the cvar, not open the menu
+		|| !PR_FindFunction(menu_world.progs, "Menu_FileDropped", PR_ANY))
+		return false;
+	if (nlen <= 0 || nlen >= (int)sizeof(path))
+		return false;
+	memcpy(path, fname, nlen);
+	path[nlen] = 0;
+	for (b = e = path; *e; e++)
+		if (*e == '/' || *e == '\\')
+			b = e+1;
+	COM_FileExtension(b, ext, sizeof(ext));
+	Q_strlwr(ext);
+	if (strcmp(ext, "bsp") && strcmp(ext, "png") && strcmp(ext, "jpg") && strcmp(ext, "jpeg") && strcmp(ext, "tga") && strcmp(ext, "json"))
+		return false;	//not a kind the upload takes: the engine runs it as before
+	//its name kept to what a map or picture name may be: letters, digits, _ - . (lowercase)
+	for (i = n = 0; b[i] && n < (int)sizeof(base)-1; i++)
+	{
+		char c = b[i];
+		if (c >= 'A' && c <= 'Z')
+			c += 'a'-'A';
+		if ((c >= 'a' && c <= 'z') || (c >= '0' && c <= '9') || c == '_' || c == '-' || c == '.')
+			base[n++] = c;
+	}
+	base[n] = 0;
+	if (n < 5 || *base == '.')
+		return false;
+	in = *file;
+	*file = NULL;
+	if (!in)
+		in = FS_OpenVFS(path, "rb", FS_SYSTEM);
+	if (!in)
+	{
+		Con_Printf("dropped file: cannot read %s\n", path);
+		return true;
+	}
+	len = VFS_GETLEN(in);
+	if (len == qofs_ErrorValue() || len <= 0 || len > MP_DROP_MAX)
+	{
+		Con_Printf("dropped file: %s is empty or over 1 GiB\n", base);
+		VFS_CLOSE(in);
+		return true;
+	}
+	Q_snprintfz(d.path, sizeof(d.path), "dropped/%s", base);
+	Q_strncpyz(d.name, base, sizeof(d.name));
+	FS_CreatePath(d.path, FS_GAMEONLY);
+	out = FS_OpenVFS(d.path, "wb", FS_GAMEONLY);
+	if (!out)
+	{
+		Con_Printf("dropped file: cannot write %s\n", d.path);
+		VFS_CLOSE(in);
+		return true;
+	}
+	while (done < len && (got = VFS_READ(in, buf, sizeof(buf))) > 0)
+	{
+		if (VFS_WRITE(out, buf, got) != got)
+			break;
+		done += got;
+	}
+	VFS_CLOSE(out);
+	VFS_CLOSE(in);
+	if (done != len)
+	{
+		Con_Printf("dropped file: copying %s failed\n", base);
+		FS_Remove(d.path, FS_GAMEONLY);
+		return true;
+	}
+	Con_Printf("dropped file: %s -> %s (%u KiB)\n", base, d.path, (unsigned int)(len/1024));
+	Cmd_AddTimer(0, MP_FileDropped_Call, 0, &d, sizeof(d));
+	return true;
+}
+
+/*FTESurf Patch 1746: float(float kind) sys_openfiledialog -- the desktop's own file picker on its own thread; the
+  file chosen arrives as a drop does (Menu_FileDropped). 0 when no picker exists here or one is already open.*/
+static qboolean mp_dialog_open;
+static void MP_FileDialogDone(void *ctx, void *data, size_t a, size_t b)
+{	//to the menu or nowhere: the menu's own button must never run a file (Host_RunFile would)
+	char *path = data;
+	vfsfile_t *none = NULL;
+	mp_dialog_open = false;
+	if (path && *path && !MP_FileDropped(path, strlen(path), &none))
+		Con_Printf("That file is not a map (.bsp), a picture (.png .jpg .tga) or a zone file (.json), or the window closed.\n");
+	free(path);
+}
+#if defined(_WIN32) && !defined(FTE_SDL) && !defined(WINRT)
+#include <commdlg.h>
+extern HWND mainwindow;
+static int MP_FileDialogThread(void *arg)
+{
+	static wchar_t file[1024];
+	char utf8[MAX_OSPATH*3];
+	OPENFILENAMEW ofn;
+	HMODULE lib = LoadLibraryA("comdlg32.dll");
+	BOOL (WINAPI *pGetOpenFileNameW)(LPOPENFILENAMEW) = lib?(void*)GetProcAddress(lib, "GetOpenFileNameW"):NULL;
+	HMODULE ole = LoadLibraryA("ole32.dll");
+	HRESULT (WINAPI *pCoInitializeEx)(LPVOID, DWORD) = ole?(void*)GetProcAddress(ole, "CoInitializeEx"):NULL;
+	char *result = NULL;
+
+	if (pCoInitializeEx)
+		pCoInitializeEx(NULL, 0x2/*COINIT_APARTMENTTHREADED*/);
+	file[0] = 0;
+	memset(&ofn, 0, sizeof(ofn));
+	ofn.lStructSize = sizeof(ofn);
+	ofn.hwndOwner = mainwindow;
+	ofn.lpstrFilter = L"Maps, pictures and zones\0*.bsp;*.png;*.jpg;*.jpeg;*.tga;*.json\0All files\0*.*\0";
+	ofn.lpstrFile = file;
+	ofn.nMaxFile = countof(file);
+	ofn.lpstrTitle = L"World of Surf: choose a file";
+	ofn.Flags = OFN_FILEMUSTEXIST|OFN_PATHMUSTEXIST|OFN_NOCHANGEDIR|OFN_EXPLORER;
+	if (pGetOpenFileNameW && pGetOpenFileNameW(&ofn)
+		&& WideCharToMultiByte(CP_UTF8, 0, file, -1, utf8, sizeof(utf8), NULL, NULL) > 0)
+		result = strdup(utf8);
+	COM_AddWork(WG_MAIN, MP_FileDialogDone, NULL, result, 0, 0);
+	return 0;
+}
+static qboolean MP_FileDialogAvailable(void) {return true;}
+#elif defined(__linux__) && !defined(ANDROID) && !defined(FTE_TARGET_WEB)
+#include <unistd.h>
+static qboolean MP_InPath(const char *exe)
+{
+	const char *p = getenv("PATH"), *colon;
+	char full[MAX_OSPATH];
+	for (; p && *p; p = colon?colon+1:NULL)
+	{
+		colon = strchr(p, ':');
+		Q_snprintfz(full, sizeof(full), "%.*s/%s", colon?(int)(colon-p):(int)strlen(p), p, exe);
+		if (access(full, X_OK) == 0)
+			return true;
+		if (!colon)
+			break;
+	}
+	return false;
+}
+static int MP_FileDialogThread(void *arg)
+{	//fixed command lines only: nothing from QC or a cvar reaches the shell
+	static const char *zenity = "zenity --file-selection --title='World of Surf: choose a file' "
+		"--file-filter='Maps, pictures and zones | *.bsp *.BSP *.png *.PNG *.jpg *.JPG *.jpeg *.tga *.json' "
+		"--file-filter='All files | *' 2>/dev/null";
+	static const char *kdialog = "kdialog --title 'World of Surf: choose a file' --getopenfilename . "
+		"'*.bsp *.BSP *.png *.PNG *.jpg *.JPG *.jpeg *.tga *.json' 2>/dev/null";
+	char line[MAX_OSPATH*2];
+	char *result = NULL;
+	FILE *f = popen(MP_InPath("zenity")?zenity:kdialog, "r");
+	if (f)
+	{
+		if (fgets(line, sizeof(line), f))
+		{
+			line[strcspn(line, "\r\n")] = 0;
+			if (*line == '/')
+				result = strdup(line);
+		}
+		pclose(f);
+	}
+	COM_AddWork(WG_MAIN, MP_FileDialogDone, NULL, result, 0, 0);
+	return 0;
+}
+static qboolean MP_FileDialogAvailable(void) {return MP_InPath("zenity") || MP_InPath("kdialog");}
+#else
+static int MP_FileDialogThread(void *arg) {return 0;}
+static qboolean MP_FileDialogAvailable(void) {return false;}
+#endif
+static void QCBUILTIN PF_m_sys_openfiledialog(pubprogfuncs_t *prinst, struct globalvars_s *pr_globals)
+{
+	void *thread;
+	G_FLOAT(OFS_RETURN) = 0;
+	if (mp_dialog_open || !MP_FileDialogAvailable())
+		return;
+	thread = Sys_CreateThread("filedialog", MP_FileDialogThread, NULL, THREADP_NORMAL, 0);
+	if (!thread)
+		return;
+	Sys_DetachThread(thread);
+	mp_dialog_open = true;
+	G_FLOAT(OFS_RETURN) = 1;
+}
+
 void MP_CoreDump_f(void)
 {
 	if (Cmd_IsInsecure())
@@ -3911,6 +4226,9 @@ static void MP_Profile_f(void)
 			Con_Printf("Enabled menuqc Profiling.\n");
 }
 
+#ifdef WEBCLIENT	//FTESurf Patch 1670: read-only; tells the menu a Download may start during a local game (cl_parse.c)
+static cvar_t cl_download_localgame = CVARFD("cl_download_localgame", "1", CVAR_NOSET|CVAR_NOSAVE, "Read-only: the menu's map downloads start during a local game too (from the web mirror).");
+#endif
 void MP_RegisterCvarsAndCmds(void)
 {
 	Cmd_AddCommand("coredump_menuqc", MP_CoreDump_f);
@@ -3928,6 +4246,9 @@ void MP_RegisterCvarsAndCmds(void)
 	Cvar_Register(&forceqmenu, MENUPROGSGROUP);
 	Cvar_Register(&pr_menu_coreonerror, MENUPROGSGROUP);
 	Cvar_Register(&pr_menu_memsize, MENUPROGSGROUP);
+#ifdef WEBCLIENT
+	Cvar_Register(&cl_download_localgame, MENUPROGSGROUP);
+#endif
 }
 
 qboolean MP_UsingGamecodeLoadingScreen(void)

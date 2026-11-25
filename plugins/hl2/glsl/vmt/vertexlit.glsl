@@ -22,6 +22,13 @@
 //it; in FTESurf VBSP_Init has already done so by the time this compiles.
 !!cvardf hl2_lt_fold=1
 !!samps =FAKESHADOWS shadowmap
+!!cvar3f r_shadows_color=0.5 0.5 0.5
+!!cvar3f r_shadows_sunfloor=0 0 0
+!!cvar3f r_shadows_vhvsun=0 0 0
+!!cvar3f r_shadows_sunlm=0 0 0
+!!cvar3f r_shadows_sundir=0 0 -1
+!!cvarf r_shadows_worldcast=1
+!!cvarf r_autoexposure_sky=1
 
 // envmaps only
 !!samps =REFLECTCUBEMASK reflectmask reflectcube
@@ -52,6 +59,8 @@
 	#define e_light_dir (instfetch(9).xyz)
 	#define e_light_mul (instfetch(10).rgb)
 	#define e_colourident (instfetch(11))
+	#define e_noshadowrecv (instfetch(8).w)	//FTESurf Patch 1732: per prop (gl_backend.c BE_NoShadowRecv)
+	#define inst_origin vec3(instfetch(4).w, instfetch(5).w, instfetch(6).w)
 	#define m_model mat4(vec4(instfetch(4).xyz,0.0), vec4(instfetch(5).xyz,0.0), vec4(instfetch(6).xyz,0.0), vec4(0.0,0.0,0.0,1.0))
 	vec3 inst_cube[6];
 	#define e_light_ambientcube inst_cube
@@ -90,7 +99,34 @@
 
 varying vec2 tex_c;
 varying vec3 norm;
-varying vec4 light;
+varying vec4 light;	//.a: FTESurf Patch 1780, Strata's baked direct sun share (the .vhv alpha), 0 without
+#ifdef VC
+	uniform vec3 cvar_r_shadows_vhvsun;	//FTESurf Patch 1780: linear sun per unit of it, set by the game on a cascade map
+#endif
+
+//FTESurf Patch 1763: a bumped prop takes its directional light per PIXEL through the normal map, as Source's
+//VertexLitGeneric does (its local lights, the sun among them); the vertex stage hands over the light's direction in
+//tangent space, its colour and its own per-vertex term, which the pixel replaces.  Not on a VRAD-baked prop (VC: the
+//directional half is zero there) nor under #AMBIENTCUBE (no directional term).
+#if defined(BUMP) && !defined(VC) && !defined(AMBIENTCUBE)
+	#define BUMPSUN
+	varying vec3 sun_t;
+	varying vec3 sun_rgb;
+	varying vec3 sun_v;
+#endif
+//FTESurf Patch 1783: on a Strata map with the cascades live (r_shadows_sunlm, as the world: lightmapped.glsl), a prop
+//with no VRAD bake takes the true sun per pixel -- lambert, as VertexLitGeneric lights it, shadowed by the cascades --
+//in place of the light fold's directional term (a cube from one trace at its origin, on a half-lambert ramp: the
+//corrugated ramp drew flat where Momentum's grooves go dark).
+uniform float cvar_r_autoexposure_sky;	//FTESurf Patch 1811: Source exposes the envmap with the rest of the pixel
+#if defined(FAKESHADOWS) && !defined(VC) && !defined(AMBIENTCUBE)
+	#define LIVESUN
+	varying vec3 lsun_t;	//toward the sun in (s, t, n)
+	varying vec3 lsun_v;	//the vertex stage's directional term, which the live sun replaces
+	uniform vec3 cvar_r_shadows_sundir;
+	uniform vec3 cvar_r_shadows_sunlm;
+	uniform float cvar_r_shadows_worldcast;
+#endif
 
 /* CUBEMAPS ONLY */
 #ifdef REFLECTCUBEMASK
@@ -122,6 +158,16 @@ varying vec4 light;
 
 #ifdef FAKESHADOWS
 	varying vec4 vtexprojcoord;
+	#ifdef FAKESHADOWS_CASCADE
+	varying vec3 shwpos;	//FTESurf Patch 1762: world position for the sun cascades (sys/pcf.h CascadeShadowFilter)
+	#endif
+	uniform vec3 cvar_r_shadows_color;	//FTESurf Patch 1732
+	uniform vec3 cvar_r_shadows_sunfloor;
+	#ifdef INSTANCED
+	uniform mat4 l_cubeworld;			//FTESurf Patch 1732: the projection alone; each prop's matrix is per instance
+	#else
+	uniform float e_noshadowrecv;		//FTESurf Patch 1732: 1 = a Source model that casts (no self-shadow)
+	#endif
 #endif
 
 #ifdef VERTEX_SHADER
@@ -171,9 +217,23 @@ varying vec4 light;
 		//same reason.  An undefined hl2_lt_fold evaluates to 0 here, which is the
 		//legacy pair, so a missing define degrades to today rather than to a mix.
 		#if defined(HALFLAMBERT) || hl2_lt_fold
-			light.rgb += max(0.0,halflambert(n,e_light_dir)) * e_light_mul;
+			vec3 dirv = max(0.0,halflambert(n,e_light_dir)) * e_light_mul;
 		#else
-			light.rgb += max(0.0,dot(n,e_light_dir)) * e_light_mul;
+			vec3 dirv = max(0.0,dot(n,e_light_dir)) * e_light_mul;
+		#endif
+		light.rgb += dirv;
+		#ifdef LIVESUN
+		{
+			vec3 tosun = -cvar_r_shadows_sundir;
+			vec3 tm = vec3(dot(m_model[0].xyz, tosun), dot(m_model[1].xyz, tosun), dot(m_model[2].xyz, tosun));	//into model space
+			lsun_t = vec3(dot(tm, s), dot(tm, t), dot(tm, n));
+			lsun_v = dirv;
+		}
+		#endif
+		#ifdef BUMPSUN
+			sun_v = dirv;
+			sun_t = vec3(dot(e_light_dir, s), dot(e_light_dir, t), dot(e_light_dir, n));
+			sun_rgb = e_light_mul;
 		#endif
 	#endif
 
@@ -200,11 +260,17 @@ varying vec4 light;
 	//these files is either // or a /* */ that opens and closes on one line.
 	#ifdef VC
 		#ifdef INSTANCED
-			//the attribute's own fetch: index value plus where this prop's surface starts
-			light.rgb *= texelFetch(s_instvc, int(instfetch(7).w) + gl_VertexID).rgb;
+		{	//the attribute's own fetch: index value plus where this prop's surface starts
+			vec4 vhv = texelFetch(s_instvc, int(instfetch(7).w) + gl_VertexID);
+			light.rgb *= vhv.rgb;
+			light.a = vhv.a;	//FTESurf Patch 1780
+		}
 		#else
 			light.rgb *= v_colour.rgb;
+			light.a = v_colour.a;	//FTESurf Patch 1780
 		#endif
+	#else
+		light.a = 0.0;
 	#endif
 
 /* CUBEMAPS ONLY */
@@ -221,7 +287,17 @@ varying vec4 light;
 #endif
 		
 		#ifdef FAKESHADOWS
+		#ifdef INSTANCED
+		vtexprojcoord = l_cubeworld * vec4((m_model * vec4(w.xyz, 0.0)).xyz + inst_origin, 1.0);	//FTESurf Patch 1732
+		#ifdef FAKESHADOWS_CASCADE
+		shwpos = (m_model * vec4(w.xyz, 0.0)).xyz + inst_origin;
+		#endif
+		#else
 		vtexprojcoord = (l_cubematrix*vec4(w.xyz, 1.0));
+		#ifdef FAKESHADOWS_CASCADE
+		shwpos = (m_model*vec4(w.xyz, 1.0)).xyz;
+		#endif
+		#endif
 		#endif
 	}
 #endif
@@ -348,6 +424,8 @@ varying vec4 light;
 	//no contrast at all.  The rtenvsphere sample takes the same post-processing.
 	//`refl` is a macro that may expand to `1.0 - diffuse_f.a`, so it is always
 	//spelled vec3(refl,refl,refl) here and never used as a bare factor.
+	//FTESurf Patch 1811: in LINEAR light, as Source: cube * mask * tint, contrast, saturation, then the tonemap scale (the
+	//exposure, r_autoexposure_sky^2.2) and the add onto the linear diffuse (after the lighting multiply under ENVSRCPOST; before it, the lighting carries the exposure), encoded after (this cube is sRGB-encoded).
 	#ifdef ENVSRCSPEC
 		#if r_glsl_rtenvsphere == 1
 		vec3 r = reflect(normalize(-eyevector), normal_f.rgb);
@@ -359,7 +437,7 @@ varying vec4 light;
 		cube_c = (m_model * vec4(cube_c.xyz, 0.0)).xyz;
 		spec = textureCube(s_reflectcube, cube_c).rgb;
 		#endif
-		spec *= vec3(refl,refl,refl);
+		spec = pow(spec, vec3(2.2)) * vec3(refl,refl,refl);
 		spec *= cube_tint;
 		spec = mix(spec, spec*spec, float(ENVCONTRAST));
 		spec = mix(vec3(dot(spec, vec3(0.299,0.587,0.114))), spec, cube_sat.r);
@@ -369,18 +447,15 @@ varying vec4 light;
 	#if r_glsl_rtenvsphere == 1
 		vec3 r = reflect(normalize(-eyevector), normal_f.rgb);
 		vec2 sphereCoord = 0.5 + r.xy * 0.5;
-		vec3 cube_t = env_saturation(texture2D(s_rtenvsphere, sphereCoord).rgb * 0.5, cube_sat.r);
+		vec3 cube_t = texture2D(s_rtenvsphere, sphereCoord).rgb * 0.5;
 	#else
 		vec3 cube_c = reflect(-eyevector, normal_f.rgb);
 		cube_c = cube_c.x * invsurface[0] + cube_c.y * invsurface[1] + cube_c.z * invsurface[2];
 		cube_c = (m_model * vec4(cube_c.xyz, 0.0)).xyz;
-		vec3 cube_t = env_saturation(textureCube(s_reflectcube, cube_c).rgb, cube_sat.r);
+		vec3 cube_t = textureCube(s_reflectcube, cube_c).rgb;
 	#endif
 
-		cube_t.r *= cube_tint.r;
-		cube_t.g *= cube_tint.g;
-		cube_t.b *= cube_tint.b;
-		
+		cube_t = env_saturation(pow(cube_t, vec3(2.2)), cube_sat.r) * cube_tint;
 		spec = cube_t * vec3(refl,refl,refl);
 
 	//FTESurf Patch 268 B: end of the ENVSRCSPEC wrapper.
@@ -389,7 +464,7 @@ varying vec4 light;
 	//FTESurf Patch 268 B: without #ENVSRCPOST the reflection lands exactly where it
 	//always has -- before the lighting multiply, so the prop's own light dims it.
 	#ifndef ENVSRCPOST
-		diffuse_f.rgb += spec;
+		diffuse_f.rgb = pow(pow(max(diffuse_f.rgb, vec3(0.0)), vec3(2.2)) + spec, vec3(1.0/2.2));
 	#endif
 #endif
 
@@ -405,6 +480,22 @@ varying vec4 light;
 	//cube carries -- so off changes nothing to the bit.  Clamped, so a face the cube calls
 	//black cannot divide the ratio into a blow-out.
 		vec3 lightrgb = light.rgb;
+		float lsunlive = 0.0, lshlit = 1.0;
+	#if defined(LIVESUN) && defined(FAKESHADOWS_CASCADE)
+		if (cvar_r_shadows_sunlm.r + cvar_r_shadows_sunlm.g + cvar_r_shadows_sunlm.b > 0.0 && cvar_r_shadows_worldcast > 0.0 &&
+			l_fakeshadowinfo[0].z > 0.5 && e_noshadowrecv < 0.5)
+		{	//FTESurf Patch 1783
+			lsunlive = 1.0;
+			lshlit = clamp(2.0*CascadeShadowFilter(s_shadowmap, vtexprojcoord, shwpos) - 1.0, 0.0, 1.0);
+			lightrgb = max(lightrgb - lsun_v, vec3(0.0));	//the ambient part
+		}
+		else
+	#endif
+		{
+	#ifdef BUMPSUN
+			lightrgb = max(lightrgb - sun_v, vec3(0.0));	//FTESurf Patch 1763: the ambient part; the directional comes per pixel below
+	#endif
+		}
 	#if defined(BUMPCUBE) && defined(BUMP)
 		#ifndef CUBEEPS
 		#define CUBEEPS 0.0005
@@ -422,19 +513,92 @@ varying vec4 light;
 		          ng2.z * ((ng.z < 0.0) ? e_light_ambientcube[5] : e_light_ambientcube[4]);
 		lightrgb *= clamp(pow((cb + vec3(CUBEEPS)) / (cg + vec3(CUBEEPS)), vec3(1.0/2.2)), 0.0, 4.0);
 	#endif
-		diffuse_f.rgb *= lightrgb * e_colourident.rgb;
-
-	#ifdef FAKESHADOWS
-		diffuse_f.rgb *= ShadowmapFilter(s_shadowmap, vtexprojcoord);
+	#ifdef LIVESUN
+		if (lsunlive > 0.5)
+		{	//FTESurf Patch 1783: the sun in linear light over the ambient part (lightrgb holds the exposure: e_lmscale)
+		#ifdef BUMP
+			#ifdef BUMPGREENFIX
+			vec3 lsn = normal_f;
+			#else
+			vec3 lsn = vec3(normal_f.x, -normal_f.y, normal_f.z);
+			#endif
+		#else
+			vec3 lsn = vec3(0.0, 0.0, 1.0);
+		#endif
+			float lndl = max(dot(lsn, lsun_t) * inversesqrt(max(dot(lsun_t, lsun_t), 1e-8)), 0.0);
+			lightrgb = pow(pow(lightrgb, vec3(2.2)) + cvar_r_shadows_sunlm * pow(e_lmscale.rgb, vec3(2.2)) * (lndl * lshlit), vec3(1.0/2.2));
+		}
+		else
 	#endif
+		{
+	#ifdef BUMPSUN
+		{	//FTESurf Patch 1763: the same ramp as the vertex stage, from the bumped normal (tangent space).  Its green as
+			//Source reads it (Patch 268 C: the default flip above mirrors the relief along V); a zero light direction
+			//gives the vertex stage's flat 0.5 back.
+		#ifdef BUMPGREENFIX
+			vec3 sunn = normal_f;
+		#else
+			vec3 sunn = vec3(normal_f.x, -normal_f.y, normal_f.z);
+		#endif
+			float ndl = dot(sunn, sun_t) * inversesqrt(max(dot(sun_t, sun_t), 1e-8));
+		#if defined(HALFLAMBERT) || hl2_lt_fold
+			lightrgb += max(0.0, ndl*0.5 + 0.5) * sun_rgb;
+		#else
+			lightrgb += max(0.0, ndl) * sun_rgb;
+		#endif
+		}
+	#endif
+		}
+		float shsun = 1.0;	//FTESurf Patch 1780: how much of the baked sun share lands (the cascade's lit fraction)
+	#ifdef FAKESHADOWS
+		if (e_noshadowrecv < 0.5 && lsunlive < 0.5)
+		{	//FTESurf Patch 1732: as lightmapped.glsl -- a baked prop on a cascade map loses only the sun
+			#ifdef FAKESHADOWS_CASCADE
+			float shlit = 2.0*CascadeShadowFilter(s_shadowmap, vtexprojcoord, shwpos) - 1.0;	//FTESurf Patch 1762
+			#else
+			float shlit = 2.0*ShadowmapFilter(s_shadowmap, vtexprojcoord) - 1.0;
+			#endif
+			shsun = clamp(shlit, 0.0, 1.0);
+			vec3 shfloor = cvar_r_shadows_sunfloor * e_lmscale.rgb;
+		#ifdef VC
+			//FTESurf Patch 1780: Strata's bake holds no sun (it is in light.a, gated by shsun below): no floor for it
+			if (cvar_r_shadows_vhvsun.r + cvar_r_shadows_vhvsun.g + cvar_r_shadows_vhvsun.b > 0.0)
+			{
+			}
+			else
+		#endif
+			if (shfloor.r + shfloor.g + shfloor.b > 0.0)
+			{	//FTESurf Patch 1774: as lightmapped.glsl -- down to the floor's level, hue kept part-way
+				float shll = dot(lightrgb, vec3(0.2126, 0.7152, 0.0722)), shlf = dot(shfloor, vec3(0.2126, 0.7152, 0.0722));
+				vec3 shdark = lightrgb;
+				if (shll > shlf)
+				{
+					float shr = shlf / shll;
+					shdark = mix(lightrgb * shr, shfloor, (1.0 - shr) * 0.5);
+				}
+				lightrgb = mix(shdark, lightrgb, shlit);
+			}
+			else
+				lightrgb *= mix(cvar_r_shadows_color, vec3(1.0), shlit);
+		}
+	#endif
+	#ifdef VC
+		if (light.a > 0.0)
+		{	//FTESurf Patch 1780: Strata's baked direct sun, added in linear light where the cascades let it land
+			vec3 vsun = cvar_r_shadows_vhvsun * (light.a * shsun);
+			if (vsun.r + vsun.g + vsun.b > 0.0)
+				lightrgb = pow(pow(max(lightrgb, vec3(0.0)), vec3(2.2)) + vsun * pow(e_lmscale.rgb, vec3(2.2)), vec3(1.0/2.2));
+		}
+	#endif
+		diffuse_f.rgb *= lightrgb * e_colourident.rgb;
 
 	//FTESurf Patch 268 B: Source adds the envmap AFTER lighting and shadowing --
 	//`result = diffuseComponent + specularLighting`, diffuseComponent being
 	//albedo*lighting (vertexlit_and_unlit_generic_bump_ps20b.fxc:268,312).  No
 	//e_colourident on it: the entity's colormod modulates the albedo, not the
 	//reflection.  With REFLECTCUBEMASK off `spec` is vec3(0.0) and this is a no-op.
-	#ifdef ENVSRCPOST
-		diffuse_f.rgb += spec;
+	#if defined(ENVSRCPOST) && defined(REFLECTCUBEMASK)	//(the linear round trip only where there is a reflection)
+		diffuse_f.rgb = pow(pow(max(diffuse_f.rgb, vec3(0.0)), vec3(2.2)) + spec * pow(cvar_r_autoexposure_sky, 2.2), vec3(1.0/2.2));
 	#endif
 
 	#ifdef FULLBRIGHT

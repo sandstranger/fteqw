@@ -297,11 +297,14 @@ void HTTP_Cleanup(struct dl_download *dl)
 	struct http_dl_ctx_s *con = dl->ctx;
 	dl->ctx = NULL;
 
-	if (con->stream)
-		VFS_CLOSE(con->stream);
-	con->stream = NULL;
-	free(con->buffer);
-	free(con);
+	if (con)	//FTESurf Patch 1746: an upload whose compression failed has none yet
+	{
+		if (con->stream)
+			VFS_CLOSE(con->stream);
+		con->stream = NULL;
+		free(con->buffer);
+		free(con);
+	}
 
 	dl->abort = NULL;
 	dl->status = DL_PENDING;
@@ -400,8 +403,24 @@ static qboolean HTTP_DL_Work(struct dl_download *dl)
 
 		con->bufferused -= ammount;
 		memmove(con->buffer, con->buffer+ammount, con->bufferused);
+		dl->postsent += ammount;
+		if (!con->bufferused && dl->postfile && dl->postsent < dl->posttotal)
+		{	//FTESurf Patch 1746: the file body, a buffer at a time
+			//never past Content-Length, should the file have grown since
+			int got = VFS_READ(dl->postfile, con->buffer, (int)min((qofs_t)min(con->bufferlen, 256*1024), dl->posttotal - dl->postsent));
+			if (got <= 0)
+			{
+				dl->status = DL_FAILED;
+				dl->replycode = 0;
+				return false;
+			}
+			con->bufferused = got;
+		}
 		if (!con->bufferused)	//that's it, all sent.
+		{
 			con->state = HC_GETTINGHEADER;
+			dl->postphase = 3;
+		}
 		break;
 
 	case HC_GETTINGHEADER:
@@ -873,6 +892,29 @@ void HTTPDL_Establish(struct dl_download *dl)
 	struct http_dl_ctx_s *con;
 	qboolean https = false;
 
+	if (dl->postfile && dl->postgzip)
+	{	//FTESurf Patch 1746: compressed whole first, so the length is known; before connecting, so no socket idles
+		qboolean zok = false;
+		qofs_t zlen = 0;
+#ifdef AVAIL_GZDEC
+		vfsfile_t *tmp = FS_OpenTemp();
+		dl->postphase = 1;
+		dl->posttotal = dl->postfilelen;
+		dl->postsent = 0;
+		if (tmp)
+			zok = FS_GZ_CompressFile(dl->postfile, tmp, dl->postfilelen, &dl->postsent, &zlen) && VFS_SEEK(tmp, 0);
+		VFS_CLOSE(dl->postfile);
+		dl->postfile = tmp;
+		dl->postgzip = false;
+#endif
+		if (!zok)
+		{
+			dl->status = DL_FAILED;
+			return;
+		}
+		dl->postfilelen = zlen;
+	}
+
 #ifdef COOKIECOOKIECOOKIE
 	char cookies[8192];
 #else
@@ -948,7 +990,7 @@ void HTTPDL_Establish(struct dl_download *dl)
 #ifdef COOKIECOOKIECOOKIE
 	Cookie_Regurgitate(con->server, con->secure, cookies, sizeof(cookies));
 #endif
-	if (dl->postdata)
+	if (dl->postdata || dl->postfile)
 	{
 		ExpandBuffer(con, 1024 + strlen(uri) + strlen(con->server) + strlen(cookies) + strlen(dl->postmimetype) + dl->postlen);
 		Q_snprintfz(con->buffer, con->bufferlen,
@@ -962,14 +1004,20 @@ void HTTPDL_Establish(struct dl_download *dl)
 			"Accept-Encoding: %s\r\n"
 #endif
 			"User-Agent: "FULLENGINENAME"\r\n"
-			"\r\n", uri, con->server, cookies, (unsigned int)dl->postlen, dl->postmimetype
+			"\r\n", uri, con->server, cookies, (unsigned int)(dl->postlen + dl->postfilelen), dl->postmimetype
 #ifdef AVAIL_GZDEC
 			, dl->identityonly ? "identity" : "gzip"
 #endif
 			);
 		con->bufferused = strlen(con->buffer);
-		memcpy(con->buffer + con->bufferused, dl->postdata, dl->postlen);
+		if (dl->postlen)
+			memcpy(con->buffer + con->bufferused, dl->postdata, dl->postlen);
 		con->bufferused += dl->postlen;
+		dl->postsent = 0;
+		dl->posttotal = con->bufferused + dl->postfilelen;
+		dl->postphase = 2;
+		if (dl->postfile && con->bufferlen < 256*1024)
+			ExpandBuffer(con, 256*1024);
 	}
 	else
 	{
@@ -1407,6 +1455,9 @@ void DL_Close(struct dl_download *dl)
 		VFS_CLOSE(dl->file);
 	if (dl->postdata)
 		BZ_Free(dl->postdata);
+	if (dl->postfile)	//FTESurf Patch 1746
+		VFS_CLOSE(dl->postfile);
+	dl->postfile = NULL;
 	free(dl);
 }
 
@@ -1597,6 +1648,8 @@ void HTTP_CL_Think(const char **curname, float *curpercent)
 		}
 		else
 			dl->qdownload.percent = dl->completed*100.0f/total;
+		if (dl->completed != dl->qdownload.completedbytes || !dl->qdownload.progresstime)
+			dl->qdownload.progresstime = Sys_DoubleTime();	//FTESurf Patch 1670: CL_MapDownloadHolds' stall test
 		dl->qdownload.completedbytes = dl->completed;
 
 		if (dl->qdownload.ratetime < currenttime)

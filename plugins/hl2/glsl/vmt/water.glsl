@@ -2,6 +2,9 @@
 !!cvardf r_glsl_turbscale_refract=1	//simpler scaler
 //FTESurf Patch 1019: refraction offset falls off past this many units; 0 = Source's constant (own line: a trailing comment lands in the default)
 !!cvarf hl2_waterrefractfalloff=512
+//FTESurf Patch 1729: the map's water_lod_control pair (#CHEAPLODMAP; the engine's cvars, 0/0 without one)
+!!cvarf r_cheapwaterstart=0
+!!cvarf r_cheapwaterend=0
 !!cvarf hl2_waterdebug=0	//P867: 1 capture untinted 2 after fog and tint 3 reflection 4 fresnel 5 fog factor 6/7 normal 8/9 the bound maps
 !!permu REFLECTCUBEMASK
 !!samps diffuse normalmap
@@ -148,6 +151,10 @@ void main (void)
 #include "sys/fog.h"
 uniform float cvar_hl2_waterdebug;
 uniform float cvar_hl2_waterrefractfalloff;
+#ifdef CHEAPLODMAP
+uniform float cvar_r_cheapwaterstart;	//FTESurf Patch 1729
+uniform float cvar_r_cheapwaterend;
+#endif
 
 #ifdef DEPTH
 // The depth capture uses the same non-oblique projection as the surface.
@@ -298,6 +305,33 @@ void main (void)
 #else
 	float distortion = nsample.a;
 #endif
+#ifdef CHEAPLOD
+	//FTESurf Patch 1729: Source's cheap pass (watercheap_ps2x BLEND: fog colour to the cubemap by (1-n.e)^5) over the
+	//refraction from the start to the end distance; past the end it is all there is, and the capture may not exist
+	//(GLBE_WaterLodCheap uses the same test). Here: after the depth block's derivatives, before the refraction colour is read
+	//(the depth reads above are discarded past the end).
+#ifdef CHEAPLODMAP
+	float lods = cvar_r_cheapwaterstart, lode = max(cvar_r_cheapwaterend, cvar_r_cheapwaterstart);
+#else
+	float lods = float(LODSTART), lode = max(float(LODEND), float(LODSTART));
+#endif
+	float lodd = length(eye);
+	float lodf = lode > 0.0 ? clamp((lodd - lods) / max(lode - lods, 0.001), 0.0, 1.0) : 0.0;
+	vec3 cheap = vec3(FOGTINT);
+#ifdef REFLECTCUBEMASK
+#ifdef NOFRESNEL
+	float cheapf = float(REFLECTBLEND);
+#else
+	float cheapf = pow(1.0 - clamp(dot(worldnormal, viewdir), 0.0, 1.0), 5.0);
+#endif
+	cheap = mix(cheap, textureCube(s_reflectcube, reflect(-viewdir, worldnormal)).rgb * vec3(TINT_REFL), cheapf);
+#endif
+	if (lode > 0.0 && lodd >= lode)
+	{
+		gl_FragColor = vec4(fog3(cheap), 1.0);
+		return;
+	}
+#endif
 
 
 	//refraction image (and water fog, if possible)
@@ -423,6 +457,9 @@ void main (void)
 	refr = fog3(refr);	
 #endif
 
+#ifdef CHEAPLOD
+	refr = mix(refr, fog3(cheap), lodf);	//over the finished pass, base layer included, as Source's BLEND pass
+#endif
 	//done
 	gl_FragColor = vec4(refr, 1.0);
 }

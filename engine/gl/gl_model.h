@@ -1202,6 +1202,20 @@ typedef struct model_s
 	//is its geomid -- Source's packed m_nBody (studio.cpp). APPEND-ONLY like the fields above.
 	unsigned int	geombase[32];	//MAX_GEOMSETS (client/render.h)
 	unsigned short	geomcount[32];
+	//FTESurf Patch 1713: a Source brush submodel whose entity Source makes SOLID_VPHYSICS (func_brush, doors,
+	//rotators...): the tree its vcollide builds, which a Source mover from 15 sweeps BOXES against instead of
+	//this model's brushes (Source's CEngineTrace::ClipRayToVPhysics; rays stay on the brushes).  A twin in
+	//memgroup with its own tree in its own group, like phyfixed; NULL = none.  APPEND-ONLY like the fields above.
+	struct model_s *vphysalt;
+	//FTESurf Patch 1717: the world's light sample for a Source MDL (MDLF_SOURCEPITCH): the hl2 plugin's VMT shaders
+	//ramp it by hl2_lt_fold's half-lambert, which LightPointValues' split does not fit.  NULL = LightPointValues for
+	//every model.  APPEND-ONLY like the fields above.
+	void (*LightPointFold)(struct model_s *model, const vec3_t point, vec3_t res_diffuse, vec3_t res_ambient, vec3_t res_dir);
+	//FTESurf Patch 1748: brushes the hl2 plugin rebuilt for mover 16 (BIH_BRUSHPAIR); 0 = the map moves as mover 15,
+	//and SV_PMSrcVer pins 15.  farfixknown: a plugin that saw pm_sourceversion >= 16 counted them (an older plugin
+	//leaves both 0, and its far brushes keep mover 15's collision).  APPEND-ONLY likewise.
+	unsigned int	farfixbrushes;
+	qboolean		farfixknown;
 } model_t;
 
 #define MDLF_EMITREPLACE     0x0001 // particle effect engulphs model (don't draw)
@@ -1219,6 +1233,8 @@ typedef struct model_s
 #define MDLF_RECALCULATERAIN 0x1000 // particles changed, recalculate any sky polys
 #define MDLF_SOURCEBSP      0x2000 // Patch 538: VBSP-only water appearance (fg_new also includes CoD/Doom).
 #define MDLF_SOURCEPITCH    0x4000 // Patch 1027: a Source studio model, drawn with Source's pitch (cl_ents.c)
+#define MDLF_SOURCEHDR      0x10000 // Patch 1764: a Source map drawn with its HDR lighting (r_autoexposure applies only here)
+#define MDLF_SOURCELOD      0x20000 // Patch 1810: a Source studio model whose surfaces' mindist/maxdist are VTX switch points
 #define MDLF_LMPADDED       0x8000 // Patch 1275: its lightmap blocks have the border bicubic sampling needs (Surf_NewMap tells the shaders)
 
 //============================================================================

@@ -250,6 +250,8 @@ typedef struct galiasinfo_s
 	vboarray_t vborgba;	//yeah, just you try reading THAT as an actual word.
 	void *vbomem;
 	void *ebomem;
+	vboarray_t vbosharedpad;	//FTESurf Patch 1810: with vbosharedverts, the 4-byte vertex buffer this surface owns
+	qboolean vbosharedverts;	//its vertex vboarrays are an earlier surface's (identical arrays): only the indexes are its own
 
 //these exist only in the root mesh.
 #ifdef MD3MODELS
@@ -339,6 +341,15 @@ typedef struct modplugfuncs_s
 //FTESurf Patch 1440: answered (an int) by an exe whose model_t ends in geombase/geomcount (gl_model.h); a plugin
 //writes them only then -- on an older exe they would land past the struct, in the next model's slot.
 #define plugmodeltail1440_name "FTESurfModelTail/1440"
+//FTESurf Patch 1713: likewise for model_t.vphysalt; without it the hl2 plugin builds no vcollide trees.
+#define plugmodeltail1713_name "FTESurfModelTail/1713"
+//FTESurf Patch 1717: likewise for model_t.LightPointFold.
+#define plugmodeltail1717_name "FTESurfModelTail/1717"
+//FTESurf Patch 1748: likewise for model_t.farfixbrushes/farfixknown, and the exe traces BIH_BRUSHPAIR (com_bih.h).
+#define plugmodeltail1748_name "FTESurfModelTail/1748"
+//FTESurf Patch 1812: the exe traces a Source model's vphysalt only from mover 17 (bih_vphysmdl); without it the hl2
+//plugin builds none for models -- an older exe would sweep them at 15 and 16.
+#define plugmodeltail1812_name "FTESurfModelTail/1812"
 } plugmodfuncs_t;
 #define MODPLUGFUNCS_VERSION 6	//FTESurf Patch 764: struct bihtransform_s grew (the plugin fills it, com_bih.c reads it); 888: again, and model_t.phyfixed
 

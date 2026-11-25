@@ -787,6 +787,14 @@ qboolean Mod_PurgeModel(model_t	*mod, enum mod_purge_e ptype)
 		ZG_FreeGroup(&mod->phyfixed->memgroup);
 		mod->phyfixed = NULL;
 	}
+	if (mod->vphysalt)
+	{	//FTESurf Patch 1713: likewise
+		ZG_FreeGroup(&mod->vphysalt->memgroup);
+		mod->vphysalt = NULL;
+	}
+	mod->farfixbrushes = 0;		//FTESurf Patch 1748: a reload by another loader must not inherit them
+	mod->farfixknown = false;
+	mod->LightPointFold = NULL;	//FTESurf Patch 1717: the plugin's
 	if (mod->archive)
 	{
 		FS_CloseMapPackFile(mod->archive);
@@ -1502,7 +1510,7 @@ static void Mod_LoadModelWorker (void *ctx, void *data, size_t a, size_t b)
 
 	//clear out any old state.
 	memset(&mod->loadstate+1, 0, sizeof(*mod) - (qintptr_t)(&((model_t*)NULL)->loadstate+1));
-	mod->engineflags &= ~MDLF_SOURCEPITCH;	//FTESurf Patch 1027: engineflags sits before loadstate; a reload may not be Source
+	mod->engineflags &= ~(MDLF_SOURCEPITCH|MDLF_SOURCEHDR);	//FTESurf Patch 1027: engineflags sits before loadstate; a reload may not be Source (Patch 1764: or HDR)
 
 	if (!*mod->publicname)
 	{

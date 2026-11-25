@@ -6216,6 +6216,7 @@ void CL_Init (void)
 #endif
 	Cvar_Register (&host_speeds, cl_controlgroup);
 	Cvar_Register (&cl_debug_spikes, cl_controlgroup);
+	CL_Discord_Init();	//FTESurf Patch 1691
 	Cvar_Register (&cl_debug_spike_ms, cl_controlgroup);
 
 	Cvar_Register (&cfg_save_name, cl_controlgroup);
@@ -7508,6 +7509,13 @@ qboolean Host_RunFile(const char *fname, int nlen, vfsfile_t *file)
 		}
 	}
 
+#ifdef MENU_DAT
+	{	//FTESurf Patch 1746: while the menu's map upload asks for files, a dropped or picked one goes to it
+		qboolean MP_FileDropped(const char *fname, int nlen, vfsfile_t **file);
+		if (MP_FileDropped(fname, nlen, &file))
+			return true;
+	}
+#endif
 	f = Z_Malloc(sizeof(*f) + nlen);
 	memcpy(f->fname, fname, nlen);
 	f->fname[nlen] = 0;
@@ -7607,6 +7615,7 @@ double Host_Frame (double time)
 	double spike_audio = 0;
 	double hostwork_start;	//FTESurf Patch 782
 	int hostwork_depth;
+	double capturestep;		//FTESurf Patch 1747
 
 	RSpeedLocals();
 
@@ -7633,6 +7642,7 @@ double Host_Frame (double time)
 
 	time = newrealtime - realtime;
 	realtime = newrealtime;
+	capturestep = time;	//FTESurf Patch 1747: the forced step before cl.gamespeed (SV_Frame applies sv.gamespeed itself)
 
 	if (oldrealtime > realtime)
 		oldrealtime = realtime;
@@ -7688,6 +7698,8 @@ double Host_Frame (double time)
 	//should smooth out a few things, and increase download speeds.
 	if (!cls.timedemo)
 		CL_ReadPackets ();
+	CL_ScriptLapseSync ();	/*FTESurf Patch 1646: publish script lapses counted off the main thread*/
+	CL_PadInputSync ();		/*FTESurf Patch 1694: likewise controller input*/
 
 	if (idle && cl_idlefps.value > 0 && !(vrflags&VRF_OVERRIDEFRAMETIME))
 	{
@@ -7879,6 +7891,7 @@ double Host_Frame (double time)
 	Cbuf_Execute ();
 	}
 	RSpeedEnd(RSPEED_INPUT);	//Patch 782
+	CL_Discord_Frame();	//FTESurf Patch 1691
 	if (spike_enabled)
 		spike_input = Sys_DoubleTime();
 
@@ -7959,6 +7972,8 @@ double Host_Frame (double time)
 	if (sv.state)
 	{
 		float ohft = host_frametime;
+		extern double sv_capturestep;
+		sv_capturestep = (Media_Capturing() == 2 && !cls.demoplayback)?capturestep:-1;	//FTESurf Patch 1747
 		RSpeedRemark();
 		SV_Frame();
 		RSpeedEnd(RSPEED_SERVER);
@@ -8357,10 +8372,8 @@ void CL_ExecInitialConfigs(char *resetcommand, qboolean fullvidrestart)
 	Cbuf_AddText("alias restart_ents \"changelevel . .\"\n",RESTRICT_LOCAL);
 	Cbuf_AddText("alias restart map_restart\n",RESTRICT_LOCAL);
 	Cbuf_AddText("alias startmap_sp \"map start\"\n", RESTRICT_LOCAL);
-#ifdef QUAKESTATS
-	Cbuf_AddText("alias +attack2 +button3\n", RESTRICT_LOCAL);
-	Cbuf_AddText("alias -attack2 -button3\n", RESTRICT_LOCAL);
-#endif
+	//FTESurf Patch 1646 review 2: +attack2 / -attack2 are commands now (cl_input.c); an alias of them is refused
+	//(an old saved config's `alias +attack2 "+button3"` silently, cmd.c).
 	Cbuf_AddText("cl_warncmd 0\n", RESTRICT_LOCAL);
 	Cbuf_AddText("cvar_purgedefaults\n", RESTRICT_LOCAL);	//reset cvar defaults to their engine-specified values. the tail end of 'exec default.cfg' will update non-cheat defaults to mod-specified values.
 	Cbuf_AddText("cvarreset *\n", RESTRICT_LOCAL);			//reset all cvars to their current (engine) defaults
@@ -8731,6 +8744,7 @@ void Host_Shutdown(void)
 
 	//disconnect server/client/etc
 	CL_Disconnect_f();
+	CL_Discord_Shutdown();	//FTESurf Patch 1691: closing the pipe clears the presence
 
 	M_Shutdown(true);
 

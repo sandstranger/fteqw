@@ -1959,6 +1959,13 @@ static void Shader_DepthPush (parsestate_t *ps, const char **ptr)
 	ps->s->depthpush = Shader_ParseFloat(ps->s, ptr, 0);
 }
 
+//FTESurf Patch 1721: `decalsize W H`, world units; a static decal asking PDC_SOURCESIZE takes it (cl_ents.c)
+static void Shader_DecalSize (parsestate_t *ps, const char **ptr)
+{
+	ps->s->decalsize[0] = Shader_ParseFloat(ps->s, ptr, 0);
+	ps->s->decalsize[1] = Shader_ParseFloat(ps->s, ptr, 0);
+}
+
 static void Shader_EntityMergable (parsestate_t *ps, const char **ptr)
 {
 	shader_t *shader = ps->s;
@@ -1971,6 +1978,23 @@ static void Shader_Wireframe (parsestate_t *ps, const char **ptr)
 	ps->s->wireframe = true;
 }
 
+//FTESurf Patch 1729: Source's water LOD distances (vmt/water #CHEAPLOD); see GLBE_WaterLodCheap.
+static void Shader_WaterLod (parsestate_t *ps, const char **ptr)
+{
+	char *t = Shader_ParseString(ptr);
+	float start, end;
+	if (!Q_strcasecmp(t, "map"))
+	{
+		ps->s->waterlodend = -1;
+		return;
+	}
+	start = atof(t);
+	end = Shader_ParseFloat(ps->s, ptr, 0);
+	ps->s->waterlodend = (end > start) ? end : start;
+	if (!(ps->s->waterlodend > 0))
+		ps->s->waterlodend = 0;
+}
+
 //FTESurf Patch 868: Source water without $reflectentities -- its reflection draws only the world.
 static void Shader_ReflectNoEntities (parsestate_t *ps, const char **ptr)
 {
@@ -1980,6 +2004,11 @@ static void Shader_ReflectNoEntities (parsestate_t *ps, const char **ptr)
 static void Shader_MaterialNoFog (parsestate_t *ps, const char **ptr)
 {
 	ps->s->materialnofog = true;
+}
+
+static void Shader_NoNameGuess (parsestate_t *ps, const char **ptr)
+{	//FTESurf Patch 1779
+	ps->s->nonameguess = true;
 }
 
 #if defined(GLQUAKE) || defined(D3DQUAKE)
@@ -3426,6 +3455,8 @@ struct shader_field_names_s shader_unif_names[] =
 /**/{"l_fakeshadowmatrix",		SP_FAKESHADOWMATRIX},
 /**/{"l_fakeshadowcell[0]",		SP_FAKESHADOWCELL},
 /**/{"l_fakeshadowcell",		SP_FAKESHADOWCELL},
+/**/{"l_fakeshadowworld[0]",	SP_FAKESHADOWWORLD},	//FTESurf Patch 1762
+/**/{"l_fakeshadowworld",		SP_FAKESHADOWWORLD},
 /**/{"l_fakeshadowinfo[0]",		SP_FAKESHADOWINFO},
 /**/{"l_fakeshadowinfo",		SP_FAKESHADOWINFO},
 /**/{"e_uppercolour",			SP_E_TOPCOLOURS},	//q1 player colours
@@ -3446,6 +3477,7 @@ struct shader_field_names_s shader_unif_names[] =
 	{"l_lightdirection",		SP_LIGHTDIRECTION},	//light direction in modelspace (ortho lights only, instead of position)
 /**/{"l_lightcolourscale",		SP_LIGHTCOLOURSCALE},//ambient/diffuse/specular scalers
 /**/{"l_cubematrix",			SP_LIGHTCUBEMATRIX},//matrix used to control the rtlight's cubemap projection
+/**/{"l_cubeworld",				SP_LIGHTCUBEWORLD},	//FTESurf Patch 1732: the projection alone, world space (INSTANCED props)
 /**/{"l_shadowmapproj",			SP_LIGHTSHADOWMAPPROJ},	//compacted projection matrix for shadowmaps
 /**/{"l_shadowmapscale",		SP_LIGHTSHADOWMAPSCALE},//should probably use a samplerRect instead...
 
@@ -4058,6 +4090,7 @@ static shaderkey_t shaderkeys[] =
 
 	//fte extensions
 	{"depthpush",			Shader_DepthPush,			"fte"},	//FTESurf Patch 1251
+	{"decalsize",			Shader_DecalSize,			"fte"},	//FTESurf Patch 1721
 	{"clutter",				Shader_ClutterParms,		"fte"},
 	{"deferredlight",		Shader_Deferredlight,		"fte"},	//(sort = prelight)
 //	{"lpp_light",			Shader_Deferredlight,		"fte"},	//(sort = prelight)
@@ -4065,7 +4098,9 @@ static shaderkey_t shaderkeys[] =
 	{"fullrate",			Shader_FullRate,			"fte"},	//blocks half-rate shading on this surface.
 	{"wireframe",			Shader_Wireframe,			"fte"},	//FTESurf Patch 780: Source's MATERIAL_VAR_WIREFRAME (GL only)
 	{"reflectnoentities",	Shader_ReflectNoEntities,	"fte"},	//FTESurf Patch 868: fte_reflectnoentities
+	{"waterlod",			Shader_WaterLod,			"fte"},	//FTESurf Patch 1729: fte_waterlod
 	{"materialnofog",		Shader_MaterialNoFog,		"fte"},
+	{"nonameguess",			Shader_NoNameGuess,			"fte"},	//FTESurf Patch 1779
 
 	{"bemode",				Shader_BEMode,				"fte"},
 
@@ -7920,7 +7955,9 @@ void QDECL R_BuildDefaultTexnums(texnums_t *src, shader_t *shader, unsigned int 
 		if (!TEXVALID(tex->fullbright))
 		{
 			extern cvar_t r_fb_bmodels;
-			if ((shader->flags & SHADER_HASFULLBRIGHT) && r_fb_bmodels.value && gl_load24bit.value)
+			//FTESurf Patch 1779: not for a material that names its own textures -- HL2's lamppost03a_glow (the lens's
+			//own material) was found for lamppost03a's pole and added its white disc over the pole's UVs.
+			if ((shader->flags & SHADER_HASFULLBRIGHT) && r_fb_bmodels.value && gl_load24bit.value && !shader->nonameguess)
 			{
 				if (!TEXVALID(tex->fullbright) && *mapname)
 					tex->fullbright = R_LoadHiResTexture(va("%s_luma:%s_glow", mapname, mapname), NULL, imageflags);
@@ -9078,6 +9115,16 @@ void Shader_DefaultSkinShell(parsestate_t *ps, const char *shortname, const void
 		"}\n"
 		);
 }
+//FTESurf Patch 1739: the image flags Shader_Default2D loads a pic with, for code that makes a pic's texture itself
+//(pr_menu.c steam_libraryimage) -- Image_FindTexture matches IF_PREMULTIPLYALPHA, so they must agree.
+qboolean Shader_2DPicPremul(void)
+{
+	return sh_config.progs_supported && qrenderer != QR_DIRECT3D9
+#ifdef HAVE_LEGACY
+			&& !dpcompat_nopremulpics.ival
+#endif
+			;
+}
 void Shader_Default2D(parsestate_t *ps, const char *shortname, const void *genargs)
 {
 	shader_t *s = ps->s;
@@ -9092,11 +9139,7 @@ void Shader_Default2D(parsestate_t *ps, const char *shortname, const void *genar
 	}
 	if (picname == s->name && Shader_ParseShader(ps, "default2d"))
 		return;
-	if (sh_config.progs_supported && qrenderer != QR_DIRECT3D9
-#ifdef HAVE_LEGACY
-			&& !dpcompat_nopremulpics.ival
-#endif
-	)
+	if (Shader_2DPicPremul())
 	{
 		//hexen2 needs premultiplied alpha to avoid looking ugly
 		//but that results in problems where things are drawn with alpha not 0, so scale vertex colour by alpha in the fragment program

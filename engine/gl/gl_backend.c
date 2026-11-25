@@ -45,6 +45,37 @@ static int be_instancecount;		//>1 while the batch being submitted stands for a 
 static int be_instancebase;		//its first texel in inst_buf
 static qboolean be_instancefailed;	//something in it drew for the first prop alone: the caller draws the rest
 static qboolean be_instdraw;		//the program BE_RenderMeshProgram just bound is the INSTANCED one
+//FTESurf Patch 1732: r_exposure on model light (R_UpdateHDR puts it on the lightmap)
+static float BE_ModelExposure(void)
+{
+	extern cvar_t r_exposure;
+	extern float r_autoexposure_value;	//FTESurf Patch 1764
+	float e = ((r_exposure.value > 0) ? r_exposure.value : 1) * ((r_refdef.flags & RDF_NOWORLDMODEL) ? 1 : r_autoexposure_value);	//a model preview keeps the fixed one
+	return (e != 1) ? pow(e, 1/2.2) : 1;
+}
+//1 = this entity must not receive the r_shadows 2 shadow map: RF_NOSHADOWRECV, the viewmodel, and (Patch 1732) a Source
+//model that casts -- Source never lays a prop's shadow on itself, and a depth map cannot tell itself apart.  Static
+//props (RF_NOSHADOW: they do not cast) and the world still receive.
+static qboolean BE_CascadesLive(void);	//FTESurf Patch 1765
+static float BE_NoShadowRecv(const entity_t *e)
+{
+	extern cvar_t r_shadows_viewmodel;
+	if (e->flags & RF_NOSHADOWRECV)
+		return 1;
+	if ((e->flags & RF_WEAPONMODEL) && !r_shadows_viewmodel.ival)
+		return 1;
+	if (e->model && (e->model->engineflags & MDLF_SOURCEPITCH) && !(e->flags & RF_NOSHADOW))
+	{	//FTESurf Patch 1765: on a cascade map (r_shadows_sunfloor) Strata's props do take the cascades, their own shadow
+		//included -- a lit face meets the caster's back face in the depth map (front faces are culled), and in shadow
+		//the light only comes down to the floor, as the world's does
+		extern cvar_t r_shadows_sunfloor, r_shadows_propselfshadow;
+		if (r_shadows_propselfshadow.ival && r_shadows_sunfloor.vec4[0] + r_shadows_sunfloor.vec4[1] + r_shadows_sunfloor.vec4[2] > 0 &&
+			BE_CascadesLive())	//live cascades: the single map's texels are too coarse to meet itself
+			return 0;
+		return 1;
+	}
+	return 0;
+}
 static void GLBE_BindInstanceData(const struct programpermu_s *permu);
 static void GLBE_InstanceReset(void);
 extern cvar_t r_tessellation;
@@ -313,11 +344,13 @@ static struct {
 	batch_t *wbatches;
 } shaderstate;
 //FTESurf Patch 1018: water in the 3D sky room samples the outer view's targets (Source's skybox water samples
-//the main view's; it renders targets for the eye's view only) -- when that view captured water this frame or
-//the last; otherwise it captures its own, as before, rather than sample nothing.
+//the main view's; it renders targets for the eye's view only); otherwise it captures its own, as before, rather
+//than sample nothing.  Patch 1719: whatever the capture's age (Patch 1018 wanted this world view or its last;
+//r_waterskyroomcapture 2 still does).
 //Stamps are per level and per kind (reflection, refraction, refraction depth): the seat's world-view count + 1
-//when that kind was last captured there (0 = never); a kind counts while the same seat captured it in this
-//world view or its last, and its target exists (a resize frees them).
+//when that kind was last captured there (0 = never, or overwritten by something that is not that capture: a
+//door's render, a refraction without its depth); a kind counts while its stamp is the same seat's and its target
+//exists (a resize frees them).
 enum {BE_CAPREFL, BE_CAPREFR, BE_CAPDEPTH, BE_CAPKINDS};
 static int be_capstamp[R_MAX_RECURSE][BE_CAPKINDS], be_capseat[R_MAX_RECURSE][BE_CAPKINDS];
 //FTESurf Patch 1245: what the top-level view's chosen water plane last rendered into the level-0 targets,
@@ -379,23 +412,31 @@ static void BE_StampCapture(int kind)
 	be_capstamp[r_refdef.recurse][kind] = be_seatviews[seat] + 1;
 	be_capseat[r_refdef.recurse][kind] = seat;
 }
-static qboolean BE_CaptureFresh(int level, int kind, texid_t target)
+//FTESurf Patch 1719: anyage -- any capture this seat made at the level since the map loaded (be_capstamp is cleared at
+//a map change), not only one from its last two world views
+static qboolean BE_CaptureFresh(int level, int kind, texid_t target, qboolean anyage)
 {
 	int seat = BE_Seat();
-	return be_capstamp[level][kind] && be_capseat[level][kind] == seat && be_capstamp[level][kind] >= be_seatviews[seat] &&
+	return be_capstamp[level][kind] && be_capseat[level][kind] == seat && (anyage || be_capstamp[level][kind] >= be_seatviews[seat]) &&
 		TEXVALID(target);
 }
+/*FTESurf Patch 1719: the 3D sky's water samples the outer view's last capture of each kind whatever its age, as Source's
+  skybox water samples _rt_WaterReflection/_rt_WaterRefraction as they stand (the skybox view renders no water targets).
+  Patch 1018 shared only a capture from the seat's last two world views and otherwise rendered the sky room's own pair: on
+  ahop_coast, looking out over the 3D sky's ocean with no level water on screen, ~0.3 scene renders a frame. It still
+  renders its own before this seat's first capture of the map. r_waterskyroomcapture 2 is Patch 1018's rule.*/
 static qboolean BE_SkyroomSharesWater(unsigned int shaderflags)
 {
 	int l = r_refdef.recurse - 1;
-	if (!r_refdef.recurse || r_refdef.recurse != r_skyroomlevel || r_waterskyroomcapture.ival ||
+	qboolean anyage = !r_waterskyroomcapture.ival;
+	if (!r_refdef.recurse || r_refdef.recurse != r_skyroomlevel || r_waterskyroomcapture.ival == 1 ||
 		(shaderflags & (SHADER_HASPORTAL|SHADER_HASRIPPLEMAP)))
 		return false;
-	if ((shaderflags & SHADER_HASREFLECT) && !BE_CaptureFresh(l, BE_CAPREFL, shaderstate.tex_reflection[l]))
+	if ((shaderflags & SHADER_HASREFLECT) && !BE_CaptureFresh(l, BE_CAPREFL, shaderstate.tex_reflection[l], anyage))
 		return false;
-	if ((shaderflags & SHADER_HASREFRACT) && !BE_CaptureFresh(l, BE_CAPREFR, shaderstate.tex_refraction[l]))
+	if ((shaderflags & SHADER_HASREFRACT) && !BE_CaptureFresh(l, BE_CAPREFR, shaderstate.tex_refraction[l], anyage))
 		return false;
-	if ((shaderflags & SHADER_HASREFRACTDEPTH) && !BE_CaptureFresh(l, BE_CAPDEPTH, shaderstate.tex_refractiondepth[l]))
+	if ((shaderflags & SHADER_HASREFRACTDEPTH) && !BE_CaptureFresh(l, BE_CAPDEPTH, shaderstate.tex_refractiondepth[l], anyage))
 		return false;
 	return true;
 }
@@ -1377,6 +1418,17 @@ void GLBE_SetupForShadowMap(dlight_t *dl, int texwidth, int texheight, float sha
 void GLBE_SetFakeShadowCount(int count)
 {
 	shaderstate.fakeshadowcount = bound(1, count, MAX_FAKESHADOW_SLOTS);
+	if (shaderstate.fakeshadowcount <= 1)
+		shaderstate.fakeshadowinfo[0][2] = 0;	//FTESurf Patch 1762: no live cascades; the receivers read the single map
+}
+float r_shadow_orthodepth;	//FTESurf Patch 1762: >0 = the depth half-range of the ortho light being selected (a sun cascade)
+static qboolean BE_CascadesLive(void)
+{
+	return shaderstate.fakeshadowinfo[0][2] > 0.5;
+}
+void GLBE_ClearFakeShadowLive(void)
+{	//FTESurf Patch 1762: the cascade pass sets it again when it draws; an early return or another generator must not leave it
+	shaderstate.fakeshadowinfo[0][2] = 0;
 }
 
 //nettest P114b: force the NEXT GLBE_SelectEntity to re-copy r_refdef.m_projection_std into the cached
@@ -5678,13 +5730,7 @@ static void BE_Program_Set_Attributes(const program_t *prog, struct programpermu
 		//global compile-time define, so this per-entity uniform is the only way the shader can know.
 		//Polarity is FAIL-SAFE: an unbound/unsupported uniform reads 0 = normal receive (never "vanish").
 		case SP_E_NOSHADOWRECV:
-			{
-				extern cvar_t r_shadows_viewmodel;
-				float supp = (shaderstate.curentity->flags & RF_NOSHADOWRECV) ? 1.0f : 0.0f;
-				if ((shaderstate.curentity->flags & RF_WEAPONMODEL) && !r_shadows_viewmodel.ival)
-					supp = 1.0f;
-				qglUniform1fARB(ph, supp);
-			}
+			qglUniform1fARB(ph, BE_NoShadowRecv(shaderstate.curentity));
 			break;
 		//nettest: 1 = this entity is the LOCAL FIRST-PERSON BODY (cl_fpbody).  The mod draws the
 		//owner's own player model so they can look down and see their legs; the model shader then
@@ -5902,6 +5948,9 @@ static void BE_Program_Set_Attributes(const program_t *prog, struct programpermu
 				qglUniformMatrix4fvARB(ph, 1, false, t);
 			}
 			break;
+		case SP_LIGHTCUBEWORLD:	//FTESurf Patch 1732
+			qglUniformMatrix4fvARB(ph, 1, false, shaderstate.lightprojmatrix);
+			break;
 		case SP_LIGHTSHADOWMAPPROJ:
 			qglUniform4fvARB(ph, 1, shaderstate.lightshadowmapproj);
 			break;
@@ -5926,6 +5975,9 @@ static void BE_Program_Set_Attributes(const program_t *prog, struct programpermu
 		case SP_FAKESHADOWCELL:
 			qglUniform4fvARB(ph, MAX_FAKESHADOW_SLOTS, (GLfloat*)shaderstate.fakeshadowcell);
 			break;
+		case SP_FAKESHADOWWORLD:	//FTESurf Patch 1762: world space, for receivers that pass a world position (instanced props)
+			qglUniformMatrix4fvARB(ph, MAX_FAKESHADOW_SLOTS, false, (GLfloat*)shaderstate.fakeshadowmatrix);
+			break;
 		case SP_FAKESHADOWINFO:
 			qglUniform4fvARB(ph, MAX_FAKESHADOW_SLOTS, (GLfloat*)shaderstate.fakeshadowinfo);
 			break;
@@ -5938,13 +5990,21 @@ static void BE_Program_Set_Attributes(const program_t *prog, struct programpermu
 			if (shaderstate.mode == BEM_DEPTHDARK)
 				qglUniform3fvARB(ph, 1, vec3_origin);
 			else
-				qglUniform3fvARB(ph, 1, (float*)shaderstate.curentity->light_range);
+			{	//FTESurf Patch 1732: r_exposure reaches models as it reaches the lightmap
+				vec3_t v;
+				VectorScale(shaderstate.curentity->light_range, BE_ModelExposure(), v);
+				qglUniform3fvARB(ph, 1, v);
+			}
 			break;
 		case SP_E_L_AMBIENT:
 			if (shaderstate.mode == BEM_DEPTHDARK)
 				qglUniform3fvARB(ph, 1, vec3_origin);
 			else
-				qglUniform3fvARB(ph, 1, (float*)shaderstate.curentity->light_avg);
+			{
+				vec3_t v;
+				VectorScale(shaderstate.curentity->light_avg, BE_ModelExposure(), v);
+				qglUniform3fvARB(ph, 1, v);
+			}
 			break;
 		case SP_E_L_AMBIENTCUBE:	//see BE_EntityAmbientCube
 			qglUniform3fvARB(ph, 6, BE_EntityAmbientCube(shaderstate.curentity, true));
@@ -6264,8 +6324,11 @@ static void BE_RenderMeshProgram(const shader_t *shader, const shaderpass_t *pas
 		//r_blackimage, not r_whiteimage: the texture holds sun OCCLUSION, so black = fully lit =
 		//shadow at full strength = the pre-SUNVIS behaviour. See the polarity note in
 		//defaultwall.glsl - getting this backwards deletes every shadow in the game.
+		//FTESurf Patch 1781: on a Source world the page is the baked sun the vmt shaders ADD back (1 - texel): no page must
+		//read as none, so white there
 		GL_LazyBind(i++, (svlm >= 0 && svlm < numlightmaps && TEXVALID(lightmap[svlm]->sunvis_texture))
-						? lightmap[svlm]->sunvis_texture : r_blackimage);
+						? lightmap[svlm]->sunvis_texture :
+						(cl.worldmodel && (cl.worldmodel->engineflags & MDLF_SOURCEBSP)) ? r_whiteimage : r_blackimage);
 	}
 	while (shaderstate.lastpasstmus > i)
 		GL_LazyBind(--shaderstate.lastpasstmus, r_nulltex);
@@ -6283,6 +6346,16 @@ qboolean GLBE_LightCullModel(vec3_t org, model_t *model)
 	{
 		float dist;
 		vec3_t disp;
+		//FTESurf Patch 1773: an ortho (sun) light's radius is its box's half-width across the sun, not a reach -- its depth
+		//runs further (r_shadow_orthodepth) and the frustum's four sides already cull.  The sphere test dropped a caster
+		//that sat sunward of the camera from the tighter cascades while its shadow fell inside them: a log's shadow faded
+		//as the player came closer and snapped back once it was deep inside the next cascade.
+		if ((shaderstate.lightmode & LSHADER_ORTHO) && shaderstate.mode == BEM_DEPTHONLY)
+		{	//only past its far face (away from the sun) can nothing it holds be shadowed -- depth clamp keeps the sunward side
+			float zr = (r_shadow_orthodepth > 0) ? r_shadow_orthodepth : shaderstate.lightradius;
+			VectorSubtract(org, shaderstate.lightorg, disp);
+			return DotProduct(disp, shaderstate.lightdir) - model->radius*2 > zr;
+		}
 		if (model->type == mod_alias)
 		{
 			VectorSubtract(org, shaderstate.lightorg, disp);
@@ -6579,10 +6652,11 @@ qboolean GLBE_SelectDLight(dlight_t *dl, vec3_t colour, vec3_t axis[3], unsigned
 		float proj[16];
 		float xmin = -dl->radius;
 		float ymin = -dl->radius;
-		float znear = -dl->radius;
+		float zr = (r_shadow_orthodepth > 0) ? r_shadow_orthodepth : dl->radius;	//FTESurf Patch 1762: a sun cascade's deeper range
+		float znear = -zr;
 		float xmax = dl->radius;
 		float ymax = dl->radius;
-		float zfar = dl->radius;
+		float zfar = zr;
 		Matrix4x4_CM_Orthographic(proj, xmin, xmax, ymax, ymin, znear, zfar);
 		Matrix4x4_CM_ModelViewMatrixFromAxis(view, axis[0], axis[2], axis[1], dl->origin);
 		Matrix4_Multiply(proj, view, shaderstate.lightprojmatrix);
@@ -6592,7 +6666,7 @@ qboolean GLBE_SelectDLight(dlight_t *dl, vec3_t colour, vec3_t axis[3], unsigned
 			//SCALED 0.015 NDC bias (removed there), which grew to ~15qu at distance
 			//1024 and cut shadows off well before their caster touched the ground.
 			extern cvar_t r_shadows_bias;
-			shaderstate.lightprojmatrix[14] -= r_shadows_bias.value / max(1, dl->radius);
+			shaderstate.lightprojmatrix[14] -= r_shadows_bias.value / max(1, zr);
 		}
 	}
 	else if (shaderstate.lightmode & LSHADER_SPOT)
@@ -7758,9 +7832,8 @@ static void BE_GenTempMeshVBO(vbo_t **vbo, mesh_t *m)
 
 void GLBE_DrawMesh_List(shader_t *shader, int nummeshes, mesh_t **meshlist, vbo_t *vbo, texnums_t *texnums, unsigned int beflags)
 {
-	if (!shader)
-		return;
-
+	if (!shader || !shader->remapto)
+		return;	//FTESurf Patch 1801: as GLBE_SubmitBatch (and none at all)
 	shaderstate.curbatch = &shaderstate.dummybatch;
 	shaderstate.curshader = shader->remapto ? shader->remapto : shader;
 
@@ -7837,7 +7910,18 @@ void GLBE_SubmitBatch(batch_t *batch)
 	sh = batch->shader;
 	if (!sh)	//nettest: the portal/depthmask loops call GLBE_SubmitBatch directly (bypassing the !bs guard on the sortlist path), so a still-NULL shader (e.g. a frame-1 unparsed Source water material) would fault on sh->remapto
 		return;
-	shaderstate.curshader = sh->remapto ? sh->remapto : sh;
+	if (!sh->remapto)
+	{	//FTESurf Patch 1801: r_shadows 2 -> 1 on bhop_canals (0.1.64-0.1.67) faulted in DrawMeshes on such a shader (all
+		//zeroes: no name, uses 0, id 0); the cause is not found -- this names the batch's producer for the next look
+		static const shader_t *said;
+		if (said != sh)
+			Con_DPrintf(CON_WARNING "shader %s (uses %i id %i) has no remap target: batch skipped (build %p flags %#x model %s surface %i)\n",
+				sh->name, sh->uses, sh->id, (void*)batch->buildmeshes, batch->flags,
+				(batch->ent && batch->ent->model) ? batch->ent->model->name : "-", batch->user.poly.surface);
+		said = sh;
+		return;
+	}
+	shaderstate.curshader = sh->remapto;
 	shaderstate.flags = batch->flags;
 	if (shaderstate.curentity != batch->ent)
 		GLBE_SelectEntity(batch->ent);
@@ -8345,6 +8429,44 @@ static qboolean GLBE_WaterOnScreen(const batch_t *b)
 	}
 	return false;
 }
+//FTESurf Patch 1729: hl2_water_lod's distance cutoff (Source's water LOD past its end distance renders no
+//refraction, viewrender.cpp DetermineWaterRenderInfo). A world batch whose shader has `fte_waterlod`, with some face
+//on screen and every on-screen face at least its end from the eye: each of its pixels is cheap water (vmt/water
+//#CHEAPLOD returns before sampling the capture), so it needs none, weighs nothing in the view's choice and is not
+//gathered into a capture's visibility. r_origin is the shader's e_eyepos (a stereo eye's, not vieworg).
+extern cvar_t r_cheapwaterstart, r_cheapwaterend;
+static qboolean GLBE_WaterLodCheap(const batch_t *b)
+{
+	const shader_t *s = b->shader;
+	unsigned int m;
+	vec3_t lo, hi;
+	float end, d2, e;
+	int k;
+	qboolean seen = false;
+	if (!s || !s->waterlodend || b->ent != &r_worldentity || b->buildmeshes || !b->mesh)
+		return false;
+	end = s->waterlodend > 0 ? s->waterlodend : max(r_cheapwaterstart.value, r_cheapwaterend.value);
+	if (!(end > 0))
+		return false;
+	for (m = b->firstmesh; m < b->meshes; m++)
+	{
+		const mesh_t *mesh = b->mesh[m];
+		if (!mesh || !mesh->xyz_array || mesh->numvertexes < 3)
+			continue;
+		GLBE_MeshBox(mesh, lo, hi);
+		if (R_CullBox(lo, hi))
+			continue;
+		for (d2 = 0, k = 0; k < 3; k++)
+		{
+			e = (r_origin[k] < lo[k]) ? lo[k] - r_origin[k] : (r_origin[k] > hi[k]) ? r_origin[k] - hi[k] : 0;
+			d2 += e*e;
+		}
+		if (d2 < end*end)
+			return false;
+		seen = true;
+	}
+	return seen;
+}
 typedef struct
 {
 	plane_t p;
@@ -8428,8 +8550,8 @@ static void GLBE_WaterGather(bewaterview_t *wv, batch_t *first, const plane_t *p
 				same = GLBE_WaterSamePlane(&p, pl);
 				if ((pass == 1 && !same) || (pass == 2 && (same || !all || !GLBE_WaterFacesEye(&p, wv->under))))
 					continue;
-				if (pass && !GLBE_WaterOnScreen(b))
-					continue;	//never drawn this view (GLBE_GenerateBatchTextures skips it)
+				if (pass && (!GLBE_WaterOnScreen(b) || GLBE_WaterLodCheap(b)))
+					continue;	//never drawn this view, or drawn without sampling a capture (P1729)
 				if (same)
 					*need |= b->shader->flags & BE_WATERKINDS;
 				if (n + (b->meshes - b->firstmesh) > *max)
@@ -8498,7 +8620,7 @@ static void GLBE_WaterViewsBegin(batch_t **worldbatches)
 			for (b = worldbatches[i]; b; b = b->next)
 			{
 				qboolean facing;
-				if (!GLBE_WaterCandidate(b) || !GLR_BatchPlane(b, &p))
+				if (!GLBE_WaterCandidate(b) || GLBE_WaterLodCheap(b) || !GLR_BatchPlane(b, &p))
 					continue;
 				facing = GLBE_WaterFacesEye(&p, wv->under);
 				if (pass ? (facing || !GLBE_WaterOtherShares(b->shader, &p)) : !facing)
@@ -8872,6 +8994,11 @@ static qboolean GLBE_GenerateBatchTextures(batch_t *batch, shader_t *bs)
 	//(BEM_DEPTHDARK is used when lightmap scale is 0, but still shows any emissive stuff)
 	if (shaderstate.mode != BEM_STANDARD && shaderstate.mode != BEM_DEPTHDARK)
 		return false;
+	if (GLBE_WaterLodCheap(batch))
+	{	//FTESurf Patch 1729: all of it past its LOD end: cheap water, no capture
+		GLBE_CaptureLog(batch, bs, "waterlod", batch);
+		return true;
+	}
 	//FTESurf Patch 1018: water in the 3D sky room draws with the outer view's targets (BE_SkyroomSharesWater)
 	if (BE_SkyroomSharesWater(bs->flags))
 	{
@@ -9075,6 +9202,10 @@ static qboolean GLBE_GenerateBatchTextures(batch_t *batch, shader_t *bs)
 			qglClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
 			if (bs->flags&SHADER_HASPORTAL)
 			{
+				//FTESurf Patch 1719 review: a door renders into this level's refraction target (and maybe its depth);
+				//what is there is no longer water, so the 3D sky's water must not share it (BE_SkyroomSharesWater)
+				be_capstamp[r_refdef.recurse][BE_CAPREFR] = 0;
+				be_capstamp[r_refdef.recurse][BE_CAPDEPTH] = 0;
 				/* FTESurf: SAY WHETHER THE PORTAL ACTUALLY DREW.
 
 				   The FBO was just cleared to opaque black three lines up, and this
@@ -9133,6 +9264,8 @@ static qboolean GLBE_GenerateBatchTextures(batch_t *batch, shader_t *bs)
 				BE_StampCapture(BE_CAPREFR);
 				if (cf & SHADER_HASREFRACTDEPTH)
 					BE_StampCapture(BE_CAPDEPTH);
+				else	//Patch 1719 review: the depth target now belongs to an older render than the colour beside it
+					be_capstamp[r_refdef.recurse][BE_CAPDEPTH] = 0;
 				be_watercapture++;
 				GLR_DrawPortal(cb, cl.worldmodel->batches, NULL, ((cf & SHADER_HASREFRACTDEPTH)?3:2));	//fixme
 				be_watercapture--;
@@ -9638,15 +9771,16 @@ static int GLBE_SubmitInstancedRun(batch_t *first, int count, int *alone)
 		d = inst_data + (size_t)joined*INST_TEXELS*4;
 		R_RotateForEntity(m, mv, e, e->model);
 		Matrix4_Multiply(proj, mv, d);
-		d[16] = m[0]; d[17] = m[1]; d[18] = m[2]; d[19] = 0;
-		d[20] = m[4]; d[21] = m[5]; d[22] = m[6]; d[23] = 0;
-		d[24] = m[8]; d[25] = m[9]; d[26] = m[10]; d[27] = 0;
+		//FTESurf Patch 1732: the origin in the three .w slots, for the shadow map's world position (vertexlit.glsl)
+		d[16] = m[0]; d[17] = m[1]; d[18] = m[2]; d[19] = m[12];
+		d[20] = m[4]; d[21] = m[5]; d[22] = m[6]; d[23] = m[13];
+		d[24] = m[8]; d[25] = m[9]; d[26] = m[10]; d[27] = m[14];
 		Matrix4_Invert(m, inv);
 		Matrix4x4_CM_Transform3(inv, r_origin, eye);
 		VectorCopy(eye, d+28); d[31] = vc;
-		VectorCopy(e->light_avg, d+32); d[35] = 0;
+		VectorScale(e->light_avg, BE_ModelExposure(), d+32); d[35] = BE_NoShadowRecv(e);	//FTESurf Patch 1732
 		VectorCopy(e->light_dir, d+36); d[39] = 0;
-		VectorCopy(e->light_range, d+40); d[43] = 0;
+		VectorScale(e->light_range, BE_ModelExposure(), d+40); d[43] = 0;
 		if (b->flags & BEF_FORCECOLOURMOD)
 			Vector4Copy(e->shaderRGBAf, d+44);
 		else
@@ -9754,8 +9888,10 @@ static void GLBE_SubmitMeshesSortRange(batch_t *sortlist, batch_t *end)
 	batch_t *batch, *n;
 	shader_t *bs;
 	int run, used, alone, noinst = 0;
+	//FTESurf Patch 1732: r_shadows 2 no longer refuses it: vertexlit.glsl's INSTANCED path projects each prop's own world
+	//position (texels 4-6, origin in .w) through l_cubeworld
 	qboolean instancing = r_instancing.ival && !inst_broken && shaderstate.mode == BEM_STANDARD &&
-		qglDrawElementsInstanced && (qglTexBuffer || gl_instubo_max) && !r_fakeshadows && !Sh_AnyLightToDraw();
+		qglDrawElementsInstanced && (qglTexBuffer || gl_instubo_max) && !Sh_AnyLightToDraw();
 	int ncand = 0, nalias = 0, nruns = 0;
 	if (r_instancing.ival == 2)
 	{	//one frame's report, every view of it
@@ -12319,6 +12455,26 @@ void GLBE_BaseEntTextures(const qbyte *worldpvs, const int *worldareas)
 	shaderstate.mbatches = batches;
 	BE_GenModelBatches(batches, shaderstate.curdlight, shaderstate.mode, worldpvs, worldareas);
 	GLBE_SubmitMeshes(NULL, SHADER_SORT_PORTAL, SHADER_SORT_SEETHROUGH+1);
+	if (shaderstate.mode == BEM_DEPTHONLY)
+	{	//FTESurf Patch 1802: a blended PROP material with the hl2 plugin's masked depth pass (Patch 1768's ALPHASHADOW)
+		//casts through its alpha (texels at or over the mask), as Strata's cascades draw bhop_canals' $translucent tree
+		//cards (save 33's branch shadows); brush entities' blended faces (func_brush windows) and other blends still don't
+		batch_t *b, *n, *keep = NULL, **tail = &keep;
+		for (b = batches[SHADER_SORT_BLEND]; b; b = n)
+		{
+			n = b->next;
+			if (b->shader && b->shader->bemoverrides[bemoverride_depthonly] &&	//the plugin's embedded "<material>_mode<n>";
+				strncmp(b->shader->bemoverrides[bemoverride_depthonly]->name, "depthonly", 9) &&	//the engine's own do not mask
+				b->ent && b->ent->model && b->ent->model->type == mod_alias)
+			{
+				*tail = b;
+				tail = &b->next;
+			}
+		}
+		*tail = NULL;
+		if (keep)
+			GLBE_SubmitMeshesSortRange(keep, NULL);
+	}
 	GLBE_SelectEntity(&r_worldentity);
 	shaderstate.mbatches = ob;
 }

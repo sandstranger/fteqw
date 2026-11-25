@@ -70,6 +70,8 @@ extern cvar_t	r_underwateroverlay;	//FTESurf Patch 1013
 static qboolean r_uwnowarp;	//FTESurf Patch 1013: a Source volume with no overlay draws neither warp
 static shader_t *cc_warned;			//Patch 290: last grade shader we complained about
 extern cvar_t	r_hdr_framebuffer;
+extern cvar_t	r_exposure, r_autoexposure_sky, r_autoexposure_current, r_autoexposure, r_autoexposure_min, r_autoexposure_max, r_autoexposure_rate, r_autoexposure_target, r_autoexposure_bright, r_autoexposure_minavg, r_autoexposure_hdrsat;	//FTESurf Patch 1764/1775
+extern cvar_t	r_dither;	//FTESurf Patch 1785
 
 extern cvar_t	gl_screenangle;
 
@@ -136,8 +138,10 @@ static void GL_InitSceneProcessingShaders_WaterWarp (void)
 	}
 }
 
+static void GLR_AutoExposureShutdown(void);
 void GL_ShutdownPostProcessing(void)
 {
+	GLR_AutoExposureShutdown();	//FTESurf Patch 1764
 	GLBE_FBO_Destroy(&fbo_vr);
 	GLBE_FBO_Destroy(&fbo_gameview);
 	GLBE_FBO_Destroy(&fbo_postproc);
@@ -2892,6 +2896,179 @@ R_RenderView
 r_refdef must be set before the first call
 ================
 */
+/*FTESurf Patch 1764: Source's auto-exposure from the drawn frame.  A few times a second, 32 rows of the finished 3D view
+  are read into a pixel buffer behind a fence (asynchronous: no stall); when the fence has passed, 64 samples a row
+  give the scene's linear luminance with the exposure that drew it divided out.  Source's tonemap (mat_tonemap_algorithm
+  1) brings the brightest r_autoexposure_bright of the pixels to r_autoexposure_target, raises a dark frame until its
+  average reaches r_autoexposure_minavg, and clamps to the band; the value eases there at r_autoexposure_rate and
+  multiplies r_exposure on lightmaps and model light (R_UpdateHDR, BE_ModelExposure).*/
+#define AE_ROWS 32
+#ifndef GL_ALREADY_SIGNALED
+#define GL_ALREADY_SIGNALED 0x911A
+#endif
+#ifndef GL_CONDITION_SATISFIED
+#define GL_CONDITION_SATISFIED 0x911C
+#endif
+#define AE_COLS 64
+static GLuint ae_pbo;
+static size_t ae_pbosize;
+static GLsync ae_fence;
+static int ae_pending, ae_rowbytes, ae_framesout;
+static float ae_readexp = 1, ae_target = 1, ae_skyvalue = 1;
+static double ae_lastread, ae_lastframe;
+static int ae_framecount = -1;
+static const model_t *ae_world;
+static void GLR_AutoExposureDrop(void)
+{	//forget a read in flight (a new map, off, or the context going away)
+	if (ae_fence && qglDeleteSync)
+		qglDeleteSync(ae_fence);
+	ae_fence = NULL;
+	ae_pending = false;
+}
+static void GLR_AutoExposureReset(void)
+{
+	extern float r_autoexposure_value;
+	GLR_AutoExposureDrop();
+	r_autoexposure_value = ae_target = 1;
+	r_autoexposure_sky.value = ae_skyvalue = 1;
+}
+static void GLR_AutoExposureShutdown(void)
+{
+	GLR_AutoExposureReset();	//another renderer shares R_UpdateHDR: leave it at 1
+	if (ae_pbo && qglDeleteBuffersARB)
+		qglDeleteBuffersARB(1, &ae_pbo);
+	ae_pbo = 0;
+	ae_pbosize = 0;
+}
+static int GLR_AutoExposureCmp(const void *a, const void *b)
+{
+	float x = *(const float*)a, y = *(const float*)b;
+	return (x > y) - (x < y);
+}
+static void GLR_AutoExposureRead(void)
+{
+	static float lin[256];
+	static float samp[AE_ROWS*AE_COLS];
+	const qbyte *px;
+	int r, c, n = 0, w = ae_rowbytes / 4;
+	double sum = 0;
+	float bright, target;
+	if (!lin[255])
+		for (r = 0; r < 256; r++)
+			lin[r] = pow(r / 255.0, 2.2);
+	qglBindBufferARB(GL_PIXEL_PACK_BUFFER_ARB, ae_pbo);
+	px = qglMapBufferRange ? qglMapBufferRange(GL_PIXEL_PACK_BUFFER_ARB, 0, ae_pbosize, GL_MAP_READ_BIT) : qglMapBufferARB(GL_PIXEL_PACK_BUFFER_ARB, GL_READ_ONLY_ARB);
+	if (px)
+	{
+		for (r = 0; r < AE_ROWS; r++)
+			for (c = 0; c < AE_COLS; c++)
+			{
+				const qbyte *p = px + r*ae_rowbytes + ((c*2+1) * w / (AE_COLS*2)) * 4;
+				//FTESurf Patch 1775: a clamped channel counts at least r_autoexposure_hdrsat on its own -- a saturated red sign
+				//is not a white one
+				float cr = lin[p[0]] / ae_readexp, cg = lin[p[1]] / ae_readexp, cb = lin[p[2]] / ae_readexp;
+				float l;
+				if (p[0] >= 250 && cr < r_autoexposure_hdrsat.value) cr = r_autoexposure_hdrsat.value;
+				if (p[1] >= 250 && cg < r_autoexposure_hdrsat.value) cg = r_autoexposure_hdrsat.value;
+				if (p[2] >= 250 && cb < r_autoexposure_hdrsat.value) cb = r_autoexposure_hdrsat.value;
+				l = 0.2126f*cr + 0.7152f*cg + 0.0722f*cb;
+				samp[n++] = l;
+				sum += l;
+			}
+		qglUnmapBufferARB(GL_PIXEL_PACK_BUFFER_ARB);
+	}
+	qglBindBufferARB(GL_PIXEL_PACK_BUFFER_ARB, 0);
+	if (!n)
+		return;
+	qsort(samp, n, sizeof(*samp), GLR_AutoExposureCmp);
+	bright = samp[(int)bound(0, (1 - r_autoexposure_bright.value) * (n-1), n-1)];
+	target = r_autoexposure_target.value / max(bright, 1e-4f);
+	if ((sum / n) * target < r_autoexposure_minavg.value)
+		target = r_autoexposure_minavg.value / max(sum / n, 1e-5);
+	{
+		float lo = max(r_autoexposure_min.value, 0.01f);
+		ae_target = bound(lo, target, max(r_autoexposure_max.value, lo));
+	}
+	{
+		extern float r_autoexposure_value;
+		Cvar_ForceSet(&r_autoexposure_current, va("%.3f %.3f (bright %.3f, average %.3f)", r_autoexposure_value, ae_target, bright, sum / n));
+	}
+}
+static void GLR_AutoExposureFrame(qboolean rtview)
+{
+	extern float r_autoexposure_value;
+	double now = Sys_DoubleTime(), dt;
+	int x, y, w, h, r;
+	//only a Source map drawn with its HDR lighting (the plugin's MDLF_SOURCEHDR): the cvar outlives the csprogs that set it
+	if (!r_autoexposure.ival || !cl.worldmodel || !(cl.worldmodel->engineflags & MDLF_SOURCEHDR) ||
+		!qglFenceSync || !qglClientWaitSync || !qglGenBuffersARB || !(qglMapBufferRange || qglMapBufferARB))
+	{
+		if (ae_pending || r_autoexposure_value != 1 || ae_skyvalue != 1)
+		{
+			GLR_AutoExposureReset();
+			Cvar_ForceSet(&r_autoexposure_current, "1 (off)");	//FTESurf Patch 1767: not the last measurement
+		}
+		ae_world = NULL;
+		return;
+	}
+	if (cl.worldmodel != ae_world)
+	{	//a new map starts at 1, as Source's does, and a read of the old one is dropped
+		ae_world = cl.worldmodel;
+		GLR_AutoExposureReset();
+	}
+	//the main view only: once a frame, a world in it, most of the screen, not a render target
+	if (host_framecount == ae_framecount || (r_refdef.flags & RDF_NOWORLDMODEL) || rtview ||
+		r_refdef.vrect.width < vid.width/2 || r_refdef.vrect.height < vid.height/2)
+		return;
+	ae_framecount = host_framecount;
+	dt = bound(0, now - ae_lastframe, 0.25);
+	ae_lastframe = now;
+	if (ae_pending)
+	{
+		GLenum st = qglClientWaitSync(ae_fence, 0, 0);
+		if (st == GL_ALREADY_SIGNALED || st == GL_CONDITION_SATISFIED || ++ae_framesout > 8)
+		{
+			GLR_AutoExposureRead();
+			if (qglDeleteSync)
+				qglDeleteSync(ae_fence);
+			ae_fence = NULL;
+			ae_pending = false;
+		}
+	}
+	if (!ae_pending && now - ae_lastread >= 0.1)
+	{
+		x = r_refdef.vrect.x * vid.fbpwidth / vid.width;
+		w = r_refdef.vrect.width * vid.fbpwidth / vid.width;
+		h = r_refdef.vrect.height * vid.fbpheight / vid.height;
+		y = vid.fbpheight - (r_refdef.vrect.y * vid.fbpheight / vid.height + h);
+		if (w >= AE_COLS && h >= AE_ROWS)
+		{
+			ae_rowbytes = w * 4;
+			if (!ae_pbo)
+				qglGenBuffersARB(1, &ae_pbo);
+			qglBindBufferARB(GL_PIXEL_PACK_BUFFER_ARB, ae_pbo);
+			if (ae_pbosize != (size_t)ae_rowbytes * AE_ROWS)
+			{
+				ae_pbosize = (size_t)ae_rowbytes * AE_ROWS;
+				qglBufferDataARB(GL_PIXEL_PACK_BUFFER_ARB, ae_pbosize, NULL, GL_STREAM_READ_ARB);
+			}
+			for (r = 0; r < AE_ROWS; r++)
+				qglReadPixels(x, y + (r*2+1) * h / (AE_ROWS*2), w, 1, GL_RGBA, GL_UNSIGNED_BYTE, (void*)(size_t)(r * ae_rowbytes));
+			qglBindBufferARB(GL_PIXEL_PACK_BUFFER_ARB, 0);
+			ae_fence = qglFenceSync(GL_SYNC_GPU_COMMANDS_COMPLETE, 0);
+			ae_pending = !!ae_fence;
+			ae_framesout = 0;
+			ae_readexp = max(r_autoexposure_value * ((r_exposure.value > 0) ? r_exposure.value : 1), 0.01f);
+			if (vid.flags & VID_SRGBAWARE)	//linear shading: the 1/2.2 power R_UpdateHDR applies is a linear scale here
+				ae_readexp = pow(ae_readexp, 1/2.2);
+			ae_lastread = now;
+		}
+	}
+	r_autoexposure_value += (ae_target - r_autoexposure_value) * (1 - exp(-max(0, r_autoexposure_rate.value) * dt));
+	//the sky too, as Source's: the value only (the program reads it at draw time); its string stays "1"
+	r_autoexposure_sky.value = ae_skyvalue = pow(r_autoexposure_value * ((r_exposure.value > 0) ? r_exposure.value : 1), 1/2.2);
+}
+
 void GLR_RenderView (void)
 {
 	int dofbo = *r_refdef.rt_destcolour[0].texname || *r_refdef.rt_depth.texname;
@@ -2935,6 +3112,9 @@ void GLR_RenderView (void)
 //		Sys_Error ("R_RenderView: NULL worldmodel");
 	}
 
+	//FTESurf Patch 1764: the sky and UnlitGeneric follow the auto-exposure in a world view only, as model light does
+	r_autoexposure_sky.value = (r_refdef.flags & RDF_NOWORLDMODEL) ? 1 : ae_skyvalue;
+
 	//check if we're underwater (this also limits damage from stereo wallhacks).
 	Surf_SetupFrame();
 	r_refdef.flags &= ~(RDF_ALLPOSTPROC|RDF_RENDERSCALE);
@@ -2956,6 +3136,12 @@ void GLR_RenderView (void)
 			r_refdef.flags |= RDF_UNDERWATER;
 		else
 			r_refdef.flags &= ~RDF_UNDERWATER;
+	}
+	{	//FTESurf Patch 1781: the hl2 plugin sets the Strata sun at a Source map's load; nothing else clears it
+		extern cvar_t r_shadows_sunlm;
+		if (cl.worldmodel && !(cl.worldmodel->engineflags & MDLF_SOURCEBSP) &&
+			r_shadows_sunlm.vec4[0] + r_shadows_sunlm.vec4[1] + r_shadows_sunlm.vec4[2] != 0)
+			Cvar_ForceSet(&r_shadows_sunlm, "0 0 0");
 	}
 	if (r_refdef.flags & RDF_UNDERWATER)
 	{
@@ -3127,6 +3313,8 @@ void GLR_RenderView (void)
 		if (r_scenedepth.ival)
 			fbdepth = forcedfb = true;
 		if (V_UseSceneGamma() && (v_gamma.value != 1 || v_contrast.value != 1 || v_contrastboost.value != 1 || v_brightness.value != 0 || v_shadows.value > 0))
+			r_refdef.flags |= RDF_SCENEGAMMA;
+		if (r_dither.ival)	//FTESurf Patch 1785: the pass that dithers, and with it a float scene
 			r_refdef.flags |= RDF_SCENEGAMMA;
 	}
 
@@ -3416,7 +3604,10 @@ void GLR_RenderView (void)
 		sourcetex = R_RenderPostProcess (sourcetex, sourcedepth, RDF_COLOURCORRECT, ccpostproc, "rt/$colourcorrected");
 		if (r_refdef.flags & RDF_SCENEGAMMA)
 		{
-			R2D_ImageColours (v_gammainverted.ival?v_gamma.value:(1/v_gamma.value), v_contrast.value, v_brightness.value, v_contrastboost.value);
+			if (V_UseSceneGamma())
+				R2D_ImageColours (v_gammainverted.ival?v_gamma.value:(1/v_gamma.value), v_contrast.value, v_brightness.value, v_contrastboost.value);
+			else	//FTESurf Patch 1785: here only to dither; the hardware ramp does the gamma
+				R2D_ImageColours (1, 1, 0, 1);
 			sourcetex = R_RenderPostProcess (sourcetex, sourcedepth, RDF_SCENEGAMMA, scenepp_gamma, "rt/$gammaed");
 			R2D_ImageColours (1, 1, 1, 1);
 		}
@@ -3440,6 +3631,7 @@ void GLR_RenderView (void)
 
 	RSpeedEnd(RSPEED_POSTPROC);
 	}
+	GLR_AutoExposureFrame(rtview);	//FTESurf Patch 1764: the finished view, before CSQC draws its HUD over it
 
 	checkglerror();
 }

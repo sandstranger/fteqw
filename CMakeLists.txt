@@ -796,6 +796,7 @@ ENDIF()
 #these files are only in the client
 SET(FTE_CLIENT_FILES
 	engine/client/cl_cam.c
+	engine/client/cl_discord.c
 	engine/client/cl_demo.c
 	engine/client/cl_ents.c
 	engine/client/cl_ignore.c

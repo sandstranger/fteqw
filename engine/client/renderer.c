@@ -142,6 +142,15 @@ cvar_t r_ignoreentpvs						= CVARD ("r_ignoreentpvs", "1", "Disables pvs culling
 #else
 cvar_t r_ignoreentpvs						= CVARD ("r_ignoreentpvs", "0", "Disables pvs culling of entities that have been submitted to the renderer.");
 #endif
+//FTESurf Patch 1698: with the sky a hole (gl_warp.c), what is drawn must be what the PVS holds, as Source's client leaf system culls.
+cvar_t r_entpvs_source = CVARD("r_entpvs_source", "1", "FTESurf Patch 1698: on a Source map, entities and persistent decals with a leaf record are culled by each view's PVS and areas even under r_ignoreentpvs 1, as Source culls every renderable; one without a record is still drawn. 0: frustum only (before Patch 1698).");
+cvar_t r_entpvs_active = CVARFD("r_entpvs_active", "0", CVAR_NOSET|CVAR_NOSAVE|CVAR_NORESET, "Set by the engine: 1 while r_entpvs_source applies to the loaded map (a Source map). CSQC culls its own polygons by the PVS when it reads 1.");
+qboolean R_EntPVSSource(void)
+{
+	model_t *w = cl.worldmodel;
+	return r_entpvs_source.ival && w && w->loadstate == MLS_LOADED && (w->engineflags & MDLF_SOURCEBSP) &&
+		w->funcs.EdictInFatPVS && w->funcs.FindTouchedLeafs;
+}
 
 cvar_t mod_md3flags							= CVARD  ("mod_md3flags", "1", "The flags field of md3s was never officially defined. If this is set to 1, the flags will be treated identically to mdl files. Otherwise they will be ignored. Naturally, this is required to provide rotating pickups in quake.");
 
@@ -253,9 +262,13 @@ cvar_t r_skyroomneed						= CVARD ("r_skyroomneed", "2", "Where the 3D sky is dr
 cvar_t r_refractreflect_scale				= CVARD ("r_refractreflect_scale", "0.5", "Use a different scale for refraction and reflection texturemaps. Because $reasons.");
 //FTESurf Patch 868: Source's water views (viewrender.cpp CAboveWaterView::CReflectionView::Setup, :5690-5700).
 cvar_t r_watertargetsize					= CVARD ("r_watertargetsize", "1024", "FTESurf Patch 1018: the largest a water reflection or refraction capture may be, in pixels per axis (r_refractreflect_scale of the frame, then this cap). Source's targets are 1024x1024 whatever the screen (baseclientrendertargets.h iWaterTextureSize); at r_renderscale 2 on a 1920x1200 screen the uncapped capture is 1920x1200. 0: no cap. Portals keep their full size.");
-cvar_t r_waterskyroomcapture				= CVARD ("r_waterskyroomcapture", "0", "FTESurf Patch 1018: whether water inside the 3D sky room renders its own reflection and refraction.\n0: no -- it samples the outer level's last water capture of each kind it reads (one frame old, as Source's skybox water samples the main view's: Source renders water targets for the eye's view only); when the same seat did not capture those kinds in its last two world views it captures its own. bhop_ceaseless looking over its start room: two sky-room scene renders a frame, about 1.1 ms of GPU.\n1: yes, as before Patch 1018.");
+cvar_t r_waterskyroomcapture				= CVARD ("r_waterskyroomcapture", "0", "FTESurf Patch 1018: whether water inside the 3D sky room renders its own reflection and refraction.\n0: no -- it samples the outer level's last water capture of each kind it reads, whatever its age (Patch 1719), as Source's skybox water samples the main view's targets as they stand (Source renders water targets for the eye's view only); it captures its own only until this seat has captured each kind it reads at the outer level (after a map change or a resize, or a kind only it reads), and always for water with a ripple map or a portal. bhop_ceaseless looking over its start room: two sky-room scene renders a frame, about 1.1 ms of GPU; ahop_coast ~0.3 a frame.\n1: yes, as before Patch 1018.\n2 (or any other value): Patch 1018's rule -- share only a capture from the seat's last two world views, else capture its own.");
 cvar_t r_waterskyroom						= CVARD ("r_waterskyroom", "0", "Whether a water reflection or refraction draws the 3D sky.\n0: no -- the reflection shows the 2D skybox through its sky surfaces, as Source's does (viewrender.cpp: \"draw the 2d skybox in the reflection, instead of the 3d skybox\"), and the refraction looks under the water. Two exceptions, as in Source: with the eye under water the refraction (looking up out of it) keeps the 3D sky, and water seen through a portal draws it too.\n1: yes, as before Patch 868 (still subject to r_skyroomneed).");
 cvar_t r_waterviews						= CVARD ("r_waterviews", "1", "FTESurf Patch 879: how many water reflection/refraction captures a view renders.\n0: one for every water batch, as before.\n1: one pair, as Source (viewrender.cpp DrawWorldAndEntities: one fog volume per view), for the level water that most fills the screen on the eye's side of it (tops from above, undersides from in the water) and that the eye can see past the world; every level water facing the same way samples it, as every Source water material samples the same _rt_WaterReflection/_rt_WaterRefraction. Other water (facing the other way, not level, on brush entities) follows r_waterwalls.\n2: one pair per plane: a plane's batches share a capture, other planes render their own.");
+//FTESurf Patch 1729: the map's water_lod_control distances (Source's view pair, viewrender.cpp m_flCheapWaterStart/
+//EndDistance); the hl2 plugin sets them at each load, 0/0 for a map without one
+cvar_t r_cheapwaterstart					= CVARFD("r_cheapwaterstart", "0", CVAR_NOSAVE, "FTESurf Patch 1729: the map's water_lod_control start distance, for hl2_water_lod 1 on water with the WaterLOD proxy. Set at map load (0 without one).");
+cvar_t r_cheapwaterend						= CVARFD("r_cheapwaterend", "0", CVAR_NOSAVE, "FTESurf Patch 1729: the map's water_lod_control end distance: at hl2_water_lod 1, WaterLOD water at least this far from the eye draws as Source's cheap water and renders no refraction. Set at map load (0 without one: no distance cutoff).");
 cvar_t r_waterwalls						= CVARD ("r_waterwalls", "1", "FTESurf Patch 1386: water other than level water seen from its top (a wall or slope of water, an underside seen from below out of the water, Water on a brush entity), under r_waterviews 1.\n1: it samples the pair the view captured for its chosen water, as every Source water material samples the same reflection and refraction; when no level water on screen can be seen past the world, the other water that most fills the screen and can be is the chosen one.\n0: each plane of it captures its own pair every frame, as before (bhop_ceaseless's start, two hidden water walls: 217 against 448 fps; surf_affliction's lava channel: 184 scene renders a frame).");
 cvar_t r_capturelog						= CVARD ("r_capturelog", "0", "FTESurf Patch 879: for this many top-level views (a frame's, or each eye/face/renderscene), print each view's water choice (and any plane rejected as hidden) and every water reflection/refraction capture and share (level, kind, shader, plane, the plane that placed it, meshes).");
 cvar_t r_nearestsort						= CVARD ("r_nearestsort", "1", "FTESurf Patch 878: how panes that refract the screen (Refract at hl2_refract 1) are ordered.\n1: the world's first, sharing the view's most recent copy of the screen (Patch 895; Source's brushes never copy), then models' back to front, each over a fresh copy, as Source draws its models.\n0: in the order they were submitted, world first, each over its own copy (the engine's order and copies before Patches 878 and 895; not a pre-878 picture, since the plugin's depth rule stays). Either way a model pane that Source draws opaque writes depth, and a world or brush pane does not. GL only.");
@@ -353,6 +366,20 @@ cvar_t r_lightstylescale					= CVAR	("r_lightstylescale", "1");
 cvar_t r_lightmap_scale						= CVARFD ("r_shadow_realtime_nonworld_lightmaps", "1", 0, "Scaler for lightmaps used when not using realtime world lighting. Probably broken.");
 cvar_t r_hdr_framebuffer					= CVARFCD("r_hdr_framebuffer", "0", CVAR_ARCHIVE, R_HDR_FramebufferFormat_Changed, "If enabled, the map will be rendered into a high-precision image framebuffer. This avoids issues with shaders that contribute more than 1 in any single pass (like overbrights). Can also be set to the name of an image format, to force rendering to that format first - interesting formats are L8, RGB565, B10G11R11F, and others.");
 cvar_t r_hdr_irisadaptation					= CVARF	("r_hdr_irisadaptation", "0", CVAR_ARCHIVE);
+cvar_t r_exposure							= CVARD	("r_exposure", "1", "FTESurf Patch 1732 (test): a fixed exposure, Source's linear tonemap scale -- lightmaps, model light, dynamic lights, scripted particles and sprites are multiplied by its 1/2.2 power (as Source's scale reaches them); the sky and classic particles are not. 1 = off. The game sets it from the map's env_tonemap_controller when vbsp_exposure is 1.");
+//FTESurf Patch 1764: Source's auto-exposure, measured from the drawn frame (gl_rmain.c GLR_AutoExposureFrame)
+cvar_t r_autoexposure						= CVARD	("r_autoexposure", "0", "FTESurf Patch 1764: Source's HDR auto-exposure. The brightest pixels of the 3D view (r_autoexposure_bright of them) are brought to r_autoexposure_target of full scale, within r_autoexposure_min..max, easing at r_autoexposure_rate; the result multiplies r_exposure. Applies only on a Source map drawn with its HDR lighting (the game sets it from vbsp_autoexposure); it scales lightmaps, model light, the sky and UnlitGeneric surfaces, as Source does. 0 = off.");
+cvar_t r_autoexposure_min					= CVARD	("r_autoexposure_min", "0.5", "FTESurf Patch 1764: the lowest auto-exposure (Source's mat_autoexposure_min; env_tonemap_controller SetAutoExposureMin).");
+cvar_t r_autoexposure_max					= CVARD	("r_autoexposure_max", "2", "FTESurf Patch 1764: the highest auto-exposure (mat_autoexposure_max; SetAutoExposureMax).");
+cvar_t r_autoexposure_rate					= CVARD	("r_autoexposure_rate", "1", "FTESurf Patch 1764: how fast the exposure eases toward its target, per second (Source's tonemap rate).");
+cvar_t r_autoexposure_target				= CVARD	("r_autoexposure_target", "0.75", "FTESurf Patch 1764: the linear level the brightest pixels are brought to (Source's mat_tonemap_percent_target is 60; 0.75 matches Momentum's frame at bhop_canals within a few levels).");
+cvar_t r_autoexposure_bright				= CVARD	("r_autoexposure_bright", "0.005", "FTESurf Patch 1764: the share of pixels counted as the brightest (mat_tonemap_percent_bright_pixels 2). Patch 1775: 0.5% -- our clamped frame holds the sky and sun patches at most at full scale where Source's HDR frame lets a small skylight outshine the rest; at 2% a barn with skylights opened to the band's maximum where Momentum's stays near its minimum.");
+cvar_t r_autoexposure_minavg				= CVARD	("r_autoexposure_minavg", "0", "FTESurf Patch 1764: the exposure rises until the average pixel reaches at least this linear level (mat_tonemap_min_avglum 3). Patch 1775: 0 (off) -- Momentum's dark barn sits near the band's minimum, not its maximum.");
+cvar_t r_autoexposure_hdrsat				= CVARD	("r_autoexposure_hdrsat", "1", "FTESurf Patch 1775: a measured colour channel at full scale (a skylight, a sun patch) counts as at least this linear level on its own: our frame clamps what Source's HDR frame keeps, and without it a bright window read dimmer the further the exposure opened.");
+cvar_t r_autoexposure_current				= CVARFD	("r_autoexposure_current", "1", CVAR_NOSET|CVAR_NOSAVE, "FTESurf Patch 1764 (read-only): the auto-exposure in use and its target, updated with each measurement.");
+cvar_t r_dither							= CVARFD	("r_dither", "1", CVAR_ARCHIVE, "FTESurf Patch 1785: render the 3D view into a 16-bit float image and write it to the screen through the scene-gamma pass with a fine, still noise of half a step (interleaved gradient noise), so dark gradients and soft glows never band. Blacks stay black (no noise under 2/255). 0: an 8-bit scene unless gamma/contrast or something else needs the float one.");
+cvar_t r_autoexposure_sky					= CVARFD	("r_autoexposure_sky", "1", CVAR_NOSET|CVAR_NOSAVE, "FTESurf Patch 1764 (internal): what the skybox is multiplied by -- the exposure's 1/2.2 power.");
+float r_autoexposure_value = 1;			//FTESurf Patch 1764: the eased exposure in use (linear)
 cvar_t r_hdr_irisadaptation_multiplier		= CVAR	("r_hdr_irisadaptation_multiplier", "2");
 cvar_t r_hdr_irisadaptation_minvalue		= CVAR	("r_hdr_irisadaptation_minvalue", "0.5");
 cvar_t r_hdr_irisadaptation_maxvalue		= CVAR	("r_hdr_irisadaptation_maxvalue", "4");
@@ -950,7 +977,9 @@ cvar_t r_model_mincoverage					= CVARFD ("r_model_mincoverage", "0", CVAR_ARCHIV
 cvar_t r_batchsort						= CVARD ("r_batchsort", "1", "FTESurf Patch 831: sort opaque model batches by shader, model and surface, so consecutive draws share their state. 0 draws them in entity order (the A/B).");
 cvar_t r_multidraw						= CVARD ("r_multidraw", "1", "FTESurf Patch 831: draw a batch of several meshes straight from its index buffer with one glMultiDrawElements, where the compatibility profile copied every index into a fresh list per draw. 0 = the copy (the A/B).");
 cvar_t r_instancing						= CVARD ("r_instancing", "1", "FTESurf Patch 831: draw a run of identical props (same model, surface and material, after r_batchsort) as one instanced draw. 0 draws each prop alone (the A/B); 2 prints one frame's runs.");
-cvar_t r_shadows							= CVARFD ("r_shadows", "0", CVAR_ARCHIVE, "Draw basic blob shadows underneath entities without using realtime lighting.");
+//FTESurf Patch 1724: CVAR_SHADERSYSTEM -- programs parsed under one value declare (or omit) `!!samps =FAKESHADOWS
+//shadowmap` by it (Com_PermuOrFloatArgument), so a live 0 -> 2 left them compiling FAKESHADOWS with no s_shadowmap
+cvar_t r_shadows							= CVARFD ("r_shadows", "0", CVAR_ARCHIVE|CVAR_SHADERSYSTEM, "Draw basic blob shadows underneath entities without using realtime lighting.");
 //nettest: whether BRUSH entities (the inline "*N" submodels a map's func_ classes are made of)
 //cast shadows at all.  DEFAULT 0 = models only: doors, lifts, crates, buttons and invisible
 //clip/trigger brushwork stop casting, while the world itself and every model entity keep doing
@@ -1602,6 +1631,18 @@ void Renderer_Init(void)
 
 	Cvar_Register(&r_hdr_framebuffer, GRAPHICALNICETIES);
 	Cvar_Register(&r_hdr_irisadaptation, GRAPHICALNICETIES);
+	Cvar_Register(&r_exposure, GRAPHICALNICETIES);	//FTESurf Patch 1732
+	Cvar_Register(&r_autoexposure, GRAPHICALNICETIES);	//FTESurf Patch 1764
+	Cvar_Register(&r_autoexposure_min, GRAPHICALNICETIES);
+	Cvar_Register(&r_autoexposure_max, GRAPHICALNICETIES);
+	Cvar_Register(&r_autoexposure_rate, GRAPHICALNICETIES);
+	Cvar_Register(&r_autoexposure_target, GRAPHICALNICETIES);
+	Cvar_Register(&r_autoexposure_bright, GRAPHICALNICETIES);
+	Cvar_Register(&r_autoexposure_minavg, GRAPHICALNICETIES);
+	Cvar_Register(&r_autoexposure_hdrsat, GRAPHICALNICETIES);	//FTESurf Patch 1775
+	Cvar_Register(&r_autoexposure_current, GRAPHICALNICETIES);
+	Cvar_Register(&r_autoexposure_sky, GRAPHICALNICETIES);
+	Cvar_Register(&r_dither, GRAPHICALNICETIES);	//FTESurf Patch 1785
 	Cvar_Register(&r_hdr_irisadaptation_multiplier, GRAPHICALNICETIES);
 	Cvar_Register(&r_hdr_irisadaptation_minvalue, GRAPHICALNICETIES);
 	Cvar_Register(&r_hdr_irisadaptation_maxvalue, GRAPHICALNICETIES);
@@ -1663,6 +1704,8 @@ void Renderer_Init(void)
 	Cvar_Register (&r_capturelog, GRAPHICALNICETIES);	//FTESurf Patch 879
 	Cvar_Register (&r_waterviews, GRAPHICALNICETIES);
 	Cvar_Register (&r_waterwalls, GRAPHICALNICETIES);	//FTESurf Patch 1386
+	Cvar_Register (&r_cheapwaterstart, GRAPHICALNICETIES);	//FTESurf Patch 1729
+	Cvar_Register (&r_cheapwaterend, GRAPHICALNICETIES);
 	Cvar_Register (&r_nearestsort, GRAPHICALNICETIES);
 	Cmd_AddCommandD("r_viewstats", R_ViewStats_f, "FTESurf Patch 850: per top-level view since the last call -- views by depth, 3D skies drawn and skipped, entities a nested view passed over, 3D skies from the sky camera, screen copies and their megapixels.");
 	{
@@ -1738,6 +1781,8 @@ void Renderer_Init(void)
 
 //renderer
 	Cvar_Register (&r_ignoreentpvs, "Hacky bug workarounds");
+	Cvar_Register (&r_entpvs_source, GRAPHICALNICETIES);	//FTESurf Patch 1698
+	Cvar_Register (&r_entpvs_active, GRAPHICALNICETIES);
 	Cvar_Register (&r_fullbright, SCREENOPTIONS);
 	Cvar_Register (&r_drawentities, GRAPHICALNICETIES);
 	Cvar_Register (&r_drawviewmodel, GRAPHICALNICETIES);

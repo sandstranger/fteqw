@@ -2806,7 +2806,8 @@ qboolean QC_MenuTable(const char *name)
 	static const char *const tables[] = {"mapdeps.txt", "mapdeps.net.txt", "mapmeta.txt", "mapmeta.net.txt",
 		"mapmedia.tmp", "mapdl.txt", "mapdl.net.txt", "mapdl.net.tmp", "mapmeta_override.txt",
 		"mapparticles.txt", "mapwr.txt",
-		"goldsrc.net.txt", "goldsrc.net.tmp", "wadcolours.net.txt", "wadcolours.net.tmp"};	//FTESurf Patch 1656, 1660
+		"goldsrc.net.txt", "goldsrc.net.tmp", "wadcolours.net.txt", "wadcolours.net.tmp",	//FTESurf Patch 1656, 1660
+		"consent.txt"};	//FTESurf Patch 1704: the menu's record of the terms, which sets rec_terms (cl_receipt.c's upload gate)
 	const char *s = name, *seg;
 	size_t i;
 	if (!name || !QC_TasprojSeg(&s, "data", false))
@@ -2848,7 +2849,7 @@ static qboolean QC_CfgChangeDenied(pubprogfuncs_t *prinst, const char *fixedname
 	}
 	if (prinst == csqc_world.progs && fixedname && QC_MenuTable(fixedname))
 	{
-		Con_Printf("qcfopen(\"%s\"): csqc may not change the map tables\n", fixedname);
+		Con_Printf("qcfopen(\"%s\"): csqc may not change the menu's files (map tables, consent)\n", fixedname);
 		return true;
 	}
 #endif
@@ -2876,6 +2877,28 @@ static qboolean QC_TasprojSeg(const char **s, const char *word, qboolean pattern
 	seg[e - b] = 0;
 	return pattern ? wildcmp(seg, word) : !Q_strcasecmp(seg, word);
 }
+/*FTESurf Patch 1746: what the menu's map upload may read beyond data/ -- the gamedir's own loose maps/<name>.bsp
+  and screenshots/ pictures, to hash (FILE_READSTREAM) and send (uri_postfile). Never CSQC: a server's code must not.*/
+static qboolean QC_MenuUploadPath(pubprogfuncs_t *prinst, const char *name)
+{
+#if defined(MENU_DAT) && !defined(SERVERONLY)
+	extern world_t menu_world;
+	const char *ext;
+	if (!name || prinst != menu_world.progs || strchr(name, ':') || strchr(name, '\\') || strstr(name, "..") || *name == '/')
+		return false;
+	ext = COM_GetFileExtension(name, NULL);
+	if (!strncmp(name, "maps/", 5) && !strchr(name+5, '/') && !Q_strcasecmp(ext, ".bsp"))
+		return true;
+	if (!strncmp(name, "screenshots/", 12) && !strchr(name+12, '/')
+		&& (!Q_strcasecmp(ext, ".png") || !Q_strcasecmp(ext, ".jpg") || !Q_strcasecmp(ext, ".jpeg") || !Q_strcasecmp(ext, ".tga")))
+		return true;
+	if (!strncmp(name, "dropped/", 8) && !strchr(name+8, '/'))	//pr_menu.c MP_FileDropped's spool
+		return true;
+#endif
+	return false;
+}
+
+
 static qboolean QC_TasprojDenied(pubprogfuncs_t *prinst, const char *name, qboolean pattern)
 {
 #if defined(CSQC_DAT) && !defined(SERVERONLY)
@@ -2886,6 +2909,14 @@ static qboolean QC_TasprojDenied(pubprogfuncs_t *prinst, const char *name, qbool
 		Con_Printf("qcfopen(\"%s\"): csqc may not use data/tasproj/\n", name);
 		return true;
 	}
+	//FTESurf Patch 1746: nor the menu's drop spool, dropped/ (or data/dropped/, which QC_FixFileName makes of it): a
+	//server's code must not read an admin's files or plant ones an upload signs. Every file builtin asks this.
+	s = name;
+	if (prinst == csqc_world.progs && name && QC_TasprojSeg(&s, "dropped", pattern))
+		return true;
+	s = name;
+	if (prinst == csqc_world.progs && name && QC_TasprojSeg(&s, "data", pattern) && QC_TasprojSeg(&s, "dropped", pattern))
+		return true;
 #endif
 	return false;
 }
@@ -3018,7 +3049,11 @@ void QCBUILTIN PF_fopen (pubprogfuncs_t *prinst, struct globalvars_s *pr_globals
 		//Loose writable gamedir only: never enter packed/decompression backends or file: URIs.
 		if (!strncmp(name, "file:", 5))
 			break;
-		pf_fopen_files[i].file = FS_OpenVFS(name, "rbn", FS_GAMEONLY);
+		//FTESurf Patch 1746: an upload path is the real file, never its data/ twin (which CSQC can write)
+		if (QC_MenuUploadPath(prinst, fallbackread))
+			pf_fopen_files[i].file = FS_OpenVFS(fallbackread, "rbn", FS_GAMEONLY);
+		else
+			pf_fopen_files[i].file = FS_OpenVFS(name, "rbn", FS_GAMEONLY);
 		if (pf_fopen_files[i].file)
 		{
 			G_FLOAT(OFS_RETURN) = i + FIRST_QC_FILE_INDEX;
@@ -6701,6 +6736,125 @@ void QCBUILTIN PF_uri_get  (pubprogfuncs_t *prinst, struct globalvars_s *pr_glob
 	}
 	else
 		G_FLOAT(OFS_RETURN) = 0;
+#endif
+}
+#ifdef WEBCLIENT
+/*FTESurf Patch 1746: uploads the menu can watch (uri_progress), cleared when the reply is queued.*/
+static struct {pubprogfuncs_t *prinst; int spawncount; float id; struct dl_download *dl;} uri_posts[8];
+static void PR_uri_postfile_callback(struct dl_download *dl)
+{
+	int i;
+	for (i = 0; i < countof(uri_posts); i++)
+		if (uri_posts[i].dl == dl)
+			memset(&uri_posts[i], 0, sizeof(uri_posts[i]));
+	PR_uri_get_callback(dl);
+}
+#endif
+/*FTESurf Patch 1746: float(string url, float id, string mimetype, string head, string path, float flags) uri_postfile
+  POSTs head's bytes then the file's (a loose file QC may stream: data/, or the menu's maps/ and screenshots/).
+  flags 1 gzips the file first, on the download thread. The reply comes to URI_Get_Callback as uri_post's does.*/
+void QCBUILTIN PF_uri_postfile(pubprogfuncs_t *prinst, struct globalvars_s *pr_globals)
+{
+#ifndef WEBCLIENT
+	G_FLOAT(OFS_RETURN) = 0;
+#else
+	world_t *w = prinst->parms->user;
+	const char *url = PR_GetStringOfs(prinst, OFS_PARM0);
+	float id = G_FLOAT(OFS_PARM1);
+	const char *mimetype = PR_GetStringOfs(prinst, OFS_PARM2);
+	const char *head = PR_GetStringOfs(prinst, OFS_PARM3);
+	const char *name = PR_GetStringOfs(prinst, OFS_PARM4);
+	int flags = (prinst->callargc >= 6)?G_FLOAT(OFS_PARM5):0;
+	const char *fallbackread;
+	struct dl_download *dl;
+	vfsfile_t *file = NULL;
+	qofs_t len;
+	size_t headlen = strlen(head);
+	int slot;
+
+	G_FLOAT(OFS_RETURN) = 0;
+	if (!pr_enable_uriget.ival || (strncmp(url, "https://", 8) && strncmp(url, "http://", 7)) || !*mimetype
+		|| strlen(mimetype) >= sizeof(dl->postmimetype) || headlen > 4096)
+		return;
+	for (slot = 0; slot < countof(uri_posts); slot++)
+		if (!uri_posts[slot].dl)
+			break;
+	if (slot == countof(uri_posts) || HTTP_CL_GetActiveDownloads() > 32)
+	{
+		Con_Printf("uri_postfile: too many uploads\n");
+		return;
+	}
+	if (strncmp(name, "file:", 5) && QC_FixFileName(name, &name, &fallbackread)
+		&& !QC_TasprojDenied(prinst, name, false) && !QC_TasprojDenied(prinst, fallbackread, false))
+	{
+		if (QC_MenuUploadPath(prinst, fallbackread))	//the real file, never its data/ twin
+			file = FS_OpenVFS(fallbackread, "rbn", FS_GAMEONLY);
+		else
+			file = FS_OpenVFS(name, "rbn", FS_GAMEONLY);
+	}
+	if (!file)
+	{
+		Con_Printf("uri_postfile: cannot read \"%s\"\n", PR_GetStringOfs(prinst, OFS_PARM4));
+		return;
+	}
+	len = VFS_GETLEN(file);
+	if (len == qofs_ErrorValue() || len <= 0 || len > (qofs_t)1<<30)
+	{
+		Con_Printf("uri_postfile: \"%s\" is empty or over 1 GiB\n", PR_GetStringOfs(prinst, OFS_PARM4));
+		VFS_CLOSE(file);
+		return;
+	}
+	dl = HTTP_CL_Get(url, NULL, PR_uri_postfile_callback);	//linked into the reaped list (DL_Create alone is not)
+	if (!dl)
+	{
+		VFS_CLOSE(file);
+		return;
+	}
+	Q_strncpyz(dl->postmimetype, mimetype, sizeof(dl->postmimetype));
+	dl->postdata = BZ_Malloc(headlen+1);
+	memcpy(dl->postdata, head, headlen+1);
+	dl->postlen = headlen;
+	dl->postfile = file;
+	dl->postfilelen = len;
+	dl->postgzip = !!(flags & 1);
+	dl->posttotal = headlen + len;
+	dl->redircount = 11;	//the client's redirect guard refuses the first: a body never follows one
+	dl->user_ctx = w;
+	dl->user_float = id;
+	dl->user_num = *w->g.self;
+	dl->user_sequence = w->spawncount;
+	dl->isquery = true;
+	uri_posts[slot].prinst = prinst;
+	uri_posts[slot].spawncount = w->spawncount;	//a restarted menu does not see the old one's upload
+	uri_posts[slot].id = id;
+	uri_posts[slot].dl = dl;
+#ifdef MULTITHREAD
+	DL_CreateThread(dl, NULL, NULL);
+#endif
+	G_FLOAT(OFS_RETURN) = 1;
+#endif
+}
+/*FTESurf Patch 1746: vector(float id) uri_progress -- an upload's KiB sent, KiB to send, and its phase
+  (0 waiting, 1 compressing, 2 sending, 3 sent, waiting for the reply); '0 0 -1' when no upload has that id.*/
+void QCBUILTIN PF_uri_progress(pubprogfuncs_t *prinst, struct globalvars_s *pr_globals)
+{
+	float id = G_FLOAT(OFS_PARM0);
+	world_t *w = prinst->parms->user;
+	int i;
+	G_VECTOR(OFS_RETURN)[0] = 0;
+	G_VECTOR(OFS_RETURN)[1] = 0;
+	G_VECTOR(OFS_RETURN)[2] = -1;
+#ifdef WEBCLIENT
+	for (i = 0; i < countof(uri_posts); i++)
+		if (uri_posts[i].dl && uri_posts[i].prinst == prinst && uri_posts[i].spawncount == w->spawncount && uri_posts[i].id == id)
+		{
+			struct dl_download *dl = uri_posts[i].dl;
+			qofs_t sent = dl->postsent, total = dl->posttotal;
+			G_VECTOR(OFS_RETURN)[0] = (float)(sent / 1024);
+			G_VECTOR(OFS_RETURN)[1] = (float)(total / 1024);
+			G_VECTOR(OFS_RETURN)[2] = dl->postphase;
+			break;
+		}
 #endif
 }
 void QCBUILTIN PF_netaddress_resolve(pubprogfuncs_t *prinst, struct globalvars_s *pr_globals)

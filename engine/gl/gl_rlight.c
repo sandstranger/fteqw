@@ -118,6 +118,15 @@ void R_UpdateHDR(vec3_t org)
 	}
 	else
 		r_refdef.hdr_value = 1;
+	{	//FTESurf Patch 1732: a fixed exposure on top (linear; the lightmap is sRGB, so its 1/2.2 power)
+		extern cvar_t r_exposure;
+		extern float r_autoexposure_value;	//FTESurf Patch 1764
+		float e = (r_exposure.value > 0) ? r_exposure.value : 1;
+		if (!(r_refdef.flags & RDF_NOWORLDMODEL))
+			e *= r_autoexposure_value;	//not on a model preview without the world
+		if (e != 1)
+			r_refdef.hdr_value *= pow(e, 1/2.2);
+	}
 }
 
 //nettest: dump every lightstyle's live value.
@@ -255,7 +264,7 @@ void R_AnimateLight (void)
 			//Looked up every frame: a gamedir change frees plugin-created cvars (Cvar_GamedirChange).
 			static const char *plugcvars[] = {"hl2_lt_scale", "hl2_lt_srgb_mag", "hl2_lt_min", "hl2_lt_face",
 				"hl2_lt_dirsign", "hl2_lt_fold", "hl2_lt_worldlight",
-				"hl2_lt_occlusion", "hl2_lt_blend", "hl2_lt_illumpos", "hl2_cubelight", "hl2_lt_vcache"};	//FTESurf Patch 1289
+				"hl2_lt_occlusion", "hl2_lt_blend", "hl2_lt_illumpos", "hl2_cubelight", "hl2_lt_vcache", "hl2_lt_sun"};	//FTESurf Patch 1289
 			size_t k;
 			for (k = 0; k < countof(plugcvars); k++)
 			{

@@ -427,6 +427,7 @@ typedef struct qdownload_s
 	double			ratetime;				//periodically updated
 	int				rate;					//ratebytes/ratetimedelta
 	int				ratebytes;				//updated by download reception code, and cleared when ratetime is bumped
+	double			progresstime;			//FTESurf Patch 1670: when completedbytes last grew (web downloads)
 	unsigned int	flags;
 
 	//chunked downloads uses this
@@ -627,6 +628,7 @@ typedef struct downloadlist_s {
 #define DLLF_BEGUN			(1u<<8)		//server has confirmed that the file exists, is readable, and we've opened a file. should not be set on new requests.
 #define DLLF_ALLOWWEB		(1u<<9)		//failed http downloads should retry but from the game server itself
 #define DLLF_TRYWEB			(1u<<10)	//should be trying to download it from a website...
+#define DLLF_WEBONLY		(1u<<11)	//FTESurf Patch 1670: a menu map download during a local game: the web mirror or nothing
 
 	enum dlfailreason_e failreason;
 	struct downloadlist_s *next;
@@ -1332,11 +1334,12 @@ extern unsigned int cl_maxstris;
 
 //nettest: persistent lit decals (cl_ents.c) — clip once + cache, re-emit cheaply each frame.
 #define PDC_SOURCE	1	//FTESurf Patch 772: also displacements and brush entities, as a Source decal
-void CL_PersistentDecals_PortalView(void);	//FTESurf Patch 772: a recursive view drew scene tris (r_surf.c)
+#define PDC_SOURCESIZE	2	//FTESurf Patch 1721: the shader's decalsize sets the footprint (side keeps only its direction)
+void CL_PersistentDecals_PortalView(qboolean otherplace);	//FTESurf Patch 772: a recursive view drew scene tris (r_surf.c); P1698: a portal, not a water capture
 int CL_AddPersistentDecal(const char *shadername, const vec3_t origin, const vec3_t up, const vec3_t side, const vec3_t rgb, float alpha, float aspect, float lifetime, const float *texrange, unsigned int clipflags);
 void CL_RemovePersistentDecal(int handle);
 void CL_UpdatePersistentDecal(int handle, const vec3_t rgb, float alpha);
-void CL_EmitPersistentDecals(void);	//called from the world draw (r_surf.c) before BE_DrawWorld
+void CL_EmitPersistentDecals(const qbyte *vis, const int *areas);	//FTESurf Patch 1698: vis/areas cull on Source maps (NULL: none)	//called from the world draw (r_surf.c) before BE_DrawWorld
 void CL_WipePersistentDecals(void);	//called from CL_ClearState
 void CL_PersistentDecals_Restarted(void);	//called on renderer restart (renderer.c) -> re-clip all next emit
 
@@ -1390,6 +1393,9 @@ extern	int in_rawkbd_observechanges;	/*Patch 1424: transitions of the above, so 
 
 void CL_MakeActive(char *gamename);
 void CL_UpdateWindowTitle(void);
+void CL_Discord_Init(void);	//FTESurf Patch 1691, cl_discord.c
+void CL_Discord_Frame(void);
+void CL_Discord_Shutdown(void);
 
 #ifdef QUAKESTATS
 const char *IN_GetPreselectedViewmodelName(unsigned int pnum);
@@ -1398,6 +1404,11 @@ qboolean IN_DrawWeaponWheel(int pnum);
 qboolean IN_WeaponWheelIsShown(void);	//to decide when the game should be auto-paused.
 #endif
 void CL_InitInput (void);
+void CL_ScriptLapse(void);
+void CL_ScriptLapseSync(void);	/*FTESurf Patch 1646 (cl_input.c)*/
+void CL_PadInput(void);			/*FTESurf Patch 1694 (cl_input.c)*/
+void CL_PadInputSync(void);
+void CL_DirectPress(const char *bind, int key, int level);
 void CL_SendCmd (double frametime, qboolean mainloop);
 void CL_SendMove (usercmd_t *cmd);
 void CL_AngleHistoryFollow(int plnum, const vec3_t before);	//FTESurf Patch 396
@@ -1534,6 +1545,7 @@ void CL_ShowTrafficUsage(float x, float y);
 void CL_NewTranslation (int slot);
 
 int CL_IsDownloading(const char *localname);
+qboolean CL_MapDownloadHolds(const char *level);	//FTESurf Patch 1670: SV_Map_f's refusal
 qboolean CL_CheckDLFile(const char *filename);
 qboolean CL_CheckOrEnqueDownloadFile (const char *filename, const char *localname, unsigned int flags);
 qboolean CL_EnqueDownload(const char *filename, const char *localname, unsigned int flags);

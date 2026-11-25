@@ -498,8 +498,10 @@ typedef struct {
 		SP_LIGHTCUBEMATRIX,
 		SP_LIGHTSHADOWMAPPROJ,
 		SP_LIGHTSHADOWMAPSCALE,
+		SP_LIGHTCUBEWORLD,		//FTESurf Patch 1732: the light's projection alone (world space), for INSTANCED props whose model matrix is per instance
 		SP_FAKESHADOWMATRIX,	//nettest P110: mat4[N] - per-atlas-slot ortho proj*view for the multi-direction fake shadow. Composed with the model matrix at upload, exactly like SP_LIGHTCUBEMATRIX.
 		SP_FAKESHADOWCELL,		//nettest P110: vec4[N] - atlas cell remap per slot (xy = cell origin in GL bottom-origin UV, zw = cell scale).
+		SP_FAKESHADOWWORLD,		//FTESurf Patch 1762: mat4[N] - SP_FAKESHADOWMATRIX without the model matrix (world-space positions; the vmt receivers' cascades)
 		SP_FAKESHADOWINFO,		//nettest: vec4[N] - per-slot metadata for the PERSPECTIVE lamp cells. x = sun-suppression factor (how much a sun-visible receiver washes this lamp's shadow out; 0 on unbaked maps = feature inert). yzw reserved.
 
 		//things that are set immediatly
@@ -755,6 +757,9 @@ struct shader_s
 	qboolean reflectnoents;	//FTESurf Patch 868: `fte_reflectnoentities` -- Source water with no $reflectentities: its reflection draws only the world. Appended: plugins read shader_t by offset.
 	qboolean materialnofog;	//Authored policy; keep the shared prefix and full flag word unchanged.
 	float depthpush;		//FTESurf Patch 1251: `depthpush N` -- N depth steps away from the eye, negative toward it (BE_PolyOffset). Appended.
+	float decalsize[2];		//FTESurf Patch 1721: `decalsize W H` -- a Source decal material's world size (texture x $decalscale). Appended.
+	float waterlodend;		//FTESurf Patch 1729: `fte_waterlod <start> <end>` (stored max(start,end)) or `fte_waterlod map` (-1: r_cheapwaterstart/end); 0 none. GLBE_WaterLodCheap. Appended.
+	qboolean nonameguess;	//FTESurf Patch 1779: `fte_nonameguess` -- the material names every texture it uses: R_BuildDefaultTexnums does not look for <name>_luma/_glow. Appended.
 
 	//arranged as a series of vec4s
 /*	struct
@@ -927,6 +932,7 @@ typedef struct
 	qboolean showbatches;	//print batches... cleared at end of video frame.
 } sh_config_t;
 extern sh_config_t sh_config;
+qboolean Shader_2DPicPremul(void);	//FTESurf Patch 1739
 #endif
 
 enum
@@ -1033,6 +1039,8 @@ void GLBE_SetupForShadowMap(dlight_t *dl, int texwidth, int texheight, float sha
 //quarter-size cells).  The engine clamp and the shader's FAKESHADOWS_COUNT both derive from this, so they
 //cannot disagree about how many cells exist.
 #define MAX_FAKESHADOW_SLOTS 16	/*renderer-internal (NOT plugin abi): atlas cells, glsl uniform/varying arrays scale with this*/
+void GLBE_ClearFakeShadowLive(void);	//FTESurf Patch 1762
+extern float r_shadow_orthodepth;	//FTESurf Patch 1762
 void GLBE_SetFakeShadowCount(int count);						//0/1 = legacy single path
 void GLBE_CaptureFakeShadowSlot(int slot, const vec4_t cell);	//snapshot the CURRENT lightprojmatrix (set by GLBE_SelectDLight) as this slot's consumption matrix
 void GLBE_CaptureFakeShadowSlotMatrix(int slot, const float *matrix, const vec4_t cell);	//nettest Phase-1: snapshot an EXPLICIT matrix (proj*m_view actually rendered) -- for PERSPECTIVE prop cells where GLBE_SelectDLight's spot matrix would mismatch the face-4 render convention

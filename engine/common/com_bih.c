@@ -1,5 +1,7 @@
 #include "quakedef.h"
 #include "com_bih_ts.h"
+//Patch 1748: a brush leaf's brush; a BIH_BRUSHPAIR gives its old brush to Source movers below 16
+#define BIH_LEAFBRUSH(n)	(((n)->type == BIH_BRUSHPAIR && !bih_oldbevel) ? (n)->data.brushpair.farfix : (n)->data.brush)
 //Patch 1467: the clip flags and probe record, one set a thread (com_bih_ts.h)
 static bih_tstate_t bih_main_ts = {0, 0, 0, 0, -1};
 FTE_TLS bih_tstate_t *bih_ts = &bih_main_ts;
@@ -1358,9 +1360,10 @@ static void BIH_RecursiveTrace (struct bihtrace_s *fte_restrict tr, const struct
 	{	//leaf
 #if defined(Q2BSPS) || defined(Q3BSPS)
 	case BIH_BRUSH:
+	case BIH_BRUSHPAIR:	//Patch 1748
 		if (node->data.contents & tr->hitcontents)
 		{
-			q2cbrush_t *b = node->data.brush;
+			q2cbrush_t *b = BIH_LEAFBRUSH(node);
 			if (BIH_BoundsIntersect(b->absmins, b->absmaxs, movesubbounds->min, movesubbounds->max))
 				BIH_ClipBoxToBrush (tr, b);
 		}
@@ -1737,9 +1740,10 @@ static void BIH_RecursiveTest (struct bihtrace_s *fte_restrict tr, const struct 
 	{
 #if defined(Q2BSPS) || defined(Q3BSPS)
 	case BIH_BRUSH:
+	case BIH_BRUSHPAIR:	//Patch 1748
 		if (node->data.contents & tr->hitcontents)
 		{
-			q2cbrush_t *b = node->data.brush;
+			q2cbrush_t *b = BIH_LEAFBRUSH(node);
 //			if (BIH_BoundsIntersect(tr->bounds.min, tr->bounds.max, b->absmins, b->absmaxs))
 				BIH_TestBoxInBrush (tr, b);
 		}
@@ -1897,6 +1901,7 @@ static void BIH_RecursiveTest (struct bihtrace_s *fte_restrict tr, const struct 
   anything reads it (pm_dispprobe, or a holder of bih_probe_readers such as pm_dettest). Main thread only.*/
 extern cvar_t bih_tracecache, pm_dispprobe;
 static int bih_collisionepoch = 1;
+int BIH_CollisionEpoch(void) { return *(volatile int *)&bih_collisionepoch; }	//FTESurf Patch 1720: cl_pred.c's memo key
 int bih_probe_readers;
 void BIH_CollisionChanged(void)
 {
@@ -1938,7 +1943,15 @@ static qboolean BIH_TraceUncached(model_t *model, int forcehullnum, const frames
 static qboolean BIH_Trace(model_t *model, int forcehullnum, const framestate_t *framestate, const vec3_t axis[3], const vec3_t start, const vec3_t end, const vec3_t mins, const vec3_t maxs, qboolean capsule, unsigned int contents, trace_t *out_trace)
 {
 	struct bihtracekey_s key;
-	model_t *m = (bih_phyfix && model && model->phyfixed) ? model->phyfixed : model;	//as BIH_TraceUncached resolves it
+	model_t *m;	//as BIH_TraceUncached resolves it
+	if (bih_vphysmdl && bih_vphys && model && model->type == mod_alias && model->vphysalt && !VectorEquals(mins, maxs))
+		m = model->vphysalt;	//Patch 1812: a model's pieces before Patch 888's twin (which has none)
+	else
+	{
+		m = (bih_phyfix && model && model->phyfixed) ? model->phyfixed : model;
+		if (bih_vphys && m && m->vphysalt && !VectorEquals(mins, maxs) && m->type != mod_alias)
+			m = m->vphysalt;	//Patch 1713: likewise
+	}
 	unsigned int h, k, i, w;
 	qboolean hit;
 
@@ -1950,7 +1963,7 @@ static qboolean BIH_Trace(model_t *model, int forcehullnum, const framestate_t *
 	key.nodes = m->cnodes;
 	key.contents = contents;
 	key.forcehullnum = forcehullnum;
-	key.flags = (capsule?1u:0u) | (axis?2u:0u) | (bih_sourceclip?4u:0u) | (bih_phybrushes?8u:0u) | (bih_phyfix?16u:0u) | (bih_phypick?32u:0u) | (bih_oldwind?64u:0u);
+	key.flags = (capsule?1u:0u) | (axis?2u:0u) | (bih_sourceclip?4u:0u) | (bih_phybrushes?8u:0u) | (bih_phyfix?16u:0u) | (bih_phypick?32u:0u) | (bih_oldwind?64u:0u) | (bih_vphys?128u:0u) | (bih_oldbevel?256u:0u) | (bih_vphysmdl?512u:0u);
 	key.bevels = pm_trisoup_bevels.ival;
 	key.rotated = pm_rotatedboxhulls.ival;
 	VectorCopy(start, key.v+0);
@@ -2010,9 +2023,21 @@ static qboolean BIH_TraceUncached(model_t *model, int forcehullnum, const frames
 	int		i;
 	vec3_t point;
 	struct bihtrace_s tr;
+	qboolean isvphys = false;
 
-	if (bih_phyfix && model->phyfixed)
+	if (bih_vphysmdl && bih_vphys && model->type == mod_alias && model->vphysalt && !VectorEquals(mins, maxs))
+		;	//Patch 1812: a model's vphysalt (below) before Patch 888's twin, which has none
+	else if (bih_phyfix && model->phyfixed)
 		model = model->phyfixed;	//Patch 888
+	/* Patch 1713: Source sweeps a BOX against a SOLID_VPHYSICS brush entity's vcollide and a ray against its
+	   brushes (CEngineTrace::ClipRayToVPhysics, "do ray traces with normal code, but use vphysics to do box
+	   traces").  The hl2 plugin builds vphysalt only for the submodels whose entity Source makes VPHYSICS,
+	   with vphysics' half-unit separation in the shape (mod_vbsp.c VBSP_VPhysAlt). */
+	if (bih_vphys && model->vphysalt && !VectorEquals(mins, maxs) && (model->type != mod_alias || bih_vphysmdl))
+	{	//Patch 1812: a Source prop model's vphysalt (its .phy pieces as brushes) only from mover 17
+		model = model->vphysalt;
+		isvphys = true;	//its leaves are convex pieces: Patch 1248's crease rule, as for a prop's
+	}
 
 	if (axis)
 	{	//rotate everything
@@ -2043,7 +2068,7 @@ static qboolean BIH_TraceUncached(model_t *model, int forcehullnum, const frames
 
 	// fill in a default trace
 	memset (&tr.trace, 0, sizeof(tr.trace));
-	tr.inphy = false;	//Patch 1248: only the prop-piece loop sets it
+	tr.inphy = isvphys;	//Patch 1248: the prop-piece loop sets it, and a vphysalt sweep (Patch 1713)
 	tr.trace.fraction = tr.trace.truefraction = 1;
 	tr.trace.surface = &(nullsurface.c);
 
@@ -2229,8 +2254,9 @@ restart:
 	{	//leaf
 #if defined(Q2BSPS) || defined(Q3BSPS)
 	case BIH_BRUSH:
+	case BIH_BRUSHPAIR:	//Patch 1748
 		{
-			q2cbrush_t *b = node->data.brush;
+			q2cbrush_t *b = BIH_LEAFBRUSH(node);
 			q2cbrushside_t *brushside = b->brushside;
 			size_t j;
 			if (!BIH_BoundsIntersect(p, p, b->absmins, b->absmaxs))
@@ -2790,11 +2816,12 @@ static void BIH_EnumBrushes_r (struct bihnode_s *node, const vec3_t mins, const 
 		break;
 #endif
 	case BIH_BRUSH:
+	case BIH_BRUSHPAIR:	//Patch 1748
 		/*the brush's own bounds, not the leaf's -- Patch 318 deliberately leaves
 		  absmins/absmaxs describing the un-beveled brush, and they are what the
 		  sweep's own cull uses, so this sees exactly the set a trace would. */
-		if (BIH_BoundsIntersect (node->data.brush->absmins, node->data.brush->absmaxs, mins, maxs))
-			cb (ctx, node->data.brush);
+		if (BIH_BoundsIntersect (BIH_LEAFBRUSH(node)->absmins, BIH_LEAFBRUSH(node)->absmaxs, mins, maxs))
+			cb (ctx, BIH_LEAFBRUSH(node));
 		break;
 	default:
 		break;	/*triangles, patches and submodels are not brushes; not our job*/
@@ -2839,8 +2866,9 @@ static void BIH_EnumCollision_r (struct bihnode_s *node, const vec3_t mins, cons
 		break;
 #endif
 	case BIH_BRUSH:
-		if (en->brush && BIH_BoundsIntersect (node->data.brush->absmins, node->data.brush->absmaxs, mins, maxs))
-			en->brush (en->ctx, node->data.brush);
+	case BIH_BRUSHPAIR:	//Patch 1748
+		if (en->brush && BIH_BoundsIntersect (BIH_LEAFBRUSH(node)->absmins, BIH_LEAFBRUSH(node)->absmaxs, mins, maxs))
+			en->brush (en->ctx, BIH_LEAFBRUSH(node));
 		break;
 	case BIH_TRIANGLE:
 	case BIH_TRIANGLE_REWOUND:	//FTESurf Patch 1630: winding plays no part here
@@ -3059,23 +3087,108 @@ unsigned int BIH_HeldAirBoxTest(unsigned int *checks)
 }
 #endif
 
+/*FTESurf Patch 1714: the union of a tree's leaf boxes, kept in front of its nodes, so pmovetst.c can tell how far
+  from its origin this model's collision can reach (BIH_LeafBounds).  model_t is not touched: the plugin reads it by
+  offset.  The back-pointer and the magic tell a tree built here from any other cnodes.*/
+typedef struct
+{
+	const void *nodes;
+	unsigned int magic;
+	qboolean empty;		//no leaves, or a leaf the reach bound does not cover (BIH_LeafClaims): no claim
+	vec3_t mins, maxs;
+} bihhead_t;
+#define BIH_HEADMAGIC	0x34313731u	//"1714"
+#define BIH_HEADSIZE	((sizeof(bihhead_t) + 15) & ~(size_t)15)
+/*Patch 1714 review 2: the reach bound needs every leaf capped by axial planes at its box.  Triangles are, in code
+  (BIH_ClipToTriangle / BIH_TestToTriangle), for a shaped trace; a point trace meets the 4-unit prism -- unless the
+  triangle has no area: its planes then have zero normals and a point trace is startsolid anywhere its box overlaps
+  (review 3), so such a triangle leaves the tree unclaimed.  A brush is capped only by its own sides -- VBSP adds the
+  six axial bevels, but nothing here enforces it (Patch 318 skips axial edges) -- so a brush must carry all six, at
+  its leaf box within a unit.  Any other leaf type, and any non-finite box, leaves the tree unclaimed.*/
+static qboolean BIH_LeafClaims (const struct bihleaf_s *leaf)
+{
+	int a, k;
+	for (a = 0; a < 3; a++)
+		if (!isfinite(leaf->mins[a]) || !isfinite(leaf->maxs[a]))
+			return false;
+	switch (leaf->type)
+	{
+	case BIH_TRIANGLE:
+	case BIH_TRIANGLE_REWOUND:
+		{	//the face normal as BIH_ClipToTriangle forms it; near zero or not finite: no claim
+			const float *p1, *p2, *p3;
+			vec3_t e1, e2, n;
+			if (!leaf->data.tri.indexes || !leaf->data.tri.xyz)
+				return false;
+			p1 = leaf->data.tri.xyz[leaf->data.tri.indexes[0]];
+			p2 = leaf->data.tri.xyz[leaf->data.tri.indexes[1]];
+			p3 = leaf->data.tri.xyz[leaf->data.tri.indexes[2]];
+			VectorSubtract(p1, p2, e1);
+			VectorSubtract(p3, p2, e2);
+			CrossProduct(e1, e2, n);
+			return isfinite(n[0]) && isfinite(n[1]) && isfinite(n[2]) && DotProduct(n, n) > 1e-6f;
+		}
+#if defined(Q2BSPS) || defined(Q3BSPS)
+	case BIH_BRUSH:
+	case BIH_BRUSHPAIR:	//Patch 1748: the old brush; its farfix carries the same six axial sides
+		{
+			const q2cbrush_t *b = leaf->data.brush;
+			unsigned int found = 0;
+			if (!b)
+				return false;
+			for (k = 0; k < b->numsides; k++)
+			{
+				const mplane_t *pl = b->brushside[k].plane;
+				if (!pl)
+					continue;
+				for (a = 0; a < 3; a++)
+				{
+					if (pl->normal[(a+1)%3] != 0 || pl->normal[(a+2)%3] != 0)
+						continue;
+					if (pl->normal[a] == 1 && fabs(pl->dist - leaf->maxs[a]) <= 1)
+						found |= 1u<<(a*2);
+					else if (pl->normal[a] == -1 && fabs(pl->dist + leaf->mins[a]) <= 1)
+						found |= 1u<<(a*2+1);
+				}
+			}
+			return found == 63;
+		}
+#endif
+	default:
+		return false;
+	}
+}
 void BIH_Build (model_t *mod, struct bihleaf_s *leafs, size_t numleafs)
 {
-	size_t numnodes;
+	size_t numnodes, i;
 	struct bihnode_s *nodes, *tmpnodes;
 	struct bihleaf_s *scratch;
+	bihhead_t *head;
 
 	if (!numleafs)
 	{	//if we don't actually have anything solid, we still need SOMETHING so we don't crash.
 		//we can just use an empty group node for that.
-		nodes = ZG_Malloc(&mod->memgroup, sizeof(*nodes));
+		head = ZG_Malloc(&mod->memgroup, BIH_HEADSIZE + sizeof(*nodes));
+		nodes = (struct bihnode_s *)((qbyte *)head + BIH_HEADSIZE);
 		nodes->type = BIH_GROUP;
 		nodes->group.numchildren = 0;
+		head->empty = true;
 	}
 	else
 	{
 		numnodes = numleafs*2-1;
-		nodes = ZG_Malloc(&mod->memgroup, sizeof(*nodes)*numnodes);
+		head = ZG_Malloc(&mod->memgroup, BIH_HEADSIZE + sizeof(*nodes)*numnodes);
+		nodes = (struct bihnode_s *)((qbyte *)head + BIH_HEADSIZE);
+		head->empty = false;
+		VectorCopy(leafs[0].mins, head->mins);
+		VectorCopy(leafs[0].maxs, head->maxs);
+		for (i = 0; i < numleafs && !head->empty; i++)
+		{	//before the build: BIH_BuildNode sorts and partitions leafs in place
+			if (!BIH_LeafClaims(&leafs[i]))
+				head->empty = true;
+			AddPointToBounds(leafs[i].mins, head->mins, head->maxs);
+			AddPointToBounds(leafs[i].maxs, head->mins, head->maxs);
+		}
 
 		tmpnodes = nodes+1;
 		/*ftesurf P323: ONE scratch array for the whole recursive build -- the
@@ -3088,11 +3201,27 @@ void BIH_Build (model_t *mod, struct bihleaf_s *leafs, size_t numleafs)
 		if (tmpnodes > nodes+numnodes)
 			Sys_Error("CM_BuildBIH: generated wrong number of nodes");
 	}
+	head->nodes = nodes;
+	head->magic = BIH_HEADMAGIC;
 	mod->cnodes = nodes;
 	BIH_CollisionChanged();	//FTESurf Patch 1266
 	mod->funcs.NativeTrace			= BIH_Trace;
 	mod->funcs.PointContents		= BIH_PointContents;
 	mod->funcs.NativeContents		= BIH_NativeContents;
+}
+//FTESurf Patch 1714: the leaf boxes' union of the tree BIH_Trace walks for this model, if BIH_Build made it.
+//false: not a tree built here, or one with no leaves (no claim either way).
+qboolean BIH_LeafBounds (const model_t *mod, vec3_t mins, vec3_t maxs)
+{
+	const bihhead_t *head;
+	if (!mod || !mod->cnodes || mod->funcs.NativeTrace != BIH_Trace)
+		return false;
+	head = (const bihhead_t *)((const qbyte *)mod->cnodes - BIH_HEADSIZE);
+	if (head->magic != BIH_HEADMAGIC || head->nodes != mod->cnodes || head->empty)
+		return false;
+	VectorCopy(head->mins, mins);
+	VectorCopy(head->maxs, maxs);
+	return true;
 }
 #ifdef SKELETALMODELS
 void BIH_BuildAlias (model_t *mod, galiasinfo_t *meshes)

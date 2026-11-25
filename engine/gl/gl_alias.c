@@ -1419,6 +1419,7 @@ typedef struct
 	vec3_t lightdir;
 	int keynum;				//FTESurf Patch 1398: the entity and model that wrote it (the moved rule's owner check)
 	model_t *model;
+	qboolean fold;			//FTESurf Patch 1717: sampled by LightPointFold (R_ModelLightFold); part of the key
 	vec3_t shade0, ambient0, dir0;	//FTESurf Patch 1398: what was shown when the sample above landed,
 	float blend;					//blended to it over this many seconds (0: shown as sampled)
 } modellightcache_t;
@@ -1465,7 +1466,14 @@ static struct
 	unsigned int seq;
 	vec3_t origin, shadelight, ambientlight, lightdir;
 	double time;
+	qboolean fold;	//FTESurf Patch 1717: sampled by LightPointFold (R_ModelLightFold); part of the key
 } vmlightcache;
+
+//FTESurf Patch 1717: a Source MDL draws through the hl2 plugin's VMT shaders, whose ramp needs the world's other split
+static qboolean R_ModelLightFold(const model_t *clmodel)
+{
+	return clmodel && cl.worldmodel && (clmodel->engineflags & MDLF_SOURCEPITCH) && cl.worldmodel->LightPointFold;
+}
 
 /*The world-lightmap sample, factored out so the cache-fill path and the r_modellight_cache 2
   self-check can run byte-identical code. Pure function of e->origin (+ the world/styles/cvars
@@ -1473,6 +1481,8 @@ static struct
 static void R_SampleModelLight(entity_t *e, model_t *clmodel, vec3_t shadelight, vec3_t ambientlight, vec3_t lightdir)
 {
 	vec3_t center;
+	void (*lightpoint)(struct model_s *model, const vec3_t point, vec3_t res_diffuse, vec3_t res_ambient, vec3_t res_dir) =
+		R_ModelLightFold(clmodel) ? cl.worldmodel->LightPointFold : cl.worldmodel->funcs.LightPointValues;
 	#if 0 /*hexen2*/
 	VectorAvg(clmodel->mins, clmodel->maxs, center);
 	VectorAdd(e->origin, center, center);
@@ -1480,7 +1490,7 @@ static void R_SampleModelLight(entity_t *e, model_t *clmodel, vec3_t shadelight,
 	VectorCopy(e->origin, center);
 	center[2] += 24;
 	#endif
-	cl.worldmodel->funcs.LightPointValues(cl.worldmodel, center, shadelight, ambientlight, lightdir);
+	lightpoint(cl.worldmodel, center, shadelight, ambientlight, lightdir);
 	if (r_modellight_fallback.ival)
 	{	/*the +24 sample point lands inside the ceiling for roof-mounted
 		  models, and a lightpoint trace that starts in solid returns
@@ -1494,7 +1504,7 @@ static void R_SampleModelLight(entity_t *e, model_t *clmodel, vec3_t shadelight,
 			if (ambientlight[0] || ambientlight[1] || ambientlight[2] || shadelight[0] || shadelight[1] || shadelight[2])
 				break;
 			center[2] = e->origin[2] + drop[attempt];
-			cl.worldmodel->funcs.LightPointValues(cl.worldmodel, center, shadelight, ambientlight, lightdir);
+			lightpoint(cl.worldmodel, center, shadelight, ambientlight, lightdir);
 		}
 	}
 }
@@ -1508,6 +1518,7 @@ qboolean R_CalcModelLighting(entity_t *e, model_t *clmodel)
 	vec3_t shadelight, ambientlight;
 	vec3_t bakedmean = {0,0,0};	//nettest: this prop's mean baked colour (0-1), if it has an RGBPROPLIGHT record
 	modellightcache_t *cache = NULL;	//Patch 105: non-NULL = this entity is cacheable
+	qboolean foldlit = false;	//FTESurf Patch 1717: the sample is LightPointFold's (Source's scale and split)
 
 	if (e->light_known)
 		return e->light_known-1;
@@ -1557,12 +1568,14 @@ qboolean R_CalcModelLighting(entity_t *e, model_t *clmodel)
 
 	if (!(r_refdef.flags & RDF_NOWORLDMODEL) && cl.worldmodel)
 	{
+		foldlit = R_ModelLightFold(clmodel);	//both caches key on it, so a hit is the same split
 		if (e->flags & RF_WEAPONMODEL)
 		{
 			float rate = r_viewmodel_lightrate.value;
 			vec3_t moved;
 			VectorSubtract(r_refdef.vieworg, vmlightcache.origin, moved);
 			if (r_modellight_cache.ival && vmlightcache.valid && vmlightcache.seq == r_modellight_seq &&
+				vmlightcache.fold == R_ModelLightFold(clmodel) &&
 				((VectorEquals(vmlightcache.origin, r_refdef.vieworg) && (!R_ModelLightSettles() ||
 				  (realtime >= vmlightcache.time && realtime - vmlightcache.time < 0.25))) ||	//Patch 1283
 				 (rate > 0 && realtime >= vmlightcache.time && realtime - vmlightcache.time < 1.0 / rate &&
@@ -1574,8 +1587,12 @@ qboolean R_CalcModelLighting(entity_t *e, model_t *clmodel)
 			}
 			else
 			{
-				cl.worldmodel->funcs.LightPointValues(cl.worldmodel, r_refdef.vieworg, shadelight, ambientlight, lightdir);
+				if (R_ModelLightFold(clmodel))	//FTESurf Patch 1717: a Source viewmodel draws through the VMT shaders too
+					cl.worldmodel->LightPointFold(cl.worldmodel, r_refdef.vieworg, shadelight, ambientlight, lightdir);
+				else
+					cl.worldmodel->funcs.LightPointValues(cl.worldmodel, r_refdef.vieworg, shadelight, ambientlight, lightdir);
 				vmlightcache.valid = true;
+				vmlightcache.fold = R_ModelLightFold(clmodel);
 				vmlightcache.seq = r_modellight_seq;
 				vmlightcache.time = realtime;
 				VectorCopy(r_refdef.vieworg, vmlightcache.origin);
@@ -1585,7 +1602,12 @@ qboolean R_CalcModelLighting(entity_t *e, model_t *clmodel)
 			}
 			for (i = 0; i < 3; i++)
 			{	/*viewmodels may not be pure black*/
-				if (ambientlight[i] < 24)
+				if (foldlit)
+				{	//Patch 1717: the fold's range is lit-unlit, ~0 in even light; floor its base instead
+					if (shadelight[i] < 24)
+						shadelight[i] = 24;
+				}
+				else if (ambientlight[i] < 24)
 					ambientlight[i] = 24;
 				/*r_viewmodel_maxlight: optional ceiling so a bright floor
 				  (lava, white tile, sky-lit area) doesn't blow the gun out.
@@ -1615,7 +1637,7 @@ qboolean R_CalcModelLighting(entity_t *e, model_t *clmodel)
 				qboolean exact;
 				cache = &modellightcache[(unsigned int)e->keynum & (MODELLIGHTCACHE_BUCKETS-1)];
 				VectorSubtract(e->origin, cache->origin, moved);
-				exact = VectorEquals(cache->origin, e->origin) &&
+				exact = VectorEquals(cache->origin, e->origin) && cache->fold == R_ModelLightFold(clmodel) &&
 					(!R_ModelLightSettles() || (realtime >= cache->time &&
 					 realtime - cache->time < 1 + (e->keynum & 63) * (1/64.0)));	//Patch 1283; spread, not all in one frame
 				//FTESurf Patch 1398: on a Source map (where a sample traces world lights) a model that moved keeps the
@@ -1683,6 +1705,7 @@ qboolean R_CalcModelLighting(entity_t *e, model_t *clmodel)
 					VectorCopy(lightdir, cache->lightdir);
 					cache->keynum = e->keynum;
 					cache->model = clmodel;
+					cache->fold = R_ModelLightFold(clmodel);
 					cache->time = realtime;
 					cache->seq = r_modellight_seq;	//publish last: the entry is only valid once filled
 					if (cache->blend > 0)
@@ -1925,7 +1948,8 @@ qboolean R_CalcModelLighting(entity_t *e, model_t *clmodel)
 		}
 		else
 			m = 1;
-		m /= 200.0/255;	//a legacy quake fudge-factor.
+		if (!foldlit)	//FTESurf Patch 1717: the plugin's cube is at Source's scale, as its static props draw it
+			m /= 200.0/255;	//a legacy quake fudge-factor.
 		VectorScale(shadelight, m, shadelight);
 		VectorScale(ambientlight, m, ambientlight);
 #else
@@ -2500,6 +2524,16 @@ void R_GAlias_DrawBatch(batch_t *batch)
 	return;
 }
 
+/*FTESurf Patch 1810: Source's LOD metric for a model at view depth z: 100 / the pixel width of a unit-diameter sphere
+  (studio.h LODMetric, ComputePixelWidthOfSphere(origin, 0.5)), from the camera's fov and the view's own pixel width --
+  which a shadow pass keeps (it swaps only pxrect and the projection). 0 (level 0) nearer than the camera.*/
+static float R_SourceLODMetric(float z)
+{
+	float t = (r_refdef.fov_x > 0 && r_refdef.fov_x < 179) ? tan(r_refdef.fov_x * (M_PI / 360)) : 1;
+	float w = (vid.width > 0) ? r_refdef.vrect.width * (float)vid.pixelwidth / vid.width : vid.pixelwidth;
+	float px = (z > 0) ? w * 0.5f / (t * z) : 0;
+	return (px > 0) ? 100 / px : 0;
+}
 void R_GAlias_GenerateBatches(entity_t *e, batch_t **batches)
 {
 	galiasinfo_t *inf;
@@ -2646,7 +2680,14 @@ void R_GAlias_GenerateBatches(entity_t *e, batch_t **batches)
 			if (r_model_mincoverage.value > 0 && coverage < r_model_mincoverage.value && sizecullable)
 				return;
 
-			if (clmodel->maxlod)
+			if (clmodel->engineflags & MDLF_SOURCELOD)
+			{	//FTESurf Patch 1810: Source's metric, 100 / the pixel width of a unit-diameter sphere at the model
+				//(studio.h LODMetric, ComputePixelWidthOfSphere(origin, 0.5)), against the VTX switch points -- from the
+				//camera's fov and the window's width, which a perspective shadow face keeps (it swaps only pxrect and the
+				//projection), so a caster casts the level it draws; a viewmodel always takes level 0
+				lod = (e->flags & RF_WEAPONMODEL) ? 0 : R_SourceLODMetric(z);
+			}
+			else if (clmodel->maxlod)
 			{
 				lod = 1-(coverage*r_lodscale.value);
 				lod = bound(0, lod, 1);	//so lodbias is a little more reliable.
@@ -2657,6 +2698,13 @@ void R_GAlias_GenerateBatches(entity_t *e, batch_t **batches)
 			else
 				lod = 0;
 		}
+	}
+	else if ((clmodel->engineflags & MDLF_SOURCELOD) && !(e->flags & RF_WEAPONMODEL))
+	{	//FTESurf Patch 1810: an orthographic pass (the sun cascades) keeps the camera's vieworg/vpn, so a caster casts the
+		//level it is drawn at here too
+		vec3_t v;
+		VectorSubtract(e->origin, r_refdef.vieworg, v);
+		lod = R_SourceLODMetric(DotProduct(v, vpn));
 	}
 	else
 		lod = 0;
@@ -3907,11 +3955,24 @@ void BE_GenModelBatches(batch_t **batches, const dlight_t *dl, unsigned int bemo
 //	unsigned int orig_numstrisidx = cl_numstrisidx;
 //	unsigned int orig_numstrisvert = cl_numstrisvert;
 	extern cvar_t r_ignoreentpvs; //legacy value is 1...
+	extern qboolean R_EntPVSSource(void);
+	extern int r_entpvs_culled, r_entpvs_norecord;
+	qboolean recordsonly = false;
 
 	if (r_ignoreentpvs.ival)
-	{
+	{	//FTESurf Patch 1698: a Source map still culls each entity that has a leaf record (renderer.c r_entpvs_source),
+		//by the view's unclipped PVS (surfvis is frustum-clipped, and all zero on an unvised map). An eye in solid
+		//(area 0: the noclip margin, the void) is connected to no area, so it keeps the PVS test only.
 		worldpvs = NULL;
-		worldareas = NULL;
+		if (bemode == BEM_STANDARD && r_refdef.sceneentvis && !(r_refdef.flags & RDF_NOWORLDMODEL) && R_EntPVSSource())
+		{
+			recordsonly = true;
+			worldpvs = r_refdef.sceneentvis;
+			if (!worldareas || worldareas[0] < 1 || worldareas[1] <= 0)
+				worldareas = NULL;
+		}
+		else
+			worldareas = NULL;
 	}
 
 	/*clear the batch list*/
@@ -3968,6 +4029,7 @@ void BE_GenModelBatches(batch_t **batches, const dlight_t *dl, unsigned int bemo
 		r_voidvis_edicts = cl_numvisedicts - r_refdef.firstvisedict;
 		r_voidvis_brush = 0;
 		r_voidvis_dropped = 0;
+		r_entpvs_culled = r_entpvs_norecord = 0;
 		for (i=r_refdef.firstvisedict ; i<cl_numvisedicts ; i++)
 		{
 			ent = &cl_visedicts[i];
@@ -4013,6 +4075,8 @@ void BE_GenModelBatches(batch_t **batches, const dlight_t *dl, unsigned int bemo
 			continue;
 		if (!r_refdef.externalview && (ent->flags & RF_EXTERNALMODEL) && !chase_active.ival)
 			continue;
+		if ((ent->flags & RF_SHADOWONLY) && bemode != BEM_DEPTHONLY && bemode != BEM_STENCIL)
+			continue;	//FTESurf Patch 1766: a shadow caster only, in no view, mirror or portal
 
 #ifdef RTLIGHTS
 		if (bemode == BEM_STENCIL || bemode == BEM_DEPTHONLY)
@@ -4035,8 +4099,15 @@ void BE_GenModelBatches(batch_t **batches, const dlight_t *dl, unsigned int bemo
 		}
 #endif
 
-		if (worldpvs && !cl.worldmodel->funcs.EdictInFatPVS(cl.worldmodel, &ent->pvscache, worldpvs, worldareas))
+		if (worldpvs && !(recordsonly && (!ent->pvscache.num_leafs || (ent->flags & (RF_WEAPONMODEL|RF_DEPTHHACK)))) &&
+			!cl.worldmodel->funcs.EdictInFatPVS(cl.worldmodel, &ent->pvscache, worldpvs, worldareas))
+		{
+			if (countcensus && recordsonly)
+				r_entpvs_culled++;
 			continue;
+		}
+		if (countcensus && recordsonly && (!ent->pvscache.num_leafs || (ent->flags & (RF_WEAPONMODEL|RF_DEPTHHACK))))
+			r_entpvs_norecord++;
 
 		switch(ent->rtype)
 		{

@@ -2286,6 +2286,9 @@ void IN_SynthOrigin(qboolean on);	/*Patch 625, in_generic.c*/
 static void QDECL Plug_IN_KeyEvent(unsigned int devid, int down, int keycode, int unicode)
 {
 	IN_Journal_MarkSynth("plugin");
+#ifdef HAVE_CLIENT
+	CL_ScriptLapse();	/*FTESurf Patch 1646: counted where the server reads it*/
+#endif
 	IN_SynthOrigin(true);
 	IN_KeyEvent(devid, down, keycode, unicode);
 	IN_SynthOrigin(false);
@@ -2293,21 +2296,33 @@ static void QDECL Plug_IN_KeyEvent(unsigned int devid, int down, int keycode, in
 static void QDECL Plug_IN_MouseMove(unsigned int devid, int abs, float x, float y, float z, float size)
 {
 	IN_Journal_MarkSynth("plugin");
+#ifdef HAVE_CLIENT
+	CL_ScriptLapse();	/*FTESurf Patch 1646: counted where the server reads it*/
+#endif
 	IN_MouseMove(devid, abs, x, y, z, size);
 }
 static void QDECL Plug_IN_JoystickAxisEvent(unsigned int devid, int axis, float value)
 {
 	IN_Journal_MarkSynth("plugin");
+#ifdef HAVE_CLIENT
+	CL_ScriptLapse();	/*FTESurf Patch 1646: counted where the server reads it*/
+#endif
 	IN_JoystickAxisEvent(devid, axis, value);
 }
 static void QDECL Plug_IN_Accelerometer(unsigned int devid, float x, float y, float z)
 {
 	IN_Journal_MarkSynth("plugin");
+#ifdef HAVE_CLIENT
+	CL_ScriptLapse();	/*FTESurf Patch 1646: counted where the server reads it*/
+#endif
 	IN_Accelerometer(devid, x, y, z);
 }
 static void QDECL Plug_IN_Gyroscope(unsigned int devid, float pitch, float yaw, float roll)
 {
 	IN_Journal_MarkSynth("plugin");
+#ifdef HAVE_CLIENT
+	CL_ScriptLapse();	/*FTESurf Patch 1646: counted where the server reads it*/
+#endif
 	IN_Gyroscope(devid, pitch, yaw, roll);
 }
 
@@ -2316,6 +2331,30 @@ static void *QDECL PlugBI_GetEngineInterface(const char *interfacename, size_t s
 	if (!strcmp(interfacename, plugmodeltail1440_name))
 	{	//FTESurf Patch 1440: see com_mesh.h
 		static const int tail = 1440;
+		if (structsize == sizeof(tail))
+			return (void*)&tail;
+	}
+	if (!strcmp(interfacename, plugmodeltail1713_name))
+	{	//FTESurf Patch 1713: see com_mesh.h
+		static const int tail = 1713;
+		if (structsize == sizeof(tail))
+			return (void*)&tail;
+	}
+	if (!strcmp(interfacename, plugmodeltail1717_name))
+	{	//FTESurf Patch 1717: see com_mesh.h
+		static const int tail = 1717;
+		if (structsize == sizeof(tail))
+			return (void*)&tail;
+	}
+	if (!strcmp(interfacename, plugmodeltail1748_name))
+	{	//FTESurf Patch 1748: see com_mesh.h
+		static const int tail = 1748;
+		if (structsize == sizeof(tail))
+			return (void*)&tail;
+	}
+	if (!strcmp(interfacename, plugmodeltail1812_name))
+	{	//FTESurf Patch 1812: see com_mesh.h
+		static const int tail = 1812;
 		if (structsize == sizeof(tail))
 			return (void*)&tail;
 	}

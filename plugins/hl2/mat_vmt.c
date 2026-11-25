@@ -64,6 +64,7 @@ build 11, which needs a vid_reload, so setting them and reloading the map did
 nothing at all.  See the note beside MAPOPTIONS in mod_vbsp.c.)
 */
 cvar_t *hl2_water;
+cvar_t *hl2_waterlod;	//FTESurf Patch 1729
 //FTESurf Patch 1475: water that reads its reflection's depth for r_captureparallax (an engine without it answers "")
 static qboolean VMT_WaterParallax(int wmode, const char *progargs)
 {
@@ -106,6 +107,33 @@ cvar_t *hl2_unlitprogram;	//FTESurf Patch 1213, the rest of UnlitGeneric onto a 
 int vmt_stat_water, vmt_stat_refract, vmt_stat_translucent;
 int vmt_stat_imposter;	//FTESurf Patch 263
 int vmt_stat_flowwater;	//Patch 990: Water materials drawn with their $flowmap
+qboolean VBSP_CubeIsBlack (const char *name);	//FTESurf Patch 1771, mod_vbsp.c
+qboolean VBSP_CubeIsFloat (const char *name);
+//FTESurf Patch 1771: the black-LDR / float-HDR answer per cube, once: hundreds of materials name the same few cubes,
+//and VBSP_CubeIsBlack reads the whole file.  Names carry the map's own path, so one table serves every map.
+static struct vmtcubeans_s { char name[MAX_QPATH]; qboolean usehdr; } *vmt_cubeans;	//(materials are generated on the main thread)
+static size_t vmt_numcubeans, vmt_maxcubeans;
+static qboolean VMT_CubeUseHDR(const char *ldr, const char *hdr)
+{
+	size_t i;
+	qboolean ans;
+	for (i = 0; i < vmt_numcubeans; i++)
+		if (!strcmp(vmt_cubeans[i].name, ldr))
+			return vmt_cubeans[i].usehdr;
+	ans = VBSP_CubeIsBlack(ldr) && VBSP_CubeIsFloat(hdr);
+	if (vmt_numcubeans == vmt_maxcubeans)
+	{
+		struct vmtcubeans_s *n = plugfuncs->Realloc(vmt_cubeans, sizeof(*vmt_cubeans) * (vmt_maxcubeans ? vmt_maxcubeans * 2 : 256));
+		if (!n)
+			return ans;
+		vmt_cubeans = n;
+		vmt_maxcubeans = vmt_maxcubeans ? vmt_maxcubeans * 2 : 256;
+	}
+	Q_strlcpy(vmt_cubeans[vmt_numcubeans].name, ldr, sizeof(vmt_cubeans[vmt_numcubeans].name));
+	vmt_cubeans[vmt_numcubeans].usehdr = ans;
+	vmt_numcubeans++;
+	return ans;
+}
 int vmt_stat_hdrenvmap;	//FTESurf Patch 264, $envmap resolved via the .hdr.vtf fallback
 int vmt_stat_ignorez;	//FTESurf Patch 290, $ignorez materials that could not be honoured
 int vmt_stat_addprog;	//FTESurf Patch 300, additive materials moved from a pass onto vmt/unlit
@@ -1311,11 +1339,16 @@ typedef struct
 	char vmtclass[32];	//FTESurf Patch 783: the Source shader class, before an arm rewrites `type`
 	char selfillum;
 	char decal;
+	float decalscale;	//FTESurf Patch 1721: $decalscale, 0 = absent (Source's default 1)
+	char decalsrc;		//FTESurf Patch 1721: $decal as written (the Decal/DecalModulate arms clear st->decal)
 	char nofog;
 	char mod2x; /* modulate only */
 	char water_cheap; /* water only */
 	char water_expensive; /* water only */
 	char water_nofresnel; /* water only, FTESurf Patch 879: the cheap path's fresnel off */
+	char water_lodproxy; /* water only, FTESurf Patch 1729: a WaterLOD proxy -- the map's distances */
+	char water_lodstart_set, water_lodend_set;
+	float water_lodstart, water_lodend; /* water only: $cheapwaterstartdistance/$cheapwaterenddistance */
 	char water_reflectblend_set; /* water only */
 	float water_reflectblend; /* water only: $reflectblendfactor, the cheap mix without fresnel */
 	char water_reflectents; /* FTESurf Patch 868: $reflectentities -- its reflection draws entities */
@@ -1431,7 +1464,6 @@ static qboolean VMT_IsKnownIgnoredField(const char *key)
 {
 	static const char *ig[] = {"$nolod", "$model", "$FlashlightNoLambert",
 		"$parallaxmap", "$parallaxmapscale",	//nettest: Source parallax-occlusion hints, FTE has no POM path
-		"$cheapwaterstartdistance", "$cheapwaterenddistance",	//nettest: Source water LOD distance cutoffs, unused by FTE water
 		"$multipass", "$fresnelreflection", "$modelmaterial", "$texture2", "$no_fullbright",	//nettest: more benign Source-only fields on HL2 glass/metal/combine props
 		"$gnoise", "$playerdistance", "$playerdistance2", "$alpharesult", "$alpharesultmin", "$alpharesultmax",	//nettest: COMBINESHIELD proxy result-vars (top-level $-var declarations the proxy system writes)
 		"$smallamount", "$largeamount", "$hundred", "$ten", "$frameminusten",
@@ -1624,6 +1656,48 @@ static qboolean VMT_IsKnownIgnoredBlock(const char *key)
 }
 static char *VMT_ParseBlock(const char *fname, vmtstate_t *st, char *line);
 
+/*
+FTESurf Patch 1731: a DX-level conditional block (">=dx90", "<dx90_20b", "<=dx81", ...) as Source's material system
+evaluates it on a current GPU (dxlevel 98, ps2.0b): true blocks merge into the material over its own keys, false ones
+are DX8 fallbacks. Skipped wholesale before, so HL2's canal water lost $refractamount .2 and $reflectentities 1 (Valve:
+"This *cannot* exist in the root level"), the toxic slime its DX9 bump maps, the Combine soldier skins their DX9 sheets.
+Returns false for any other name; *truth says which way it went.
+*/
+static qboolean VMT_DXBlock(const char *key, qboolean *truth)
+{
+	const char *s = key;
+	int op = 0, n = 0, digits = 0;	//op: 0 '=', 1 '>=', 2 '<=', 3 '>', 4 '<'
+	qboolean need20b = false, ok;
+	if (s[0] == '>' && s[1] == '=') op = 1, s += 2;
+	else if (s[0] == '<' && s[1] == '=') op = 2, s += 2;
+	else if (s[0] == '>') op = 3, s++;
+	else if (s[0] == '<') op = 4, s++;
+	else if (s[0] == '=') op = 0, s++;
+	else return false;
+	if ((s[0] != 'd' && s[0] != 'D') || (s[1] != 'x' && s[1] != 'X'))
+		return false;
+	for (s += 2; *s >= '0' && *s <= '9'; s++, digits++)
+		n = n*10 + (*s - '0');
+	if (!digits)
+		return false;
+	if (!Q_strcasecmp(s, "_20b"))
+		need20b = true;
+	else if (*s)
+		return false;
+	switch (op)
+	{
+	case 1: ok = 98 >= n; break;
+	case 2: ok = 98 <= n; break;
+	case 3: ok = 98 > n; break;
+	case 4: ok = 98 < n; break;
+	default: ok = 98 == n; break;
+	}
+	//"_20b" adds "and ps2.0b"; this renderer has it, so the suffix changes nothing
+	(void)need20b;
+	*truth = ok;
+	return true;
+}
+
 //FTESurf Patch 189: does this proxy drive the base texture's transform?  An
 //absent texturescrollvar means the material never said, and every observed one
 //that omits it means $basetextureTransform.
@@ -1712,6 +1786,29 @@ static qboolean VMT_TextureHasAlpha(const char *name)
 	return alpha;
 }
 
+//FTESurf Patch 1721: a VTF's top-mip size from its header (VTFFileHeader_t width/height at 16/18)
+static qboolean VMT_VTFSize(const char *name, int *w, int *h)
+{
+	char path[MAX_QPATH];
+	unsigned char hdr[20];
+	vfsfile_t *f;
+	qboolean ok = false;
+	if (!*name)
+		return false;
+	Q_snprintfz(path, sizeof(path), "%s%s.vtf", strcmp(name, "materials/")?"materials/":"", name);
+	f = fsfuncs->OpenVFS(path, "rb", FS_GAME);
+	if (f)
+	{
+		if (VFS_READ(f, hdr, sizeof(hdr)) == sizeof(hdr) && !memcmp(hdr, "VTF", 4))
+		{
+			*w = hdr[16] | (hdr[17] << 8);
+			*h = hdr[18] | (hdr[19] << 8);
+			ok = *w > 0 && *h > 0;
+		}
+		VFS_CLOSE(f);
+	}
+	return ok;
+}
 /*
 FTESurf Patch 1218: a "mipmap fade" -- mip levels drawn to differ, so a pane changes with distance
 (surf_sidelines' fades/mipmap_black: clear, then white, then black from level 2).  A box filter keeps
@@ -2083,7 +2180,11 @@ static char *VMT_ParseProxies(const char *fname, vmtstate_t *st, char *line)
 			else if (!Q_strcasecmp(key, "equals"))
 				line = VMT_ParseArithProxy(fname, st, VMTPRX_EQUALS, line);
 			else
+			{
+				if (st && !Q_strcasecmp(key, "waterlod"))
+					st->water_lodproxy = 1;	//FTESurf Patch 1729: its distances come from the view (water_lod_control)
 				line = VMT_ParseArithProxy(fname, st, VMTPRX_OTHER, line);
+			}
 			continue;
 		}
 	}
@@ -2271,11 +2372,13 @@ static void VMT_ResolveProxies(vmtstate_t *st)
 static char *VMT_ParseBlock(const char *fname, vmtstate_t *st, char *line)
 {	//assumes the open { was already parsed, but will parse the close.
 	char *replace = NULL;
+	char *dxblock[4];	//FTESurf Patch 1731: true DX-level blocks, merged after the material's own keys
+	int ndx = 0, i;
 	com_tokentype_t ttype;
 	char key[MAX_OSPATH];
 	char value[MAX_OSPATH];
 	char *qmark;
-	qboolean cond, srgbkey;
+	qboolean cond, srgbkey, dxtrue;
 	float fogtmp[3];
 	for(;line;)
 	{
@@ -2298,6 +2401,13 @@ static char *VMT_ParseBlock(const char *fname, vmtstate_t *st, char *line)
 			}
 			else if (st && !Q_strcasecmp(st->type, "Refract") && !Q_strcasecmp(key, "Refract_DX60"))
 				;	//The active DX90 shader must not consume the legacy fallback's keys.
+			else if (st && VMT_DXBlock(key, &dxtrue))
+			{
+				if (dxtrue && ndx < countof(dxblock))
+					dxblock[ndx++] = line;
+				else if (dxtrue)
+					Con_DPrintf("%s: more than %i true DX-level blocks; \"%s\" not applied\n", fname, (int)countof(dxblock), key);
+			}
 			else if (VMT_IsKnownIgnoredBlock(key))
 				;	//nettest: Source per-DX/HDR shader-variant sub-block (vertexlitgeneric_dx9, Proxies, …) — benign
 			else if (st)	//nettest: only warn about UNKNOWN blocks at the material TOP level. Nested sub-blocks recurse with st==NULL — e.g. every proxy entry inside "Proxies" (GaussianNoise/PlayerProximity/Add/Subtract/Multiply/Equals/Sine/Clamp/…). FTE handles no nested blocks, so they're all benign noise.
@@ -2523,7 +2633,7 @@ static char *VMT_ParseBlock(const char *fname, vmtstate_t *st, char *line)
 			;	//nettest: recognised-but-ignored Source key; silenced (was per-field developer-1 spam)
 		}
 		else if (!Q_strcasecmp(key, "$halflambert"))
-			st->halflambert = 1;
+			st->halflambert = atof(value) != 0;	//FTESurf Patch 1770: "$halflambert 0" is off
 		/*
 		FTESurf: the tool materials.
 
@@ -2583,9 +2693,9 @@ static char *VMT_ParseBlock(const char *fname, vmtstate_t *st, char *line)
 			st->vertexalpha_on = atof(value) != 0;	//FTESurf Patch 783: the value, for VMT_AdditiveBlend only
 		}
 		else if (!Q_strcasecmp(key, "$decal"))
-			st->decal = atoi(value);
+			st->decalsrc = st->decal = atoi(value);
 		else if (!Q_strcasecmp(key, "$decalscale"))
-			;	//nettest: recognised-but-ignored Source key; silenced (was per-field developer-1 spam)
+			st->decalscale = atof(value);	//FTESurf Patch 1721
 		else if (!Q_strcasecmp(key, "$decalsize"))
 			;	//nettest: recognised-but-ignored Source key; silenced (was per-field developer-1 spam)
 		else if (!Q_strcasecmp(key, "$envmap"))
@@ -2637,13 +2747,14 @@ static char *VMT_ParseBlock(const char *fname, vmtstate_t *st, char *line)
 			st->envmapsat_set = 1;		//Patch 237: ditto -- $envmapsaturation 0 is a real request
 		}
 		else if (!Q_strcasecmp(key, "$basealphaenvmapmask"))
-			st->envfrombase=1;
+			st->envfrombase = atof(value) != 0;	//FTESurf Patch 1770: the value, not the key's presence
 		else if (!Q_strcasecmp(key, "$normalmapalphaenvmapmask"))
-			st->envfromnorm=1;
+			st->envfromnorm = atof(value) != 0;
 		else if (!Q_strcasecmp(key, "$crackmaterial"))
 			;	//nettest: recognised-but-ignored Source key; silenced (was per-field developer-1 spam)
 		else if (!Q_strcasecmp(key, "$selfillum"))
-			st->selfillum = 1;
+			st->selfillum = atof(value) != 0;	//FTESurf Patch 1770: "$selfillum 0" (HL2's oak_tree01, the canal railings) is off --
+											//it added the unlit base texture over the lit one, pale white trunks
 		else if (!Q_strcasecmp(key, "$selfillummask"))
 			Q_strlcpy(st->fullbrightmap, value, sizeof(st->fullbrightmap));
 		else if (!Q_strcasecmp(key, "$selfillumtint"))
@@ -2760,6 +2871,10 @@ static char *VMT_ParseBlock(const char *fname, vmtstate_t *st, char *line)
 			st->water_expensive = !!atoi(value);
 		else if (!Q_strcasecmp(key, "$nofresnel"))
 			st->water_nofresnel = !!atoi(value);
+		else if (!Q_strcasecmp(key, "$cheapwaterstartdistance"))
+			st->water_lodstart = atof(value), st->water_lodstart_set = 1;	//FTESurf Patch 1729
+		else if (!Q_strcasecmp(key, "$cheapwaterenddistance"))
+			st->water_lodend = atof(value), st->water_lodend_set = 1;
 		else if (!Q_strcasecmp(key, "$reflectblendfactor"))
 			st->water_reflectblend = atof(value), st->water_reflectblend_set = 1;
 		else if (!Q_strcasecmp(key, "$normalmap"))
@@ -2828,6 +2943,8 @@ static char *VMT_ParseBlock(const char *fname, vmtstate_t *st, char *line)
 		else
 			VMT_RecordKey(vmt_key_alien, &vmt_key_alien_n, &vmt_key_alien_over, key, fname, "Unknown");
 	}
+	for (i = 0; i < ndx; i++)
+		VMT_ParseBlock(fname, st, dxblock[i]);
 	if (replace)
 		VMT_ParseBlock(fname, st, replace);
 	return line;
@@ -4469,6 +4586,9 @@ static void Shader_GenerateFromVMT(parsestate_t *ps, vmtstate_t *st, const char 
 		} else {
 			Q_strlcatfz(script, &offset, sizeof(script),"\t\tblendFunc gl_dst_color gl_one_minus_src_alpha\n");
 		}
+		//FTESurf Patch 1776: a multiply of what is already drawn takes no exposure -- rgbgen identity is the
+		//exposure-scaled identity in the opaque sorts (x1.37 at auto-exposure 2.0), so blood brightened its floor
+		Q_strlcatfz(script, &offset, sizeof(script),	"\t\trgbGen const ( 1 1 1 )\n");
 
 		Q_strlcatfz(script, &offset, sizeof(script),	"\t}\n");
 		st->decal = 0;
@@ -4493,8 +4613,8 @@ static void Shader_GenerateFromVMT(parsestate_t *ps, vmtstate_t *st, const char 
 		//are its lighting, so surf_voyager's combine balls (comball_glow1, grey under $mod2x) drew black squares in space.
 		if (st->vertexcolor_on || st->vertexalpha_on)
 			Q_strlcatfz(script, &offset, sizeof(script),	"\trgbGen vertex\n");
-		else
-			Q_strlcatfz(script, &offset, sizeof(script),	"\trgbGen identity\n");
+		else	//FTESurf Patch 1776: constant 1, not the exposure-scaled identity (see DecalModulate)
+			Q_strlcatfz(script, &offset, sizeof(script),	"\trgbGen const ( 1 1 1 )\n");
 
 		Q_strlcatfz(script, &offset, sizeof(script),	"\t}\n");
 		st->translucent = 0;
@@ -4756,6 +4876,7 @@ static void Shader_GenerateFromVMT(parsestate_t *ps, vmtstate_t *st, const char 
 		}
 		else
 		{
+			char waterlod[64] = "";	//FTESurf Patch 1729: its fte_waterlod line, if any
 			/*
 			Refraction always; reflection only at 2.  Dropping the reflection
 			removes one whole scene render per batch and is what Source's own
@@ -4776,6 +4897,25 @@ static void Shader_GenerateFromVMT(parsestate_t *ps, vmtstate_t *st, const char 
 				}
 				if (VMT_WaterParallax(wmode, progargs))
 					Q_strlcat(wargs, "#PARALLAX", sizeof(wargs));
+				//FTESurf Patch 1729: hl2_water_lod -- Source's LOD mechanics (water.cpp DrawCheapWater's BLEND pass over
+				//the refraction between the distances; viewrender.cpp: no refraction past the end) on any water with an
+				//$envmap (the cheap pass's) and distances: the map's under a WaterLOD proxy, else its own authored pair.
+				//Source keeps them for water without a local reflection; see the cvar.
+				if (wmode == 1 && hl2_waterlod && hl2_waterlod->ival && st->envauthored &&
+					(st->water_lodproxy || (st->water_lodend_set && st->water_lodend > 0)))
+				{
+					float ls = st->water_lodstart_set ? st->water_lodstart : 0, le = st->water_lodend;
+					if (st->water_lodproxy)
+						Q_strlcat(wargs, "#CHEAPLOD#CHEAPLODMAP", sizeof(wargs));
+					else
+						Q_strlcat(wargs, va("#CHEAPLOD#LODSTART=%g#LODEND=%g", ls, le), sizeof(wargs));
+					if (st->water_nofresnel)
+						Q_strlcat(wargs, va("#NOFRESNEL#REFLECTBLEND=%g", st->water_reflectblend_set ? st->water_reflectblend : 1.0f), sizeof(wargs));
+					if (st->water_lodproxy)
+						Q_strlcpy(waterlod, "\tfte_waterlod map\n", sizeof(waterlod));
+					else
+						Q_snprintfz(waterlod, sizeof(waterlod), "\tfte_waterlod %g %g\n", ls, le);
+				}
 				Q_strlcatfz(script, &offset, sizeof(script),
 					"\t{\n"
 						"\t\tprogram \"vmt/water%s%s%s\"\n"	//P867: vmt/wateranim is vmt/water under GLSL 130
@@ -4806,6 +4946,8 @@ static void Shader_GenerateFromVMT(parsestate_t *ps, vmtstate_t *st, const char 
 			//FTESurf Patch 868: Source water reflects entities only under $reflectentities.
 			if (!st->water_reflectents)
 				Q_strlcatfz(script, &offset, sizeof(script), "\tfte_reflectnoentities\n");
+			if (*waterlod)
+				Q_strlcatfz(script, &offset, sizeof(script), "%s", waterlod);
 		}
 
 		/*
@@ -5515,6 +5657,15 @@ static void Shader_GenerateFromVMT(parsestate_t *ps, vmtstate_t *st, const char 
 			vmt_stat_translucent++;	//it costs what a translucent surface costs; the census should say so
 	}
 
+	if (st->decal || st->decalsrc || !Q_strcasecmp(st->type, "DecalModulate"))
+	{	//FTESurf Patch 1721: Source sizes an infodecal by its base texture's top mip x $decalscale (r_decal.cpp)
+		int dw, dh;
+		if (VMT_VTFSize(st->tex[0].name, &dw, &dh))
+		{
+			float ds = st->decalscale > 0 ? st->decalscale : 1;
+			Q_strlcatfz(script, &offset, sizeof(script),	"\tdecalsize %g %g\n", dw * ds, dh * ds);
+		}
+	}
 	if (st->decal) {
 		//Patch 990: a $decal Refract one step nearer than other decals: bhop_ceaseless's ripple, the
 		//swirl decal and the floor share z 11616, and at equal bias the ripple flickered over the swirl.
@@ -5525,6 +5676,7 @@ static void Shader_GenerateFromVMT(parsestate_t *ps, vmtstate_t *st, const char 
 		Q_strlcatfz(script, &offset, sizeof(script),	"\tfte_wireframe\n");	//FTESurf Patch 780
 	if (st->nofog)
 		Q_strlcatfz(script, &offset, sizeof(script), "\tfte_materialnofog\n");
+	Q_strlcatfz(script, &offset, sizeof(script), "\tfte_nonameguess\n");	//FTESurf Patch 1779: a VMT names its textures; no <base>_glow guess
 
 	if (*st->fullbrightmap)
 		Q_strlcatfz(script, &offset, sizeof(script), "\tfullbrightmap \"%s%s.vtf\"\n", strcmp(st->fullbrightmap, "materials/")?"materials/":"", st->fullbrightmap);
@@ -5575,7 +5727,15 @@ static void Shader_GenerateFromVMT(parsestate_t *ps, vmtstate_t *st, const char 
 		char cube[MAX_QPATH], hdr[MAX_QPATH];
 		const char *pfx = strcmp(st->envmap, "materials/")?"materials/":"";
 		Q_snprintfz(cube, sizeof(cube), "%s%s.vtf", pfx, st->envmap);
-		if (!fsfuncs->LocateFile(cube, FSLF_IFFOUND, NULL))
+		Q_snprintfz(hdr, sizeof(hdr), "%s%s.hdr.vtf", pfx, st->envmap);
+		if (fsfuncs->LocateFile(cube, FSLF_IFFOUND, NULL) && VMT_CubeUseHDR(cube, hdr))
+		{	//FTESurf Patch 1771: a map's named cubemap whose LDR file is VBSP's black placeholder and whose .hdr.vtf holds the
+			//bake (bhop_canals: all 412 .vtf black) -- Patch 1559's rule for the nearest cubemap, here for the 830 patched
+			//materials that name theirs, so the windows reflect the sky
+			vmt_stat_hdrenvmap++;
+			Q_strlcpy(cube, hdr, sizeof(cube));
+		}
+		else if (!fsfuncs->LocateFile(cube, FSLF_IFFOUND, NULL))
 		{
 			Q_snprintfz(hdr, sizeof(hdr), "%s%s.hdr.vtf", pfx, st->envmap);
 			if (fsfuncs->LocateFile(hdr, FSLF_IFFOUND, NULL))
@@ -5653,6 +5813,16 @@ static void Shader_GenerateFromVMT(parsestate_t *ps, vmtstate_t *st, const char 
 	//blendfunc on a material that already has the right one.
 	if (st->blendfunc && !st->animpass)
 		Q_strlcatfz(script, &offset, sizeof(script), "\tprogblendfunc %s\n", st->blendfunc);
+	//FTESurf Patch 1768: an alpha-tested or alpha-blended material (bushes, fences) throws the sun's shadow through its
+	//holes, as Source's depth passes alpha-test -- its depth-only pass is the built-in depthonly with #MASK and its
+	//base texture (the generic one drew the whole card: a solid quad of shadow under every bush).
+	if (*st->tex[0].name && !st->nobasetex && !st->additive && !st->animpass &&
+		(st->alphatest || (st->translucent_vmt && !st->envfrombase && !st->selfillum && VMT_TextureHasAlpha(st->tex[0].name))))
+	{	//(a translucent material's base alpha is its opacity only when no envmap or self-illum mask rides on it)
+		float mask = (st->alphatest && st->alphatestref > 0.0f) ? st->alphatestref : 0.5f;
+		mask = bound(0.01f, mask, 0.99f);
+		Q_strlcatfz(script, &offset, sizeof(script), "\tbemode depthonly\n\t{\n\t\tprogram \"depthonly#ALPHASHADOW#MASK=%f#MASKLT\"\n\t\tdiffusemap \"%s\"\n\t}\n", mask, VMT_BaseImage(st));
+	}
 	//FTESurf Patch 188: a top-level `rgbGen const` used to be emitted here.  It
 	//was a no-op at the top level and it passed the value through with its
 	//brackets still on, so it could not have worked even in a pass.  $color and

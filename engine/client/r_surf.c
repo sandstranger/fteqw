@@ -1493,14 +1493,26 @@ static void Surf_BuildLightMap (model_t *model, msurface_t *surf, int map, int s
 				//black (0) means "fully lit, dynamic shadow at full strength".  That makes every
 				//failure mode - sampler unbound, texture never created, format unsupported -
 				//land on the OLD behaviour instead of silently deleting every shadow in the game.
+				qbyte *svblock = svdst;
+				qboolean svchanged = false;
 				for (svrow = 0; svrow < tmax; svrow++)
 				{
 					for (svcol = 0; svcol < smax; svcol++)
-						svdst[svcol] = 255 - svsrc[svcol];
+					{
+						qbyte v = 255 - svsrc[svcol];
+						svchanged |= (svdst[svcol] != v);
+						svdst[svcol] = v;
+					}
 					svsrc += smax;
 					svdst += lm->width;
 				}
-				lm->sunvis_modified = true;
+				//static data: a dlight's or a style's rebuild of the same face must not re-upload the page (FTESurf Patch 1781)
+				if (svchanged)
+				{
+					if (pad)	//FTESurf Patch 1781: the lightmap's one-texel border (Patch 1275), or a face's edge filters in its atlas neighbour's sun
+						Surf_PadLightmapBlock(svblock, smax, tmax, lm->width, 1);
+					lm->sunvis_modified = true;
+				}
 			}
 		}
 	}
@@ -2367,6 +2379,31 @@ inherit the main view's cache.
 static model_t *surf_lastgoodworld;
 static int surf_lastgoodcluster[2] = {-1, -1};
 static vec3_t surf_lastgoodorg;	//FTESurf Patch 1627: the primary eye when surf_lastgoodcluster was taken
+//FTESurf Patch 1698: CSQC's checkpvs (pr_csqc.c) judges from here too while the eye is in solid, as the world draws
+static qboolean surf_mainvoidview;	//FTESurf Patch 1698: r_voidview of the last primary world view (no-world scenes keep it)
+qboolean Surf_MainVoidView(void)
+{
+	return surf_mainvoidview;
+}
+int Surf_LastGoodCluster(model_t *w)
+{
+	return (w && w == surf_lastgoodworld && surf_lastgoodcluster[0] < w->numclusters) ? surf_lastgoodcluster[0] : -1;
+}
+//FTESurf Patch 1698: an all-visible row for an unvised Source map, whose entities are then culled by area only
+static qbyte *surf_allvis;
+static size_t surf_allvisbytes;
+qbyte *Surf_AllVis(model_t *w)
+{
+	if (!w || !w->pvsbytes)
+		return NULL;
+	if (surf_allvisbytes < w->pvsbytes)
+	{
+		surf_allvis = BZ_Realloc(surf_allvis, w->pvsbytes);
+		surf_allvisbytes = w->pvsbytes;
+		memset(surf_allvis, 0xff, surf_allvisbytes);
+	}
+	return surf_allvis;
+}
 
 /*
 FTESurf build 17.  "The view is in the void AND the player is noclipping."
@@ -2417,6 +2454,8 @@ loader believed it emitted.
 int r_voidvis_edicts;		/*visedicts offered to the batch generator*/
 int r_voidvis_brush;		/*...of which are brush models*/
 int r_voidvis_dropped;		/*...rejected by the same primary STANDARD world-only gate*/
+int r_entpvs_culled, r_entpvs_norecord;	/*FTESurf Patch 1698: culled by their leaf record; drawn with none*/
+extern cvar_t r_entpvs_source;
 
 /*
 An all-visible PVS, handed to the world through r_refdef.forcedvis.
@@ -2579,6 +2618,8 @@ static void Surf_VoidSceneInfo(void)
 	Con_Printf("  eye %.3f %.3f %.3f angles %.3f %.3f %.3f\n", r_refdef.vieworg[0], r_refdef.vieworg[1], r_refdef.vieworg[2], r_refdef.viewangles[0], r_refdef.viewangles[1], r_refdef.viewangles[2]);
 	Con_Printf("  world meshes %i batches %i verts %i indexes %i shape %08x; census %i brush %i rejected %i (primary offered candidates before culling; developer 1)\n",
 		meshes, batches, verts, indexes, shape, r_voidvis_edicts, r_voidvis_brush, r_voidvis_dropped);
+	Con_Printf("  entity PVS (P1698, r_entpvs_source %i): %i culled by their leaves, %i drawn with no record\n",
+		r_entpvs_source.ival, r_entpvs_culled, r_entpvs_norecord);
 }
 
 //most of this is a direct copy from gl
@@ -2691,6 +2732,7 @@ void Surf_SetupFrame(void)
 			surf_lastgoodworld = cl.worldmodel;
 			surf_lastgoodcluster[0] = surf_lastgoodcluster[1] = -1;
 		}
+		surf_mainvoidview = false;
 
 		/*
 		  Build 17: in the void, noclipping, and asked for.  Leave the cluster
@@ -2705,6 +2747,7 @@ void Surf_SetupFrame(void)
 		if (r_viewcluster == -1 && r_voidvis.ival && Surf_PlayerIsNoclipping(r_refdef.playerview) && !Surf_VoidNear(r_refdef.vieworg))
 		{
 			r_voidview = true;
+			surf_mainvoidview = true;
 			if (Surf_WorldOnlyView(r_refdef.playerview))
 				r_refdef.flags |= RDF_WORLDONLY;
 
@@ -2947,9 +2990,14 @@ void Surf_GenBrushBatches(batch_t **batches, entity_t *ent)
 	//not a contents volume.  Left in, every tagged slide -- 484 of them on
 	//bhop_aberrant -- would draw both sides of every face and lose its
 	//transparency flag below, which is not what 'traces as a skin-0 brush' means.
+	//FTESurf Patch 1736: not a Source brush entity.  VBSP emits a water brush's top in both facings (the down-facing
+	//one carries $bottommaterial, or the same material lit from below), so two-sided drew the dark underside over
+	//the lit top at the same depth from above -- bhop_canals' slime (func_water_analog *18) flickered black.
+	//Source relies on backface culling there; so does this now.
 	if (ent->skinnum < 0 && !PMSLIDE_FLAGS_FROM_SKIN(ent->skinnum))
 	{
-		bef |= BEF_FORCETWOSIDED;
+		if (!(model->engineflags & MDLF_SOURCEBSP))
+			bef |= BEF_FORCETWOSIDED;
 
 		//nettest: AND THE WATER SHADER'S OWN ALPHA IS THE WHOLE ANSWER.
 		//
@@ -3814,6 +3862,15 @@ void Surf_DrawWorld (void)
 {
 	//surfvis vs entvis - the key difference is that surfvis is surfaces while entvis is volume. though surfvis should be frustum culled also for lighting. entvis doesn't care.
 	qbyte *surfvis, *entvis;
+	r_refdef.sceneentvis = NULL;	//FTESurf Patch 1698: set below for a Source world with a real eye cluster
+	if (!r_refdef.recurse)
+	{	//FTESurf Patch 1698: tells CSQC to cull its own polygons the same way; here, before any early return
+		extern cvar_t r_entpvs_active;
+		extern qboolean R_EntPVSSource(void);
+		qboolean on = R_EntPVSSource();
+		if (on != !!r_entpvs_active.ival)
+			Cvar_ForceSet(&r_entpvs_active, on ? "1" : "0");
+	}
 	int areas[2];
 	RSpeedLocals();
 
@@ -4100,9 +4157,9 @@ void Surf_DrawWorld (void)
 				if (!r_refdef.recurse && !(r_refdef.flags & (RDF_DISABLEPARTICLES|RDF_WORLDONLY)))
 					P_DrawParticles ();
 				if (!r_refdef.recurse && !(r_refdef.flags & RDF_WORLDONLY))
-					CL_EmitPersistentDecals ();	//nettest: persistent lit decals (before BE_DrawWorld consumes cl_stris)
+					CL_EmitPersistentDecals (NULL, NULL);	//nettest: persistent lit decals (before BE_DrawWorld consumes cl_stris)
 				else if (r_refdef.recurse && !(r_refdef.flags & (RDF_DISABLEPARTICLES|RDF_WORLDONLY)))
-					CL_PersistentDecals_PortalView ();	//FTESurf Patch 772
+					CL_PersistentDecals_PortalView (r_refdef.capturekind < 1 || r_refdef.capturekind > 3);	//FTESurf Patch 772
 
 				TRACE(("dbg: calling BE_DrawWorld\n"));
 				r_refdef.scenevis = surfvis;
@@ -4177,6 +4234,13 @@ void Surf_DrawWorld (void)
 		areas[0] = 1;
 		areas[1] = r_viewarea;
 		r_refdef.sceneareas = areas;
+		if (currentmodel->funcs.PrepareFrame && r_viewcluster >= 0)
+		{	//FTESurf Patch 1698 (gl_alias.c BE_GenModelBatches, decals below). An unvised map: all clusters, so its
+			//entities are culled by area as Patch 1271 culls its world (not under r_novis or a forced vis)
+			r_refdef.sceneentvis = entvis;
+			if (!entvis && !currentmodel->vis && !r_novis.ival && !r_refdef.forcevis && r_viewarea > 0)
+				r_refdef.sceneentvis = Surf_AllVis(currentmodel);
+		}
 		if (!(r_refdef.flags & RDF_NOWORLDMODEL))
 		{
 			CL_LinkStaticEntities(entvis, r_refdef.sceneareas);
@@ -4184,9 +4248,9 @@ void Surf_DrawWorld (void)
 			if (!r_refdef.recurse && !(r_refdef.flags & (RDF_DISABLEPARTICLES|RDF_WORLDONLY)))
 				P_DrawParticles ();
 			if (!r_refdef.recurse && !(r_refdef.flags & RDF_WORLDONLY))
-				CL_EmitPersistentDecals ();	//nettest: persistent lit decals
+				CL_EmitPersistentDecals (r_refdef.sceneentvis, r_refdef.sceneareas);	//nettest: persistent lit decals
 			else if (r_refdef.recurse && !(r_refdef.flags & (RDF_DISABLEPARTICLES|RDF_WORLDONLY)))
-				CL_PersistentDecals_PortalView ();	//FTESurf Patch 772
+				CL_PersistentDecals_PortalView (r_refdef.capturekind < 1 || r_refdef.capturekind > 3);	//FTESurf Patch 772
 		}
 
 		//FTESurf Patch 218: the world walk emitted these near-to-far, which is

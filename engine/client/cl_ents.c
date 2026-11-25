@@ -5101,6 +5101,7 @@ typedef struct
 	float		die;			//0 = never; else cl.time to expire
 	unsigned int clipflags;		//FTESurf Patch 772: PDC_*
 	vec3_t		mins, maxs;		//FTESurf Patch 772: the clipped geometry's bounds, for the frustum cull
+	pvscache_t	pvs;			//FTESurf Patch 1698: leaves of mins/maxs, for the PVS cull on Source maps
 } persistdecal_t;
 
 static persistdecal_t		*cl_persistdecals;
@@ -5227,14 +5228,23 @@ static void CL_AddDecalStatic_Callback(void *vctx, vec3_t *fte_restrict points, 
 		VectorScale(surf->plane->normal, (DotProduct(surf->plane->normal, ctx->axis[0]) > 0) ? -0.25f : 0.25f, lift);
 	for (tr = 0; tr < numtris; tr++)
 	{
-		persistdecaltri_t *tri = CL_PersistTri_Alloc();
-		tri->lightmap = page;
+		persistdecaltri_t tmp, *tri;
 		for (k = 0; k < 3; k++)
 		{
-			VectorAdd(points[tr*3+k], cc->shift, tri->vertex[k]);
-			CL_Decal_VertexAttribs(ctx, surf, page, points[tr*3+k], tri->vertex[k], tri->texcoord[k], tri->lmcoord[k], &tri->valpha[k]);
-			VectorAdd(tri->vertex[k], lift, tri->vertex[k]);
+			VectorAdd(points[tr*3+k], cc->shift, tmp.vertex[k]);
+			CL_Decal_VertexAttribs(ctx, surf, page, points[tr*3+k], tmp.vertex[k], tmp.texcoord[k], tmp.lmcoord[k], &tmp.valpha[k]);
+			VectorAdd(tmp.vertex[k], lift, tmp.vertex[k]);
 		}
+		//FTESurf Patch 1721: past the depth fade at every corner draws nothing.  A Source-sized decal's deep box
+		//reached the wall behind a prop hull, and those invisible tris counted the decal placed (no retry).
+		if (tmp.valpha[0] <= 0 && tmp.valpha[1] <= 0 && tmp.valpha[2] <= 0)
+			continue;
+		tri = CL_PersistTri_Alloc();
+		tri->lightmap = page;
+		memcpy(tri->vertex, tmp.vertex, sizeof(tri->vertex));
+		memcpy(tri->texcoord, tmp.texcoord, sizeof(tri->texcoord));
+		memcpy(tri->lmcoord, tmp.lmcoord, sizeof(tri->lmcoord));
+		memcpy(tri->valpha, tmp.valpha, sizeof(tri->valpha));
 		tri->next = cc->rec->tris;
 		cc->rec->tris = tri;
 	}
@@ -5257,6 +5267,15 @@ static qboolean CL_ClipPersistDecal(persistdecal_t *rec)
 	if (!rec->shader || !cl.worldmodel)
 		return false;
 
+	if ((rec->clipflags & PDC_SOURCESIZE) && rec->shader->decalsize[0] > 0 && rec->shader->decalsize[1] > 0)
+	{	//FTESurf Patch 1721: side's length is 1/height, aspect width/height (CL_Decal_SetupCtx)
+		float l = VectorLength(rec->side);
+		if (l > 0)
+		{
+			VectorScale(rec->side, 1/(l * rec->shader->decalsize[1]), rec->side);
+			rec->aspect = rec->shader->decalsize[0] / rec->shader->decalsize[1];
+		}
+	}
 	cc.rec = rec;
 	VectorClear(cc.shift);
 	CL_Decal_SetupCtx(&cc.base, rec->shader, rec->origin, rec->up, rec->side, rec->rgba, rec->rgba[3], rec->aspect, rec->texrange, cliptan1, cliptan2, &clipsize);
@@ -5303,6 +5322,9 @@ static qboolean CL_ClipPersistDecal(persistdecal_t *rec)
 			for (k = 0; k < 3; k++)
 				AddPointToBounds(tri->vertex[k], rec->mins, rec->maxs);
 	}
+	memset(&rec->pvs, 0, sizeof(rec->pvs));
+	if (rec->tris && cl.worldmodel->funcs.FindTouchedLeafs)
+		cl.worldmodel->funcs.FindTouchedLeafs(cl.worldmodel, &rec->pvs, rec->mins, rec->maxs);
 	return rec->tris != NULL;
 }
 
@@ -5395,14 +5417,23 @@ static void CL_EmitPersistDecalTris(persistdecal_t *rec)
 //so a decal outside the main frustum may still be seen through one. Cull only on frames that follow
 //one with no such view; the skyroom draws no scene tris (RDF_DISABLEPARTICLES) and does not count.
 //The first frame a portal appears, the main view has already culled: a one-frame pop in it.
-void CL_PersistentDecals_PortalView(void)
+static int cl_persistdecal_otherplaceframe;	//FTESurf Patch 1698: a portal into another place, not a water capture
+void CL_PersistentDecals_PortalView(qboolean otherplace)
 {
 	cl_persistdecal_portalframe = cls.framecount;
+	if (otherplace)
+		cl_persistdecal_otherplaceframe = cls.framecount;
 }
-void CL_EmitPersistentDecals(void)
+void CL_EmitPersistentDecals(const qbyte *vis, const int *areas)
 {
+	extern qboolean R_EntPVSSource(void);
 	int i;
 	qboolean cull = (unsigned int)(cls.framecount - cl_persistdecal_portalframe) > 1;
+	//FTESurf Patch 1698: another stage's decal is not drawn in your sky. A water capture shows this view's PVS
+	//mirrored, so only a portal into another place, last frame, keeps decals outside it.
+	qboolean pvscull = (unsigned int)(cls.framecount - cl_persistdecal_otherplaceframe) > 1 && vis && R_EntPVSSource();
+	if (areas && (areas[0] < 1 || areas[1] <= 0))
+		areas = NULL;	//eye in solid: no area is connected to it (gl_alias.c)
 	for (i = 0; i < cl_numpersistdecals; i++)
 	{
 		persistdecal_t *rec = &cl_persistdecals[i];
@@ -5418,6 +5449,8 @@ void CL_EmitPersistentDecals(void)
 		if (!rec->shader || !rec->tris)
 			continue;
 		if (cull && R_CullBox(rec->mins, rec->maxs))
+			continue;
+		if (pvscull && rec->pvs.num_leafs && !cl.worldmodel->funcs.EdictInFatPVS(cl.worldmodel, &rec->pvs, vis, areas))
 			continue;
 		CL_EmitPersistDecalTris(rec);
 	}
@@ -6631,6 +6664,7 @@ void CL_LinkPacketEntities (void)
 	struct itemtimer_s	*timer, **timerlink;
 	float timestep = cl.time-cl.lastlinktime;
 	extern cvar_t r_ignoreentpvs;
+	extern qboolean R_EntPVSSource(void);
 	vec3_t absmin, absmax;
 	cl.lastlinktime = cl.time;
 	timestep = bound(0, timestep, 0.1);
@@ -6908,7 +6942,7 @@ void CL_LinkPacketEntities (void)
 			model2 = NULL;
 
 
-		if (r_ignoreentpvs.ival || !model)
+		if ((r_ignoreentpvs.ival && !R_EntPVSSource()) || !model)	//FTESurf Patch 1698: Source maps keep records
 		{
 			ent->pvscache.num_leafs = 0;
 #if defined(Q2BSPS) || defined(Q3BSPS) || defined(TERRAIN)
@@ -6920,7 +6954,16 @@ void CL_LinkPacketEntities (void)
 		else
 		{
 			/*bsp model size*/
-			if (model->type == mod_brush && (state->angles[0]||state->angles[1]||state->angles[2]))
+			if (model->type == mod_brush && (state->angles[0]||state->angles[1]||state->angles[2]) && model->radius > 0 && R_EntPVSSource())
+			{	//FTESurf Patch 1698: the bounding radius covers every rotation; the Q2 cube below misses a turned slab's corners
+				int i;
+				for (i=0 ; i<3 ; i++)
+				{
+					absmin[i] = ent->origin[i] - model->radius;
+					absmax[i] = ent->origin[i] + model->radius;
+				}
+			}
+			else if (model->type == mod_brush && (state->angles[0]||state->angles[1]||state->angles[2]))
 			{
 				int i;
 				float v;

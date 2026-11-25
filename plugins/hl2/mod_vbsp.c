@@ -102,6 +102,8 @@ static cvar_t *hl2_lumpretire;	//FTESurf Patch 298
 static cvar_t *hl2_lightmap_repack;	//FTESurf Patch 281: see VBSP_RepackLighting
 static cvar_t *hl2_bumpstride;	//FTESurf Patch 268 D1: tag surfaces with their per-style luxel-set stride, see VBSP_ProbeLightmapStride
 static cvar_t *hl2_rnm;	//FTESurf Patch 1264: bumped faces lit by their basis maps, see VBSP_BuildRNM
+static cvar_t *hl2_sunpage;	//FTESurf Patch 1781: Strata's baked direct-sun page, see VBSP_BuildSunPage
+static cvar_t *hl2_dispnormals;	//FTESurf Patch 1781: displacement normals/tangents from the displaced grid, see VBSP_BuildSurfMesh
 static cvar_t *map_noareas;
 static cvar_t *map_autoopenportals;
 static cvar_t *hl2_areaportals;		//FTESurf Build 8
@@ -132,7 +134,7 @@ extern int vmt_stat_unparsed;	//FTESurf Patch 181, found but would not parse -- 
 extern char vmt_stat_unparsed_name[VMT_MISSING_LIST][MAX_QPATH];
 void Mat_VMT_ResetStats (void);
 int Mat_VMT_ReportUnsupported(void);
-extern cvar_t *hl2_water, *hl2_refract, *hl2_translucent;
+extern cvar_t *hl2_water, *hl2_waterlod, *hl2_refract, *hl2_translucent;
 extern cvar_t *hl2_animated;	//FTESurf Patch 195, owned by mat_vmt.c like the rest
 extern cvar_t *hl2_vertexcolor;	//FTESurf Patch 232, likewise
 extern cvar_t *hl2_decallit;	//FTESurf Patch 236's kill switch, added by 238
@@ -189,6 +191,7 @@ extern cvar_t *hl2_dither_force;	//FTESurf Patch 174, likewise
 cvar_t *hl2_texdiag;	//FTESurf build 11: the engine's r_texdiag, borrowed -- see VBSP_GenerateMaterials.
 							//Patch 239 dropped `static`: img_vtf.c reports the per-file image format under it.
 static cvar_t *hl2_propdist;	//FTESurf Patch 193: default draw distance for props that declare no fade -- see VBSP_PrepareFrame.
+static cvar_t *vbsp_r_shadows, *vbsp_r_shadows_distance, *vbsp_r_shadows_cascades, *vbsp_r_shadows_cascade_dist, *vbsp_r_shadows_slots, *vbsp_r_shadows_sunfloor;	//FTESurf Patch 1760/1762: the engine's
 static cvar_t *hl2_detail;	//FTESurf Patch 1038: detail props (grass) -- see VBSP_DetailBuild.
 cvar_t *hl2_rigidprops;			//FTESurf Patch 230: read by Mod_LoadHL2Model in mod_hl2.c, registered here with the rest.
 
@@ -200,6 +203,8 @@ qboolean Mod_PHY_ConvexPieces (model_t *mod, plugfsfuncs_t *phy_filefuncs,
                                plugmodfuncs_t *phy_modfuncs, vecV_t **xyz,
                                index_t **idx, size_t **ledgestart, size_t *numledges,
                                int fixed, qboolean *wrapped);	//FTESurf Patch 764, 888
+qboolean Mod_PHY_SolidPieces (const qbyte *solid, size_t len, vecV_t **xyz, index_t **idx,
+                              size_t **ledgestart, size_t *numledges, int **ledgedata);	//FTESurf Patch 1713
 extern volatile int phy_stat_unwrapped;	//FTESurf Patch 888
 cvar_t *hl2_phywinding;	//FTESurf Patch 317: read by Mod_LoadHL2Model in mod_hl2.c, registered here beside hl2_dispwinding
 /*FTESurf Patch 318 -- see the essay above VBSP_AddBrushBevels.  Up here because
@@ -349,7 +354,7 @@ enum hllumps_e
 	VLUMP_DISP_INFO		= 26,
 //	VLUMP_FOO			= 27,
 //	VLUMP_FOO			= 28,
-//	VLUMP_FOO			= 29,
+	VLUMP_PHYSCOLLIDE	= 29,	//FTESurf Patch 1713: the models' vcollides (VBSP_VPhysSolids)
 	VLUMP_VERTNORMALS	= 30,	//FTESurf Patch 1023: VRAD's smoothed vertex normals...
 	VLUMP_VERTNORMALINDICES = 31,	//...one index per face vertex, faces in lump order
 	VLUMP_DISP_LMALPHA	= 32,
@@ -524,6 +529,7 @@ typedef struct vbspinfo_s
 
 	int				numbrushes;
 	q2cbrush_t		*brushes;
+	q2cbrush_t		**brushfarfix;	//FTESurf Patch 1748: [numbrushes], VBSP_FarBrushFix's; NULL = the exe predates mover 16
 	qboolean		*brushlightopaque;
 	qboolean		*brushvisopaque;	//FTESurf Patch 879: ...and hides what is behind it (VBSP_CONTENTS_LIGHTONLY)
 	model_t			*wl_trace_model;	//unregistered world-only light BIH; map-owned
@@ -613,10 +619,15 @@ typedef struct vbspinfo_s
 		float	constant_attn, linear_attn, quadratic_attn;
 	} *worldlights;
 	size_t		numworldlights;
+	//FTESurf Patch 1722: the map's emit_skylight, kept out of worldlights[]: it reaches a point only by a trace that
+	//ends on sky (VBSP_SunVisible), Source's light-cache rule for it
+	qboolean	sun_have;
+	vec3_t		sun_normal, sun_intensity;
 	//Suppressed for exactly one population: props whose .vhv bake already
 	//contains VRAD's direct light.  Set around the HL2_CalcModelLighting call in
 	//the prop loop, never anywhere else.  See the essay there.
 	qboolean	wl_suppress;
+	int			bspversion;	//FTESurf Patch 1780: the header's (25: Strata, whose .vhv alpha is the direct sun)
 	/*
 	FTESurf Patch 304: enabled for exactly one population -- static props, which
 	are the only models guaranteed to render through plugins/hl2/glsl/vmt/
@@ -739,6 +750,7 @@ typedef struct vbspinfo_s
 	size_t			detailrawsize;
 	char			detailmaterial[MAX_QPATH];	//worldspawn "detailmaterial"
 	float			detailfadestart, detailfadeend;	//env_detail_controller's; -1 = none
+	qboolean		csm;	//FTESurf Patch 1760: the map has a Strata env_cascade_light, so static props cast the sun's shadow
 	float			detailmaxd, detailfade;		//as Source sets cl_detaildist / cl_detailfade from them
 	qboolean		detailbuilt;
 	size_t			numdetailcells, maxdetailcells;
@@ -746,6 +758,8 @@ typedef struct vbspinfo_s
 
 	unsigned int contentsremap[32];
 	qboolean	lightwarm_done;		//FTESurf Patch 1364: this load's prop-lighting warm is over
+	qbyte		**vpsolid;			//FTESurf Patch 1713: per submodel, a copy of the vcollide solid Source sweeps boxes
+	size_t		*vplen;				//against (VBSP_VPhysSolids), for the submodel loop; freed after it
 } vbspinfo_t;
 
 /*
@@ -924,10 +938,12 @@ static void VBSP_PhyRotate(const struct bihtransform_s *trn, const float *m, vec
 }
 
 //False refuses the prop (a ledge not convex or degenerate): it keeps its triangles.
-static qboolean VBSP_PhyBrushes(model_t *mod, struct staticprop_s *sp, const struct vbsp_phypieceset_s *pc,
-                                q2cbrush_t **outbrushes, unsigned int *outnum)
+//FTESurf Patch 1713: also a brush entity's vcollide (VBSP_VPhysAlt): `margin` stands every side that much
+//proud, and `contents` (per ledge, or NULL for FTECONTENTS_BODY) replaces the prop's.  A prop passes
+//0 and NULL, which builds exactly what it always did and counts in the prop statistics.
+static qboolean VBSP_PhyBrushesT(model_t *mod, const struct bihtransform_s *trn, const struct vbsp_phypieceset_s *pc,
+                                 float margin, const unsigned int *contents, q2cbrush_t **outbrushes, unsigned int *outnum)
 {
-	const struct bihtransform_s *trn = &sp->transform;
 	size_t li, t, nb = 0;
 	int k, a, e, n, nw, *map = NULL;
 	vec3_t *w = NULL, cen, u, v, nrm, axis;
@@ -1052,18 +1068,24 @@ static qboolean VBSP_PhyBrushes(model_t *mod, struct staticprop_s *sp, const str
 		for (k = 0; k < n; k++)
 		{
 			VectorCopy(pl[k], planes[k].normal);
-			planes[k].dist = pl[k][3];
+			planes[k].dist = pl[k][3] + margin;
 			planes[k].type = (planes[k].normal[0] == 1) ? 0 : (planes[k].normal[1] == 1) ? 1 : (planes[k].normal[2] == 1) ? 2 : 3;
 			planes[k].signbits = (planes[k].normal[0] < 0 ? 1 : 0) | (planes[k].normal[1] < 0 ? 2 : 0) | (planes[k].normal[2] < 0 ? 4 : 0);
 			b->brushside[k].plane = &planes[k];
 			b->brushside[k].surface = &vbsp_physurface;
 		}
 		b->numsides = n;
-		vbsp_stat_phyplanes += n;
-		b->contents = FTECONTENTS_BODY;	//what mod_hl2 gives the hull's triangles
+		if (!contents)
+			vbsp_stat_phyplanes += n;
+		b->contents = contents ? contents[li] : FTECONTENTS_BODY;	//what mod_hl2 gives the hull's triangles
 		ClearBounds(b->absmins, b->absmaxs);
 		for (k = 0; k < nw; k++)
 			AddPointToBounds(w[k], b->absmins, b->absmaxs);
+		for (k = 0; k < 3; k++)
+		{	//Patch 1713: the margin moves every side out, so the box grows with it
+			b->absmins[k] -= margin;
+			b->absmaxs[k] += margin;
+		}
 		nb++;
 	}
 
@@ -1074,8 +1096,354 @@ static qboolean VBSP_PhyBrushes(model_t *mod, struct staticprop_s *sp, const str
 		return false;
 	*outbrushes = brushes;
 	*outnum = nb;
-	vbsp_stat_phypieces += nb;
+	if (!contents)
+		vbsp_stat_phypieces += nb;
 	return true;
+}
+static qboolean VBSP_PhyBrushes(model_t *mod, struct staticprop_s *sp, const struct vbsp_phypieceset_s *pc,
+                                q2cbrush_t **outbrushes, unsigned int *outnum)
+{
+	return VBSP_PhyBrushesT(mod, &sp->transform, pc, 0, NULL, outbrushes, outnum);
+}
+
+/*
+==================
+FTESurf Patch 1713: brush entities Source collides through their vcollide
+
+Source's CEngineTrace::ClipRayToVPhysics sweeps a BOX against a SOLID_VPHYSICS
+brush entity's vcollide (solid 0) -- "do ray traces with normal code, but use
+vphysics to do box traces" -- and the player is a box.  That vcollide is not the
+brushes: VBSP (utils/vbsp/ivp.cpp BuildConvexForBrush) skips every bevel side and
+pulls each VISIBLE side in VPHYSICS_SHRINK (0.5), leaving nodraw and clip sides
+where they are, and vphysics then keeps its 0.25 separation radius on both
+shapes ("it's symmetric").  So a visible side ends where the brush is and a clip
+or nodraw side stands half a unit proud.  Measured on ahop_coast's func_brush *134
+(16 player-clip wedges up the climb at x 11400-12700): Momentum's ten 2026 bhop
+demos land on it with our floor 2.2-4.3 units down, and take off (sv_jump_z_offset
+0 pins the takeoff to the floor) 0.53-0.57 above its stored hull -- the half unit
+plus the trace's 1/32.  Seven of those wedges also carry a compile bevel that cuts
+22-34 units off their top: harmless to Source, which never reads bevels there, and
+what we were standing on.
+
+So: the stored hull as Patch 764 builds a prop's (faces, axial and edge bevels at
+the hull's own support), every side moved out VBSP_VPHYS_MARGIN, each piece keeping
+its brush's contents (client_data is the brush number, SetConvexGameData).  Which
+entities: Source's Spawn()s (SDK 2013 server/), VBSP_VPhysClass.  The tree is the
+submodel's vphysalt, swept only by Source movers from 15 (bih_vphys).
+
+Tried and measured against the same demos, so nobody re-runs them: a half unit
+kept only ALONG the sweep (look 0.5 past the end, stop 0.5 short) fixes the two
+grazing passes below but loses ten real hits on func_brush *25 that end within
+0.11-0.45 of its hull (48 ticks better, 12 worse); the margin on faces and axial
+planes but not edge bevels loses two landings (40 better, 3 worse).  This one is
+42 better, 3 worse (2 graded): Momentum twice passes within 0.40/0.47 of a *134
+wedge's edge mid-sweep without a hit, where the shapes' edges are rounded
+(vphysics' radius is a sphere; ours is planes).  VPhysics-Jolt, which Strata can
+run instead, rounds both shapes' edges by 0.05 m and adds nothing on faces; the
+demos say faces stand 0.5 proud, so Momentum's sweeps are not that one.
+==================
+*/
+#define VBSP_VPHYS_MARGIN	0.5f	/*vphysics' 0.25 separation radius, on the hull and on the box*/
+static qboolean vbsp_tail1717;	//FTESurf Patch 1717: the exe answers plugmodeltail1717_name: model_t has LightPointFold
+static qboolean vbsp_tail1748;	//FTESurf Patch 1748: ...plugmodeltail1748_name: farfixbrushes/farfixknown, BIH_BRUSHPAIR
+static qboolean vbsp_tail1713;	//the exe answers plugmodeltail1713_name: its model_t has vphysalt (com_mesh.h)
+static qboolean vbsp_tail1812;	//FTESurf Patch 1812: ...plugmodeltail1812_name: it sweeps a model's vphysalt only from mover 17
+static unsigned int vbsp_stat_vphysmodels, vbsp_stat_vphysrefused, vbsp_stat_vphyspieces;
+
+typedef struct
+{
+	char cls[64], name[64], parent[64];
+	int model, solidbsp, spawnflags;
+} vbsp_vpent_t;
+
+//Source's solid type for entity i ignoring a door's parent: 1 SOLID_VPHYSICS, 2 SOLID_BSP, 0 anything else.
+static int VBSP_VPhysClassOwn(const vbsp_vpent_t *e, int i)
+{
+	const char *c = e[i].cls;
+	if (!Q_strcasecmp(c, "func_brush") || !Q_strcasecmp(c, "func_reflective_glass") || !Q_strcasecmp(c, "func_door_rotating") ||
+		!Q_strcasecmp(c, "func_rotating") || !Q_strcasecmp(c, "momentary_rot_button"))
+		return e[i].solidbsp ? 2 : 1;	//modelentities.cpp:43/63 (+CFuncReflectiveGlass), doors.cpp:1403/1407, bmodels.cpp:694/752, buttons.cpp:1047/1061
+	if (!Q_strcasecmp(c, "func_rot_button") || !Q_strcasecmp(c, "func_movelinear") ||
+		!Q_strcasecmp(c, "momentary_door") || !Q_strcasecmp(c, "func_water_analog") ||
+		!Q_strcasecmp(c, "func_physbox") || !Q_strcasecmp(c, "func_physbox_multiplayer") ||
+		!Q_strcasecmp(c, "simple_physics_brush"))
+		return 1;	//buttons.cpp:870, func_movelinear.cpp:96, physobj.cpp:447/1243
+	if (!Q_strcasecmp(c, "func_pushable"))
+		return (e[i].spawnflags & 128) ? 2 : 1;	//func_break.cpp:1238-1246, SF_PUSH_BREAKABLE -> CBreakable
+	if (!Q_strcasecmp(c, "func_tracktrain") || !Q_strcasecmp(c, "func_tanktrain"))
+		return (e[i].spawnflags & 0x80) ? 2 : 1;	//trains.cpp:2717, SF_TRACKTRAIN_HL1TRAIN (tanktrain.cpp:40 derives)
+	if (!Q_strcasecmp(c, "func_door") || !Q_strcasecmp(c, "func_water"))
+		return 1;	//doors.cpp:249-257; VBSP_VPhysClass applies the parent rule
+	if (!Q_strcasecmp(c, "func_wall") || !Q_strcasecmp(c, "func_wall_toggle") || !Q_strcasecmp(c, "func_conveyor") ||
+		!Q_strcasecmp(c, "func_breakable") || !Q_strcasecmp(c, "func_button") || !Q_strcasecmp(c, "func_plat") ||
+		!Q_strcasecmp(c, "func_platrot") || !Q_strcasecmp(c, "func_train") || !Q_strcasecmp(c, "func_lod") ||
+		!Q_strcasecmp(c, "func_vehicleclip") || !Q_strcasecmp(c, "trigger_brush"))
+		return 2;
+	return 0;
+}
+//...and with it: a func_door/func_water under a SOLID_BSP root move parent is SOLID_BSP (doors.cpp:249-257).
+//The parent walk is bounded, so a parentname loop (a map can hold one) ends instead of recursing.
+static int VBSP_VPhysClass(const vbsp_vpent_t *e, int n, int i)
+{
+	int own = VBSP_VPhysClassOwn(e, i), root = i, steps, j;
+	if (own != 1 || (Q_strcasecmp(e[i].cls, "func_door") && Q_strcasecmp(e[i].cls, "func_water")))
+		return own;
+	for (steps = 0; steps < 64 && *e[root].parent; steps++)
+	{
+		for (j = 0; j < n; j++)
+			if (j != root && *e[j].name && !Q_strcasecmp(e[j].name, e[root].parent))
+				break;
+		if (j == n)
+			break;
+		root = j;
+	}
+	if (steps == 64)
+		return 1;	//a loop has no root
+	if (root == i)
+		return 1;
+	if (!Q_strncasecmp(e[root].cls, "trigger_", 8))
+		return 2;	//an unparented trigger is SOLID_BSP (triggers.cpp CBaseTrigger::InitTrigger)
+	return VBSP_VPhysClassOwn(e, root) == 2 ? 2 : 1;
+}
+
+//-> per model index (1..nummodels-1), its vcollide's solid 0 when Source sweeps boxes against it, else NULL.
+static const qbyte **VBSP_VPhysSolids(qbyte *mod_base, size_t basesize, vlump_t *lumps, int nummodels, size_t **outlen)
+{
+	vlump_t *el = &lumps[VLUMP_ENTITIES], *pl = &lumps[VLUMP_PHYSCOLLIDE];
+	const qbyte *d = mod_base + pl->fileofs;
+	const qbyte **solid;
+	size_t *len, o = 0, n = pl->filelen;
+	char *text, *data, key[128], token[1024];
+	vbsp_vpent_t *ents = NULL;
+	int numents = 0, maxents = 0, i;
+	qbyte *want;
+
+	*outlen = NULL;
+	if (nummodels < 2 || n < 16 || !el->filelen ||	//DecompressLumps skips a lump past the file, it does not drop it
+		(size_t)pl->fileofs + n > basesize || (size_t)el->fileofs + el->filelen > basesize)
+		return NULL;
+	want = plugfuncs->Malloc(nummodels);
+	text = plugfuncs->Malloc((size_t)el->filelen + 1);
+	if (!want || !text)
+	{
+		plugfuncs->Free(want);
+		plugfuncs->Free(text);
+		return NULL;
+	}
+	memset(want, 0, nummodels);
+	memcpy(text, mod_base + el->fileofs, el->filelen);
+	text[el->filelen] = 0;	//not every map stores the terminator (VBSP_LoadColourCorrection)
+	for (data = text;;)
+	{
+		vbsp_vpent_t e;
+		data = cmdfuncs->ParseToken(data, token, sizeof(token), NULL);
+		if (!data)
+			break;
+		if (*token != '{')
+			continue;
+		memset(&e, 0, sizeof(e));
+		e.model = -1;
+		for (;;)
+		{
+			data = cmdfuncs->ParseToken(data, key, sizeof(key), NULL);
+			if (!data || *key == '}')
+				break;
+			data = cmdfuncs->ParseToken(data, token, sizeof(token), NULL);
+			if (!data)
+				break;
+			if (!Q_strcasecmp(key, "classname"))		Q_strlcpy(e.cls, token, sizeof(e.cls));
+			else if (!Q_strcasecmp(key, "targetname"))	Q_strlcpy(e.name, token, sizeof(e.name));
+			else if (!Q_strcasecmp(key, "parentname"))
+			{
+				char *comma;
+				Q_strlcpy(e.parent, token, sizeof(e.parent));
+				if ((comma = strchr(e.parent, ',')))	//"name,attachment"
+					*comma = 0;
+			}
+			else if (!Q_strcasecmp(key, "model") && *token == '*')	e.model = atoi(token+1);
+			else if (!Q_strcasecmp(key, "solidbsp"))	e.solidbsp = atoi(token);
+			else if (!Q_strcasecmp(key, "spawnflags"))	e.spawnflags = atoi(token);
+		}
+		if (numents == maxents)
+		{
+			vbsp_vpent_t *g = plugfuncs->Realloc(ents, sizeof(*ents)*(maxents = maxents ? maxents*2 : 256));
+			if (!g)
+				break;
+			ents = g;
+		}
+		ents[numents++] = e;
+		if (!data)
+			break;
+	}
+	for (i = 0; i < numents; i++)
+		if (ents[i].model > 0 && ents[i].model < nummodels && VBSP_VPhysClass(ents, numents, i) == 1)
+			want[ents[i].model] = 1;
+	plugfuncs->Free(ents);
+	plugfuncs->Free(text);
+
+	solid = plugfuncs->Malloc(sizeof(*solid)*nummodels);
+	len = plugfuncs->Malloc(sizeof(*len)*nummodels);
+	if (!solid || !len)
+	{
+		plugfuncs->Free(solid);
+		plugfuncs->Free(len);
+		plugfuncs->Free(want);
+		return NULL;
+	}
+	memset(solid, 0, sizeof(*solid)*nummodels);
+	memset(len, 0, sizeof(*len)*nummodels);
+	while (o + 16 <= n)
+	{	//dphysmodel_t {modelIndex, dataSize, keydataSize, solidCount}, then the solids, then the key text
+		int h[4], sz;
+		memcpy(h, d + o, sizeof(h));
+		for (i = 0; i < 4; i++)
+			h[i] = LittleLong(h[i]);
+		o += 16;
+		if (h[0] == -1 || h[1] < 0 || h[2] < 0 || (size_t)h[1] + (size_t)h[2] > n - o)
+			break;
+		if (h[0] > 0 && h[0] < nummodels && want[h[0]] && h[3] >= 1 && h[1] >= 4)
+		{	//solid 0 only: ClipRayToVPhysics' own BUGBUG ("only works when the vcollide in question is the first solid")
+			memcpy(&sz, d + o, 4);
+			sz = LittleLong(sz);
+			if (sz > 0 && (size_t)sz + 4 <= (size_t)h[1])
+			{
+				solid[h[0]] = d + o;
+				len[h[0]] = (size_t)sz + 4;
+			}
+		}
+		o += (size_t)h[1] + (size_t)h[2];
+	}
+	plugfuncs->Free(want);
+	*outlen = len;
+	return solid;
+}
+
+//Builds submodel `sub`'s vphysalt from its vcollide solid.  On a refused hull it keeps none (brushes as before).
+static void VBSP_VPhysAlt(model_t *sub, const qbyte *solid, size_t len)
+{
+	vbspinfo_t *prv = (vbspinfo_t*)sub->meshinfo;
+	struct vbsp_phypieceset_s pc;
+	struct bihtransform_s trn;
+	struct bihleaf_s *leafs;
+	int *data = NULL;
+	unsigned int *cont, nb = 0, i;
+	q2cbrush_t *brushes = NULL;
+	model_t *twin;
+
+	memset(&pc, 0, sizeof(pc));
+	if (!Mod_PHY_SolidPieces(solid, len, &pc.xyz, &pc.idx, &pc.ledgestart, &pc.numledges, &data))
+	{
+		vbsp_stat_vphysrefused++;
+		return;
+	}
+	memset(&trn, 0, sizeof(trn));
+	trn.axis[0][0] = trn.axis[1][1] = trn.axis[2][2] = 1;	//model space, as the submodel's brushes are
+	cont = plugfuncs->Malloc(sizeof(*cont)*(pc.numledges+1));
+	twin = plugfuncs->GMalloc(&sub->memgroup, sizeof(*twin));
+	if (cont && twin)
+	{
+		for (i = 0; i < pc.numledges; i++)
+			cont[i] = (data[i] >= 0 && data[i] < prv->numbrushes) ? prv->brushes[data[i]].contents : FTECONTENTS_SOLID;
+		memset(twin, 0, sizeof(*twin));
+		Q_strlcpy(twin->name, sub->name, sizeof(twin->name));
+		twin->type = sub->type;
+		twin->loadstate = MLS_LOADED;
+		ClearBounds(twin->mins, twin->maxs);	//sub's are still the world's here (*mod = *wmod)
+		if (VBSP_PhyBrushesT(twin, &trn, &pc, VBSP_VPHYS_MARGIN, cont, &brushes, &nb) &&
+			(leafs = plugfuncs->Malloc(sizeof(*leafs)*nb)))
+		{
+			for (i = 0; i < nb; i++)
+			{
+				leafs[i].type = BIH_BRUSH;
+				leafs[i].data.brush = &brushes[i];
+				leafs[i].data.contents = brushes[i].contents;
+				VectorCopy(brushes[i].absmins, leafs[i].mins);
+				VectorCopy(brushes[i].absmaxs, leafs[i].maxs);
+				AddPointToBounds(brushes[i].absmins, twin->mins, twin->maxs);
+				AddPointToBounds(brushes[i].absmaxs, twin->mins, twin->maxs);
+			}
+			modfuncs->BIH_Build(twin, leafs, nb);
+			plugfuncs->Free(leafs);
+			sub->vphysalt = twin;	//its bounds took the pieces' margin-grown boxes: PM_TransformedHullCheck reads them
+			vbsp_stat_vphysmodels++;
+			vbsp_stat_vphyspieces += nb;
+		}
+		else
+		{
+			plugfuncs->GFreeAll(&twin->memgroup);
+			vbsp_stat_vphysrefused++;
+		}
+	}
+	plugfuncs->Free(cont);
+	plugfuncs->Free(data);
+	plugfuncs->Free(pc.xyz);
+	plugfuncs->Free(pc.idx);
+	plugfuncs->Free(pc.ledgestart);
+}
+
+/*FTESurf Patch 1812: a Source prop model's .phy as brushes for mover 17. Mover 7 sweeps a STATIC prop's hull as its
+  convex pieces (Patch 764, world space); an entity prop (prop_dynamic, solid 6) still met the hull's triangle prisms,
+  whose 4-unit back slabs a thin hull cannot hold: bhop_canals' metal_panel01a ramp (3 units thick, turned -70 90 -180)
+  let the box sink through it (Lex save 5; P1761). These are the same pieces (mover 9's reading), model space, margin 0
+  as the static props'; the box is turned into model space by the trace (BIH_TraceUncached's axis path), as for Patch
+  1713's turning brush entities. Only on an exe that gates it at mover 17 (vbsp_tail1812).*/
+float RadiusFromBounds (const vec3_t mins, const vec3_t maxs);	//mod_hl2.c
+void VBSP_MDLVPhysAlt(model_t *mod)
+{
+	struct vbsp_phypieceset_s pc;
+	struct bihtransform_s trn;
+	struct bihleaf_s *leafs;
+	unsigned int *cont, nb = 0, i;
+	q2cbrush_t *brushes = NULL;
+	model_t *twin;
+	qboolean wrapped;
+
+	if (!vbsp_tail1713 || !vbsp_tail1812 || !modfuncs || mod->vphysalt)
+		return;
+	memset(&pc, 0, sizeof(pc));
+	if (!Mod_PHY_ConvexPieces(mod, filefuncs, modfuncs, &pc.xyz, &pc.idx, &pc.ledgestart, &pc.numledges, 1, &wrapped))
+		return;
+	memset(&trn, 0, sizeof(trn));
+	trn.axis[0][0] = trn.axis[1][1] = trn.axis[2][2] = 1;
+	cont = pc.numledges ? plugfuncs->Malloc(sizeof(*cont)*pc.numledges) : NULL;
+	twin = (cont && pc.numledges) ? plugfuncs->GMalloc(&mod->memgroup, sizeof(*twin)) : NULL;
+	if (twin)
+	{
+		for (i = 0; i < pc.numledges; i++)
+			cont[i] = FTECONTENTS_BODY;	//(an array, so the static-prop piece counts stay theirs)
+		memset(twin, 0, sizeof(*twin));
+		Q_strlcpy(twin->name, mod->name, sizeof(twin->name));
+		twin->type = mod->type;
+		twin->loadstate = MLS_LOADED;
+		ClearBounds(twin->mins, twin->maxs);
+		if (VBSP_PhyBrushesT(twin, &trn, &pc, 0, cont, &brushes, &nb) &&
+			(leafs = plugfuncs->Malloc(sizeof(*leafs)*nb)))
+		{
+			for (i = 0; i < nb; i++)
+			{
+				leafs[i].type = BIH_BRUSH;
+				leafs[i].data.brush = &brushes[i];
+				leafs[i].data.contents = brushes[i].contents;
+				VectorCopy(brushes[i].absmins, leafs[i].mins);
+				VectorCopy(brushes[i].absmaxs, leafs[i].maxs);
+				AddPointToBounds(brushes[i].absmins, twin->mins, twin->maxs);
+				AddPointToBounds(brushes[i].absmaxs, twin->mins, twin->maxs);
+			}
+			modfuncs->BIH_Build(twin, leafs, nb);
+			plugfuncs->Free(leafs);
+			twin->radius = RadiusFromBounds(twin->mins, twin->maxs);
+			mod->vphysalt = twin;
+		}
+		else
+		{	//one rejected piece (flat, not convex) leaves the whole model on its triangles at 17
+			plugfuncs->GFreeAll(&twin->memgroup);
+			Con_DPrintf("%s: .phy pieces refused as brushes; mover 17 keeps its triangle collision\n", mod->name);
+		}
+	}
+	plugfuncs->Free(cont);
+	plugfuncs->Free(pc.xyz);
+	plugfuncs->Free(pc.idx);
+	plugfuncs->Free(pc.ledgestart);
 }
 
 /*
@@ -1111,6 +1479,7 @@ static q2mapsurface_t	nullsurface;
 static int		VBSP_NumInlineModels (model_t *model);
 static cmodel_t	*VBSP_InlineModel (model_t *model, char *name);
 static void VBSP_FinalizeBrush(model_t *mod, q2cbrush_t *brush);
+static q2cbrush_t *VBSP_FarBrushFix(model_t *mod, const q2cbrush_t *brush, q2cbrushside_t *sides, int numsides);	//Patch 1748
 static void	FloodAreaConnections (vbspinfo_t	*prv);
 
 /*
@@ -2005,6 +2374,51 @@ static void VBSP_LoadColourCorrection(model_t *loadmodel, const qbyte *entdata, 
 }
 
 #ifdef HAVE_CLIENT
+//FTESurf Patch 1729: water_lod_control's distances into r_cheapwaterstart/end (the engine's; vmt/water #CHEAPLODMAP
+//and GLBE_WaterLodCheap read them), the last one as Source's C_WaterLODControl writes the view's pair on each. Without
+//one 0/0: no cutoff (Source's view keeps 0/0.1 or the previous map's, but this is not its rule anyway; see hl2_water_lod).
+static void VBSP_LoadWaterLod(const qbyte *entdata, size_t entlen)
+{
+	char key[64], token[1024], cls[64];
+	float start = 0, end = 0, s, e;
+	char *text, *data;
+	text = plugfuncs->Malloc(entlen+1);
+	if (text)
+	{
+		memcpy(text, entdata, entlen);
+		text[entlen] = 0;
+		for (data = text; (data = cmdfuncs->ParseToken(data, token, sizeof(token), NULL)); )
+		{
+			if (*token != '{')
+				continue;
+			*cls = 0;
+			s = 0;
+			e = 0.1f;
+			while ((data = cmdfuncs->ParseToken(data, key, sizeof(key), NULL)) && *key != '}')
+			{
+				if (!(data = cmdfuncs->ParseToken(data, token, sizeof(token), NULL)))
+					break;
+				if (!Q_strcasecmp(key, "classname"))
+					Q_strlcpy(cls, token, sizeof(cls));
+				else if (!Q_strcasecmp(key, "cheapwaterstartdistance"))
+					s = atof(token);
+				else if (!Q_strcasecmp(key, "cheapwaterenddistance"))
+					e = atof(token);
+			}
+			if (!Q_strcasecmp(cls, "water_lod_control"))
+			{
+				start = s;
+				end = e;
+			}
+			if (!data)
+				break;
+		}
+		plugfuncs->Free(text);
+	}
+	cvarfuncs->SetFloat("r_cheapwaterstart", start);
+	cvarfuncs->SetFloat("r_cheapwaterend", end);
+}
+
 //FTESurf Patch 1038: worldspawn's "detailmaterial" and env_detail_controller's fade distances.
 static void VBSP_LoadDetailKeys(model_t *mod, const qbyte *entdata, size_t entlen)
 {
@@ -2043,6 +2457,8 @@ static void VBSP_LoadDetailKeys(model_t *mod, const qbyte *entdata, size_t entle
 		}
 		if (!Q_strcasecmp(classname, "worldspawn") && *mat)
 			Q_strlcpy(prv->detailmaterial, mat, sizeof(prv->detailmaterial));
+		else if (!Q_strcasecmp(classname, "env_cascade_light"))
+			prv->csm = true;	//FTESurf Patch 1760
 		else if (!Q_strcasecmp(classname, "env_detail_controller"))
 		{
 			prv->detailfadestart = fmin;
@@ -2077,6 +2493,7 @@ static qboolean VBSP_LoadEntities (model_t *loadmodel, qbyte *mod_base, vlump_t 
 	VBSP_LoadColourCorrection(loadmodel, entdata, l->filelen);
 #ifdef HAVE_CLIENT
 	VBSP_LoadDetailKeys(loadmodel, entdata, l->filelen);	//FTESurf Patch 1038
+	VBSP_LoadWaterLod(entdata, l->filelen);	//FTESurf Patch 1729
 #endif
 
 	if (!hl2_overlays || !hl2_overlays->value)
@@ -2261,6 +2678,8 @@ static qboolean VBSP_LoadBrushes (model_t *mod, qbyte *mod_base, vlump_t *l)
 	out = prv->brushes;
 
 	prv->numbrushes = count;
+	//FTESurf Patch 1748: an exe without tail 1748 has no BIH_BRUSHPAIR and no model_t farfix fields
+	prv->brushfarfix = vbsp_tail1748 ? plugfuncs->GMalloc(&mod->memgroup, sizeof(*prv->brushfarfix) * (count+1)) : NULL;
 
 	/*Patch 318: reset here rather than at map load, because this is the one
 	  place the counters are filled and submodel brushes come out of the same
@@ -2284,6 +2703,16 @@ static qboolean VBSP_LoadBrushes (model_t *mod, qbyte *mod_base, vlump_t *l)
 		}
 		out->contents = VBSP_TranslateContentBits(prv, LittleLong(in->contents));
 		VBSP_FinalizeBrush(mod, out);
+		if (prv->brushfarfix)
+			prv->brushfarfix[i] = VBSP_FarBrushFix(mod, out, &prv->brushsides[LittleLong(in->firstside)], LittleLong(in->numsides));
+	}
+	if (prv->brushfarfix)
+	{	//counted from the table: two maps can load on worker threads at once (review)
+		unsigned int nfix = 0;
+		for (i = 0; i < count; i++)
+			nfix += !!prv->brushfarfix[i];
+		mod->farfixbrushes = nfix;
+		mod->farfixknown = true;
 	}
 
 	return true;
@@ -4690,6 +5119,126 @@ static void VBSP_EncodeRGBE(const float *c, qbyte *p)
 	p[3] = (qbyte)(signed char)e;
 }
 
+/*FTESurf Patch 1781: Strata's lighting lump (the 2/5 layout) ends every style with one more luxel set whose red byte is
+  VRAD's baked direct sun, its shadowing included, in units of the sun's own intensity: the lightmap is
+  indirect + sun * R/255 (bhop_canals: 0 in shade, 32 in a penumbra, 115 on a sunlit floor, linear across the edge;
+  full sun about 0.984 * N.L^1.4).  Kept as the SUNVIS page (1 byte a luxel at style 0, r_surf.c builds its texture)
+  for lightmapped.glsl/transition.glsl to swap for the sun under the cascades.  Every lit face must carry the set.*/
+static void VBSP_BuildSunPage(model_t *mod)
+{
+	vbspinfo_t	*prv = (vbspinfo_t*)mod->meshinfo;
+	size_t		si, i, nlux, faces = 0, sunlit = 0;
+	qbyte		*sv;
+
+	mod->sunvisdata = NULL;
+	if (!hl2_sunpage || !hl2_sunpage->ival || prv->bspversion < 25 || !mod->lightdata || !prv->lightraw ||
+		prv->lightrepacked || mod->lightmaps.fmt != LM_E5BGR9 || (mod->lightdatasize & 3))
+		return;
+	for (si = 0; si < mod->numsurfaces; si++)
+	{
+		msurface_t *surf = mod->surfaces + si;
+		int extra = (surf->flags & SURF_LMSTRIDE_MASK) >> SURF_LMSTRIDE_SHIFT;
+		if (surf->samples && extra != (prv->texinfo[surf->texinfo - mod->texinfo].bumped ? 16 : 4))
+		{
+			Con_DPrintf("VBSP: %s: no Strata sun page (a lit face has %i extra bytes a luxel)\n", mod->name, extra);
+			return;
+		}
+	}
+	nlux = mod->lightdatasize / 4;
+	sv = plugfuncs->GMalloc(&mod->memgroup, nlux);
+	memset(sv, 0, nlux);
+	for (si = 0; si < mod->numsurfaces; si++)
+	{
+		msurface_t *surf = mod->surfaces + si;
+		size_t extra = (surf->flags & SURF_LMSTRIDE_MASK) >> SURF_LMSTRIDE_SHIFT;
+		size_t ofs, lux;
+		const qbyte *src;
+		if (!surf->samples)
+			continue;
+		lux = (size_t)((surf->extents[0]>>surf->lmshift)+1) * ((surf->extents[1]>>surf->lmshift)+1);
+		ofs = surf->samples - mod->lightdata;	//== the file's lightofs (VBSP_LoadLighting keeps offsets)
+		if ((ofs & 3) || ofs + extra*lux + 4*lux > prv->lightrawsize || ofs/4 + lux > nlux)
+			continue;
+		src = prv->lightraw + ofs + extra*lux;	//style 0's last set
+		for (i = 0; i < lux; i++)
+		{
+			sv[ofs/4 + i] = src[4*i];
+			sunlit += src[4*i] != 0;
+		}
+		faces++;
+	}
+	mod->sunvisdata = sv;
+	Con_DPrintf("VBSP: %s: Strata sun page on %u faces, %u luxels sunlit\n", mod->name, (unsigned)faces, (unsigned)sunlit);
+}
+
+/*FTESurf Patch 1781: once the sun is known (VBSP_LoadWorldLights), style 0 becomes the INDIRECT light -- VRAD's own
+  split, per luxel in linear light -- and the page what was taken out (sun * page/255 IS the sun), so the shaders add
+  the sun back: the bake, or under the cascades the live sun.  Done here rather than in the shader because the lightmap
+  filters in sRGB and the page linearly: a subtraction after filtering overshot across a baked edge (a teal ring round
+  every sun patch).  A bumped face's style 0 is its basis maps' mean (VBSP_BuildRNM): its sun share is scaled by
+  mean/flat, and the page carries what was removed, so with no cascades the shaders rebuild the bake exactly.*/
+static void VBSP_SunPageToIndirect(model_t *mod)
+{
+	vbspinfo_t	*prv = (vbspinfo_t*)mod->meshinfo;
+	size_t		si, i, faces = 0;
+	if (!mod->sunvisdata)
+		return;
+	if (!prv->sun_have || prv->sun_intensity[0] + prv->sun_intensity[1] + prv->sun_intensity[2] <= 0)
+	{
+		mod->sunvisdata = NULL;	//no sun to put back: the bake as it is
+		return;
+	}
+	for (si = 0; si < mod->numsurfaces; si++)
+	{
+		msurface_t *surf = mod->surfaces + si;
+		size_t ofs, lux;
+		unsigned int *lm;
+		qbyte *sv;
+		const qbyte *raw;
+		if (!surf->samples)
+			continue;
+		lux = (size_t)((surf->extents[0]>>surf->lmshift)+1) * ((surf->extents[1]>>surf->lmshift)+1);
+		ofs = surf->samples - mod->lightdata;
+		if ((ofs & 3) || ofs + 4*lux > prv->lightrawsize || ofs + 4*lux > (size_t)mod->lightdatasize)
+			continue;
+		lm = (unsigned int*)(mod->lightdata + ofs);
+		sv = mod->sunvisdata + ofs/4;
+		raw = prv->lightraw + ofs;
+		for (i = 0; i < lux; i++)
+		{
+			float cur[3], d[3], k = 1, q = 1, lflat, lcur, rs;
+			qbyte rgbe[4];
+			unsigned int h = lm[i];
+			int c;
+			if (!sv[i])
+				continue;
+			rs = ldexp(1.0f, (int)(h>>27) - 15 - 9);
+			for (c = 0; c < 3; c++)
+				cur[c] = M_SRGBToLinear(((h >> (9*c)) & 0x1ff) * rs, 1.0);
+			rs = ldexp(1.0f, (signed char)raw[4*i+3]) / 255.0f;
+			lflat = (0.2126f*raw[4*i+0] + 0.7152f*raw[4*i+1] + 0.0722f*raw[4*i+2]) * rs;
+			lcur = 0.2126f*cur[0] + 0.7152f*cur[1] + 0.0722f*cur[2];
+			if (lflat > 0 && lcur > 0)
+				q = lcur / lflat;	//1 on a flat face (style 0 is the file's set); mean/flat on a basis-lit one
+			if (sv[i] * q > 255)
+				k = 255 / (sv[i] * q);	//what comes out must fit back in the page's byte
+			for (c = 0; c < 3; c++)
+			{
+				d[c] = prv->sun_intensity[c] * sv[i] * (1.0f/255) * q;
+				if (d[c] * k > cur[c])
+					k = cur[c] / d[c];	//never more than the luxel holds, in the sun's own hue
+			}
+			for (c = 0; c < 3; c++)
+				cur[c] = (cur[c] - d[c]*k) * 255.0f;
+			VBSP_EncodeRGBE(cur, rgbe);
+			lm[i] = VBSP_ConvertLuxel(rgbe);
+			sv[i] = (qbyte)bound(0, (int)(sv[i] * q * k + 0.5f), 255);	//exactly what came out
+		}
+		faces++;
+	}
+	Con_DPrintf("VBSP: %s: style 0 is the indirect light on %u faces (Strata sun page)\n", mod->name, (unsigned)faces);
+}
+
 static void VBSP_BuildRNM(model_t *mod)
 {
 	vbspinfo_t	*prv = (vbspinfo_t*)mod->meshinfo;
@@ -4861,6 +5410,44 @@ static void VBSP_BuildSurfMesh(model_t *mod, msurface_t *surf, builddata_t *bd)
 				mesh->colors4f_array[sty][i][1] = 1;
 				mesh->colors4f_array[sty][i][2] = 1;
 				mesh->colors4f_array[sty][i][3] = ((int)dv->alpha&255)/255.0;
+			}
+		}
+		/*FTESurf Patch 1781: the displaced surface's own normal (central differences over the grid, on the face's side)
+		  and texture directions projected onto it and normalised, as a brush face's are below: the plane normal and the
+		  raw texinfo vectors (their length is texels per unit) put the live sun's N.L off by the texture scale.*/
+		if (hl2_dispnormals && hl2_dispnormals->ival && d->width > 0 && d->height > 0 &&
+			mesh->numvertexes == (d->width+1)*(d->height+1))
+		{
+			int w = d->width + 1, x, y, vote = 0, pass;
+			float flip;
+			//one orientation for the whole displacement, the grid's winding by majority against the face's (outward) plane:
+			//a vertex on a real fold or overhang faces away from it and must stay so
+			for (pass = 0; pass < 2; pass++)
+			for (i = 0; i < mesh->numvertexes; i++)
+			{
+				vec3_t du, dvv, n;
+				x = i % w;
+				y = i / w;
+				VectorSubtract(mesh->xyz_array[y*w + min(x+1, w-1)], mesh->xyz_array[y*w + max(x-1, 0)], du);
+				VectorSubtract(mesh->xyz_array[min(y+1, d->height)*w + x], mesh->xyz_array[max(y-1, 0)*w + x], dvv);
+				CrossProduct(du, dvv, n);
+				if (pass == 0)
+				{
+					vote += (DotProduct(n, surf->plane->normal) >= 0) ? 1 : -1;
+					continue;
+				}
+				flip = (vote >= 0) ? 1 : -1;
+				if (VectorNormalize(n) <= 0)
+					VectorCopy(surf->plane->normal, n);
+				else
+					VectorScale(n, flip, n);
+				VectorCopy(n, mesh->normals_array[i]);
+				miss = -DotProduct(n, mesh->snormals_array[i]);
+				VectorMA(mesh->snormals_array[i], miss, n, mesh->snormals_array[i]);
+				miss = -DotProduct(n, mesh->tnormals_array[i]);
+				VectorMA(mesh->tnormals_array[i], miss, n, mesh->tnormals_array[i]);
+				VectorNormalize(mesh->snormals_array[i]);
+				VectorNormalize(mesh->tnormals_array[i]);
 			}
 		}
 		return;
@@ -5637,18 +6224,23 @@ static qboolean VBSP_LoadPropBakedLight(model_t *mod, struct staticprop_s *sent,
 						//the multiplier and the mean it is normalised against are
 						//derived from one quantity and cannot drift apart.
 						float e = 0;
-						unsigned int q;
+						unsigned int q, sa = 0;
 						int b;
 						for (q = 0; q < ncol; q++)
 						{
 							const qbyte *p = c + q*4;
 							e += p[2]*0.299f + p[1]*0.587f + p[0]*0.114f;
+							sa += p[3];
 						}
 						b = (int)((e/ncol) * inv + 0.5f);
 						if (b < 0) b = 0;
 						if (b > 255) b = 255;
 						out[0] = out[1] = out[2] = (qbyte)b;
-						out[3] = 255;
+						//FTESurf Patch 1780: Strata's bake leaves the sun out of the colour and writes its direct share in
+						//the alpha (zero on every vertex turned from the sun), for its cascades to shadow; vertexlit.glsl
+						//adds r_shadows_vhvsun x alpha under the cascade shadow (the game sets it only on a v25 cascade map).
+						//Other compilers' alpha is not that: 255, as before (unlit/animated $vertexalpha surfaces of a baked prop read it).
+						out[3] = (((vbspinfo_t*)mod->meshinfo)->bspversion >= 25) ? (qbyte)((sa + ncol/2) / ncol) : 255;
 					}
 				}
 			}
@@ -5907,6 +6499,13 @@ static qboolean VBSP_LoadStaticProps(model_t *mod, qbyte *offset, size_t size, i
 		ent->skinnum = LittleLong(*(unsigned int*)prop);				prop += sizeof(unsigned int);
 		sent->fademindist = LittleFloat(*(float*)prop);					prop += sizeof(float);
 		sent->fademaxdist = LittleFloat(*(float*)prop);					prop += sizeof(float);
+		if (sent->fademindist > sent->fademaxdist && sent->fademaxdist > 0)
+		{	//FTESurf Patch 1800: Source swaps an inverted pair (UTIL_ComputeEntityFade); unswapped the fade fraction goes past 1
+			//and the prop is invisible at every distance -- bhop_canals' 64 (save 33's driftwood, rebar, cleats), drawn in Momentum
+			float t = sent->fademindist;
+			sent->fademindist = sent->fademaxdist;
+			sent->fademaxdist = t;
+		}
 		sent->lightorg[0] = LittleFloat(*(float*)prop);					prop += sizeof(float);
 		sent->lightorg[1] = LittleFloat(*(float*)prop);					prop += sizeof(float);
 		sent->lightorg[2] = LittleFloat(*(float*)prop);					prop += sizeof(float);
@@ -6128,7 +6727,6 @@ static qboolean VBSP_LoadStaticProps(model_t *mod, qbyte *offset, size_t size, i
 			the code pretending to use it.
 			*/
 			propflagsex = LittleLong(*(unsigned int*)prop);				prop += sizeof(unsigned int);
-			(void)propflagsex;
 		}
 		/*
 		FTESurf Patch 228 -- the inserted field, and it belongs HERE: after FlagsEx
@@ -6137,6 +6735,16 @@ static qboolean VBSP_LoadStaticProps(model_t *mod, qbyte *offset, size_t size, i
 		canonical v10@72 maps propextra is 0 and this line does nothing, which is
 		the property that keeps those maps byte-identical to before.
 		*/
+#ifdef HAVE_CLIENT
+		/*FTESurf Patch 1760: on a cascade map Strata draws every static prop into the sun's shadow maps unless
+		  FlagsEx says DISABLE_SHADOW_DEPTH (1) or DISABLE_CSM (2) -- its VRAD bakes no prop shadows there (bhop_canals'
+		  pipes shadow the ground in Momentum and nowhere in the lightmap).  FlagsEx is the inserted field where there
+		  is one (CS:GO's lineage: its dword above is DisableX360), else the canonical v11+ dword; an SDK 2013 v10's
+		  dword is LightmapRes, so it never casts.*/
+		if (prv->csm && ((version >= 10 && propextra >= 4) || version >= 11) &&
+			!((version >= 10 && propextra >= 4 ? LittleLong(*(unsigned int*)prop) : propflagsex) & 3))
+			ent->flags &= ~RF_NOSHADOW;
+#endif
 		prop += propextra;
 
 		if (version >= 12)
@@ -6876,10 +7484,10 @@ static void VBSP_BoxLeafnums_r (model_t *mod, int nodenum)
 
 	while (1)
 	{
+		if (leaf_count >= leaf_maxcount)
+			return;	//FTESurf Patch 1698: full; the rest of a map-sized box's walk changed nothing (leaf_topnode is set by now)
 		if (nodenum < 0)
 		{
-			if (leaf_count >= leaf_maxcount)
-				return;
 			leaf_list[leaf_count++] = -1 - nodenum;
 			return;
 		}
@@ -7151,7 +7759,9 @@ static qboolean VBSP_PlaneKnown (const vec4_t *list, int count, const vec3_t nor
 	return false;
 }
 
-static void VBSP_AddBrushBevels (model_t *mod, q2cbrush_t *brush, vec4_t *planes)
+/*FTESurf Patch 1748: planes may be given relative to ofs (the windings then come out relative to it too); the
+  bevels are stored absolute. stats: count into Patch 318's figures (the origin-frame pass only).*/
+static void VBSP_AddBrushBevels (model_t *mod, q2cbrush_t *brush, vec4_t *planes, const vec3_t ofs, qboolean stats)
 {
 	vecV_t		   *wverts;
 	int				wfirst[VBSP_MAXBRUSHSIDES], wcount[VBSP_MAXBRUSHSIDES];
@@ -7183,7 +7793,8 @@ static void VBSP_AddBrushBevels (model_t *mod, q2cbrush_t *brush, vec4_t *planes
 		if (nverts >= VBSP_MAXWINDVERTS)
 		{	/*no room to be sure the support test sees the whole hull, and a
 			  support test that cannot see every point is not a support test. */
-			vbsp_stat_bevelfull++;
+			if (stats)
+				vbsp_stat_bevelfull++;
 			goto done;
 		}
 	}
@@ -7233,7 +7844,8 @@ static void VBSP_AddBrushBevels (model_t *mod, q2cbrush_t *brush, vec4_t *planes
 
 				if (numbevels == VBSP_MAXBEVELS)
 				{
-					vbsp_stat_bevelfull++;
+					if (stats)
+						vbsp_stat_bevelfull++;
 					numbevels = 0;
 					goto done;	/*all or nothing; a partial set is still a superset*/
 				}
@@ -7258,7 +7870,7 @@ static void VBSP_AddBrushBevels (model_t *mod, q2cbrush_t *brush, vec4_t *planes
 	for (i = 0; i < numbevels; i++)
 	{
 		VectorCopy (bevels[i], nplane[i].normal);
-		nplane[i].dist = bevels[i][3];
+		nplane[i].dist = bevels[i][3] + DotProduct(bevels[i], ofs);	//Patch 1748: back from the brush's frame
 		/*A bevel is non-axial by construction (an axial one would have been the
 		  edge's own axis and was skipped), so PLANE_ANYX is right -- and giving
 		  it a type < 3 it does not have would make PlaneDiff read one component
@@ -7277,11 +7889,87 @@ static void VBSP_AddBrushBevels (model_t *mod, q2cbrush_t *brush, vec4_t *planes
 
 	brush->brushside = nside;
 	brush->numsides += numbevels;
-	vbsp_stat_bevelbrushes++;
-	vbsp_stat_bevelplanes += numbevels;
+	if (stats)
+	{
+		vbsp_stat_bevelbrushes++;
+		vbsp_stat_bevelplanes += numbevels;
+	}
 done:
 	plugfuncs->Free(wverts);
 	plugfuncs->Free(bevels);
+}
+
+/*FTESurf Patch 1748: Fragment_ClipPlaneToBrush starts each face from a quad 32767 either side of the plane's point
+  nearest the ORIGIN. Strata maps reach 50000+ (bhop_canals), so a far brush's windings come out cut at that quad's
+  edge: its hull is wrong, and Patch 318's support test then passes bevel planes that cut the real brush (bhop_canals
+  brush 1903 traced as empty; players fell through the canal banks). A brush with all six axial planes (vbsp emits
+  them on every brush) is rebuilt with its planes taken about its own centre, so the quad covers it. Kept beside the
+  original in a BIH_BRUSHPAIR leaf: a Source mover below 16 still traces the old sides, so recorded runs verify.*/
+static q2cbrush_t *VBSP_FarBrushFix(model_t *mod, const q2cbrush_t *brush, q2cbrushside_t *sides, int numsides)
+{
+	vec3_t mins, maxs, c, corner;
+	vec4_t sp[VBSP_MAXBRUSHSIDES];
+	int i, k, axes = 0;
+	qboolean far = false;
+	q2cbrush_t *fix;
+
+	if (numsides > VBSP_MAXBRUSHSIDES || (hl2_brushbevels && !hl2_brushbevels->ival))
+		return NULL;
+	for (i = 0; i < numsides; i++)
+	{
+		const mplane_t *pl = sides[i].plane;
+		for (k = 0; k < 3; k++)
+		{
+			if (pl->normal[k] == 1)		{ maxs[k] = pl->dist; axes |= 1<<(k*2); }
+			else if (pl->normal[k] == -1)	{ mins[k] = -pl->dist; axes |= 2<<(k*2); }
+		}
+	}
+	if (axes != 63)
+		return NULL;
+	for (i = 0; i < 8; i++)
+	{	/*a corner within 32000 of the origin keeps every face inside every quad (the in-plane part of a point is no
+		  longer than the point), so near brushes -- every brush on a classic Source map -- are left exactly as they were*/
+		for (k = 0; k < 3; k++)
+			corner[k] = (i & (1<<k)) ? maxs[k] : mins[k];
+		if (DotProduct(corner, corner) > 32000.0f*32000.0f)
+			far = true;
+	}
+	if (!far)
+		return NULL;
+	VectorAvg(mins, maxs, c);
+	for (i = 0; i < numsides; i++)
+	{
+		VectorCopy(sides[i].plane->normal, sp[i]);
+		sp[i][3] = sides[i].plane->dist - DotProduct(sides[i].plane->normal, c);
+	}
+	fix = plugfuncs->GMalloc(&mod->memgroup, sizeof(*fix));
+	if (!fix)
+		return NULL;
+	*fix = *brush;
+	fix->brushside = sides;
+	fix->numsides = numsides;
+	VectorCopy(mins, fix->absmins);		/*exact: the axial planes bound a Source brush*/
+	VectorCopy(maxs, fix->absmaxs);
+	VectorSubtract(maxs, c, corner);
+	if (DotProduct(corner, corner) <= 32000.0f*32000.0f)	//else even its own frame cuts the windings: no bevels (pre-318)
+		VBSP_AddBrushBevels(mod, fix, sp, c, false);
+	return fix;
+}
+
+//FTESurf Patch 1748: the leaf for prv->brushes[idx], paired with its farfix if it has one
+static void VBSP_BrushLeaf(vbspinfo_t *prv, struct bihleaf_s *l, size_t idx)
+{
+	if (prv->brushfarfix && prv->brushfarfix[idx])
+	{
+		l->type = BIH_BRUSHPAIR;
+		l->data.brushpair.old = &prv->brushes[idx];
+		l->data.brushpair.farfix = prv->brushfarfix[idx];
+	}
+	else
+	{
+		l->type = BIH_BRUSH;
+		l->data.brush = &prv->brushes[idx];
+	}
 }
 
 static void VBSP_FinalizeBrush(model_t *mod, q2cbrush_t *brush)
@@ -7324,7 +8012,7 @@ static void VBSP_FinalizeBrush(model_t *mod, q2cbrush_t *brush)
 	  absmins/absmaxs and those must describe the brush, not the beveled side
 	  list -- the bevels support the same hull, so the bounds do not change. */
 	if (!hl2_brushbevels || hl2_brushbevels->ival)
-		VBSP_AddBrushBevels(mod, brush, planes);
+		VBSP_AddBrushBevels(mod, brush, planes, vec3_origin, true);
 }
 
 /*
@@ -8069,8 +8757,7 @@ static void VBSP_BuildBIHSubmodel(model_t *mod, int submodel)
 	for (i = 0; i < sub->num_brushes; i++)
 	{
 		q2cbrush_t *b = &prv->brushes[sub->firstbrush+i];
-		l->type = BIH_BRUSH;
-		l->data.brush = b;
+		VBSP_BrushLeaf(prv, l, sub->firstbrush+i);
 
 		l->data.contents = b->contents;
 		VectorCopy(b->absmins, l->mins);
@@ -8092,6 +8779,7 @@ static cvar_t *hl2_lt_baked_dir;	//FTESurf Patch 296
 //for models that have no VRAD bake.  Read in VBSP_LightPointValues and by the
 //static-prop light cache invalidation; registered in VBSP_Init.
 static cvar_t *hl2_lt_worldlight;
+static cvar_t *hl2_lt_sun;	//FTESurf Patch 1722
 static cvar_t *hl2_lt_reusecube;
 #ifdef HAVE_CLIENT
 static void VBSP_LightPointValuesCube(struct model_s *model, const vec3_t point, vec3_t res_diffuse, vec3_t res_ambient, vec3_t res_dir, vec3_t res_cube[6]);
@@ -8100,6 +8788,7 @@ static void VBSP_LightPointValuesCube(struct model_s *model, const vec3_t point,
 //Read at LOAD, inside VBSP_LoadWorldLights, so an A/B needs a map change or a
 //second process -- there is no live arm and the description says so.
 static cvar_t *hl2_lt_wl21;
+static cvar_t *hl2_lt_wlv25;	//FTESurf Patch 1777
 /*
 FTESurf Patch 304: how the cube is folded into the shader's two slots.
 
@@ -8334,8 +9023,7 @@ static void VBSP_BuildOccluderBIH(model_t *mod, const char *why)
 		q2cbrush_t *b = &prv->brushes[sub->firstbrush+i];
 		if (!prv->brushlightopaque[sub->firstbrush+i])
 			continue;
-		l->type = BIH_BRUSH;
-		l->data.brush = b;
+		VBSP_BrushLeaf(prv, l, sub->firstbrush+i);
 		l->data.contents = prv->brushvisopaque[sub->firstbrush+i] ? FTECONTENTS_SOLID : VBSP_CONTENTS_LIGHTONLY;
 		VectorCopy(b->absmins, l->mins);
 		VectorCopy(b->absmaxs, l->maxs);
@@ -8378,7 +9066,7 @@ static void VBSP_BuildOccluderBIH(model_t *mod, const char *why)
 static void VBSP_BuildLightBIH(model_t *mod)
 {
 	vbspinfo_t *prv = mod->meshinfo;
-	if (!prv->numworldlights)
+	if (!prv->numworldlights && !prv->sun_have)	//FTESurf Patch 1722: the sun's trace needs it too
 		return;	//FTESurf Patch 879: otherwise the first VBSP_OccluderTrace builds it, client only
 	prv->wl_tried = true;
 	VBSP_BuildOccluderBIH(mod, "at load for the world lights");
@@ -8803,8 +9491,7 @@ static void VBSP_BuildBIHMain(void *ctx, void *unusedp, size_t unuseda, size_t u
 	for (i = 0; i < sub->num_brushes; i++)
 	{
 		q2cbrush_t *b = &prv->brushes[sub->firstbrush+i];
-		l->type = BIH_BRUSH;
-		l->data.brush = b;
+		VBSP_BrushLeaf(prv, l, sub->firstbrush+i);
 
 		l->data.contents = b->contents;
 		VectorCopy(b->absmins, l->mins);
@@ -9055,6 +9742,10 @@ static void VBSP_BuildBIHMain(void *ctx, void *unusedp, size_t unuseda, size_t u
 			mod->name, hl2_brushbevels?hl2_brushbevels->ival:1,
 			vbsp_stat_bevelplanes, vbsp_stat_bevelbrushes,
 			vbsp_stat_bevelfull ? va(", and %i MORE were left alone for want of room", vbsp_stat_bevelfull) : "");
+
+	if (vbsp_tail1748 && mod->farfixknown && mod->farfixbrushes)	//FTESurf Patch 1748: an older exe's model_t has no such fields
+		Con_DPrintf("%s: %u brushes beyond 32000 units given bevels built about themselves (traced from mover 16)\n",
+			mod->name, mod->farfixbrushes);
 
 	//FTESurf Patch 764
 	if (vbsp_stat_phyprops || vbsp_stat_phyrefused)
@@ -9639,6 +10330,43 @@ static qboolean VBSP_CullBox (vec3_t mins, vec3_t maxs)
 		if (BOX_ON_PLANE_SIDE (mins, maxs, &refdef->frustum[i]) == 2)
 			return true;
 	return false;
+}
+
+//FTESurf Patch 1760: an off-screen static caster within r_shadows 2's reach still throws its shadow on screen,
+//so it is submitted (the main pass culls it again, gl_alias.c R_CullEntityBox).  The sun map is a cube of half-side
+//r_shadows_distance centred a third of it ahead of the eye (Sh_OrthoAlignToFrustum); with its edge fade and the throw
+//fade, 4/3 of it about the eye holds every caster whose shadow shows.  Patch 1762: with cascades (camera-centred,
+//the outermost r_shadows_cascade_dist) that reach instead.
+//FTESurf Patch 1766: a Strata cascade map (the game sets r_shadows_sunfloor from its env_cascade_light), where a caster
+//out of the view's PVS still shadows what is in it -- elsewhere the lightmap holds the world's shadows and such a
+//caster would shadow through floors and ceilings.  Valid after VBSP_ShadowCasterInReach has looked the cvars up.
+static qboolean VBSP_CascadeMap (void)
+{
+	return vbsp_r_shadows_sunfloor && vbsp_r_shadows_sunfloor->vec4[0] + vbsp_r_shadows_sunfloor->vec4[1] + vbsp_r_shadows_sunfloor->vec4[2] > 0;
+}
+static qboolean VBSP_ShadowCasterInReach (const entity_t *e, float radius)
+{
+	vec3_t d;
+	float reach;
+	if (e->flags & RF_NOSHADOW)
+		return false;
+	if (!vbsp_r_shadows)
+	{	//the engine's own (renderer.c, gl_shadow.c): a NULL default only finds
+		vbsp_r_shadows = cvarfuncs->GetNVFDG("r_shadows", NULL, 0, NULL, NULL);
+		vbsp_r_shadows_distance = cvarfuncs->GetNVFDG("r_shadows_distance", NULL, 0, NULL, NULL);
+		vbsp_r_shadows_cascades = cvarfuncs->GetNVFDG("r_shadows_cascades", NULL, 0, NULL, NULL);
+		vbsp_r_shadows_cascade_dist = cvarfuncs->GetNVFDG("r_shadows_cascade_dist", NULL, 0, NULL, NULL);
+		vbsp_r_shadows_slots = cvarfuncs->GetNVFDG("r_shadows_slots", NULL, 0, NULL, NULL);
+		vbsp_r_shadows_sunfloor = cvarfuncs->GetNVFDG("r_shadows_sunfloor", NULL, 0, NULL, NULL);
+	}
+	if (!vbsp_r_shadows || vbsp_r_shadows->ival != 2 || !vbsp_r_shadows_distance)
+		return false;
+	if (vbsp_r_shadows_cascades && vbsp_r_shadows_cascades->ival > 1 && vbsp_r_shadows_cascade_dist && !(vbsp_r_shadows_slots && vbsp_r_shadows_slots->ival > 1))
+		reach = vbsp_r_shadows_cascade_dist->value + radius;
+	else
+		reach = vbsp_r_shadows_distance->value * (4.0f/3) + radius;
+	VectorSubtract(e->origin, refdef->vieworg, d);
+	return DotProduct(d, d) < reach * reach;
 }
 // nettest: SAFE world-surface emit. A VBSP/Source world face reached by the leaf/node
 // walk can have NO valid render batch: mod->nummodelsurfaces is narrowed to
@@ -10828,7 +11556,7 @@ static void VBSP_PropSolveLight(model_t *mod, vbspinfo_t *prv, struct staticprop
 				for (k = 0; k < nv; k++)
 				{
 					out[k*4+0] = out[k*4+1] = out[k*4+2] = (qbyte)meanb;
-					out[k*4+3] = 255;
+					out[k*4+3] = (((vbspinfo_t*)mod->meshinfo)->bspversion >= 25) ? 0 : 255;	//FTESurf Patch 1780: no baked sun on a vertex the file does not cover
 				}
 				if (nm > sent->vcrawverts)
 					nm = sent->vcrawverts;	//a shorter file colours what it can
@@ -10840,6 +11568,7 @@ static void VBSP_PropSolveLight(model_t *mod, vbspinfo_t *prv, struct staticprop
 					out[d*4+0] = sent->vcraw[k*4+0];
 					out[d*4+1] = sent->vcraw[k*4+1];
 					out[d*4+2] = sent->vcraw[k*4+2];
+					out[d*4+3] = sent->vcraw[k*4+3];	//FTESurf Patch 1780
 				}
 				sent->vc = out;
 				sent->vcverts = nv;
@@ -11171,6 +11900,7 @@ static void VBSP_PrepareFrame(model_t *mod, refdef_t *r_refdef, int area, int cl
 		struct staticprop_s *sent;
 		entity_t *src, *ent;
 		float d;
+		qboolean shadowonly;	//FTESurf Patch 1766
 		size_t i;
 		vec3_t disp;
 
@@ -11358,6 +12088,8 @@ static void VBSP_PrepareFrame(model_t *mod, refdef_t *r_refdef, int area, int cl
 			//the right knob for a live A/B within one arm.
 			static int cubelight_live = -1;
 			int wantcube = (hl2_cubelight && hl2_cubelight->ival) ? 1 : 0;
+			static int sun_live = -1;	//FTESurf Patch 1722: changes solved data
+			int wantsun = (hl2_lt_sun && hl2_lt_sun->ival) ? 1 : 0;
 			static float min_live = -1;
 			static int occlusion_live = -1;
 			float wantmin = hl2_lt_min ? hl2_lt_min->value : 16.0f;
@@ -11373,8 +12105,9 @@ static void VBSP_PrepareFrame(model_t *mod, refdef_t *r_refdef, int area, int cl
 			float wantscale, wantsrgb;
 			wantscale = ltscale ? ltscale->value : 255;
 			wantsrgb = ltsrgb ? ltsrgb->value : 1;
-			if (want != vbsp_vc_live || vbsp_vc_mod != mod || wantsign != dirsign_live || wantdir != bakeddir_live || wantwl != worldlight_live || wantreusecube != reusecube_live || wantfold != fold_live || wantcube != cubelight_live || wantmin != min_live || wantocclusion != occlusion_live || wantblend != blend_live || wantillumpos != illumpos_live || wantscale != scale_live || wantsrgb != srgb_live)
+			if (want != vbsp_vc_live || vbsp_vc_mod != mod || wantsign != dirsign_live || wantdir != bakeddir_live || wantwl != worldlight_live || wantreusecube != reusecube_live || wantfold != fold_live || wantcube != cubelight_live || wantmin != min_live || wantocclusion != occlusion_live || wantblend != blend_live || wantillumpos != illumpos_live || wantscale != scale_live || wantsrgb != srgb_live || wantsun != sun_live)
 			{
+				sun_live = wantsun;
 				scale_live = wantscale;
 				srgb_live = wantsrgb;
 				blend_live = wantblend;
@@ -11521,20 +12254,32 @@ static void VBSP_PrepareFrame(model_t *mod, refdef_t *r_refdef, int area, int cl
 			//PVS/area cull, exactly like the displacement loop above (VBSP_EdictInFatPVS at ~3587).
 			//Only valid when we actually have view PVS: surfvis==NULL means portal-recursion / novis / no model vis, where everything must draw.
 			//src->pvscache.leafnums hold CLUSTERS, and surfvis is the cluster-PVS from VBSP_MarkLeaves, so this is index-consistent (same as displacements).
+			//FTESurf Patch 1766: a caster the view cannot see (out of its PVS, or off screen) still throws its shadow into
+			//view: it goes in as a shadow-only entity (RF_SHADOWONLY -- drawn by the shadow passes and no view).  The PVS used to drop it first, so a prop round a corner lost its
+			//shadow and the shadow blinked in and out as the view's leaves changed.
+			shadowonly = false;
 			if (surfvis && !VBSP_PVSMemoTest(memo, i, mod, sent->numpvsclusters ? sent->pvsclusters : NULL, sent->numpvsclusters, &src->pvscache, surfvis, areas))
 			{
 				sent->lastpvswhy = vbsp_pvs_why;	//FTESurf Patch 257: set by the call above
-				PROP_VERDICT(PROPV_PVS);
-				continue;	//prop's leaves aren't in the view PVS and its area can't be reached — not visible.
+				if (!VBSP_ShadowCasterInReach(src, src->model->radius * (src->scale > 0 ? src->scale : 1)) || !VBSP_CascadeMap())
+				{
+					PROP_VERDICT(PROPV_PVS);
+					continue;	//prop's leaves aren't in the view PVS and its area can't be reached: not visible.
+				}
+				shadowonly = true;
 			}
-			if (unvisedareas && !VBSP_UnvisedPairVisible(prv, r_refdef->areabits, &src->pvscache, -1))
+			if (!shadowonly && unvisedareas && !VBSP_UnvisedPairVisible(prv, r_refdef->areabits, &src->pvscache, -1))
 			{
 				sent->lastpvswhy = VBSP_PVSWHY_AREA;	//Patch 1271
-				PROP_VERDICT(PROPV_PVS);
-				continue;
+				if (!VBSP_ShadowCasterInReach(src, src->model->radius * (src->scale > 0 ? src->scale : 1)) || !VBSP_CascadeMap())
+				{
+					PROP_VERDICT(PROPV_PVS);
+					continue;
+				}
+				shadowonly = true;
 			}
 
-			//cheap frustum cull on the model's radius box (props through the portal still pass PVS above, so this only drops what's off-screen).
+			if (!shadowonly)
 			{
 				vec3_t cmin, cmax;
 				float r = src->model->radius * (src->scale > 0 ? src->scale : 1);	//Patch 1559: a scale-10 logo was culled at a tenth of its size
@@ -11542,8 +12287,12 @@ static void VBSP_PrepareFrame(model_t *mod, refdef_t *r_refdef, int area, int cl
 				VectorSet(cmax, src->origin[0]+r, src->origin[1]+r, src->origin[2]+r);
 				if (VBSP_CullBox(cmin, cmax))
 				{
-					PROP_VERDICT(PROPV_FRUSTUM);
-					continue;
+					if (!VBSP_ShadowCasterInReach(src, r))
+					{
+						PROP_VERDICT(PROPV_FRUSTUM);
+						continue;
+					}
+					shadowonly = true;	//Patch 1766: off screen, in reach -- the shadow passes only
 				}
 			}
 
@@ -11559,12 +12308,28 @@ static void VBSP_PrepareFrame(model_t *mod, refdef_t *r_refdef, int area, int cl
 			if (!ent)
 				return;		//scene entity budget spent; the rest stay PROPV_UNVISITED, which is what happened
 			*ent = *src;
+			if (shadowonly)
+				ent->flags |= RF_SHADOWONLY;	//Patch 1766: the shadow passes alone
 			ent->framestate.g[FS_REG].frametime[0] = refdef->time;
 			ent->framestate.g[FS_REG].frametime[1] = refdef->time;
-			if (d)
+			if (d && !shadowonly)	//(a shadow-only prop stays opaque: the depth passes skip translucent ones)
 			{
 				ent->shaderRGBAf[3] *= 1-d;
 				ent->flags |= RF_TRANSLUCENT;
+				//FTESurf Patch 1766: a translucent entity casts nothing (the depth passes skip it), so a prop that began
+				//to fade lost its shadow at a line in front of the player; an opaque shadow-only twin keeps it until
+				//the prop is gone
+				if (!shadowonly && !(src->flags & RF_NOSHADOW) && VBSP_ShadowCasterInReach(src, src->model->radius * (src->scale > 0 ? src->scale : 1)))
+				{
+					entity_t *twin = modfuncs->NewSceneEntity();
+					if (twin)
+					{
+						*twin = *src;
+						twin->flags |= RF_SHADOWONLY;
+						twin->framestate.g[FS_REG].frametime[0] = refdef->time;
+						twin->framestate.g[FS_REG].frametime[1] = refdef->time;
+					}
+				}
 			}
 			//FTESurf Patch 259: counted at the point of submission, so it is what
 			//the frame actually did rather than what the map loaded.
@@ -11863,6 +12628,7 @@ static void VBSP_LoadLeafLight (model_t *mod, qbyte *mod_base, vlump_t *hdridx, 
 	size_t i, j;
 	unsigned short *in;
 	qbyte *inpoint;
+	qboolean wide;	//FTESurf Patch 1717
 
 	if (version == 17 || version == 19)
 		return; //nope. this info is in the leafs.
@@ -11909,7 +12675,10 @@ static void VBSP_LoadLeafLight (model_t *mod, qbyte *mod_base, vlump_t *hdridx, 
 	if (lump_vals->filelen%(7*4))
 		return;
 
-	if (lump_idx->filelen != mod->numleafs*sizeof(short)*2)
+	//FTESurf Patch 1717: Strata (v25) widens the index to two uint32 per leaf -- count, then first (bhop_canals: the
+	//10276 counts sum to its 54901 samples, every first in order); v20's is two ushort.
+	wide = lump_idx->filelen == mod->numleafs*sizeof(int)*2 && lump_idx->filelen != mod->numleafs*sizeof(short)*2;
+	if (!wide && lump_idx->filelen != mod->numleafs*sizeof(short)*2)
 		return;	//erk?
 
 	//easy enough to load some of the data...
@@ -11957,6 +12726,20 @@ static void VBSP_LoadLeafLight (model_t *mod, qbyte *mod_base, vlump_t *hdridx, 
 	lavender off strangers' cubes.
 	*/
 	prv->leaflight = plugfuncs->GMalloc(&mod->memgroup, sizeof(*prv->leaflight)*mod->numleafs);
+	if (wide)
+	{	//Patch 1717: 32-bit firsts cannot wrap
+		const unsigned int *in32 = (const unsigned int*)(mod_base + lump_idx->fileofs);
+		size_t npoints = lump_vals->filelen/(7*4);
+		for (i = 0; i < mod->numleafs; i++)
+		{
+			unsigned int count = LittleLong(in32[i*2]), first = LittleLong(in32[i*2+1]);
+			if (count && ((size_t)first + count > npoints || first + count < first))
+				count = 0;	//names cubes the lump does not hold
+			prv->leaflight[i].count = count;
+			prv->leaflight[i].point = point + (count ? first : 0);
+		}
+		return;
+	}
 	in = (unsigned short*)(mod_base + lump_idx->fileofs);
 	{
 		size_t npoints = lump_vals->filelen/(7*4), run = 0, first, wrapped = 0, disagree = 0, sum = 0;
@@ -12167,14 +12950,16 @@ static const vec3_t vbsp_boxdirections[6] =
 	{ 0, 1, 0}, { 0,-1, 0},
 	{ 0, 0, 1}, { 0, 0,-1}
 };
-static void VBSP_LoadWorldLights (model_t *mod, qbyte *mod_base, vlump_t *hdr, vlump_t *ldr, qboolean usehdr)
+static void VBSP_LoadWorldLights (model_t *mod, qbyte *mod_base, vlump_t *hdr, vlump_t *ldr, qboolean usehdr, int bspversion)
 {
 	vbspinfo_t	*prv = (vbspinfo_t*)mod->meshinfo;
 	vlump_t		*l;
 	dworldlight_t *in;
 	size_t		i, count, kept = 0, stride;
-	size_t		drop_sky = 0, drop_style = 0, drop_cube = 0, drop_cluster = 0;
+	size_t		drop_sky = 0, drop_style = 0, drop_cube = 0, drop_cluster = 0, drop_v25 = 0;
 	qboolean	v21;
+	//FTESurf Patch 1777: Strata (BSP v25) keeps a map's local lights off unbaked models -- see hl2_lt_wlv25
+	qboolean	v25drop = bspversion >= 25 && hl2_lt_wlv25 && hl2_lt_wlv25->ival;
 
 	prv->wl_pvscluster = -2;	//GMalloc zeroes prv, and 0 is a real cluster number.
 
@@ -12245,6 +13030,15 @@ static void VBSP_LoadWorldLights (model_t *mod, qbyte *mod_base, vlump_t *hdr, v
 		flags = LittleLong(rec.flags);
 		cluster = LittleLong(rec.cluster);
 
+		if (type == VWL_SKYLIGHT && style == 0 && !(flags & DWL_FLAGS_INAMBIENTCUBE) && !prv->sun_have)
+		{	//FTESurf Patch 1722
+			prv->sun_have = true;
+			for (j = 0; j < 3; j++)
+			{
+				prv->sun_normal[j]		= LittleFloat(rec.normal[j]);
+				prv->sun_intensity[j]	= LittleFloat(rec.intensity[j]);
+			}
+		}
 		if (type != VWL_SURFACE && type != VWL_POINT && type != VWL_SPOTLIGHT)
 			{ drop_sky++; continue; }
 		if (style != 0)
@@ -12253,6 +13047,8 @@ static void VBSP_LoadWorldLights (model_t *mod, qbyte *mod_base, vlump_t *hdr, v
 			{ drop_cube++; continue; }
 		if (cluster < 0)
 			{ drop_cluster++; continue; }
+		if (v25drop)
+			{ drop_v25++; continue; }
 
 		out = &prv->worldlights[kept++];
 		for (j = 0; j < 3; j++)
@@ -12279,12 +13075,12 @@ static void VBSP_LoadWorldLights (model_t *mod, qbyte *mod_base, vlump_t *hdr, v
 	//FTESurf Patch 308 adds the layout to it, because "v21 accepted" and "v21
 	//still refused" were previously distinguishable only by the ABSENCE of this
 	//line, and an absent line reads as "the map has no worldlights".
-	Con_DPrintf("%s: worldlights %s v%i (%u-byte%s), %u of %u usable (%u sky, %u styled, %u already in cube, %u clusterless)%s\n",
+	Con_DPrintf("%s: worldlights %s v%i (%u-byte%s), %u of %u usable (%u sky, %u styled, %u already in cube, %u clusterless, %u Strata v25 hl2_lt_wlv25)%s\n",
 		mod->name, (l == hdr) ? "HDR" : "LDR", l->version,
 		(unsigned)stride, v21 ? ", Strata" : "",
 		(unsigned)kept, (unsigned)count, (unsigned)drop_sky, (unsigned)drop_style,
-		(unsigned)drop_cube, (unsigned)drop_cluster,
-		kept ? "" : CON_WARNING" -- hl2_lt_worldlight can do nothing on this map");
+		(unsigned)drop_cube, (unsigned)drop_cluster, (unsigned)drop_v25,
+		(kept || drop_v25) ? "" : CON_WARNING" -- hl2_lt_worldlight can do nothing on this map");
 }
 
 /*
@@ -12351,6 +13147,44 @@ static qboolean VBSP_WorldLightVisible(model_t *mod, const vec3_t point, const s
 	prv->wl_trace_model->funcs.NativeTrace(prv->wl_trace_model, 0, NULLFRAMESTATE,
 		NULL, point, end, zero, zero, false, FTECONTENTS_SOLID|VBSP_CONTENTS_LIGHTONLY, &tr);
 	return !tr.startsolid && !tr.allsolid && tr.fraction == 1;
+}
+
+/*FTESurf Patch 1722: Source's light cache admits emit_skylight to a model only when a trace from it toward the sun
+  ends on a sky face (SURF_SKY 0x4 / SURF_SKY2D 0x2; the plugin keeps Source's surface flags).  Through the same
+  world-only tree as the local lights: brushes and displacements, no props.  A miss is not sky (review 1: a ray
+  through a seam would light an indoor model at full sun).*/
+static qboolean VBSP_SunVisible(model_t *mod, const vec3_t point)
+{
+	vbspinfo_t *prv = mod->meshinfo;
+	vec3_t end, zero = {0, 0, 0};
+	trace_t tr;
+	if (!prv->wl_trace_model || !prv->wl_trace_model->funcs.NativeTrace)
+		return false;
+	VectorMA(point, -65536, prv->sun_normal, end);
+	memset(&tr, 0, sizeof(tr));
+	prv->wl_trace_model->funcs.NativeTrace(prv->wl_trace_model, 0, NULLFRAMESTATE,
+		NULL, point, end, zero, zero, false, FTECONTENTS_SOLID|VBSP_CONTENTS_LIGHTONLY, &tr);
+	if (tr.startsolid || tr.allsolid)
+		return false;
+	return tr.fraction < 1 && tr.surface && (tr.surface->flags & (0x0004|0x0002));
+}
+static void VBSP_AddLightToCube(vec3_t cube[6], const struct vworldlight_s *wl, const vec3_t dir, float ratio);
+//FTESurf Patch 1722: the sun into a cube, under hl2_lt_worldlight (its pre-302 control) and hl2_lt_sun
+static void VBSP_AddSunCube(model_t *mod, const vec3_t point, vec3_t cube[6], qboolean ignoresuppress)
+{
+	vbspinfo_t *prv = mod->meshinfo;
+	struct vworldlight_s sun;
+	vec3_t todir;
+	if (!prv || !prv->sun_have || !hl2_lt_sun || !hl2_lt_sun->ival || !hl2_lt_worldlight || !hl2_lt_worldlight->ival)
+		return;
+	if (prv->wl_suppress && !ignoresuppress)
+		return;
+	if (!VBSP_SunVisible(mod, point))
+		return;
+	memset(&sun, 0, sizeof(sun));
+	VectorCopy(prv->sun_intensity, sun.intensity);
+	VectorNegate(prv->sun_normal, todir);	//from where it shines
+	VBSP_AddLightToCube(cube, &sun, todir, 1);
 }
 
 /* FTESurf Patch 879: the renderer's water-occlusion test (gl_backend.c GLBE_WaterSeen) through Patch 509's
@@ -13004,7 +13838,8 @@ static void VBSP_FloorModelAmbient(vec3_t base, float minimum)
 			base[c] += minimum - lum;
 }
 
-static void VBSP_LightPointValuesCube(struct model_s *model, const vec3_t point, vec3_t res_diffuse, vec3_t res_ambient, vec3_t res_dir, vec3_t res_cube[6])
+//fold: Patch 304's split whatever prv->fold_prop says -- LightPointFold's (Patch 1717)
+static void VBSP_LightPointCubeEx(struct model_s *model, const vec3_t point, vec3_t res_diffuse, vec3_t res_ambient, vec3_t res_dir, vec3_t res_cube[6], qboolean fold)
 {
 	vbspinfo_t	*prv = (vbspinfo_t*)model->meshinfo;
 	int leafnum = VBSP_PointLeafnum(model,point);
@@ -13040,6 +13875,7 @@ static void VBSP_LightPointValuesCube(struct model_s *model, const vec3_t point,
 	but bounded -- and then encoded, which is right for LDR and safe for HDR.
 	*/
 	static cvar_t *srgbmag, *scale, *forceface;
+	qboolean foldlevels = false;	//FTESurf Patch 1717: res_ambient holds lit-unlit (linear), see the encode
 	if (!srgbmag)	srgbmag		= cvarfuncs->GetNVFDG("hl2_lt_srgb_mag","1",	0, "sRGB-encode model lighting (0 = plain linear scale by hl2_lt_scale). Source's ambient cube is LINEAR light and needs a gamma encode to be displayed; a multiply is not one. Values are clamped to 1.0 first so an HDR cube cannot run away through pow().", "");
 	if (!scale)		scale		= cvarfuncs->GetNVFDG("hl2_lt_scale",	"255",	0, "Model-lighting brightness scale, applied after the encode. 255 maps a fully-lit luxel to white. The old default of 160 belonged to the linear path, where it was compensating for a missing gamma encode rather than setting a brightness.", "");
 	if (!forceface)	forceface	= cvarfuncs->GetNVFDG("hl2_lt_face",	"-1",	0, "TEST", "TEST");
@@ -13077,6 +13913,7 @@ static void VBSP_LightPointValuesCube(struct model_s *model, const vec3_t point,
 		vec3_t *rgb = leafcube;
 		if (prv->numworldlights && hl2_lt_worldlight && hl2_lt_worldlight->ival && !prv->wl_suppress)
 			VBSP_AddWorldLightCube(model, point, leafcube, false, false);	//the LEVEL: suppression stands
+		VBSP_AddSunCube(model, point, leafcube, false);	//FTESurf Patch 1722
 		//Share the raw cube, never its encoded/folded/floored output.
 		if (res_cube)
 			memcpy(res_cube, leafcube, sizeof(leafcube));
@@ -13092,7 +13929,7 @@ static void VBSP_LightPointValuesCube(struct model_s *model, const vec3_t point,
 			VectorSubtract(rgb[j], res_ambient, diff[j]);
 			sig[j] = VectorLength(diff[j]);
 		}
-		if (hl2_lt_fold && hl2_lt_fold->ival && prv->fold_prop)
+		if (hl2_lt_fold && hl2_lt_fold->ival && (prv->fold_prop || fold))
 		{
 			/*
 			FTESurf Patch 304 -- WHICH END OF THE RAMP THE FLAT BASE IS.
@@ -13171,6 +14008,7 @@ static void VBSP_LightPointValuesCube(struct model_s *model, const vec3_t point,
 				//side, and a negative amp would subtract light from the lit face.
 				for (j = 0; j < 3; j++)
 					res_ambient[j] = (lit[j] > unlit[j]) ? lit[j]-unlit[j] : 0;
+				foldlevels = true;
 			}
 		}
 		else if (hl2_lt_dirsign && hl2_lt_dirsign->ival)
@@ -13226,6 +14064,7 @@ static void VBSP_LightPointValuesCube(struct model_s *model, const vec3_t point,
 
 		if (forceface->ival >= 0)
 		{
+			foldlevels = false;	//Patch 1717: both slots now hold the face itself
 			VectorCopy(rgb[forceface->ival], res_diffuse);
 			VectorCopy(rgb[forceface->ival], res_ambient);
 			VectorClear(res_dir);
@@ -13240,12 +14079,16 @@ static void VBSP_LightPointValuesCube(struct model_s *model, const vec3_t point,
 				//what blew this out last time; 1.0 is "fully lit" and anything
 				//above it has nowhere brighter to go on an 8-bit screen anyway.
 				float a = res_ambient[j], d = res_diffuse[j];
+				if (foldlevels)
+					a += d;	//Patch 1717: encode the lit LEVEL; sRGB(unlit)+sRGB(lit-unlit) drew lit faces up to 1.4x hot
 				if (a > srgbmag->value) a = srgbmag->value;
 				if (d > srgbmag->value) d = srgbmag->value;
 				if (a < 0) a = 0;
 				if (d < 0) d = 0;
 				res_diffuse[j] = M_LinearToSRGB(d, srgbmag->value)*scale->value;
 				res_ambient[j] = M_LinearToSRGB(a, srgbmag->value)*scale->value;
+				if (foldlevels)
+					res_ambient[j] = max(0, res_ambient[j] - res_diffuse[j]);
 			}
 
 			/*for (j = 0; j < 6; j++)
@@ -13341,9 +14184,20 @@ static void VBSP_LightPointValuesCube(struct model_s *model, const vec3_t point,
 	//Patch 508: floor only the shader base, in both folds. Never scale the range.
 	VBSP_FloorModelAmbient(res_diffuse, hl2_lt_min ? hl2_lt_min->value : 16.0f);
 }
+static void VBSP_LightPointValuesCube(struct model_s *model, const vec3_t point, vec3_t res_diffuse, vec3_t res_ambient, vec3_t res_dir, vec3_t res_cube[6])
+{
+	VBSP_LightPointCubeEx(model, point, res_diffuse, res_ambient, res_dir, res_cube, false);
+}
 static void VBSP_LightPointValues(struct model_s *model, const vec3_t point, vec3_t res_diffuse, vec3_t res_ambient, vec3_t res_dir)
 {
-	VBSP_LightPointValuesCube(model, point, res_diffuse, res_ambient, res_dir, NULL);
+	VBSP_LightPointCubeEx(model, point, res_diffuse, res_ambient, res_dir, NULL, false);
+}
+//FTESurf Patch 1717: model_t.LightPointFold -- a Source MDL entity draws through vertexlit/animated.glsl, whose
+//half-lambert ramp (hl2_lt_fold) wants Patch 304's split as much as a static prop's does.  The engine skips Quake's
+//255/200 for these (gl_alias.c R_CalcModelLighting), as HL2_CalcModelLighting's static props never had it.
+static void VBSP_LightPointFold(struct model_s *model, const vec3_t point, vec3_t res_diffuse, vec3_t res_ambient, vec3_t res_dir)
+{
+	VBSP_LightPointCubeEx(model, point, res_diffuse, res_ambient, res_dir, NULL, true);
 }
 #else
 static void VBSP_LightPointValues	(struct model_s *model, const vec3_t point, vec3_t res_diffuse, vec3_t res_ambient, vec3_t res_dir)
@@ -13402,6 +14256,7 @@ static void VBSP_LightPointCube(struct model_s *model, const vec3_t point, vec3_
 	//"the rocks have no bumpmap relief" survived Patch 268 C and Patch 302 both.
 	VBSP_AddWorldLightCube(model, point, res_cube,
 		(hl2_cubelight && hl2_cubelight->ival) ? true : false, false);
+	VBSP_AddSunCube(model, point, res_cube, (hl2_cubelight && hl2_cubelight->ival) ? true : false);	//FTESurf Patch 1722
 }
 
 
@@ -13525,7 +14380,7 @@ deliberately NOT retired when drawing, even though the loader picks one: it pick
 FALLS BACK LDR->HDR the way VBSP_LoadLeafLight does, which is the exact three-way this rule was
 written around, so "the map is HDR" does not make the LDR half dead.
 */
-static qbyte *VBSP_DecompressLumps(model_t *mod, qbyte *mod_base, size_t filelen, dvbspheader_t *header, const qboolean *skiplump)
+static qbyte *VBSP_DecompressLumps(model_t *mod, qbyte *mod_base, size_t filelen, dvbspheader_t *header, const qboolean *skiplump, size_t *outsize)
 {
 	size_t i, extra = 0, tail, saved = 0;
 	int anycompressed = 0, numskipped = 0;
@@ -13556,6 +14411,7 @@ static qbyte *VBSP_DecompressLumps(model_t *mod, qbyte *mod_base, size_t filelen
 	if (numskipped)
 		Con_DPrintf("%s: %i compressed lump%s retired unread, %.1f MB not decompressed\n",
 					mod->name, numskipped, numskipped==1?"":"s", saved/(1024*1024.0));
+	*outsize = filelen;	//FTESurf Patch 1713: the buffer every lump offset must fit in
 	if (!anycompressed)
 		return mod_base;	//uncompressed classic map: leave it exactly as-is
 
@@ -13597,6 +14453,7 @@ static qbyte *VBSP_DecompressLumps(model_t *mod, qbyte *mod_base, size_t filelen
 		l->filelen = actual;
 		tail += actual;
 	}
+	*outsize = filelen + extra;
 	return newbase;
 }
 
@@ -13649,7 +14506,7 @@ even on a map that never built any.
 //0x0001 on surf_beyond2) beside good .hdr.vtf copies -- 38 of 151 sampled maps; beyond2's floor lost
 //its reflection.  Judges DXT1/DXT5 only, over the whole high-res image block, any endpoint more than
 //one 565 step above black is "not black"; any other format is "not black".
-static qboolean VBSP_CubeIsBlack (const char *name)
+qboolean VBSP_CubeIsBlack (const char *name)	//FTESurf Patch 1771: mat_vmt.c reads it too
 {
 	qbyte *f;
 	size_t len = 0, ofs, p, bs;
@@ -13703,17 +14560,16 @@ done:
 
 //Patch 1559: only a float cube (RGBA16161616F, Patch 887 encodes it) replaces a black LDR one; an
 //integer or packed HDR cube would load as 0..1 data from a wider range.
-static qboolean VBSP_CubeIsFloat (const char *name)
-{
-	qbyte *f;
-	size_t len = 0;
-	qboolean yes;
-
-	f = filefuncs->LoadFile(name, &len);
-	if (!f)
+qboolean VBSP_CubeIsFloat (const char *name)
+{	//FTESurf Patch 1771: the header only (a float cube is megabytes; the format sits at byte 52)
+	qbyte f[56];
+	vfsfile_t *vf = filefuncs->OpenVFS(name, "rb", FS_GAME);
+	qboolean yes = false;
+	if (!vf)
 		return false;
-	yes = len >= 56 && !memcmp(f, "VTF\0", 4) && (f[52] | (f[53]<<8) | (f[54]<<16) | ((unsigned int)f[55]<<24)) == 24;
-	plugfuncs->Free(f);
+	if (VFS_READ(vf, f, sizeof(f)) == sizeof(f))
+		yes = !memcmp(f, "VTF\0", 4) && (f[52] | (f[53]<<8) | (f[54]<<16) | ((unsigned int)f[55]<<24)) == 24;
+	VFS_CLOSE(vf);
 	return yes;
 }
 
@@ -13873,6 +14729,7 @@ static qboolean VBSP_LoadModel(model_t *mod, qbyte *mod_base, size_t filelen, ch
 	vbspinfo_t *prv = mod->meshinfo;
 	size_t i;
 	qboolean noerrors = true;
+	size_t basesize = filelen;	//FTESurf Patch 1713: VBSP_DecompressLumps' buffer
 #ifdef HAVE_CLIENT
 	qboolean haverenderer = qrenderer != QR_NONE;
 #else
@@ -13923,6 +14780,8 @@ static qboolean VBSP_LoadModel(model_t *mod, qbyte *mod_base, size_t filelen, ch
 
 		//VBSP_LoadLighting's own choice, verbatim, and the one the leaf ambient cube must agree with.
 		usehdr = lit_hdr && !(hl2_favour_ldr->ival && lit_ldr);
+		if (usehdr)
+			mod->engineflags |= MDLF_SOURCEHDR;	//FTESurf Patch 1764: Source runs its auto-exposure on this lighting
 		//VBSP_LoadLeafLight's FIRST branch, verbatim.  Only when this is true is the LDR half dead.
 		ambhdr = usehdr && ami_hdr && amv_hdr;
 
@@ -13970,7 +14829,7 @@ static qboolean VBSP_LoadModel(model_t *mod, qbyte *mod_base, size_t filelen, ch
 
 	//nettest: transparently decompress any LZMA-compressed lumps (repoints mod_base + rewrites the lump
 	//table, so every Load* below sees plain data).  Must run before LoadMapArchive / the Load* calls.
-	mod_base = VBSP_DecompressLumps(mod, mod_base, filelen, &header, lumpskip);
+	mod_base = VBSP_DecompressLumps(mod, mod_base, filelen, &header, lumpskip, &basesize);
 	if (!mod_base)
 		return false;
 
@@ -13998,6 +14857,8 @@ static qboolean VBSP_LoadModel(model_t *mod, qbyte *mod_base, size_t filelen, ch
 		VBSP_ProbeLightmapStride				(mod);
 	if (noerrors && haverenderer)	//FTESurf Patch 1264: after the stride tags it reads, before anything allocates lightmaps
 		VBSP_BuildRNM							(mod);
+	if (noerrors && haverenderer)	//FTESurf Patch 1781: likewise
+		VBSP_BuildSunPage						(mod);
 #endif
 	noerrors = noerrors && VBSP_LoadDisplacements	(mod, mod_base, header.lumps);
 	noerrors = noerrors && VBSP_LoadMarksurfaces	(mod, mod_base, &header.lumps[VLUMP_LEAFFACES]);
@@ -14010,6 +14871,23 @@ static qboolean VBSP_LoadModel(model_t *mod, qbyte *mod_base, size_t filelen, ch
 		VBSP_LoadLeafWater							(mod, mod_base, &header.lumps[VLUMP_LEAFWATERDATA]);	//FTESurf Patch 1013
 	noerrors = noerrors && VBSP_LoadNodes			(mod, mod_base, &header.lumps[VLUMP_NODES]);
 	noerrors = noerrors && VBSP_LoadSubmodels		(mod, mod_base, &header.lumps[VLUMP_MODELS]);
+	prv->vpsolid = NULL;	//FTESurf Patch 1713: copied out (the decompressed lumps die with this function), into
+	prv->vplen = NULL;		//the model's group so a later failed load frees them too
+	if (noerrors && vbsp_tail1713)
+	{
+		size_t *len = NULL;
+		const qbyte **sol = VBSP_VPhysSolids(mod_base, basesize, header.lumps, prv->numcmodels, &len);
+		if (sol && len && (prv->vpsolid = plugfuncs->GMalloc(&mod->memgroup, sizeof(*prv->vpsolid)*prv->numcmodels)) &&
+			(prv->vplen = plugfuncs->GMalloc(&mod->memgroup, sizeof(*prv->vplen)*prv->numcmodels)))
+			for (i = 0; i < (size_t)prv->numcmodels; i++)
+			{
+				prv->vplen[i] = len[i];
+				if ((prv->vpsolid[i] = sol[i] ? plugfuncs->GMalloc(&mod->memgroup, len[i]) : NULL))
+					memcpy(prv->vpsolid[i], sol[i], len[i]);
+			}
+		plugfuncs->Free((void*)sol);
+		plugfuncs->Free(len);
+	}
 	noerrors = noerrors && VBSP_LoadAreas			(mod, mod_base, &header.lumps[VLUMP_AREAS]);
 	noerrors = noerrors && VBSP_LoadAreaPortals		(mod, mod_base, &header.lumps[VLUMP_AREAPORTALS], &header.lumps[VLUMP_AREAPORTALVERTS]);
 #ifdef HAVE_CLIENT
@@ -14034,7 +14912,20 @@ static qboolean VBSP_LoadModel(model_t *mod, qbyte *mod_base, size_t filelen, ch
 		//VBSP_LoadGameLump below, which is what parses the static props.  Called
 		//bare, like its two neighbours: a missing or malformed optional lighting
 		//lump must leave props on bounce-only light, never fail the map load.
-		VBSP_LoadWorldLights						(mod, mod_base, &header.lumps[VLUMP_WORLDLIGHTS_HDR], &header.lumps[VLUMP_WORLDLIGHTS_LDR], usehdr);
+		VBSP_LoadWorldLights						(mod, mod_base, &header.lumps[VLUMP_WORLDLIGHTS_HDR], &header.lumps[VLUMP_WORLDLIGHTS_LDR], usehdr, header.version);
+		{	//FTESurf Patch 1781: the sun the sun page is in units of (lightmapped.glsl); 0 = the shaders keep the bake
+			char sunlm[96] = "0 0 0", sundir[96] = "0 0 -1";
+#ifdef HAVE_CLIENT
+			VBSP_SunPageToIndirect(mod);
+#endif
+			if (mod->sunvisdata && prv->sun_have)
+			{
+				Q_snprintfz(sunlm, sizeof(sunlm), "%g %g %g", prv->sun_intensity[0], prv->sun_intensity[1], prv->sun_intensity[2]);
+				Q_snprintfz(sundir, sizeof(sundir), "%g %g %g", prv->sun_normal[0], prv->sun_normal[1], prv->sun_normal[2]);
+			}
+			cvarfuncs->ForceSetString("r_shadows_sunlm", sunlm);
+			cvarfuncs->ForceSetString("r_shadows_sundir", sundir);	//the direction the light travels, as VRAD baked it
+		}
 
 		//after LoadFaces (needs surfaces + surfedges) and LoadDisplacements
 		//(needs surfdisp), before the batch builder reads surf->envmap.
@@ -14052,6 +14943,8 @@ static qboolean VBSP_LoadModel(model_t *mod, qbyte *mod_base, size_t filelen, ch
 #endif
 #ifdef HAVE_CLIENT
 	mod->funcs.LightPointValues		= VBSP_LightPointValues;
+	if (vbsp_tail1717)
+		mod->LightPointFold			= VBSP_LightPointFold;	//FTESurf Patch 1717
 //	mod->funcs.StainNode			= VBSP_StainNode;
 //	mod->funcs.MarkLights			= VBSP_MarkLights;
 	mod->funcs.GenerateShadowMesh	= VBSP_GenerateShadowMesh;
@@ -14128,6 +15021,8 @@ static qboolean VBSP_LoadMap (model_t *mod, void *filein, size_t filelen)
 	header = *(dvbspheader_t *)(buf);
 	header.magic = LittleLong(header.magic);
 	header.version = LittleLong(header.version);
+	prv->bspversion = header.version;	//FTESurf Patch 1780
+	cvarfuncs->SetFloat("hl2_bspversion", header.version);	//and for the game: r_shadows_vhvsun only on a v25 map
 
 	ClearBounds(mod->mins, mod->maxs);
 
@@ -14229,6 +15124,9 @@ static qboolean VBSP_LoadMap (model_t *mod, void *filein, size_t filelen)
 	}
 #endif
 
+	//FTESurf Patch 1713: which submodels Source sweeps boxes against through their vcollide, and that solid
+	vbsp_stat_vphysmodels = vbsp_stat_vphysrefused = vbsp_stat_vphyspieces = 0;
+
 	for (i=1 ; i< mod->numsubmodels ; i++)
 	{
 		cmodel_t	*bm;
@@ -14237,7 +15135,11 @@ static qboolean VBSP_LoadMap (model_t *mod, void *filein, size_t filelen)
 
 		Q_snprintfz (name, sizeof(name), "*%i:%s", i, wmod->publicname);
 		mod = modfuncs->BeginSubmodelLoad(name);
-		*mod = *wmod;
+		//FTESurf Patch 1717: only as much of model_t as the exe has (its tails, com_mesh.h); a whole-struct copy
+		//on an older exe ran past this slot into the next model's name
+		memcpy(mod, wmod, vbsp_tail1748 ? sizeof(*mod) : vbsp_tail1717 ? offsetof(model_t, farfixbrushes) :
+			vbsp_tail1713 ? offsetof(model_t, LightPointFold) :
+			hl2_bodyparts ? offsetof(model_t, vphysalt) : offsetof(model_t, geombase));
 		mod->archive = NULL;
 		mod->entities_raw = NULL;
 		mod->submodelof = wmod;
@@ -14266,6 +15168,12 @@ static qboolean VBSP_LoadMap (model_t *mod, void *filein, size_t filelen)
 		mod->firstmodelsurface = bm->firstsurface;
 
 		VBSP_BuildBIHSubmodel(mod, i);
+		if (vbsp_tail1713)
+		{	//FTESurf Patch 1713: only an exe whose model_t has the field
+			mod->vphysalt = NULL;	//*mod = *wmod copied the world's
+			if (prv->vpsolid && i < prv->numcmodels && prv->vpsolid[i])
+				VBSP_VPhysAlt(mod, prv->vpsolid[i], prv->vplen[i]);
+		}
 
 		memset(&mod->batches, 0, sizeof(mod->batches));
 		mod->vbos = NULL;
@@ -14286,6 +15194,13 @@ static qboolean VBSP_LoadMap (model_t *mod, void *filein, size_t filelen)
 #endif
 		modfuncs->EndSubmodelLoad(mod, MLS_LOADED);
 	}
+	//FTESurf Patch 1713: the copies stay in wmod's group until the model goes (no GFree here: the main thread
+	//may already be allocating into that group for VBSP_GenerateMaterials, and ZG_* takes no lock)
+	prv->vpsolid = NULL;
+	prv->vplen = NULL;
+	if (vbsp_stat_vphysmodels || vbsp_stat_vphysrefused)
+		Con_DPrintf("%s: %u brush entities collide through their vcollide (%u pieces), %u refused\n",
+			wmod->name, vbsp_stat_vphysmodels, vbsp_stat_vphyspieces, vbsp_stat_vphysrefused);
 
 	//urgh, we need to wait for models to load in order to get their sizes. that requires being on the main thread and the caller will think we're loaded on completion so we can't safely pingpong it back before generating the bih tree
 	threadfuncs->AddWork(WG_MAIN, VBSP_BuildBIHMain, wmod, NULL, 0, 0);
@@ -14609,6 +15524,10 @@ qboolean VBSP_Init(void)
 		modfuncs = NULL;
 	threadfuncs = plugfuncs->GetEngineInterface(plugthreadfuncs_name, sizeof(*threadfuncs));
 	loadingfuncs = plugfuncs->GetEngineInterface(plugloadingfuncs_name, sizeof(*loadingfuncs));
+	vbsp_tail1713 = plugfuncs->GetEngineInterface(plugmodeltail1713_name, sizeof(int)) != NULL;	//FTESurf Patch 1713
+	vbsp_tail1717 = plugfuncs->GetEngineInterface(plugmodeltail1717_name, sizeof(int)) != NULL;	//FTESurf Patch 1717
+	vbsp_tail1748 = plugfuncs->GetEngineInterface(plugmodeltail1748_name, sizeof(int)) != NULL;	//FTESurf Patch 1748
+	vbsp_tail1812 = plugfuncs->GetEngineInterface(plugmodeltail1812_name, sizeof(int)) != NULL;	//FTESurf Patch 1812
 
 	//nettest: a dedicated/headless server has no client Image/renderer interface (the same condition the
 	//"hl2: VTF/VMT/TTH support unavailable" banners report).  Mark qrenderer QR_NONE so the renderer-only
@@ -14693,6 +15612,8 @@ qboolean VBSP_Init(void)
 		which walk was used either way.  MAPLATCH: the tags are written while the BSP is
 		read, so a map reload is when a change takes effect.
 		*/
+		hl2_dispnormals = cvarfuncs->GetNVFDG("hl2_dispnormals", "1", CVAR_MAPLATCH, "FTESurf Patch 1781: a displacement's vertices take the displaced surface's own normal and texture directions projected onto it and normalised (as brush faces' are). 0: the face's plane normal and the raw texture vectors. Takes effect on a map reload.", MAPOPTIONS);
+		hl2_sunpage = cvarfuncs->GetNVFDG("hl2_sunpage", "1", CVAR_MAPLATCH, "FTESurf Patch 1781: on a Strata (v25) map, keep its lightmap's baked direct-sun page so that, with the sun cascades on, the world takes the sun live (sharp, per pixel, through its normal maps) as Strata does, the bake beyond their reach. 0: the bake as it is. Takes effect on a map reload.", MAPOPTIONS);
 		hl2_rnm = cvarfuncs->GetNVFDG("hl2_rnm", "1", CVAR_MAPLATCH, "Light bumped Source brush faces as Source does (radiosity normal mapping): the three basis lightmaps VRAD stores for a $bumpmap face, weighted by the normal map or $ssbump; needs r_deluxemapping. 0 shows the flat lightmap and no bump lighting (an $ssbump material still reflects off its own normal). Takes effect on a map reload.", MAPOPTIONS);
 		hl2_bumpstride = cvarfuncs->GetNVFDG("hl2_bumpstride", "1", CVAR_MAPLATCH, "Walk a Source map's lightstyles at the stride VRAD wrote them: a $bumpmap face stores four luxel sets per style (flat plus three radiosity-normal-map basis maps), and 150 library maps add a non-lightmap record after every style's sets.\n0: the old walk, which summed a basis map in as the next lightstyle at full brightness and never read the real one, on ~67,000 faces across 153 library maps.\n1: probe the layout per map and skip the extra sets (default). Faces then show their real second style -- brighter where it is a bright switchable light, darker where it is dim. Maps whose layout cannot be proven from the lighting lump size fall back to 0 and say so in the console.", MAPOPTIONS);
 		/*
@@ -14914,6 +15835,7 @@ qboolean VBSP_Init(void)
 		mod->envmaps while the BSP is being read, which no shader flush revisits.
 		*/
 		hl2_water = cvarfuncs->GetNVFDG("hl2_water", "0", CVAR_SHADERSYSTEM, "How Source water is drawn, and what it costs.\n0: flat translucent (default, FTESurf Patch 1587) -- a $fogcolor sheet, no extra scene render, but it still blends and still sorts.\n1: live refraction with approximate baked-cubemap reflection -- one extra scene render per batch.\n2: live refraction and reflection -- two extra scene renders per batch.\n3: dithered flat -- an ordered dither of $fogcolor. No blend, no sort, no render target; writes depth.\n4: budget animated -- translucent fog-coloured water with normal-map animation and approximate baked-cubemap reflection. No reflection, refraction, depth capture or screen copy; still blends/sorts and does not write depth. Not depth-correct or Source-exact.\n5: screen-space (FTESurf Patch 1020) -- refraction from a copy of the view's colour and depth, reflection marched through that depth copy, the fog colour where the reflected ray leaves the screen. No extra scene render; reflects only what is on screen.\nAt 1, 2 and 5 a material with $forcecheap (and an $envmap) draws as Source's cheap water instead: opaque $fogcolor to the cubemap by fresnel, its normal map's AnimatedTexture frames playing but not scrolled by $bumptransform (as Source's), no extra scene render (FTESurf Patch 879).", MAPOPTIONS);
+		hl2_waterlod = cvarfuncs->GetNVFDG("hl2_water_lod", "0", CVAR_SHADERSYSTEM, "FTESurf Patch 1729: a distance cutoff for water at hl2_water 1, from the LOD distances the map and material give. NOT Source's rule: on PC Source never applies them to water that reflects (an absent $forceexpensive is 1, water.cpp), which is most water. 1: water with an $envmap fades to Source's cheap water (fog colour to the cubemap by fresnel) between its distances -- the map's water_lod_control under a WaterLOD proxy, otherwise the material's own $cheapwaterstartdistance/$cheapwaterenddistance; water with neither, or without an $envmap, keeps its refraction -- and water wholly past them renders no refraction. 0: refraction at every distance.", MAPOPTIONS);
 		hl2_refract = cvarfuncs->GetNVFDG("hl2_refract", "0", CVAR_SHADERSYSTEM, "How Source's Refract materials (glass, windows) are drawn.\n0: translucent (default, FTESurf Patch 1587), no framebuffer copy -- what is behind the pane tinted by $refracttint (and its tint texture), plus its $envmap reflection: Source's look without the warp.\n1: Source's refraction, which copies the framebuffer once per batch.\n2: dithered flat -- the pane keeps its own texture, $alpha sets the coverage, and it becomes opaque geometry that writes depth. A pane with no texture of its own draws as 0.", MAPOPTIONS);
 		hl2_vertexcolor = cvarfuncs->GetNVFDG("hl2_vertexcolor", "1", CVAR_SHADERSYSTEM, "FTESurf Patch 232: $vertexcolor / $vertexalpha on LightmappedGeneric and WorldVertexTransition materials -- the per-vertex tint and opacity a mapper paints onto a DISPLACEMENT (every other surface carries white at alpha 1, so this cannot change them).\n0: ignore both keys, which is what every build before P232 did.\n1: draw what the material asks for (default). 41 transition materials in 20 maps and 494 LightmappedGeneric ones in 111 maps carry them; surf_rise's ivy is the reported case.", MAPOPTIONS);
 		hl2_bottommaterial = cvarfuncs->GetNVFDG("hl2_bottommaterial", "1", CVAR_SHADERSYSTEM, "FTESurf Patch 233: a water material's $bottommaterial -- the underside of the water -- when the map names one and does not ship it.\n0: leave it unresolved, which is what every build before P233 did; the underside draws with the default wall shader and the map reports a missing material.\n1: draw it as the water material that names it (default). surf_aesthetic's water/clear_beneath is 325 faces and surf_demise's water_tar_beneath 7; neither exists in any pack, in either spelling.", MAPOPTIONS);
@@ -14959,7 +15881,7 @@ qboolean VBSP_Init(void)
 		//companions.  hl2_cubelight and hl2_bumpgreenfix are mat_vmt.c's and SHADERSYSTEM,
 		//because they decide what is compiled; hl2_lt_dirsign is this file's, and a plain
 		//cvar, because it only changes a cached light direction (see VBSP_PrepareFrame).
-		hl2_cubelight = cvarfuncs->GetNVFDG("hl2_cubelight", "0", CVAR_SHADERSYSTEM, "Per-pixel relief on bumped Source props: the leaf's six-face ambient cube evaluated with the NORMAL-MAPPED normal, as Source lights them, applied as a ratio over the prop's existing (baked) lighting.\n0: today -- a VertexLitGeneric with $bumpmap and no $envmap samples no normal map at all and draws flat.\n1: on. Regenerates materials, so use r_cubelight for a live A/B on a loaded map.", MAPOPTIONS);
+		hl2_cubelight = cvarfuncs->GetNVFDG("hl2_cubelight", "1", CVAR_SHADERSYSTEM, "Per-pixel relief on bumped Source props: the leaf's six-face ambient cube evaluated with the NORMAL-MAPPED normal, as Source lights them, applied as a ratio over the prop's existing (baked) lighting.\n0: a VertexLitGeneric with $bumpmap and no $envmap samples no normal map at all and draws flat (the default until Patch 1782).\n1: on (default since Patch 1782, Lex 24 Nov). Regenerates materials, so use r_cubelight for a live A/B on a loaded map.", MAPOPTIONS);
 		hl2_bumpgreenfix = cvarfuncs->GetNVFDG("hl2_bumpgreenfix", "0", CVAR_SHADERSYSTEM, "Green channel of a bumped VertexLitGeneric's normal map.\n0: today -- flipped, which mirrors the relief along V relative to Source (Source never flips it; handedness rides on the tangent's w).\n1: unflipped, as Source. Also bends the Patch 268 B reflection the same way.", MAPOPTIONS);
 		hl2_lt_dirsign = cvarfuncs->GetNVFDG("hl2_lt_dirsign", "0", 0, "Direction of the model light derived from the leaf ambient cube.\n0: today -- from unsigned face deviations, which points AWAY from a single bright face and drops the sign of a symmetric pair.\n1: the signed luminance difference of each opposing face pair, pointing toward the light. Visible only on props with no .vhv bake, and on models that are not static props.", MAPOPTIONS);
 		//FTESurf Patch 296.  REGISTERED HERE AS WELL AS LAZILY IN THE LOADER, for the
@@ -15060,10 +15982,13 @@ qboolean VBSP_Init(void)
 		hl2_lt_prewarm = cvarfuncs->GetNVFDG("hl2_lt_prewarm", "3000", 0, "FTESurf Patch 1364: milliseconds of static-prop lighting solved in a map's first frame, after waiting for every prop model, so no prop is solved in the frame that first draws it. 0: solve each prop when it is first drawn, as before. hl2_lt_prewarm_info reports the pass.", "");
 		cmdfuncs->AddCommand("hl2_lt_prewarm_info", VBSP_PropLightWarmInfo_f, "FTESurf Patch 1364: what the last hl2_lt_prewarm pass solved.");
 		hl2_lt_reusecube = cvarfuncs->GetNVFDG("hl2_lt_reusecube", "1", 0, "Reuse the exact unbaked static-prop lighting cube instead of tracing it twice. 0 keeps the original two queries. Dynamic/approximate, baked and other lighting functions retain their original paths.", "");
-		hl2_lt_worldlight = cvarfuncs->GetNVFDG("hl2_lt_worldlight", "1", 0, "Light models with no VRAD bake from the map's worldlights as well as the leaf ambient cube, as Source's light cache does.\n0: the leaf ambient cube alone, which VRAD fills with BOUNCE ONLY, so a prop with no .vhv draws at roughly a fifth of its Source brightness. This is the falsifier -- it is bit-for-bit the pre-302 behaviour.\n1: default. Add the direct contribution of every emit_surface/point/spotlight whose cluster is in the sample point's PVS. Sky lights are deliberately excluded until a sky-visibility trace exists -- they have no distance falloff, so without one they would light sealed indoor rooms at full sun. Does nothing to props that DO have a .vhv bake; their direct light is already in it.", MAPOPTIONS);
+		hl2_lt_sun = cvarfuncs->GetNVFDG("hl2_lt_sun", "1", 0, "FTESurf Patch 1722: light models with no VRAD bake from the map's sun (emit_skylight) where a trace toward it ends on sky, as Source's light cache does. 0: no sun on models (the pre-1722 picture).", MAPOPTIONS);
+		hl2_lt_worldlight = cvarfuncs->GetNVFDG("hl2_lt_worldlight", "1", 0, "Light models with no VRAD bake from the map's worldlights as well as the leaf ambient cube, as Source's light cache does.\n0: the leaf ambient cube alone, which VRAD fills with BOUNCE ONLY, so a prop with no .vhv draws at roughly a fifth of its Source brightness. This is the falsifier -- it is bit-for-bit the pre-302 behaviour.\n1: default. Add the direct contribution of every emit_surface/point/spotlight whose cluster is in the sample point's PVS. The sun (emit_skylight) comes in through hl2_lt_sun where a trace reaches sky (Patch 1722); 0 here drops it too. Does nothing to props that DO have a .vhv bake; their direct light is already in it.", MAPOPTIONS);
 		//FTESurf Patch 308.  Registered here, beside the term it feeds, and NOT
 		//latched: VBSP_LoadWorldLights reads it once per map load, so changing it
 		//needs a map change to take effect and the description has to say so.
+		cvarfuncs->GetNVFDG("hl2_bspversion", "0", 0, "FTESurf Patch 1780: set at each Source map load to its BSP version (25: Strata). Read by the game; setting it does nothing.", MAPOPTIONS);
+		hl2_lt_wlv25 = cvarfuncs->GetNVFDG("hl2_lt_wlv25", "0", 0, "FTESurf Patch 1777 (default 0 since Patch 1805): on a Strata (BSP v25) map, light models that have no VRAD bake from the leaf ambient cube and the sun only, not the map's point/spot/surface lights.\n0: default since Patch 1805 -- Momentum does light them: bhop_canals save 39/0025 (the same room as save 28) shows the cans and the rusty barrel lit by the fluorescent and the cyan spot, 0013 the red toolbox; with 1 they drew black.\n1: Patch 1777's rule. Measured on bhop_canals (save 28): Momentum lights the floor under the barrels, jerry cans and crates with the room's fluorescent and an outdoor spot (lightmap 0.9-1.4 linear) but draws those prop_dynamics at roughly the leaf cube alone; adding the two lights drew them 2-18x too bright beside the walls.\nRead at map load.", MAPOPTIONS);
 		hl2_lt_wl21 = cvarfuncs->GetNVFDG("hl2_lt_wl21", "1", 0, "Read the worldlights lump of a v21 (Strata) map, whose record is 100 bytes rather than 88.\n0: refuse it, the pre-308 behaviour. 123 of the 1314 installed maps ship this lump version, so hl2_lt_worldlight -- and with it Patch 304's fold -- silently did nothing on any of them, including surf_fantasy.\n1: default. The layout is a single 12-byte insertion after `normal` (Strata's shadow_cast_offset, zero on all 39,641 lights measured), derived by pairing the CS:S and Momentum builds of surf_fantasy light-for-light rather than guessed: every field that must survive a recompile agrees on 777 of 777, and across all 123 maps every light yields a valid type, a valid style and a unit normal.\nRead at map load -- an A/B needs a map change or a second process.", MAPOPTIONS);
 
 		/*

@@ -550,6 +550,38 @@ int CL_IsDownloading(const char *localname)
 	return 0;
 }
 
+//FTESurf Patch 1670: a map download queued or running would land under a local server loading that map (and the model
+//cache it shares with us), so SV_Map_f refuses the map meanwhile. Not once the running web transfer has been silent
+//for 60 s (as the menu's PJ_STALL; its Play holds 62, DL_HOLD_STALL): nothing can cancel one, and a dead one would
+//block that map for the session.
+qboolean CL_MapDownloadHolds(const char *level)
+{
+	char base[MAX_QPATH], bsp[MAX_QPATH+16], gsp[MAX_QPATH+16];
+	char *c;
+	downloadlist_t *dl;
+	qboolean found = false;
+	if (!strncmp(level, "maps/", 5))
+		level += 5;
+	Q_strncpyz(base, level, sizeof(base));
+	if ((c = strchr(base, '#')))
+		*c = 0;
+	c = base + strlen(base);
+	if (c - base > 4 && !Q_strcasecmp(c - 4, ".bsp"))
+		c[-4] = 0;
+	Q_snprintfz(bsp, sizeof(bsp), "maps/%s.bsp", base);
+	Q_snprintfz(gsp, sizeof(gsp), "goldsrc/%s.pk3", base);
+	for (dl = cl.downloadlist; dl && !found; dl = dl->next)	//any case: a join fetches the server's spelling
+		found = !Q_strcasecmp(dl->localname, bsp) || !Q_strcasecmp(dl->localname, gsp);
+	if (!found && cls.download)
+		found = !Q_strcasecmp(cls.download->localname, bsp) || !Q_strcasecmp(cls.download->localname, gsp);
+	if (!found)
+		return false;
+	if (cls.download && cls.download->method == DL_HTTP && cls.download->progresstime &&
+		Sys_DoubleTime() - cls.download->progresstime > 60)
+		return false;
+	return true;
+}
+
 //note: this will overwrite existing files.
 //returns true if the download is going to be downloaded after the call.
 #ifdef CSQC_DAT
@@ -1094,6 +1126,7 @@ void CL_DownloadFinished(qdownload_t *dl)
 {
 	int i;
 	char ext[8];
+	qboolean localgame;
 
 	char filename[MAX_QPATH];
 	char tempname[MAX_QPATH];
@@ -1102,6 +1135,10 @@ void CL_DownloadFinished(qdownload_t *dl)
 	Q_strncpyz(tempname, dl->tempname, sizeof(tempname));
 
 	DL_Abort(dl, QDL_COMPLETED);
+	localgame = false;
+#ifndef CLIENTONLY
+	localgame = !!sv.state;
+#endif
 
 	FS_FlushFSHashWritten(filename);
 
@@ -1111,6 +1148,13 @@ void CL_DownloadFinished(qdownload_t *dl)
 		if (CL_GoldSrc_MapOf(filename, "goldsrc/", ".pk3", gsid, sizeof(gsid)))
 		{
 			FS_GoldSrc_Reverify();
+#ifndef CLIENTONLY
+			if (localgame && !Q_strcasecmp(gsid, svs.name))
+			{	//FTESurf Patch 1670: the local game's own map: no remount or model purge under its server
+				Con_Printf("%s: the new build is used from the next load of this map\n", gsid);
+				return;
+			}
+#endif
 			if (cls.state >= ca_connected && cl.model_name[1] &&
 				CL_GoldSrc_MapOf(cl.model_name[1], "maps/", ".bsp", world, sizeof(world)) && !Q_strcasecmp(world, gsid))
 			{
@@ -1135,7 +1179,16 @@ void CL_DownloadFinished(qdownload_t *dl)
 	}
 	else
 	{
-		CL_CheckModelResources(filename);
+#ifndef CLIENTONLY
+		if (localgame && *sv.modelname && !Q_strcasecmp(filename, sv.modelname))
+		{	//FTESurf Patch 1670: the world this local game's server runs, in the model cache it shares with us:
+			//Mod_FileWritten would purge it under both; SV_SpawnServer's mtime check takes the new file next load
+			Con_Printf("%s: the new build is used from the next load of this map\n", filename);
+			return;
+		}
+#endif
+		if (!localgame)	//P1670: in a local game nothing may fetch what it names, and the scan reads the BSP mid-run
+			CL_CheckModelResources(filename);
 
 		Mod_FileWritten(filename);
 		{
@@ -1306,7 +1359,8 @@ qboolean	CL_CheckOrEnqueDownloadFile (const char *filename, const char *localnam
 
 #ifndef CLIENTONLY
 	/*no downloading if we're the one we'd be downloading from*/
-	if (sv.state)
+	//FTESurf Patch 1670: except a map the menu asked for (PF_m_downloadmap), which comes from the web mirror
+	if (sv.state && !(flags & DLLF_WEBONLY))
 		return true;
 #endif
 
@@ -1411,6 +1465,15 @@ qboolean	CL_CheckOrEnqueDownloadFile (const char *filename, const char *localnam
 		}
 	}
 
+	if (flags & DLLF_WEBONLY)
+	{	//FTESurf Patch 1670: never re-queued over the netchan, which here is the server we host
+#ifndef WEBCLIENT
+		return true;	//CL_SendDownloadStartRequest would send even a TRYWEB entry over it
+#endif
+		if (!(flags & DLLF_TRYWEB))
+			return true;
+		flags &= ~DLLF_ALLOWWEB;
+	}
 	if (!CL_EnqueDownload(filename, localname, flags))
 		return true;	/*don't stall waiting for it if it failed*/
 
@@ -2349,8 +2412,15 @@ void CL_RequestNextDownload (void)
 {
 
 	int stage;
+	/*FTESurf Patch 1670: a menu download begun during a local game (DLLF_WEBONLY) is no signon's: while that game
+	  runs, its map changes go on beside it. Not once it is gone: a join's world may be that very file, and the
+	  world model does not wait for its own download*/
+	qboolean aside = false;
+#ifndef CLIENTONLY
+	aside = sv.state && cls.download && !cls.demoplayback && (cls.download->flags & DLLF_WEBONLY);
+#endif
 	/*already downloading*/
-	if (cls.download && !cls.demoplayback)
+	if (cls.download && !cls.demoplayback && !aside)
 		return;
 
 	/*FTESurf Patch 465: an http download needs no server, so don't make it wait for one.
@@ -2363,6 +2433,8 @@ void CL_RequestNextDownload (void)
 	if (cls.state < ca_connected && !cl.sendprespawn && cl.downloadlist)
 	{
 		downloadlist_t *wdl;
+		if (aside)
+			return;	//P1670: one transfer at a time
 		for (wdl = cl.downloadlist; wdl; wdl = wdl->next)
 		{
 			if (wdl->flags & DLLF_TRYWEB)
@@ -2377,6 +2449,8 @@ void CL_RequestNextDownload (void)
 	/*request downloads only if we're at the point where we've received a complete list of them*/
 	if (cl.sendprespawn || cls.state == ca_active)
 	{
+		if (cl.downloadlist && aside)
+			return;	//P1670: anything queued (only another menu map in a local game) holds this signon until it ends
 		if (cl.downloadlist)
 		{
 			downloadlist_t *dl;
@@ -2418,7 +2492,7 @@ void CL_RequestNextDownload (void)
 				}
 			}
 		}
-		else if (cls.download && requiredownloads.value)
+		else if (cls.download && !aside && requiredownloads.value)
 			return;
 	}
 

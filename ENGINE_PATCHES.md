@@ -1,5 +1,2635 @@
 # Engine patches (fteqw `fteqw64.exe`)
 
+## Patch 1820 - map and zone downloads; one site menu; the admin and TAS upload pages in the site's look; admin runs explained and ~10x faster (game src/release/site, surfd/web, surfd/admin.py + templates, surfd/tasupd.py, tools/sitenav.py)
+
+**Problem.** Lex, 25 Nov: "it would be cool if people could download any map on the leaderboard with a button, also same
+with the zones on the zones tab"; "sometimes a bot will add a tab and it won't appear on all the pages"; "can the backend
+look a little more like the site"; runs "refused with weird notes I don't quite understand" ('a cold rewind (`pause
+retry|load`): the move before it has no stated duration', 'counts unavailable (no stored observation)'); "the tabs on the
+runs pages also loads quite slow"; "a hover tooltip explaining the refused badge or any other badge". The map/zone URLs
+302 into R2 objects named by their hash, so a plain link saves `<sha>.bsp`. Every page carried its own copy of the tabs:
+the TAS uploads page lacked Download and Log in and linked /ftesurf/, the 3D viewer had none, and the live Reports page
+still lacks P1697's Top 10. The admin runs list took 0.6-2.6 s a tab: the stage-evidence EXISTS took runs_board's leg
+range (4.1M of 4.17M runs have replay_id 0) and the first-key tables scanned all 85k replays before 2.5k receipts.
+
+**Change.** src/release/site/dl.js fetches the .bsp / .json (both hops send Access-Control-Allow-Origin: *) and saves it
+under the map's name with progress in the button; the zoning page has Map on every row and Zones on zoned rows and the
+recent list; get.html?map=&get= is the board's target (its CSP keeps connect-src 'self'), with the map's size and "not on
+the servers" / "no zones yet". tools/sitenav.py generates every header, footer link row, admin menu and tasupd's SITE_NAV
+between marker comments; --check fails on a stale page or on a page with a menu and no block. tasupd and the admin take
+the site's palette, header and pill buttons; the wordmark is inline SVG (their CSPs load no fonts or images). admin.py
+explain_verdict(): a heading, a sentence and a look level per pm_verify reason (HOLD 2; REFUSE at most 1, the checker's
+"cannot say"); the runs list gets a Why column, human tab names and a tooltip on every tab and badge, the run page an
+explainer box and plain mouse-count lines. SQL: `+r.leg`/`+r.replay_id` keep the EXISTS on runs_run (map, track, player,
+runid); CROSS JOIN drives the key tables from receipts.
+
+**Verified.** On the Pi's surfd.db.bak-pre1710 (read-only, immutable), 88 state/search/page combinations give identical
+counts and rows to the live gen1745 admin.py; worst tab 2.55 s -> 0.19 s; key_for 0.55 -> 0.07 s on the live DB
+(read-only). Every reason in the live store maps to a specific explanation (1149 PASS, 238 retry/save, 178 kept/sampled
+clock, 21 viewing clock, 17 parked, 11 parked-wall, 4 frozen, 2 ERROR, 1 partial). Headless Chromium over CDP in real
+time: get.html saved bhop_bobop.bsp (3,632,591 bytes = the object's Content-Length) and surf_kartune.json; the admin
+pages and the reportd page load without a script exception (review fix: the Reports tab keeps #navunseen). Suites:
+test_admin, test_admin_explain, test_reportd, test_tasupd (447), test_board, test_web, test_sitenav (with the add-a-tab
+mutation) pass; two review rounds (round 1: the Reports badge, a mis-indented marker eating page content, verdict
+misfiles, the zoning Zones button moving between lists -- all fixed with falsifiers; round 2 clean). Game main cbefd439.
+LIVE 24 Nov UTC: site 19:08Z (sitepage.ps1 into releases/0.1.68, read back byte for byte; 0.1.69 is cut after it), board
+19:09Z (publish_board.py --commit e0905e56, cut from gen1745's source_ref c2cbe46f), reportd templates 19:09Z (HUP).
+tasupd: re-staged at cbefd439 for Lex's one root upgrade (with P1806). The admin half waits for the next surfd generation
+(tools/backend-pending.md).
+
+## Patch 1812 - Mover 17: a solid Source prop collides through its .phy pieces as brushes (engine common/pmove.h pm_source.c com_bih.c com_bih_ts.h pmovetst.c com_mesh.h plugin.c, server/sv_user.c sv_phys.c; plugin hl2/mod_vbsp.c mod_hl2.c)
+
+**Problem.** Lex, 24 Nov, bhop_canals save 5: a ramp you walk through -- the metal_panel01a pair (prop_dynamic_override
+solid 6, angles -70 90 -180). A STATIC prop's .phy has been swept as its convex pieces since mover 7 (Patch 764); an
+entity prop still met the hull's triangles, each a prism with a 4-unit back slab, and this hull is 3 units thick: P1761
+measured the box sinking 7.5 units at the high edge and passing under the low half. A walk from y 6480 stopped dead at
+(22031, 6378, -445.6) -- inside the panel, where Lex's save 5 sits -- and drops onto it came to rest on a flat shelf at
+-430.5 (the slabs) or sank to -449.
+
+**Change.** Version 17. The hl2 plugin gives a Source model with a usable .phy (hl2_propcollision 1) a vphysalt: its
+convex pieces (mover 9's reading) as brushes, model space, margin 0 -- the static props' shapes -- in a BIH tree
+(VBSP_MDLVPhysAlt), only on an exe that answers FTESurfModelTail/1812. bih_vphysmdl (sourceversion >= 17) lets a box
+sweep meet a MODEL's vphysalt (BIH_Trace, BIH_TraceUncached, PM_TransformedHullCheck; the trace cache keys on it); the
+box turns into model space as for Patch 1713's turning brush entities; a model's twin is taken before Patch 888's (whose
+zeroed twin has none). Brush entities (mover 15) are unchanged. Version 17 pins 17 on every map, as 15 did: a first cut
+pinned 16 where no solid entity carried such a model, read from live entities with a cache -- review 1 showed
+Enable/Disable, point_template spawns and lazy loads could make a run's pin differ from its replay's. The verifier notes
+an exact replay pinned below 17 on a map whose prop models have twins (not a verdict).
+
+**Verified.** Local gate (installed 0.1.69 server vs this): Lex's canals save recordings exact on both, pm_dettest on
+bhop_canals/surf_classics/surf_mesa identical; pm_sourceversion 16 -> 17. Two review rounds through two lenses each
+(control flow; recorded evidence and cheating): mover <= 16 resolves as before; no route to a false pass (a wrong shape
+ends in a HOLD). Rig, P1761's script at save 5: the walk goes
+up the panel (z -419 at y 6354), over it and down the other side to y 5978; drops land on its slope and slide down it
+(z -423 .. -448 along y) instead of resting on the slabs or sinking.
+
+**Limits.** Margin 0 as the static props (Patch 1713 measured vphysics' half unit on brush entities; props are not
+calibrated against Momentum demos). A turned prop's pieces carry bevels along its own axes, so near an edge it reaches a
+little past its shape (as at 16; static props, built in world space, are exact); the mover ignores a prop's scale (as at
+16). Jointed .phy files (ragdolls), and a model one of whose pieces the builder refuses, keep the triangle path. A 17 pin
+does not record whether the twins existed: a new exe with a stale plugin records 17 on triangle collision, and its prop
+contacts HOLD on the verifier. The lobby engine and plugin (surfd's verifier) and the client ship together.
+
+## Patch 1811 - Envmaps take the exposure and are masked in linear light (plugin hl2/glsl/vmt lightmapped transition vertexlit)
+
+**Problem.** Lex, 25 Nov, save 36: the barn window "to reflective, and the white mark is a bit to visable" -- Momentum's
+pane is a bright reflection at the top (124 levels there, ours 52) over which the interior and the dirt barely show.
+The window's patched material reflects c21000_8016_-64 (an outside cube, HDR faces 0.27-0.34 linear) through a 0.55 mask.
+Source computes cube * mask * tonemap scale in linear light and encodes; ours added the sRGB-encoded cube times the
+linear mask, unexposed (the auto-exposure reaches a surface only through its lightmap scale).
+
+**Change.** The reflection is computed and added in linear light, as Source orders it: cube (decoded) x mask x tint,
+contrast, saturation, then the tonemap scale (r_autoexposure_sky^2.2, 1 when off), added to the linearised diffuse and
+encoded after. vertexlit's add before the lighting multiply (a non-default hl2_envmap_source) takes the exposure through
+the lighting; its add after it runs only where there is a reflection.
+
+**Verified.** Rig save 36: the pane's top 52 -> 57.5 (reflections off: 17; an intermediate mask^(1/2.2) form gave 64 and
+overshot Source on lit surfaces, review 1); save 16's corrugated ramp within a level.
+
+**Limits.** Momentum's pane is still twice as bright; the remaining factor is not found (the cube, its orientation and
+the mask are as above). Water, refract and UnlitGeneric $envmap (unlitreflect) not changed; $envmaptint stays a factor
+on the linear value; under vid_srgb != 0 (not the default) the cube is already linear and is now decoded twice.
+
+## Patch 1810 - Source models' LODs, with VVD fixups, switched at Source's switch points (plugin hl2/mod_hl2.c; engine gl/gl_alias.c gl_model.h)
+
+**Problem.** Lex, 25 Nov, saves 40/41: "This tree has LOD models we're not using I can see switch between these two
+positions on momentum mod" -- oak_tree01 (4 levels, 2968 -> 881 vertices) drew level 0 at every distance: P201 kept any
+model whose .vvd carries fixups at LOD 0, on the premise that each level's strip indices need per-level offsets.
+
+**Change.** With the root LOD at 0 Source fixes the .vvd up once and every level's strips index that one array (each
+level uses a prefix of each mesh: oak_tree01's highest origMeshVertID per mesh 2573/1865/979/486), so level 0's fixup
+table serves every level. Each level's surfaces carry the VTX switch points and the model MDLF_SOURCELOD; the engine
+picks by Source's metric, 100 / the pixel width of a unit-diameter sphere at the model (LODMetric,
+ComputePixelWidthOfSphere(origin, 0.5)); a negative last switch point (Source's shadow LOD) is never drawn in view;
+every pass takes the level from the camera's depth, fov and the view's pixel width (shadow faces and the orthographic
+cascades cast the level drawn); viewmodels level 0. Switch points follow Source's GetLODForMetric order (a running
+maximum; a level whose range is empty never draws; an empty level 0 keeps mindist 0 for BIH_BuildAlias's LOD-0 key).
+Models without fixups (P201's) switch at their switch points too, not by coverage. Surfaces whose vertex arrays are
+pointer-identical share one vertex buffer (com_mesh.c Mod_MeshVBOTwin): every mesh of every level of a fixup model holds
+the whole array, which had multiplied its VRAM by the level count.
+
+**Verified.** Rig: oak_tree01 at save 41 (1171 units: metric ~166) draws level 1, close by level 0, nothing garbled;
+save 13's distant trees at their lower levels; canals saves 6-32 otherwise as 0.1.68; timing saves 8/6/5 GPU -0.1/0/0 ms.
+Three review rounds (VRAM sharing, zero and falling switch points, the shadow-pass metric, viewmodels).
+
+**Limits.** Raised root LODs and $lod replacematerial are not modelled (LOD meshes draw level 0's materials);
+r_lodscale/r_lodbias no longer affect Source models; no installed map with P201's prefix forests to look at.
+
+## Patch 1806 - TAS uploads on the boards' TAS tab; tasupd's Steam sign-in kept 30 days (game surfd/tasindex.py, ftesurf-tasindex.service/.timer, tasupd.py)
+
+**Problem.** Lex, 25 Nov: "only rounin has uploaded a record on surf_sandtraps main, and it doesn't appear on the
+leaderboard ... do they actually automatically apply to the leaderboard like they should?" -- they did not: the TAS tab
+(web board, game boards) is surfd's community/tas rows, and tasupd's uploads (Rounin's surf_sandtrap2 main, 48.165 s,
+approved) lived only in tasupd's store and /tasup/board. And a player: "Website doesn't save your steam login" --
+tasupd's session cookie lasted 12 h.
+
+**Change.** surfd/tasindex.py, every 5 minutes from a proto user timer (not crontab: the generation kits hash it), files
+each player's best shown upload per course as a community/tas row: node `tasup`, runid `tasup-<id>`, TF_TAS, rep 0
+(surfd serves no tasupd file), the linked account's name, 66.6667 Hz. Only into an empty slot: a player with any TAS row
+of their own on the course (live, or set aside by surfd), or an unrejected lobby recording of it, keeps it. Review 1 found the first design's displace-and-
+restore of a slower lobby row unsafe (a separately committed snapshot; restored past a reject, over a better lobby run).
+A row whose upload stops being shown (removed, rejected, beaten by the player's own better upload) is deleted and the
+slot refilled from the player's best unrejected lobby replay, surfd.restand's rule. Accounts tasupd's board would not
+show (unknown) are not filed; banned ones are left to accounts.ban_rows (read again under the lock); an upload row surfd set aside is not filed
+again. No state file: the courses looked at are every (map, track, player) tasupd's store has held (it never deletes
+run rows), read by primary key; planned with plain reads, planned again under BEGIN IMMEDIATE only for courses that
+change. Ours = node `tasup` + runid `tasup-N` + rep 0. `--full` also scans for strays (before the lock), `--withdraw`
+takes every upload row off (a banned player's too). surfd is not imported (its connect() migrates the schema). tasupd: cookie
+`sid.gen.auth.iat.key.mac` -- 30 days from issue, at most 90 from the Steam sign-in; a GET page (200, text/html) read a
+day after issue sets a fresh cookie for a known unbanned account, with the same key, from which the CSRF token comes (open
+tabs keep working); Sign out bumps the account's gen (meta `session <steamid>`), refusing every older cookie in any
+browser. Cookies from before the upgrade are refused (one more Steam sign-in each).
+
+**Verified.** test_tasindex 18 through surfd's own /api/board (17 mutants killed, an unmutated control passing);
+test_tasupd 447 on the Pi's Flask/Werkzeug 2.2.2 and on Werkzeug 3 here (15 session mutants killed; left untested: the
+GET-only and clock-step guards, which no response or a stepped clock alone reaches). Live: a pass 18 ms, surfd's write
+lock ~6 ms, the replay check one replays_player probe; the dry run files Rounin's sandtrap2 main (3211 ticks) and
+Proto's bonus 4 (522). Three review rounds per half (integrity; sessions). A cookie with non-ASCII text no longer
+answers 500 (older than this patch).
+
+**Limits.** No replay on an upload row (rep 0) until surfd serves a `tasup` replay kind (a generation); a player's own
+lobby row on the course wins over a faster upload; the web row does not link to /tasup/run. Up to 5 minutes from publish
+to board. BACKLOG "P1806".
+
+## Patch 1805 - Strata maps light unbaked props with the map's local lights again (plugin hl2/mod_vbsp.c)
+
+**Problem.** Lex, 25 Nov, save 38/39: "Models don't seem to have the 'vertex light glow' like in momentum" -- the barrels
+and jerry cans under the props room's fluorescent drew black. P1777 (hl2_lt_wlv25 1) had taken every point/spot light
+off unbaked props on v25 maps from one view of the same room (save 28); Momentum's 0025 and 0013 of that room show the
+cans, the rusty barrel and the red toolbox lit.
+
+**Change.** hl2_lt_wlv25 defaults to 0 (Source 2013's light cache: the leaf cube plus the visible local lights); 1 keeps
+P1777's rule.
+
+**Verified.** Rig save 39 against Momentum 0025: cans lit grey, one barrel blue and one rusty as Momentum's (black with
+1); hl2_lightprobe at the barrel: the room's warm spot and the cyan spot visible, an outdoor one blocked.
+
+**Limits.** Save 34's barrels (no local light reaches them) stay dimmer than Momentum's: the leaf cube there is low.
+
+## Patch 1804 - The sun sprite fades as hills, skybox geometry and solid props cover it (game cl_sun.qc)
+
+**Problem.** Lex, 25 Nov: "sun sprite should be blocked by 3d skybox geometry". Sun_Draw drew the noz glow at full
+strength whenever one ray from the eye reached the sky; it never looked into the 3D skybox, so the low sun (bhop_canals'
+env_sun pitch -10) glowed over the skybox's hills and over near hills it half sat behind. Source fades it by a pixel
+query of its disc.
+
+**Change.** Nine rays across the disc's core (the centre and eight at half the quad's radius), each traced in the world
+and, with the 3D skybox drawn (vbsp_skyroom, scale defaulting to 16 as cl_main.qc), again from the skybox eye
+(sky_camera + view / scale); the sprite eases toward the share that reaches the sky. Traced only with the sun near the
+screen and again only once the eye has moved.
+
+**Verified.** Rig, saves 40/41 and a camera sweep down toward the sun: the glow fades by the share behind the hills
+(skybox and world) where it drew whole; save 7 now shows the part-hidden sun between trees.
+
+**Limits.** Traces see brushes, displacements and solid props, not non-solid props (skybox tree cards); a pixel query
+would.
+
+## Patch 1803 - func_smokevolume takes the light where it hangs (game cl_emit.qc)
+
+**Problem.** Lex, 25 Nov, save 38: "smokevolume way to opaque, blocking view" -- P1772 drew each billboard in its
+Color1/Color2 unlit, so the basin smoke glowed in a dark corridor where Momentum's barely shows.
+
+**Change.** Each particle's colour is multiplied by the world's light at its position (getlight, clamped to 1 per
+channel, the light cache off around the loop as for the steam jets).
+
+**Verified.** Rig save 38: a faint haze against Momentum 0024's near-nothing (P1772's was a bright opaque bank); save
+11's outdoor haze unchanged.
+
+## Patch 1802 - Blended props with an alpha mask cast into the shadow maps (engine gl/gl_backend.c)
+
+**Problem.** Lex, 25 Nov, save 33: "r_shadows_worldcast is missing the flat tree alphaed textures" -- Momentum's ground
+there is striped by branch shadows from bhop_canals' 124 tree_deciduous_card_01 props, whose material is a $translucent
+UnlitGeneric. GLBE_BaseEntTextures submits sorts PORTAL..SEETHROUGH only, so the cards (SHADER_SORT_BLEND) never reached
+a shadow map although Patch 1768 gives them a masked depth pass.
+
+**Change.** In the depth pass, a BLEND-sorted prop (mod_alias) batch whose shader carries the plugin's embedded masked
+depth pass (a depthonly override not named "depthonly...") is submitted too; it casts where its alpha reaches the mask.
+Brush entities' blended faces and other blends still cast nothing.
+
+**Verified.** Rig save 33 against Momentum 0018: the branch stripes across the ground, the same layout. Timing saves
+8/6/5 GPU +0.0-0.1 ms.
+
+## Patch 1801 - A batch whose shader has no remap target is skipped (engine gl/gl_backend.c)
+
+**Problem.** r_shadows 2 -> 1 on bhop_canals (looking at save 34's barrels) segfaulted in DrawMeshes in 0.1.64 through
+0.1.67: GLBE_SubmitBatch set curshader = sh->remapto on a shader_t that is all zeroes (no name, uses 0, id 0, no
+generator), and DrawMeshes read its flags. Every shader path in gl_shader.c sets remapto, and a slot in r_shaders cannot
+carry an empty name; the pointer's producer is not found.
+
+**Change.** GLBE_SubmitBatch and GLBE_DrawMesh_List skip such a shader; developer 1 names it once with the batch's
+buildmeshes, flags, model and surface for the next look.
+
+**Verified.** The same steps crash the unguarded build every time and pass twice guarded; nothing visible is missing in
+the frame after the switch.
+
+## Patch 1800 - A static prop whose fade distances are inverted draws (plugin hl2/mod_vbsp.c)
+
+**Problem.** Lex, 25 Nov, save 33: "Missing log props, not rendering" -- driftwood static props with FadeMinDist 2500 >
+FadeMaxDist 2000 (STATIC_PROP_FLAG_FADES set). The fade fraction (d - min) / (max - min) went past 1 and the prop drew
+at alpha < 0 at every distance: 64 of bhop_canals' 3,126 (driftwood, rebar, dock cleats, canal caps, ladders, fences).
+
+**Change.** An inverted pair is swapped at load, as Source's UTIL_ComputeEntityFade does.
+
+**Verified.** Rig save 33: the three logs drawn where Momentum 0018 draws them.
+
+**Limits.** Taken from Source's entity fade; if Strata culls such a static prop at the smaller distance without a fade,
+these now stay visible 500 units further.
+
+## Patch 1799 - Map uploads: zones optional, published zones no longer block a name, Zone editor and Map upload tabs (game surfd/mapupd.py, m_mapupload.qc m_main.qc, cl_zoneedit.qc cl_zoneedit_extra.qc)
+
+**Problem.** Lex, 24 Nov: "Allow uploading without zone, just ask the client 'Are you sure, this doesn't have a zone
+file' Allow uploading of a map with the zone files already on the server. I accidently Published a zone for
+bhop_uncanny not understanding the process, and then it refused to let me upload it, so I had to rename it to
+bhop_uncanny2. Place a zone_edit 'tab' on the map upload page, and a map load 'tab' to the zone_edit page." mapupd
+refused a name with a zone file in either zone dir, and a bhop map without zones; the two tools had no way between them.
+
+**Change.** mapupd: only a BSP in the library or a list/table row blocks a name; zones are optional for every mode;
+begin says which zone copies exist and which an attachment replaces (warns about a data/maps/zones/local copy, which
+lobbies read first). Finish validates the pictures and stages the BSP .part first, then under zonepub's publish.lock
+(read-only flock, 30 s) re-checks the name, undoes a crashed earlier attempt, copies replaced zones to the store's
+zones-aside/, writes the upload_zones record, the zones, the pictures, links the BSP last, then the uploads row; any
+failure puts the old zones back. Without an attached zone file the zone dirs are not touched. remove does all its
+reads and writes under the same lock, acts only on zone files whose SHA-256 is still the upload's (puts back what it
+displaced), leaves zones of unknown provenance (uploads before this patch), zones zonepub published at or after the
+upload's (its publications table, read-only), and unhandled dirs in the record (exit 1), records progress at once and
+deletes the rows last, so a re-run finishes it. A crashed attempt is undone by the next finish on the same rules. New
+table upload_zones (CREATE IF NOT EXISTS: init on upgrade, the service and remove too). Menu: with no
+zone file the Upload press opens "Are you sure? This map doesn't have a zone file." (Upload anyway signs on its own
+press, once per manifest); a Zone editor tab loads the picked map (maps/ only) in a local game and opens zone_edit on
+it (second press to leave a game); zone_edit's Map upload tab (a real click only) opens F8 with the map picked through
+ui_mapupload_request, acted on only in a fully joined game this client hosts, never a demo; ui_zoneedit_want expires;
+coming back keeps the typed name and picture; the newer of <name>.json and the editor's own file is offered.
+
+**Verified.** test_mapupd 46 (crash reconcile, lock, record, the remove race and re-run, the store migration each
+fail when disabled); fteqcc 0 warnings, qcframes clean. Four review rounds on the service, two on the menu/editor.
+
+**Limits.** No in-game check yet (lextest). Old zones are restored only by remove (or by hand from zones-aside); a
+record remove leaves (a file changed by a later publish) is cleared by hand; tools/mapupd.md "Limits".
+
+## Patch 1798 - TAS uploads are judged by their motion, not by importer header lines (game surfd/tasupd.py, tasupd_wsgi.py, tools/install_tasupd.py)
+
+**Problem.** Lex, 24 Nov: Rounin could not upload his surf_sandtrap2 bonus 4 TAS at play.proto.bar/tasup -- "That is
+an imported run (KSF or Momentum): it is its player's, not an upload." tasupd refused any header carrying a line only
+surfd's KSF/Momentum importers write (foreign, ksfdemo, ksftime, momdemo, a ksf-/mom- runid...). A bot that builds its
+file on a downloaded replay's header keeps them; a real copy of a public replay passed once they were deleted (BACKLOG
+P1640 "Human replays passed off as TAS").
+
+**Change.** No header refusal. Each upload's motion signature (velocity and path on the tick grid, copy_of's two
+passes) is compared with the course's public replays from surfd.db (kinds run, ksf, momentum; 66.67 tick; never the
+uploader's own): the one its ksf-/mom- runid names, then the nearest in length, two a player (capped in SQL), up to 8
+files that read (missing, >16 MB or unparsable ones logged and not counted), one at a time in the checker slot, 6 s
+then the rest unread (nearest first: a re-headed replay has its original's length). A match is refused "That is the
+motion of <player>'s <KSF|Momentum|World of Surf> run on this course (replay N)". Held instead, for the owner: a match
+with a lobby TAS-style row; with a lobby row surfd hides (a current review reject, a banned owner; never named); or an
+upload shorter than the replay by more than the matcher's 16-tick shift window when the zones vouch for its start and
+finish (a tool improving a seed run). surfd unreadable holds it. Roots come from TASUPD_REPLAYS (installer ENV_ADDED
+group 3: --upgrade-from still recognises the da9042b3-era unit), resolved as surfd.replay_file does; /api/health fails
+while a root cannot be listed or a column the queries use is missing (the installer's probe then refuses).
+
+**Verified.** test_tasupd 402 (4 known Werkzeug set_cookie API errors on this PC); PublicReplays (every Service test
+with the check on, plus its own) fails against 11 mutants. test_install_tasupd 56. Live Pi data (a scratch copy as
+proto, not the service): Jargon samples under agentflwrs's KSF header accepted; agentflwrs's run re-headed refused as
+replay 34061; a 6.9 MB surf_meme KSF run re-headed refused in 4.3 s as replay 60662. Lex's 8 local Jargon b4 runs
+match none of the 3 KSF guides. Five review rounds.
+
+**Limits.** Nearest-N sampling: a copy filed under another map/track, its end nudged past 8 nearer replays, its last
+~8% changed, or shifted on an unzoned course still passes (BACKLOG). A genuine improvement within 17 ticks that still
+matches is refused.
+
+## Patch 1797 - The TAS menu's Upload tab lists every TAS run in the game, and opens its folder (engine client/cl_receipt.c pr_csqc.c; game cl_tasupload.qc sv_tasautosurf.qc)
+
+**Problem.** Lex, 24 Nov: "Tas upload needs to list all tas runs in your game, also a directory link button." The tab
+listed only this map's runs the local game had noted finishing (data/tasproj/<map>/uploads.txt, P1696), at most 10:
+older runs, other maps' and a bot's .rec placed in data/runs never showed, and nothing pointed at the folder.
+
+**Change.** SV_TASUpList sends the noted runs, then every other loose whole-course data/runs/<map>/<main|bonus_N>/
+*_tas.rec, this map's first, up to 64, the folder ones with sha "-". The tab reads each listed header itself (any
+map: TASUp_Head), labels other maps and "(folder)" runs, pages 8 at a time, and Upload of a folder run skips the
+"changed since saved" check (it makes no such claim). An Open folder chip, acted on the press, calls the new CSQC
+builtin float sys_openfolder(string gamepath): only while a device's key press is delivered (acct_browse's budget),
+the path must be data/runs[/...] of plain characters with no '..', a real directory in the writable gamedir
+(lstat / GetFileAttributesW, no reparse point), once a second; xdg-open through a double fork, or ShellExecuteW
+explore; -nobrowse prints the path. Review: only in a game this client hosts, from the very csprogs it serves (the
+tasrev_sign gate; a server's or demo's code could swap a script in for the checked folder before xdg-open read it);
+not a link; the opener gets a trailing slash, /dev/null, its own session and no inherited fds. The list holds the
+16 newest noted runs then a name-sorted folder scan (kept 15 s, dropped when a run is noted), at most 48 (~7.6 KB);
+another map's noted run keeps its SHA; the P1712 offer box takes noted runs only.
+
+**Verified.** fteqcc 0 warnings, qcframes clean; m-rel builds without new warnings. Two review rounds each (engine,
+QC).
+
+**Limits.** A file a hostile server's csprogs wrote into data/runs is now listed (labelled "(folder)"); sending it
+still needs the player's Upload click and Send press under their account, and tasupd checks it.
+
+## Patch 1796 - +jumpduck: one key jumps and holds duck (engine client/cl_input.c menu.c; game cl_keycfg.qc cl_keys.qc cl_rewind.qc cl_spectate.qc sui_sys.qc)
+
+**Problem.** Lex, 24 Nov: "we need a +jumpduck button, some people want to be able to jump, and hold duck on the same
+key, they use it at the inital jump, of a run." An alias of +jump;+duck is a chained bind: Patch 1646 counts it, and
+the Normal categories allow one button per action.
+
+**Change.** +jumpduck/-jumpduck press and release in_jump (through IN_JumpDown, smartjump included) and in_duck with
+the key's number, so either releases with the key. The duck's KeyDown is the same press (keydown_unjudged), judged
+once; IN_JumpDown's flying branch now leaves keydown_judged as the press had it. Listed in the engine bind menu; the
+game's Key config gets a Jump + duck row under Movement (row 40 listed after Duck), the key display and .view key mask
+mark both jump and duck for that key, rewind and spectate treat it as movement.
+
+**Verified.** fteqcc 0 warnings; m-rel builds; review: no lapse miscounted in any press path (keys, repeat,
+wheel, gamepad, console, smartjump swim/fly), +jumpduck cannot launder another command.
+
+## Patch 1785 - No banding by default: a float scene and a still dither on every frame (engine client/renderer.c, gl/gl_rmain.c, shaders/glsl/defaultgammacb.glsl, gl/r_bishaders.h)
+
+**Problem.** Lex, 24 Nov: "I just love full contrast and no colour banding, and want to ensure/force it default for
+players." The 3D view rendered into 8 bits (vid_srgb 0, r_hdr_framebuffer 0) and every post pass quantised again; the
+scene-gamma pass already wrote a sub-step interleaved-gradient noise, but only when gamma/contrast were moved off 1.
+
+**Change.** r_dither (default 1) turns the scene-gamma pass on for every 3D view -- with it the scene renders into
+RGBA16F (the existing rule) -- and its noise is written whatever the gamma (cvar_r_dither): half a step, still (keyed on
+the pixel, no shimmer), none under 2/255 so blacks stay black. Where the hardware ramp does the gamma the pass uses
+identity colours. Contrast and brightness defaults are unchanged (1, 0: full range).
+
+**Verified.** Rig save 13: same mean (154.9/157.1/148.2 against 155.0/157.3/148.4), a sky gradient's columns hold 54
+distinct greens against 42 (the steps broken up); the sky texture's own DXT blocks remain (in the texture). Cost, alternated
+runs of one build: saves 8/6/5 GPU 3.9-4.5/3.6/1.9 ms against 3.8-3.9/3.5/1.9 with r_dither 0, post-processing 0.05 ms CPU
+either way.
+
+**Limits.** vid_srgb 0 still blends in display values (linear-light blending is a separate, larger change).
+
+## Patch 1784 - Shafts, sprites and particles take the auto-exposure; UnlitTwoTexture adds in linear light (plugin hl2/glsl/vmt/twotexture.glsl animated.glsl; engine shaders/glsl/defaultsprite.glsl defaultadditivesprite.glsl, gl/r_bishaders.h)
+
+**Problem.** Lex, 24 Nov, save 30: the barn shafts face the right way now (P1778) but still drew a visible fan where
+Momentum shows none, brighter still once the barn auto-exposes to 2. P1764 left UnlitTwoTexture, unlit sprites and the
+engine's particle/sprite programs unscaled; and Source adds light in LINEAR light where this renderer adds display
+values -- for the shafts (rendercolor 21 18 13, ~0.025 a layer) that is ~0.3 levels over the dark barn in Source and 6
+a layer here.
+
+**Change.** UnlitTwoTexture, an unlit vmt/animated (sprites; not MODELLIT, whose light already carries it) and
+defaultadditivesprite multiply by r_autoexposure_sky (the exposure's display scale, 1 when off). UnlitTwoTexture's
+additive path adds the source's linear value (display ^ 2.2) before its fade, within 0.6-1.7x of Source's increment
+over dark to bright backgrounds where the display value is 1.4-20x over.
+
+**Verified.** Rig saves 30 and 6: no shaft fan, as Momentum's 0016/0009; the barn otherwise unchanged.
+
+**Limits.** Other additive materials still add display values; alpha-blended particles (defaultsprite) are not
+exposure-scaled: its blends include colour-factor ones (subtract, modulate) a colour scale would get wrong.
+
+## Patch 1783 - On a Strata map a prop with no bake takes the true sun per pixel under the cascades (plugin hl2/glsl/vmt/vertexlit.glsl)
+
+**Problem.** Lex, 24 Nov: "idk if we ever matched the coregated ramp texture to be the same shadow strength as momentum
+mod?" -- it had not: the ramp (prop_dynamic_override metal_panel01a, no .vhv) drew flat pale grey where Momentum's
+grooves go dark. Its sun came from the light fold: a cube from one trace at the prop's origin, on a half-lambert ramp.
+
+**Change.** With r_shadows_sunlm set (P1781), world casting on and the cascades live, a non-VC vertexlit prop that
+receives the cascades takes its ambient part (light minus the vertex stage's directional term) plus
+r_shadows_sunlm x lambert(N.L) x the cascade's lit fraction, in linear light, N.L from the normal map per pixel
+(BUMP) or the vertex normal; otherwise P1763's path.
+
+**Verified.** Rig save 16 against Momentum 0010: crest/groove 196/76 and 204/46 against 179/51 and 187/60; save 28's
+barrels and cans stay dark (the cascades shade them indoors); save 8's pipe unchanged.
+
+**Limits.** A baked (VC) prop's sun (P1780) is still vertex-level, no normal-map relief.
+
+## Patch 1782 - hl2_cubelight 1 by default (plugin hl2/mod_vbsp.c)
+
+**Problem.** Lex, 24 Nov: "make hl2_cubelight 1 default". Its ratio (the leaf cube through the bumped normal over the
+geometric one) is 1 for a flat normal and scale-invariant, so it cannot double a bake; it was left off out of caution.
+
+**Change.** Default 1.
+
+## Patch 1781 - Strata's world sun: the lightmap's baked direct-sun page, swapped for the sun under the cascades (plugin hl2/mod_vbsp.c, glsl/vmt/lightmapped.glsl transition.glsl; engine client/r_surf.c gl/gl_shadow.c)
+
+**Problem.** Lex, 24 Nov, save 32: world-cast shadows "sharp but then cuts off and is soft"; save 29: "get it to look
+the same as momentum mod". The soft part is the lightmap's own baked shadow (64-unit luxels, a 5-degree sun spread)
+where the cascades say sunlit, and save 29's wall is baked shade Strata draws sunlit: a shadow pass can only darken.
+Strata's lighting lump (version 1, the 2/5 layout) ends every style with one more luxel set whose red byte is VRAD's
+baked direct sun, its shadowing included, in units of the sun's intensity -- the lightmap is indirect + sun * R/255
+(linear across a penumbra: R 0/32/115 at 0.215/0.441/1.02 green with sun 1.80; full sun ~0.984 N.L^1.4, rms 0.02 over
+1535 faces).
+
+**Change.** VBSP_BuildSunPage keeps the page as SUNVIS (mod->sunvisdata, 1 byte a luxel at style 0) when every lit face
+carries it; VBSP_SunPageToIndirect (once the sun is known) rewrites style 0 as the indirect light, per luxel in linear
+light (a bumped face's basis mean scaled by mean/flat), the page holding exactly what came out; r_shadows_sunlm (new
+engine cvar) is set to the map's sun. lightmapped.glsl/transition.glsl add the sun back: the bake (sunlm x page), or
+under live cascades with the world in them the sun at the pixel's N.L (normal map, green as transition's cubemap path)
+times VRAD's 0.984 N.L^1.4 shape and the cascade's lit fraction, the bake again by 0.35 of the outer cascade; off the
+live path (worldcast 0, one map) a shadow still takes the baked sun out. The sun's direction is the plugin's
+(r_shadows_sundir, VRAD's), not shadow_control's. The page is sampled as the lightmap is (bicubic), the SUNVIS texture
+gets the lightmap's one-texel block border and is uploaded only when it changes (r_surf.c), reads as no sun where a
+Source batch has none; vmt/animated's lightmapped faces put the bake back too. Displacements take their own
+per-vertex normals and projected, normalised texture directions (hl2_dispnormals): the plane normal and raw texinfo
+vectors put N.L off by the texture scale. r_shadows_sunlm clears on a non-Source world. hl2_sunpage 0 keeps the bake.
+
+**Verified.** Rig: save 32's wall shadow one sharp edge, no soft cut-off; save 29's ground and table sunlit and the
+overhang's shadow edge where Momentum's is (row profile 44/0/0/7 against Momentum 44/6/4/2); save 17's shadow colour
+22 26 24 / 46 54 53 against Momentum 24 29 26 / 50 59 58 (0.1.66: 39 45 41 / 72 84 83); barn floor patches sharp with
+the window bars, no ring (a shader-side subtraction left a teal ring: the lightmap filters in sRGB, the page
+linearly); r_shadows 0 rebuilds the bake. surf_shady and bhop_ancientcanals unchanged.
+
+**Limits.** Faces of a lighting lump without the page (other Strata maps' layout 2) keep P1774's floor. Glass and other
+translucent faces are not in the cascades, so the sun passes them where VRAD stopped it (the barn's side window).
+
+## Patch 1780 - Strata's baked prop sun: the .vhv alpha, added under the cascades (plugin hl2/mod_vbsp.c, glsl/vmt/vertexlit.glsl; engine gl/gl_shadow.c; game cl_sun.qc cl_emit.qc)
+
+**Problem.** Lex, 24 Nov, save 31 (after P1779 removed the lamp's white disc): Momentum's street lamp has a warm
+sunlit side, ours was the shaded level all round. Strata's VRAD leaves the sun out of a static prop's vertex bake and
+writes its direct share in each vertex's alpha (zero on every vertex turned from the sun, about 55 x N.L on the
+lamp), for its cascades to shadow. We forced the alpha to 255 and read only the colour, so every baked static prop on
+a Strata map had no direct sun.
+
+**Change.** On a v25 BSP (new prv->bspversion, published as hl2_bspversion) the per-vertex bake keeps the file's
+alpha (averaged like the colour; 0 on vertices the file does not cover); elsewhere it stays 255, as before (unlit and
+animated $vertexalpha surfaces of a baked prop read it). vertexlit.glsl's VC path carries it in light.a and adds
+r_shadows_vhvsun x alpha in linear light, times the cascades' lit fraction where the prop receives them; with it on,
+a baked prop's shadow takes no floor/colour step (the bake holds no sun). New engine cvar r_shadows_vhvsun (0 0 0 =
+none); the game sets it on an env_cascade_light map with hl2_bspversion >= 25 to light_environment's sun as VRAD
+reads it (Sun_Direct: _lightHDR/_light x _lightscaleHDR) x vbsp_vhvsun (3).
+
+**Verified.** Rig, a close view of the save-31 lamp: lit/shaded across the pole 3.56/3.00/2.47 (R/G/B) at
+vbsp_vhvsun 3 against Momentum's 3.5/2.9/2.3 (5 gave 4.5/3.8/3.1, 8 saturated). Saves 5-21 otherwise as 0.1.65.
+
+**Limits.** One calibration point; the scale's relation to VRAD's units is not derived. On a v25 map a baked prop's
+$vertexalpha unlit/animated surface reads the sun share as its alpha (the bake is bound to every surface).
+
+## Patch 1779 - A Source material gets no guessed _luma/_glow texture (engine gl/gl_shader.c shader.h; plugin hl2/mat_vmt.c)
+
+**Problem.** Lex, 24 Nov, save 31: "The lamp post, just looks like a bad texture map, or mapping?" -- white with black
+patches and stripes. R_BuildDefaultTexnums guesses a fullbright texture as `<name>_luma` then `<name>_glow`, and
+vertexlit.glsl declares the slot; HL2 ships materials/models/props_c17/lamppost03a_glow.vtf (the lens's own
+material, a white disc), so the pole drew it over its own UVs. The vertex bake itself lands on the right vertices
+(584 VTX strip vertices name 0-699 of the VVD's 700; the other 116 are LOD1's).
+
+**Change.** New shader keyword `fte_nonameguess` (shader_t.nonameguess, appended) skips the fullbright guess; every
+VMT-generated shader carries it.
+
+**Verified.** Rig save 31 and save 20: a uniform grey pole.
+
+## Patch 1778 - The barn light shafts point at the sun patches again (game cl_sun.qc)
+
+**Problem.** Lex, 24 Nov, save 30: the shafts "face the wrong direction". P1769 draws the map's tinted props from
+CSQC (deltalisten), whose draw path flips a mesh's pitch (r_meshpitch -1) where the engine's own exempts Source
+models (Patch 1027): the beams (angles -35 104 0) leant south into the windows, not north toward the floor patches.
+
+**Change.** Tint_Delta multiplies pitch and roll by r_meshpitch/r_meshroll, cancelling the flip.
+
+**Verified.** Rig saves 6 and 30: the fans run from the skylights toward the floor's sun patches.
+
+**Limits.** UnlitTwoTexture is not scaled by auto-exposure (P1764): the shafts read brighter than Momentum's.
+
+## Patch 1777 - On a Strata map the local lights stay off unbaked models (plugin hl2/mod_vbsp.c)
+
+**Problem.** Lex, 24 Nov, save 28: "Our game draws models substantually brighter then momentum mod." The barrels,
+jerry cans and crates there are prop_dynamics with no bake, lit from the leaf cube plus the map's lights: the room's
+fluorescent and an outdoor spot with constant attenuation took them to 1.0-1.7 linear, 2-18x Momentum's (relative to
+the walls). Momentum's floor under them is as bright as ours (lightmap 0.9-1.4), its props sit at about the leaf cube.
+Static props do not block those paths (the fixture is no-shadow); every point/spot light's flag 0x2 is Portal 2's
+cast-entity-shadows bit, also on Portal 2 maps, so it is not the reason.
+
+**Change.** hl2_lt_wlv25 (default 1; 0 since Patch 1805, which found Momentum lighting these props): on a v25 BSP VBSP_LoadWorldLights keeps no point/spot/surface light for the
+model light (the sun still comes through hl2_lt_sun). 0 restores Source 2013's light cache rule.
+
+**Verified.** Rig save 28: the barrels and cans dark as in Momentum.
+
+**Limits.** An empirical rule from one room; Strata's actual model lighting is unknown.
+
+## Patch 1776 - Blood decals no longer brighten what they cover; a named infodecal waits for its input (plugin hl2/mat_vmt.c; game cl_decals.qc)
+
+**Problem.** Lex, 24 Nov, save 27: blood decals "seem to 'eat' the lightmap ... like light squares where the decal
+goes". DecalModulate (and Modulate) passes used rgbGen identity, which in the opaque sorts is the exposure-scaled
+identity: at auto-exposure 2.0 the 2x multiply drew 1.37x the surface (measured 1.24-1.43x). And these three decals
+(arlene_blood_decals) are named infodecals nothing fires; Source paints a named one only on Activate, so Momentum
+shows no blood there.
+
+**Change.** Both multiply passes are rgbGen const ( 1 1 1 ). cl_decals.qc skips an infodecal with a targetname.
+
+**Verified.** Rig save 26: no blood, no squares, as Momentum.
+
+## Patch 1775 - Auto-exposure counts small bright areas and clipped pixels; no minimum-average boost (engine client/renderer.c gl/gl_rmain.c)
+
+**Problem.** Lex, 24 Nov, saves 27-29: our game darker than Momentum "slightly, which is fine", but shade and the
+barn opened to the band's 2.0 where Momentum's sits near 0.5 (its barn surfaces measure 0.15-0.25x ours in linear).
+Source's HDR frame lets a small skylight outshine the rest; our clamped frame held it at full scale, and the 2%
+bright share plus mat_tonemap_min_avglum's floor drove dark views to the maximum.
+
+**Change.** r_autoexposure_bright 0.005 (was 0.02), r_autoexposure_minavg 0 (was 0.03), new r_autoexposure_hdrsat 1:
+a measured colour channel at full scale counts at least that bright on its own (a saturated red sign is not white).
+
+**Verified.** Rig: barn (save 30) 2.0 -> ~1.0, save 29's shade 2.0 -> 1.2, save 7 outdoors 0.78 -> 0.70.
+
+**Limits.** A room with nothing bright in view still opens to 2.0.
+
+## Patch 1774 - Cascade-map shadows keep the surface's colour (plugin hl2/glsl/vmt lightmapped/transition/vertexlit)
+
+**Problem.** Lex, 24 Nov, saves 21 and 29: world-cast shadows "with blueish green artifacts", "incorrectly coloured,
+to bright". A shadowed texel went to min(lightmap, floor) per channel with a teal sky-ambient floor: on warm walls the
+red/green channels dropped and blue stayed.
+
+**Change.** A shadowed texel comes down to the floor's luminance, its hue taken half-way toward the floor's.
+
+**Verified.** Rig save 21: dark neutral shadow, no teal; save 17 darker shade.
+
+## Patch 1773 - Sun cascades do not sphere-cull their casters (engine gl/gl_backend.c)
+
+**Problem.** Lex, 24 Nov, saves 22-25: a log's shadow "fade[s] out as you get closer to it, and then once almost
+fully 'gone' it snaps back in sharper". GLBE_LightCullModel culled a model whose sphere missed lightorg +/- lightradius;
+for an ortho cascade that is the box's half-width across the sun, while its depth runs r_shadow_orthodepth, so a
+caster sunward of the camera dropped out of the tight cascades while its shadow fell inside them.
+
+**Change.** In the depth pass an ortho light culls only a caster wholly past its far face (along lightdir, depth
+r_shadow_orthodepth, radius doubled as a margin); Sh_GenShadowFace's four-plane frustum culls the rest. Lighting and
+stencil passes keep the old test.
+
+**Verified.** Rig, the 16-step descent onto the log: shadow area steady (9.5k-12.5k px, mean 18-20 levels) where it
+faded over steps 5-11 and snapped at 12. Interleaved timing: saves 8/6/5 +0.1-0.3 ms (shadows +0.15).
+
+## Patch 1772 - func_smokevolume as Source draws it (game cl_emit.qc cl_sprites.qc)
+
+**Problem.** Lex, 24 Nov, save 11 (pass 2): the basin smoke missing. The particle emitter for it was opt-in
+(vbsp_emit_smoke 0) and is not Source's look.
+
+**Change.** vbsp_smokevol 1 (default): a still grid of billboards one ParticleSpacingDistance apart across the brush,
+ParticleDrawWidth wide, turning at RotationSpeed, coloured between Color1 and Color2, alpha the density, faded inside a
+particle's own radius, drawn far to near from Sprite_Draw with the material (particle/particle_smokegrenade). A volume
+with no density waits for its SetDensity input (not wired).
+
+**Verified.** Rig save 11: the far end of the canal hazed and the sun veiled as Momentum's 0002/0003; 235 particles on
+canals.
+
+## Patch 1771 - A map's named cubemap uses its HDR bake when the LDR file is VBSP's black placeholder (plugin hl2/mat_vmt.c, mod_vbsp.c)
+
+**Problem.** Lex, 24 Nov, bhop_canals save 18: "glass window not reflective". The window's material is one of the map
+compiler's patches (830 of the pakfile's 841 VMTs), which names its cubemap: `$envmap maps/bhop_canals/c17344_-7296_256`.
+All 412 of the map's LDR cubemaps (`.vtf`) are byte-identical black placeholders; the bake is in the `.hdr.vtf`. Patch
+1559 swapped in the HDR file for the nearest-cubemap path only, so every patched material reflected black.
+
+**Change.** The named-envmap path takes the `.hdr.vtf` when the `.vtf` is black (VBSP_CubeIsBlack) and the HDR file is
+float data (VBSP_CubeIsFloat, header only) -- Patch 1559's rule, both helpers now shared with mat_vmt.c and the answer
+cached per cube.
+
+**Verified.** Rig save 18: the building's tall windows show their panes and the sky's light, as in Momentum's shot.
+
+**Limits.** The reflection strength (hl2_envmap_source 7 squares sRGB values; Source squares linear) is unmeasured.
+
+## Patch 1770 - $selfillum 0 is off (plugin hl2/mat_vmt.c)
+
+**Problem.** Lex, 24 Nov, save 13: "These tree models are oddly whitely bright". HL2's oak_tree01 trunk material says
+`$selfillum 0`; the parser set self-illumination on for the key's presence, emitted the base texture as the
+fullbright map, and the DXT1 texture's alpha (1 everywhere) added the whole unlit bark over the lit trunk -- trunks at
+92-103 where Momentum's are 16-23. About 190 prop instances on canals use such materials (bridge railings, cattails,
+row houses, the crane).
+
+**Change.** `$selfillum`, `$halflambert`, `$basealphaenvmapmask` and `$normalmapalphaenvmapmask` read their values.
+
+**Verified.** Rig save 13: the oaks are dark bark like the trees beside them and Momentum's.
+
+**Limits.** canals' oak_tree01 still resolves to CS:S's model (mount order), so its HL2 vertex bake is dropped as
+another model's; Source blends self-illum (lerp) where we add it.
+
+## Patch 1769 - The barn light shafts: additive fog to black, and their exact tint (plugin hl2/glsl/vmt/twotexture.glsl; game cl_sun.qc)
+
+**Problem.** Lex, 24 Nov, saves 14/15: "The light shafts are very bright far away and start to dim to the correct
+level-ish then turn weirdly red". UnlitTwoTexture fogged toward the fog colour although the material is additive, so
+from 2000+ units every quad of the shafts added the fog's grey (a white column over the barn roof) until inside the
+fog's 512-unit start. The red: the wire carries colormod in 1/32 steps, so P1759 sent 21 18 13 as 24 16 16.
+
+**Change.** twotexture.glsl's #ADDITIVE fogs with fog4additive (to black, Patch 300's rule). The client reads every
+prop_* with a non-white rendercolor from the entity lump and draws it with that exact colour (deltalisten, colormod as
+a float).
+
+**Verified.** Rig: no column over the barn at save 14; at save 15 the shafts are faint amber, close to Momentum's.
+
+## Patch 1768 - Alpha-tested casters leave their holes out of the shadow (engine gl/r_bishaders.h, shaders/glsl/depthonly.glsl; plugin hl2/mat_vmt.c)
+
+**Problem.** Lex, 24 Nov, save 12: "The bushes in my game seem to shadow the whole face, and not the fine branches on
+the texture surface". The depth pass drew every caster with the generic depthonly program, which has no alpha test, so
+each foliage card shadowed as a solid quad.
+
+**Change.** depthonly gains #ALPHASHADOW (with MASK/MASKLT: discard by the diffuse alpha; the engine's own #MASK
+overrides are unchanged); an alpha-tested material, or a $translucent one whose base alpha is its opacity, carries
+`bemode depthonly { program depthonly#ALPHASHADOW#MASK=ref#MASKLT; diffusemap base }`.
+Such world faces (fences) join the sun's world mesh with it.
+
+**Verified.** Rig save 12: the bushes throw branch shadows, as in Momentum.
+
+## Patch 1767 - vbsp_autoexposure takes effect at once (game cl_sun.qc, cl_main.qc; engine gl/gl_rmain.c)
+
+**Problem.** Lex, 24 Nov: '"vbsp_autoexposure 0" doesn't seem to turn off the iris open/close effect at all? it stays
+on.' The game read it only when a map's lighting was set up.
+
+**Change.** Each frame the client compares vbsp_autoexposure with what it applied and sets r_autoexposure (with the
+map's band) or clears it. r_autoexposure_current reads "1 (off)" when off.
+
+**Verified.** Rig: vbsp_autoexposure 0 -> r_autoexposure 0 the next frame, 1 -> 1.
+
+**Limits.** Indoors (the barn) our exposure opens to the band's 2.0 where Momentum's stays darker: its HDR sky and
+sunlit patches are brighter than our clamped frame can measure. Not changed here.
+
+## Patch 1766 - Shadows no longer switch off at a line in front of the player (engine gl/gl_vidcommon.c gl_shadow.c; plugin hl2/mod_vbsp.c)
+
+**Problem.** Lex, 24 Nov: "some shadows blink in and out of existence as you move around ... it will have like a
+distance cull line or turn off in front of you". Three causes. The four camera-centred cascades (bhop_canals: 148,
+444, 1333 and 4000 units) switched at a hard edge, and at r_shadows_res 2048 each had ~1000 texels -- 2.7 units a
+texel in the third, 8 in the fourth -- so a pole, rail or plank thinner than that lost its shadow at the line where it
+crossed into the next cascade. A static prop inside its own fade range is drawn translucent, and the depth passes skip
+translucent entities, so its shadow went out at its fade distance. And a static prop out of the view's PVS was dropped
+before the shadow-reach test.
+
+**Change.** A cascade's outer band (0.40-0.47 of its half-width) blends into the next one (CascadeShadowFilter). The
+Source cascade atlas is r_shadows_cascade_res (4096: ~2000 texels a cascade) or r_shadows_res, the larger. A fading
+static prop keeps an opaque shadow-only twin (new RF_SHADOWONLY: drawn by the shadow passes and no view, mirror or
+portal), and on a cascade map a prop out of the view's PVS or off screen but within r_shadows 2's reach goes in
+shadow-only, opaque. The atlas is clamped to the GPU's texture limit.
+
+**Verified.** Rig: uncapped frame at saves 8/6/5 the same with the 4096 atlas as with 2048 (7.2-7.6 / 5.4-5.7 /
+3.5-3.6 ms); saves 8, 11, 12, 16, 17 render as before with the blend; surf_shady identical to 0.1.64.
+
+**Limits.** Prop entities (prop_dynamic) outside the PVS are not sent by the server at all; their shadows can still pop.
+The blink was not reproduced on video in the rig.
+
+## Patch 1765 - On a cascade map the world casts the sun's shadow, sharply, and props shadow themselves (engine gl/gl_shadow.c gl_backend.c gl_vidcommon.c gl_rmain.c)
+
+**Problem.** Lex, 24 Nov: "the shadows for props don't seem to self cast", "the shadow colour is not quite correct",
+save 16 "The shadow darkness and colour on the texture is way to bright", save 17 "Strata Source ... has an ability to
+make these very tight lightmaps ... much sharper then our own". bhop_canals' lightmaps are 64 units a luxel: the world's
+baked sun shadows (the concrete pillars at save 17, the canal walls at save 11) are a blur; the sharp ones in Momentum
+are Strata's cascades, which draw the world. r_shadows 2 drew models only, faded every shadow thrown further than ~123
+units (r_shadows_throwfade, meant for lightmaps that hold the shadow), and a casting prop never received.
+
+**Change.** On a Source map with Strata's env_cascade_light (r_shadows_sunfloor set by the game from
+light_environment's ambient) the sun cascades draw the world's opaque faces too: built once per map as Morton-sorted
+chunks of surfaces (~1024 triangles each, with bounds), each cascade draws the chunks inside its box (unbounded toward
+the sun) through the casters' own depth programs, the faces turned away from the sun only (r_shadows_worldcull 1).
+There the throw fade is off (a shadow only brings a sunlit texel down to the floor, so it cannot darken twice), and a
+casting Source prop receives the cascades, its own shadow included (r_shadows_propselfshadow). r_shadows_worldcast 0 is
+models only. Other maps are untouched (their lightmaps hold the world's shadows).
+
+**Verified.** Rig: save 17 shows the pillars' sharp shadow wedges and the lit strip between, save 11 the canal walls'
+shadows, save 8 the building's, matching Momentum's shots; surf_shady (no cascade light) pixel-identical to 0.1.64.
+Uncapped frame at saves 8/6/5: 6.1/3.9/2.2 -> 7.2-7.6/5.4-5.7/3.5-3.7 ms (r_shadows_worldcast 0 returns most of it).
+
+**Limits.** The shadow in shade is the floor (light_environment's ambient) for every texel; the ramp's corrugation
+still reads softer than Momentum's; func_smokevolume (save 11's haze) and the white/black street lamp (save 20: its
+bake's alpha holds the direct sun, unread) are not addressed.
+
+## Patch 1764 - Source's HDR auto-exposure, measured from the drawn frame (engine client/renderer.c, gl/gl_rmain.c gl_rlight.c gl_backend.c gl_warp.c gl_model.h, defaultskybox; plugin hl2/mod_vbsp.c, glsl/vmt/unlit.glsl; game cl_sun.qc cl_emit.qc)
+
+**Problem.** Lex, 24 Nov: "is there HDR exposure in the map we don't do?" -- yes: bhop_canals is lit only in HDR (its
+LDR lighting lump is empty) and carries an env_tonemap_controller at defaults, so Source/Momentum run auto-exposure in
+the 0.5-2.0 band (the dark barn brightens, a bright sky view darkens). We drew at exposure 1 (P1732's r_exposure is a
+fixed value; vbsp_exposure clamped the band round 1).
+
+**Change.** r_autoexposure: a few times a second GLR_AutoExposureFrame reads 32 rows of the finished 3D view (before the
+CSQC HUD; never a render target) into a pixel buffer behind a fence -- no stall -- and when the fence has passed takes 64
+samples a row, linear luminance divided by the exposure that drew it (its linear scale under vid_srgb). As Source's
+tonemap (mat_tonemap_algorithm 1) the brightest r_autoexposure_bright (2%) go to r_autoexposure_target, a dark frame
+rises until its average reaches r_autoexposure_minavg, the band clamps it, and the value eases at r_autoexposure_rate.
+It multiplies r_exposure on lightmaps, model light and -- as Source scales them -- the sky (the six-face box's vertex
+colours, the cube box's r_autoexposure_sky uniform) and UnlitGeneric surfaces; a model preview drawn without the world
+keeps the fixed exposure. It applies only on a Source map drawn with its HDR lighting (the plugin's own choice, new
+MDLF_SOURCEHDR), so the cvar left on by one map's csprogs does nothing on a Quake, GoldSrc or LDR map; a new map, turning
+it off or vid_restart drops a read in flight and starts again at 1. r_autoexposure_current shows the value, target and
+the two measured levels. The game turns it on when vbsp_autoexposure is 1 (new, archived, default 1), with the band from
+env_tonemap_controller's SetAutoExposureMin/Max at map spawn; it replaces vbsp_exposure's fixed value there.
+
+**Verified.** Rig, bhop_canals: barn (save 6) 2.0 (5.1 unclamped), the bright view at save 7 0.787, save 8 1.22, the ramp
+(save 5) 2.0. The target was calibrated on save 7 against Momentum's own screenshot: 0.6 left the frame darker (sky 118
+vs 130), 0.75 matches it within a few levels (ground 70 62 33 / Momentum 73 66 31, sky 131 135 131 / 130 137 135).
+Without the sky scaled the loop ran away to the minimum (the unscaled sky read brighter as the exposure fell); scaled,
+it is stable. A GoldSrc map with the cvar on draws at 1.
+
+**Limits.** Additive sprites, particles and UnlitTwoTexture (the light shafts) are not scaled. Measured after the scene
+gamma pass, so a player's v_gamma/v_contrast moves where it settles. One calibration point (Source's own constants
+give 0.6). Off-screen VR eyes are not measured.
+
+## Patch 1763 - A bumped prop is lit by its directional light per pixel (plugin hl2 glsl/vmt/vertexlit.glsl)
+
+**Problem.** Lex, 24 Nov, bhop_canals save 5's metal ramp: "no shadow mapping/bump mapping to the texture aswell, it's
+extremely flat and not based on the sun". vertexlit.glsl lit a model per vertex: ambient plus the light fold's
+directional term (the sun is in it); the normal map reached only Patch 268's ambient-cube ratio, so a flat corrugated
+panel took one light level across its face.
+
+**Change.** For #BUMP without VC (a VRAD bake has no directional half) or #AMBIENTCUBE, the vertex stage hands over the
+directional term's tangent-space direction, colour and its own value; the fragment stage takes that value off the
+interpolated light, applies the cube ratio to the ambient part only, and adds the directional ramp (the vertex stage's
+half-lambert or lambert) from the bumped normal, its green read as Source reads it (Patch 268 C: the default flip
+mirrors relief along V; hl2_bumpgreenfix still governs the cube ratio and reflections). A flat normal, or a zero light
+direction, reproduces the vertex result.
+
+**Verified.** Rig save 5: the corrugation reads as lit and shaded ridges, where it was a flat grey sheet; the other
+props unchanged in the saves 5-8 shots.
+
+**Limits.** Six more varyings on that permutation (the worst vmt case is 37 floats: inside GLSL 1.50's 64, over a bare
+GL 2 minimum of 32).
+
+## Patch 1762 - Sun shadow cascades on Source maps (engine gl/gl_shadow.c gl_vidcommon.c gl_backend.c gl_shader.c shader.h r_bishaders.h, shaders/glsl/defaultwall.glsl; plugin hl2 glsl/vmt lightmapped/transition/vertexlit, mod_vbsp.c; game cl_sun.qc)
+
+**Problem.** P1760 left Source maps on one sun shadow map, because their receivers read only l_cubematrix: r_shadows 2
+covered r_shadows_distance (1024 units) at r_shadows_res where Momentum's cascades reach env_cascade_light's
+maxshadowdistance (bhop_canals 4000) and are sharp near the camera.
+
+**Change.** sys/pcf.h gains CascadeShadowFilter(smap, proj, worldpos): the tightest sun cascade holding the pixel (a
+margin for the PCF), the atlas cell from l_fakeshadowcell, the same 3x3 PCF, the edge fade on the outermost only, the
+contact fade scaled to the cascade's depth range (l_fakeshadowinfo .y); l_fakeshadowinfo[0].z marks live cascades, is
+cleared at the start of every shadow frame, and without it the function reads the single map. New uniform
+l_fakeshadowworld (the slot matrices without the model matrix) so instanced props can pass a world position. The three
+vmt receivers and defaultwall (missing-material faces, Quake bmodels) pass theirs. On a Source world with
+r_shadows_slots 1 Sh_GenerateFakeShadows runs the cascade path (only there: no other receiver reads it; the prop atlas
+keeps one sun cell); default r_shadows_cascades 4 (the 2x2 atlas' maximum; 3 and 4 cost the same at canals save 8, 4 is
+sharper near). Each cascade's depth half-range is at least r_shadows_distance (r_shadow_orthodepth, read by
+GLBE_SelectDLight for the receiver matrix and bias too), so an occluder far above a receiver is not flattened onto it in
+the tight cascades and r_shadows_throwfade fades its long throw as the single map does. The game sets
+r_shadows_cascade_dist from env_cascade_light's maxshadowdistance (512-8192), else the engine default; off-screen static
+casters reach the outer cascade.
+
+**Verified.** Rig save 8: the pipe's shadow sharper than P1760's single map; uncapped frame 4.7 -> 6.1 ms there (the
+caster passes: shadows "entity draw" 0.14 -> 1.20 ms), 3.3 -> 3.9 at save 6, 2.0 -> 2.2 at save 5 -- still well under
+P1759's 8.3-9.4 / 6.4-7.0 / 5.3. The barn floor under its roof (save 6, looking down) the same with cascades as with
+the single map. A GoldSrc map with r_shadows 2 compiles and draws. r_shadows_cascades 1 is the old single map.
+
+**Limits.** The depth passes are not instanced. Source maps still draw no direction or lamp atlas. Off-screen casters
+near the outer cascade's corners (beyond its radius) are not drawn into it. Under r_tessellation, defaultwall's
+tessellation stage writes no cascade position (it never wrote the shadow coordinate either). The prop atlas' one sun
+cell no longer matches gl_shader.c's FAKESHADOWS_PERSP_FIRST off Source maps; nothing reads the lamp cells yet.
+
+## Patch 1760 - r_shadows 2 on Source maps: the single sun map, and props cast as Strata's cascades do (engine gl/gl_shadow.c; plugin hl2/mod_vbsp.c; game sv_entities.qc sv_main.qc)
+
+**Problem.** Lex, 24 Nov, bhop_canals save 8 beside Momentum: "shadowmaps in my game are much lower quality then
+momentum mod? and props don't cast shadows?". Three causes. (1) The Source receivers (plugins/hl2 vmt/lightmapped,
+transition, vertexlit.glsl) read only the single sun map (l_cubematrix); nothing they compile reads the slot, prop-shadow
+or cascade atlases. The default r_shadows_propshadows 1 renders its atlas whenever the map has point lights (bhop_canals
+295), so on such a Source map no shadow landed at all, and its lamp classification cost 2.67 ms a frame (r_budget,
+save 8: shadows 3.39 ms, "classify" 2.67). (2) Every static prop was RF_NOSHADOW, but Strata draws static props into its
+cascades unless FlagsEx says DISABLE_SHADOW_DEPTH (1) or DISABLE_CSM (2), and its VRAD bakes no prop shadows on such a
+map (canals' pipe03 shadows the ground in Momentum and nowhere in our lightmap). (3) P1724 made a prop's disableshadows
+stop it casting; on a cascade map Strata skips only disableshadowdepth (disableshadows is the RTT blob's), and 308 of
+canals' props write disableshadows 1 (its dock planks shadow the mound in Momentum's shot).
+
+**Change.** Sh_GenerateFakeShadows: on a VBSP world (fromgame fg_new, gl_warp.c's test) the atlases are skipped and the
+single sun map renders (fs_slotcount 1). Plugin: VBSP_LoadDetailKeys marks env_cascade_light (prv->csm, loaded before
+the game lump); a v10+ static prop there casts unless FlagsEx & 3; an off-screen static caster within r_shadows 2's reach
+(r_shadows_distance, or r_shadows_cascade_dist at cascades > 1) skips the frustum cull so its shadow does not pop at the
+screen edge (gl_alias.c culls it again in the main pass; the reach is 4/3 of r_shadows_distance about the eye, covering
+the sun map's cube a third ahead). FlagsEx is the inserted field where the lump has one (CS:GO's lineage, whose own
+dword there is DisableX360), else the canonical v11+ dword; an SDK 2013 v10 (LightmapRes there) never casts.
+The gate tests MDLF_SOURCEBSP (fg_new also covers Doom 3 and CoD). Game: env_cascade_light marks the map (vbsp_csm, reset per
+map); SV_PropCascadeCasters, after the lump, sets EF_NOSHADOW on a prop from disableshadowdepth instead of disableshadows,
+and a prop spawned later (a template copy) takes the same rule in SV_SpawnProp; the props line counts the props that cast
+because of it.
+
+**Verified.** Rig (headless client, Lex's saves, installed build vs this): save 8's pipe shadow on the ground as in
+Momentum (none before); canals' 3126 v13 records hold 0 in both FlagsEx candidates; the props line "308 cast cascades despite disableshadows". Uncapped frame, local game, two runs
+each: save 8 8.3-9.4 -> 4.4-5.2 ms, save 6 6.4-7.0 -> 3.3, save 5 5.3 -> 1.9-2.1 (shadows 3.39 -> 0.18 ms at save 8).
+Reviews (C/rendering and QC lenses, two rounds): round 1 found template copies keeping P1724's rule, the reach
+following cascades that never run, fg_new matching Doom 3/CoD worlds and FlagsEx read at the wrong v10 offset; round 2
+that CS:GO-lineage v11 keeps FlagsEx in the inserted field.
+
+**Limits.** Source surfaces still get one sun map: r_shadows_cascades and r_shadows_propshadows do nothing on Source
+maps until the vmt receivers read the atlas (BACKLOG). Momentum's shadow reaches 4000 units through cascades; ours
+r_shadows_distance (1024) at r_shadows_res (2048; 4096 is visibly crisper at a little GPU). Casting Source models do not
+receive shadows (P1732), which now includes canals' static props. Indoor casters still throw sun shadows (P1732's open
+item). EF_NOSHADOW is also the blob shadow's switch, so under r_shadows 1 a cascade map's disableshadows props now draw a
+blob. An env_cascade_light that starts disabled or is killed still counts (QC, cl_sun.qc and the plugin read the lump).
+
+## Patch 1759 - A prop's rendercolor tints it (game sv_entities.qc)
+
+**Problem.** Lex, 24 Nov, bhop_canals save 6: "lightshafts are way to bright". The shafts are prop_dynamic
+models/effects/vol_light128x384.mdl (UnlitTwoTexture, additive) with rendermode 1 and rendercolor 21 18 13 / 22 19 14;
+Source modulates every model by rendercolor, and SV_SpawnProp never read it, so both drew at full white.
+
+**Change.** A prop whose rendercolor is not 255 255 255 takes it as .colormod (SV_PropColour: P1250's SV_BrushColour,
+then rounded to the 1/32 step the wire truncates to, so 21 18 13 arrives as 24 16 16 rather than 16 16 8); white stays
+off the wire; the Color input reaches prop_* as well as brush entities. The props line counts tinted props. The
+vmt shaders already multiply e_colourident (twotexture.glsl, vertexlit.glsl).
+
+**Verified.** Rig at save 6: the shafts are dim gold beams over the floor, as in Source; props line "2 tinted" (the
+only two non-white props on the map).
+
+## Patch 1758 - Source's compressed-HDR sky decodes linear, and HDR skies reach the screen in sRGB (plugin hl2/img_vtf.c, hl2/mat_vmt.c; engine client/render.h comment)
+
+**Problem.** Lex, 24 Nov, bhop_canals save 7 beside Momentum: "skybox rendering looks bad, it's super low bit depth".
+sky_day01_05_hdr's faces are RGBS (BGRA8, alpha = a per-texel linear scale). img_vtf decoded rgb with an sRGB read, so
+each texel's colour bent by its own scale step: contour bands through the clouds. And it handed the linear result
+straight to a gamma framebuffer (vid_srgb 0), so the sky drew dark and saturated (a green-yellow storm for Momentum's
+grey overcast). A float $hdrbasetexture face was left linear the same way.
+
+**Change.** RGBS faces decode rgb*alpha*8/255^2 linearly (a 256x256 table over scale x byte), then are sRGB-encoded
+unless vid_srgb is set (Patch 887's rule for float cubemaps). RGBA16F faces with IF_HDRDECOMPRESS take Patch 887's
+half-float encode, and the material path prefixes $hdrbasetexture faces with $hdr: so they get it too.
+
+**Verified.** Offline decode of HL2's sky_day01_05_hdrbk.vtf four ways: the old decode reproduces Lex's shot exactly
+(contours, mean RGB 106/107/78); a linear read with the encode is smooth and grey (173/175/165) like Momentum's; an
+sRGB read with the encode still bands. Rig at save 7: the sky matches Momentum's. Review round 1: prefixing every $hdrbasetexture
+with $hdr: would decode a plain BGRA8 one as RGBS -- withdrawn.
+
+**Limits.** Source also scales the sky by its tonemap (auto-exposure); we draw it at exposure 1.
+
+## Patch 1747 - Record a replay as a video: fixed-step capture outside demos, an ffmpeg encoder, and a Record window (game m_vidrec.qc, cl_vidrec.qc)
+
+**Problem.** A player (muri, via Lex 23 Nov): "is there an easy way to render a replayed run as a video". Lex wanted a
+record window with the HUD off, supersampling, reflections and refractions at their maximum, a fixed frame time, and
+motion blur only as a toggle that looks right. capture forced fixed frame times only for engine demos (a replay is
+CSQC playing a .rec), a listen server kept the wall clock, capturedemowidth/height applied to capturedemo only, and a
+Linux build could only write image frames.
+
+**Change.** Engine: `capturefixed 1` forces 1/capturerate steps outside demos too, pauses with a menu or the console
+up (the forced clock re-anchors on resume; `capture_held` says so), renders offscreen at capturedemowidth/height, and
+steps a listen server by the same interval (`sv_capturestep`, before cl.gamespeed). A live capture no longer resets
+realtime; real sound cards are off while a fixed one runs (as capturedemo does). New capture driver `ffmpeg`: raw frames
+to the ffmpeg program's stdin (argv through `/bin/sh -c '"$0" "$@"; echo $? >&3'`, so sys_linux.c's SigChld cannot
+steal the exit code; CreateProcessW on Windows), lanczos scale to capture_outwidth/height (render larger to
+supersample), `tmix` of capture_blurframes subframes then `fps=capture_outrate` for a shutter blur, then a thread muxes
+the game's audio (AAC) and reports `saved`/`failed` in capture_ffmpeg_last; ffmpeg is found beside the game or on PATH
+(capture_ffmpeg). The non-PBO capture path passes the buffer start like the PBO path. Game: the replay bar's "record
+video" opens the menu's Record window (size, fps, supersampling, blur Off/Light/Film = a 90/180-degree shutter over
+6-8 subframes, HUD, water and glass at maximum, encoder); Record saves 28 cvars, sets them, has CSQC rewind the replay
+(vidrec_cs), runs `capture` (only the menu may), stops at the replay's end plus a second, and puts every setting back.
+With the HUD hidden CSQC draws no 2D at all; the bar never shows.
+
+**Verified.** linux64 and win64 build, no warnings in changed lines. Real client on surf_ace (3.69 s replay):
+3840x2160 -> 1920x1080 h264, 281 frames at 60 fps (3.69 s + the 1 s hold; the frame before forcing starts is skipped),
+no HUD, the right way up; with blur Film 1683 subframes -> 277 frames plus AAC audio; a fake ffmpeg that takes every
+frame and exits 3 is reported "failed" (sys_linux.c's SigChld could make that read "saved" before the status pipe).
+Reviews: security, C correctness and QC state machines, two rounds, then a security round (it found the Record
+window's capture path open to command injection through a server-set cvar; closed). Not verified: Windows at runtime.
+
+## Patch 1746 - Admin map upload from the game (F8): a streamed file POST with progress, file drops on Wayland, a file picker, and the signing op (game m_mapupload.qc, surfd/mapupd.py)
+
+**Problem.** Lex, 23 Nov: admins (Proto, MarkBeaton54) want to upload a map in game -- F8 in the main menu or on a lobby,
+pick the .bsp or drag it on, a screenshot from a grid, tier/stages/bonuses, the local zone file, a progress bar -- and
+have everyone get it. uri_post sends a QC string (no NUL, all in memory), friends_sign had no upload op, native
+Wayland refused drops, and a dropped BSP was loaded as a map.
+
+**Change.** `uri_postfile(url, id, mime, head, path, flags)` (menu only) streams head + a loose file through
+HTTP_CL_Get, gzipped first on the download thread with flag 1 (FS_GZ_CompressFile, level 6, fails a file that is not its
+length); `uri_progress(id)` reads KiB sent/total and the phase. The menu may READSTREAM and send maps/*.bsp,
+screenshots/ pictures and its drop spool dropped/ (CSQC may not read the spool). friends_sign op `mapupload` (who = the
+manifest's SHA-256): off a lobby as before, on one only under a device's press. While the menu has the keys and asks
+(ui_dropfiles + Menu_FileDropped), Host_RunFile copies a dropped or picked bsp/png/jpg/tga/json to dropped/ and tells
+it; native Wayland takes text/uri-list drops; `sys_openfiledialog` runs zenity/kdialog (Linux) or GetOpenFileNameW
+(Windows) and hands the file only to the menu. An upload path (maps/, screenshots/, dropped/) opens only the real file,
+never QC_FixFileName's data/ twin. Sys_DetachThread for Linux and SDL. Game: the window, and the isolated role-gated
+service surfd/mapupd.py with its root installer (tools/mapupd.md).
+
+**Verified.** linux64 and win64 build, no warnings in changed lines; test_mapupd 23/23; the real client hashed, signed
+and streamed a 1.9 MB map (gzip), a PNG and a zone file to a local mapupd, which published byte-identical copies, the
+pictures and both table rows. Reviews: three lenses, two rounds, then a security round. They found, among others, a
+data/ twin of an upload path that a server's CSQC could plant (upload paths now open only the real file), the drop
+spool readable from CSQC (now in QC_TasprojDenied, which every file builtin asks), and SigChld stealing ffmpeg's
+status. Not verified: real drags (Wayland, X11, Windows), the picker, Windows at runtime, the Pi install.
+
+## Patch 1748 - Mover 16: brushes more than 32000 units from the origin collide as they are (engine common/com_bih.[ch], common/com_bih_ts.h, common/pm_source.c, common/pmove.h, gl/gl_model.h, server/sv_user.c, server/sv_phys.c; plugin hl2/mod_vbsp.c)
+
+**Problem.** Lex, 23 Nov: on bhop_canals "players fall though the map in some parts" (saves 2 and 3). Save 3's spot
+(51933 41015) dropped from above lands on the canal floor at z -512, through brush 1903 (solid, z -512..-307, a slope
+top); save 2 (39566 11869 -216) stands inside brush 4283 (solid, z -256..-128). With `hl2_brushbevels 0` both are solid.
+Patch 318 builds each face's winding with Fragment_ClipPlaneToBrush, which starts from a quad 32767 either side of the
+plane's point nearest the ORIGIN. Strata maps reach 50000+: a far brush's windings come out cut at the quad's edge or
+empty, the support test then sees too few hull points, and passes bevel planes that cut the brush. On bhop_canals 9661
+brushes have a corner beyond 32000.
+
+**Change.** VBSP_FarBrushFix rebuilds every brush with all six axial planes and a corner beyond 32000 with its planes
+taken about its own centre (AddBrushBevels takes the offset and stores the bevels absolute). A far brush wider than
+32000 itself gets no bevels (pre-318). The fixed copy sits beside the old one in a new leaf type, BIH_BRUSHPAIR (appended
+to bihtype_e; data.brushpair.old aliases data.brush), so q2cbrush_t keeps its layout. A trace takes the fixed brush
+unless bih_oldbevel, which the Source mover sets below 16 -- recorded mover-15 runs replay on the old geometry. Mover 16
+pins 15 on a world with no fixed brushes (model_t farfixbrushes, appended; SV_PMSrcVer), so on every map without far
+brushes an older verifier still replays new runs, as P1709 did below fixslopes 2. The plugin builds pairs only when the
+exe reports pm_sourceversion >= 16 (Patch 1630's test), so an old exe never sees the new leaf type or field; an old
+plugin never writes them. Leaf walkers that do not trace (BIH_HeldAirBoxEmpty_r, BIH_LeafClaims) treat a pair as
+unknown, their conservative answer.
+
+**Verified.** Rig drops on bhop_canals with the new build: save 3's spot lands at -422.7, spot B (52018 40779) at
+-329.7, save 2's at -152.6 on brush 4283's top; 0.1.61 lands at -512 / -512 / -216.5. pm_recsim of Lex's save 2 and
+save 3 recordings (mover 15) on 0.1.61 and on this build: 785/785 and 4058/4058 packets exact on both; save 2's with its
+pin edited to 16 diverges at t 4.74, where he walks into brush 4283 -- so the gate is what keeps old runs. Recorded pin
+on the new server: bhop_canals 16, surf_mesa 15. Local gate against 0.1.61 (pm_verify of 9 online records, pm_dettest
+on bhop_canals, ahop_coast, surf_mesa): identical except bhop_canals' trace/srctrace/proptrace/fixtrace/picktrace
+hashes, which are plain traces at default flags (they now meet the fixed brushes); every mover hash is identical.
+
+**Review round 1** (control flow; evidence; cheater's gain). The new model_t fields broke Patch 1717's submodel copy on
+an older exe (a whole-struct memcpy ran into the next model slot): the exe now answers FTESurfModelTail/1748 and the
+plugin builds pairs, writes the fields and copies the whole struct only then. farfixbrushes came from a static counter
+two worker-thread loads could share: counted from the plugin's own table. A mover-16 exe with an older plugin recorded
+15 on far brushes without a word: farfixknown, and a load-time warning on a Source world without it. BIH_LeafClaims
+treated a pair as unbounded, which switched off P1714/P1733's entity skipping on every model with a far brush: it
+claims through the old brush (both carry the same six axial sides). pm_verify/pm_recsim print a note (not a verdict)
+when a pre-16 run replays on a map with rebuilt brushes, so runs ranked through the old collision can be found.
+Deploy: the online verifier is the lobby binary (surfd sweep.py ENGINE), so the lobby engine swap moves both; an old
+client on a mover-16 lobby predicts the old far brushes and is corrected by the server.
+**Review round 2** (ABI; evidence): no defects in round 1. The note now needs an exact replay (an approximate one runs
+the live mover, 16); Mod_PurgeModel clears farfixbrushes/farfixknown; the shared static counter is gone (the dev line
+prints the map's own count). Round 3: that line checks the exe's tail first.
+
+## Patch 1745 - Fetchers send WOS User-Agents with no URL (game surfd/ksfimport.py, mapwatch.py, mapnew.py, momgrab.py, steam.py, tasupd.py; tools/momfetch.py and the PC fetchers)
+
+**Problem.** Lex, 23 Nov: "rename them WOS"; "remove the URL after the User agent, it's not correct yet". Main sent
+`FTESurf/0.1 <tool> (+https://proto.bar/ftesurf)` from ksfimport, mapwatch, momgrab, steam (surfd), momfetch and
+ksfshots, and `WorldOfSurf-`, `FTESurf-` or `ftesurf-` labels from the other fetchers. The engine's own `FTE QW` stays:
+the R2 gateway hands the .bsp.gz copy only to `FTE*` (Patch 981).
+
+**Change.** 19 literals move to `WOS/0.1 <tool>` or `WOS-<tool>/<ver>`, each keeping its shape and any non-URL note;
+the two "where to complain" docstring bullets go with the URL. mapnew.main now replaces `mapwatch` (it replaced
+` mapwatch `, which only matched while the URL gave the trailing space), so mapnew still sends `WOS/0.1 mapnew`. The Pi
+gets it in guarded generation gen1745; mapwatch.py stays at its held live bytes there except the UA line.
+
+**Verified.** Offline in a network namespace (loopback only): test_mapnew, test_mapwatch, test_ksfimport,
+test_ksfgrab, test_momwatch, test_accounts, test_maptiers, test_mapmedia and the tournament UA test pass; test_tasupd
+passes as a normal user. test_momgrab's park case fails the same way without the change (game BACKLOG). Game c2cbe46f.
+
+## Patch 1742 - Source's prediction optimisation: a snapshot that agrees with what the client predicted for that command hands the replay the prediction, so the memo reuses every older command and ping stops costing most of its frame time (engine client/cl_pred.c)
+
+**Problem.** Lex, 23 Nov ("ping add zero frame time now correct?" -> "Yes please"). Measured on patch-1733 (rig lobby
+replica, moving): bhop_canals 434 / 373 / 276 fps at sv_minping 0 / 150 / 300, prediction 0.42 / 0.89 / 1.80 ms;
+ahop_coast 810 / 669 / 546 / 331 at 0 / 150 / 300 / 1000. Each frame replays the unacknowledged commands from the
+server's state for the command last finalised (pv->prop.sequence); when a snapshot moves that base on, the server's
+state differs from the client's own prediction for it only by wire rounding (prederr ring: origin within 0.01, velocity
+within ~0.24), and every later command then starts from other bytes, so Patch 1720/1733's memo reran them all. Source
+keeps an agreeing prediction (cl_pred_optimize).
+
+**Change.** In the replay's first pass, where the server's state for prop.sequence meets the prediction (the prederr
+ring compares them first, unchanged), CL_PredictKeepAgrees: origin within cl_predict_keep_origin (0.03) and velocity
+within cl_predict_keep_velocity (0.5; caps 1 / 8), ground and jump state equal where the protocol sends them. Then
+CL_PredictKeep hands the replay a copy of the server's state carrying the prediction's origin, velocity, ground and
+jump (the snapshot ring keeps the server's); otherwise it snaps to the server as before. The extrapolation from an
+all-acked snapshot keeps the same way. Each kept base is within the tolerance of that snapshot (it does not add up).
+cl_predict_keep 0 restores the old behaviour; cl_predict_memostats counts kept/snapped replays (not the extrapolation
+path's); the prederr ring header records the settings. Server simulation, runs and evidence untouched. Review: round 1
+-- at the first draft's 0.25 / 1.0 a slow error (the wire-rounded velocity a snap takes, an unpredicted slow push) built
+up and popped in one step, and the extrapolation path did not keep (camera alternation at low ping); round 2 clean.
+
+**Measured** (A/B by the cvar in one binary, rig lobby replica, moving, first-draft tolerances): every snapshot agreed
+(10-20 k kept per window, 0 snapped); bhop_canals 150 ms 368/385 -> 429/439 fps (prediction 0.87 -> 0.59 ms), 300 ms
+291/287 -> 385/404 (1.68 -> 0.85 ms); ahop_coast within noise.
+Re-measured at the final 0.03 / 0.5: bhop_canals 300 ms 295 -> 392 / 389 fps (straight / strafing), 9441 of 9448 and
+9995 of 9995 snapshots kept.
+
+## Patch 1739 - steam_libraryimage: a game's own icon from the player's Steam client cache, for the map browser's mount-game icons (engine client/pr_menu.c, common/fs.c, common/common.h)
+
+**Cause.** 23 Nov 2026 Lex: "game icons for each of the games that needs mounts? is it possible to find their logos
+for their games and display them visually? that would make the map picker look better."  The art cannot ship (it is
+the games' own), and mounting the Steam client folder as a search path would put it under the VFS's content checks.
+
+**Change.** Menu builtin steam_libraryimage(imagename, appid, kind): FS_SteamClientRoot finds the Steam client folder
+(Windows: HKCU SteamPath, else HKLM InstallPath; Unix: Sys_SteamVdfPath's $HOME candidates and $XDG_DATA_HOME/Steam,
+the first with appcache/librarycache), the builtin picks appcache/librarycache/<appid>/<40-hex>.jpg (Steam's 32x32
+app icon; the older <appid>_icon.jpg) or logo.png, reads it with FS_MallocFile(FS_SYSTEM) (8 MB cap) and loads it
+into a texture with Shader_Default2D's own flags, so drawpic's Image_FindTexture (which matches CLAMP and
+PREMULTIPLYALPHA) reuses it in either order.  Never a search path; nothing shipped.  The game's half (P1739, menu):
+an app-id table for the Steam folders data/mapdeps.txt names, 20 px icons at each card's name line, faded when the
+game is not installed, a tooltip naming it, reloaded in Menu_RendererRestarted.
+
+**Evidence.** Dev-install fixture, Maps screen (ui_bootcheck 2): surf_4am shows TF2's and CS:GO's icons, surf_aesthetic
+CS:GO's and Portal 2's.  First cut drew the missing-texture checker (RT_IMAGEFLAGS lacked PREMULTIPLYALPHA, so the 2D
+lookup made its own empty texture); fixed by the 2D flags.  A fake Steam folder (HOME) with a corrupt TF2 icon: the
+menu reaches the Maps screen, no TF2 icon, CS:GO's drawn faded (that HOME has no Steam libraries, so not installed).
+Review 1 (5 engine findings, 3 QC): a DOUBLE FREE on an undecodable file (Image_LoadMipsFromMemory frees filedata
+even on failure -- the builtin freed it again); no IF_NOPURGE, so a map load unloaded an icon no row had drawn and
+drawpic then looked for it in the VFS; the non-premultiplied 2D path (D3D9, dpcompat_nopremulpics 1) missed the
+lookup -- now Shader_2DPicPremul() is the one answer; Windows read SteamPath through the ANSI API, unterminated; the
+size cap came after the read.  QC: dep_game leaked per deps reload, %g named 1802710's texture 1.80271e+06, and each
+icon's click element sat over its row.  All fixed.
+
+**Left.** macOS never takes FS_SteamClientRoot's Unix branch (`__apple__` is not a compiler macro), as elsewhere in
+fs.c; no icons there.  The icon has no tooltip (a click element over the row would take its clicks); the detail line
+still says "needs TF2 CS:GO".
+
+## Patch 1736 - A Source liquid brush entity is not forced two-sided (engine client/r_surf.c)
+
+**Cause.** 23 Nov 2026 Lex (bhop_canals save 1): "water goop stuff is supposed to be static, it flickers black".  The
+goop is func_water_analog *18 (nature/toxicslime002a_dx70, LightmappedGeneric, %compileSlime) 8 units over the floor.
+VBSP gives its top two coplanar faces: 50121 up (HDR lightmap mean 8.3/7.5/4.7) and 50120 down (0.8/0.6/0.1, the
+underside).  The nettest rule that draws a liquid brush ENTITY (negative skinnum) two-sided -- GoldSrc/Quake func_water
+boxes have outward faces only -- rasterised both from above at one depth: they z-fought, near-black or lit by view.
+
+**Change.** BEF_FORCETWOSIDED is not set for an MDLF_SOURCEBSP model (inline submodels carry the flag); Source relies
+on backface culling there and VBSP emits both facings.  The alpha block beside it is unchanged; Vulkan never honoured
+the flag, so GL/D3D now match it.
+
+**Evidence.** Headless client at Lex's save-1 view: goop region mean 7.8 -> 20.4 (Lex's own screenshot 21.0); the
+other dark view 7.7 -> 20.0; fog, hl2_water and r_waterwarp toggles had changed nothing (7.5 each); r_drawentities 0
+showed the lit floor, fullbright the slime texture.  Review 1: 28 of the 30 water submodels on the 11 Source maps on
+this disk are fully twinned; GoldSrc unchanged.
+
+**Left.** A func_water_analog whose material compiles as WINDOW, not water, has one up face (TF2's cp_holyhell *58):
+sv_entities.qc SV_SpawnWater still makes it swimmable, and from inside it is now invisible (Source makes it solid).
+Unrelated, seen in review: r_waterinfo reads m->submodels[0], which the VBSP loader never fills (likely a crash on a
+Source map with water; not run).
+
+## Patch 1734 - KSF demos get half of a small crawl budget: the slowed cron row's --max 8 had left them none (game surfd/ksfimport.py)
+
+**Problem.** Lex, 23 Nov: KSF demos are not grabbed (surf_insomnia: 221 KSF runs, boards read 7 Nov, 0 replays).
+The cause today is ksf.surf's 403 (every 48-h retry refused since 11 Nov 07:21Z). Behind it: `--watch --demos` gave
+demos `min(DEMO_MAX, max - WATCH_BOARDS)` (Patch 1240: boards keep the first 16 of a 40-request tick), and the 17 Nov
+"slow down" cron row (`--max 8 --delay 6`) leaves 8 - 16 -> 0. Once KSF lifts the block, that row would read board
+pages only and never download a demo.
+
+**Change.** ksfimport.main: demo_max = min(DEMO_MAX, max(0, max - WATCH_BOARDS, max // 2)): below --max 32 demos take
+half, rounded down (8 -> 4 boards + 4 demos, 20 -> 10 + 10); 32 and above unchanged (40 -> 16 + 24). The total per
+tick is still --max. watch_mode: unblock_step's share is min(UNBLOCK_MAX, boards // 4) (was // 2), so 4 board requests
+split walks 1, unblock 1, refresh 1, sweep >= 1; 8 and more board requests unchanged.
+
+**Verified.** surfd/test_ksfgrab.py: the budget test pins eight splits (8 -> (4, 4) ... default -> (16, 24)) and fails
+on the old ksfimport with exactly the bug, [('boards', 8), ('demos', 0)]; test_p1734_cron_row_board_budget_keeps_a_
+sweep_request spends each step's share of the real Pacer: --max 8 gives walks 1, unblock 1, refresh 1, sweep 1, demos
+4 (round 1's cut gave unblock 2, sweep 0), the default walks 3, unblock 2, refresh 4, sweep 7, demos 24 (an unblock-
+capped-at-1 mutant fails). The topup test that relied on --max 2 meaning no demo budget sets DEMO_MAX 0 for the same
+scenario; the zero-reservation repair test loops --max 0, 1. test_ksfgrab 86/86, test_ksfimport 0 failed, run in a
+network namespace with only loopback (a curl to ksf.surf from inside: rc 7).
+
+**Review.** One independent reader, two rounds (split arithmetic, downstream budgets, callers, the test patch). Round 1:
+the sweep could get 0 of 4 board requests (fixed, above); a refused player walk parks only the walks, so one download
+can follow it in the same tick (already true at 40; at most one extra refused request). Round 2: none blocking; with
+--demos, --max 6 or less leaves unblock 0 every tick (documented: keep --max at 8+), and two test/comment gaps (fixed).
+
+**Deployed.** Not yet: ships in the next guarded surfd generation. KSF itself was stopped the same day at Lex's word
+(game tools/backend-pending.md): the cron row commented out and data/ksf/.refused an open-ended park, so mapwatch and
+mapnew skip KSF too. Resume = uncomment the row AND restore/delete the park.
+
+## Patch 1733 - The prediction memo keys only the physents a move could reach: far-away movers, other players and the server's lagging copy of the player stop forcing moves to rerun (engine client/cl_pred.c, common/pmovetst.c)
+
+**Problem.** The ahop_coast/bhop_canals BACKLOG (22 Nov): Patch 1720's key held every physent's fields, so any physent
+changing anywhere forced a rerun. Measured first (a diagnostic side table): at sv_minping 150, 37% of bhop_canals' and
+27% of ahop_coast's rerun moves had inputs identical to a stored move but for the physents. Keying by reach alone (first
+cut) recovered none on bhop_canals: the changing physent was entity 1, the server's copy of the local player (pmove.skipent,
+a solid box), trailing the prediction by 150 ms -- inside any reach, moved every snapshot. Every lobby player with ping
+has one.
+
+**Change.** pmovetst.c: while pm_memoq is set, the five physent queries (PM_PlayerTrace, PM_TestPlayerPosition,
+PM_PointContents, PM_ExtraBoxContents, PM_LadderEntPlane) grow P1714's own pair -- the union of their origins as a sweep
+and of their player boxes -- and PM_PhysentReachesBox runs P1714's exact PM_PhysentOutOfReach on it (a model-less
+physent: its axial box against the swept union). cl_pred.c: the key drops the physents but the portals (PM_PortalCSG
+scans every one when a trace starts solid; PM_AnyPortals switches the mover) and one bit for any slide (pms_anyslide);
+a stored move keeps its pair and the index and fields of every physent that reaches it, and is reused only if the
+physents reaching that pair now are the same. Not keyed because no query examines them: the solid skipent body and a
+nonsolid physent with no forced contents (never the world). Beside a traced model with no NativeTrace (its trace reads
+the box_planes the last PM_HullForBox left, near, far or a previous move) the move is not remembered (P1720's hole too).
+Review (three rounds, one reviewer, exactness): round 1 found the query box flattened into a point sweep dropped P1714's
+rotated-box allowance and convex-hull refusal (a 45-degree slab could be touched while "unreached") and the stale
+box_planes; round 2 the nonsolid-with-mask no-NativeTrace case; round 3 clean (the world exempted).
+
+**Measured** (rig lobby replica, sv_minping 150, moving, v0.1.59 progs, A/B against engine main 43eddadec built alike):
+cl_predict_memo 2 re-ran ~1 M reused moves across both maps, 0 differed. bhop_canals: reused 32-40% -> 61-63% of moves,
+243 -> 316 and 269 -> 316 fps (+17-30%). ahop_coast: 65% -> 72-73%, fps within noise (+0-5%).
+
+## Patch 1731 - VMT DX-level blocks evaluated as Source on a DX9 GPU: true ones (">=dx90", ">=dx90_20b") merged over the material, false ones (DX8 fallbacks) skipped (plugin hl2/mat_vmt.c)
+
+**Problem.** The ahop_coast/bhop_canals BACKLOG (22 Nov): mat_vmt.c skipped every block whose name starts with > < = as
+"never real material blocks" (VMT_IsKnownIgnoredBlock). Source's material system evaluates them against the dxlevel and
+merges a true one into the material -- HL2's canal water keeps $reflecttexture, $reflectentities 1 and $refractamount .2
+there (Valve: "This *cannot* exist in the root level, because the presence of this is used to determine whether to do the
+reflection"), so bhop_canals' water refracted at the shader default and reflected the world only (P868). Census of HL2,
+EP1, EP2 (Momentum mounts the same): 33 key lines in >=dx90 (3 Water, 2 LightmappedGeneric toxic slime: DX9 bump maps),
+20 in >=dx90_20b (10 Combine soldier VertexLitGeneric sheets), 45 in <dx90 / <dx90_20b (DX8 fallbacks: Refract, Water,
+LMG, WVT); none in ahop_coast's or bhop_canals' pakfiles.
+
+**Change.** VMT_DXBlock parses [op]dx<N>[_20b] (op >=, <=, >, <, =) and evaluates it at dxlevel 98 with ps2.0b. A true
+block's text is parsed with the material's state after its own keys, so its keys win over the material's as in Source; a
+patch's insert/replace still comes after and wins (as before; Source expands the patch first, so there the block would).
+False and unrecognised names are skipped as before; past four true blocks a developer line names the dropped one (none
+in the census has two). Review 1: nothing worse; the toxic slime now draws its DX9 base and bump (no bump mask or scroll
+on that path); bhop_canals' reflection drawing entities costs its entity pass at hl2_water 2, as Source's does.
+
+**Measured.** bhop_canals, r_shaderpasses water_canals_water_clear: the program gains #STRENGTH_REFR=0.200000 (was the
+shader default), and $reflectentities reaches P868's flag by the same parse (no fte_reflectnoentities: hl2_water 2's
+reflection draws entities, as Source's).
+## Patch 1732 - r_shadows 2 on Source maps: instanced props stay instanced, a casting prop does not shadow itself, shadow_control's colour, a Strata map's shadow takes out only the sun; r_exposure, a test fixed exposure (engine gl/gl_backend.c, gl/gl_shader.c, gl/shader.h, gl/gl_rlight.c, gl/gl_shadow.c, client/renderer.c; plugin hl2/glsl/vmt/vertexlit.glsl, lightmapped.glsl, transition.glsl)
+
+**Cause.** 22 Nov 2026 Lex, after P1724 left r_shadows 2 short of Source: "is part of the bigger render job being able
+to get the performance back? can you finish up what was partly done? also the exposure, can you maybe add a test cvar".
+Four gaps (BACKLOG "P1717"). GLBE_SubmitMeshesSortRange refused instancing whenever r_fakeshadows was on, because
+vertexlit.glsl's INSTANCED path projected every prop of a run through the first entity's l_cubematrix (lightprojmatrix
+x modelmatrix). Every caster received its own depth map, so a prop shadowed itself (ahop_coast's crate near-black at
+Lex's save 7). The shadow was ShadowmapFilter's fixed 0.5..1. On a Strata map, whose lightmap already holds the sun's
+shadows (env_cascade_light), the multiply darkened baked shade a second time.
+
+**Change.**
+- Instancing: texels 4-6 carry the prop's origin in .w (were 0); new uniform l_cubeworld (SP_LIGHTCUBEWORLD, the
+  light's projection alone); vertexlit's INSTANCED+FAKESHADOWS coords = l_cubeworld x (rotation x w + origin), which
+  equals l_cubematrix x w for a single draw. The !r_fakeshadows term is gone from the gate.
+- BE_NoShadowRecv(entity) answers e_noshadowrecv for single draws and texel 8 .w per instance: RF_NOSHADOWRECV and the
+  viewmodel as before, and now a Source model (MDLF_SOURCEPITCH) that casts (no RF_NOSHADOW). Static props (they do not
+  cast) and the world still receive.
+- r_shadows_color (default 0.5 0.5 0.5 = the old look): the plugin's shaders multiply by mix(colour, 1, 2 x filter - 1).
+- r_shadows_sunfloor (default 0 = off), a displayed level: lightmapped/transition take the lightmap to
+  mix(min(lm, floor), lm, lit) and vertexlit does the same to a prop's light, so a shadow takes out the sun down to the
+  sky's share and leaves baked shade alone. The world's e_lmscale carries 2^gl_overbright (its texels are stored that
+  much smaller, Surf_LightmapShift), so the world divides it out; a model's does not carry it.
+- r_exposure (default 1, a test): R_UpdateHDR multiplies hdr_value by r_exposure^(1/2.2) -- lightmaps, dlights, scripted
+  particles and sprites (e_vlscale), as Source's tonemap scale reaches them -- and model light (SP_E_L_AMBIENT/MUL,
+  instance texels 8 and 10) takes the same factor. Not the sky (Source scales its HDR sky), not classic particles.
+- Game (P1732, cl_sun.qc Sun_MapLight): r_shadows_color from shadow_control's color (absent key = CShadowControl's 64 64
+  64; no shadow_control = CClientShadowMgr::LevelInitPreEntity's min(1, 3 x sky ambient + 0.3)); r_shadows_sunfloor =
+  sRGB of light_environment's sky ambient (VRAD ParseLightEnvironment: a legal _ambientHDR on HDR, else _ambient, else
+  half the sun; x _AmbientScaleHDR on HDR) on maps with an env_cascade_light; vbsp_exposure 1 (archived, default 0) sets
+  r_exposure = clamp(1, SetAutoExposureMin, Max) on HDR-lit maps (1 on LDR), and 0 hands r_exposure back.
+
+**Evidence.** Headless client (visual/vprobe.py).
+- Instancing under r_shadows 2 (r_budget_dump, two fence views on surf_fantasy_css, 673 copies of one fence): entity
+  batches 157 -> 54 and 200 -> 83, draws 1084 -> 981 and 1590 -> 1473 -- the same as with shadows off; the old exe stays
+  at 157/200 with r_instancing 1 or 0 (the gate). Draw-call CPU 0.74 -> 0.68 ms; props GPU 0.08 -> 0.19 ms (instanced
+  fetches, as with shadows off).
+- Timed later on a quiet machine (23 Nov ~03:05 local, no game or OBS; one launch per setting, timerefresh one per line
+  3 s apart -- vprobe's 0.3 s stdin lines and chained timerefreshes both corrupt it), median of 5 sweeps, two reps,
+  0.1.59 exe: r_shadows 2 instanced 719/723 (view 0) and 880/787 (view 1) fps against r_instancing 0 832/769 and 824/840;
+  shadows off instanced 856/863 and 855/923 against 868/877 and 938/946. So on this map at ~800 fps instancing is no fps
+  gain, shadows or not (view 0 about 10% slower with it): the GPU's instanced path costs what the draw calls save.
+  Patch 831's gain was on draw-call-bound maps (surf_demise +22%), not reproduced here (the map is not on this PC).
+- ahop_coast save 7, shadows off -> on: the old exe darkens the crate and fence themselves (93,748 pixels > 8 levels);
+  the new one leaves them lit and still shadows the ground beside the crate (51,527). r_shadows_color 0.44 0.49 0.56.
+- bhop_canals start: r_shadows_sunfloor 0.433 0.519 0.541 (review 1 checked the formula against the map's HDR
+  lightmap: up-facing luxels' sky-only level 56-60 in VRAD units against 59.1 predicted); r_shadows_color 0.77 1.0 1.0.
+  Self-shadowing gone from the barrels and crates (view 0: 131,058 -> 22,663 pixels darkened, all floor).
+- r_exposure on ahop_coast (HDR, band .8-.9): vbsp_exposure 1 sets 0.9, the world 47.8 -> 45.6 (0.953 predicted);
+  r_exposure 2 -> 65.3 (65.5); the sky unchanged; vbsp_exposure 0 and a map load hand back 1.
+- Reviews: round 1 (renderer) one finding -- r_exposure's text claimed particles/sprites unscaled -- fixed by saying
+  what it reaches; round 1 (game) four, fixed (LDR maps, hand-back, a 0 0 0 colour, _ambientHDR). Round 2: six, fixed
+  (the HDR check asked of serverkey("map") in WorldLoaded -- "" or the previous map; the hand-back flag was a CSQC global,
+  reset every map; VRAD's half-sun fallback; the HDR scale before the legality test; the world floor 2^overbright too
+  high). Round 3: the generated mat_vmt_progs.h had missed the overbright divide (make saw it newer); regenerated.
+
+**Not shown / left.** The sun floor on a baked prop is reasoned, not measured: its light is a displayed level (P1717
+matched it to Momentum beside the world) but no shot has a shadow over both. Casters indoors still throw "sun" shadows
+(the depth map holds entities, not the world, and Strata's cascades only shade where the sun reaches) -- gating a caster
+on VBSP_SunVisible would approximate it. Exposure is fixed, not Source's adaptation (clamp(1, band) is the top of a band
+below 1, where a bright scene would push Source toward the bottom); the sky is not scaled. shadow_control's
+disableallshadows and distance are still ignored.
+
+## Patch 1729 - hl2_water_lod: an opt-in distance cutoff for water at hl2_water 1 from the map's water_lod_control (or the material's own $cheapwater* distances), with Source's cheap pass fading in and no capture for water wholly past them -- not Source's rule for reflecting water (engine gl/gl_backend.c, gl/gl_shader.c, gl/shader.h, client/renderer.c; plugin hl2/mat_vmt.c, hl2/mod_vbsp.c, hl2/glsl/vmt/water.glsl)
+
+**Problem.** Lex, 22 Nov: "I don't mind trying the distance water effect". Source SDK 2013: viewrender.cpp
+DetermineWaterRenderInfo renders no refraction once the eye is cheapwaterend from water WITHOUT a local reflection, and
+water.cpp DrawCheapWater blends its cheap pass (fog colour to the cubemap by (1-n.e)^5, $nofresnel: $reflectblendfactor)
+over the refraction from $cheapwaterstartdistance to $cheapwaterenddistance; a WaterLOD proxy takes those from the view
+(water_lod_control). But on PC an absent $forceexpensive is set to 1 (water.cpp:102-109, "NO WE DON'T!!!!"), so any water
+whose (>=dx90) block has $reflecttexture has a local reflection and never takes the LOD: ahop_coast's water_coast02 and
+bhop_canals' water_canals_water_clear both reflect at every distance in Momentum. Source's LOD reaches only refract-only
+water. (The 22 Nov BACKLOG note said the opposite for hl2_water 1; corrected there.) So copying Source changes nothing on
+those maps; Lex asked to try the effect, so this is the mechanics as an opt-in cutoff, labelled as not Source's.
+
+**Change.** hl2_water_lod (plugin, CVAR_SHADERSYSTEM, default 0). Map load: the last water_lod_control -> r_cheapwaterstart/
+end (engine cvars, Source's names; 0/0 without one = no cutoff). At hl2_water 1 and hl2_water_lod 1, Water with an $envmap
+and distances -- the map's under a WaterLOD proxy (#CHEAPLODMAP, the cvars as uniforms), else its own authored pair --
+builds vmt/water #CHEAPLOD plus `fte_waterlod map|<start> <end>` (shader_t.waterlodend = max of the pair). water.glsl mixes
+the cheap colour over the finished pass (base layer and fog included) by the fragment's distance, and at or past the end
+returns before reading the capture (placed after the depth block's derivatives). GLBE_WaterLodCheap: a world water batch
+with that keyword, some face on screen and every on-screen face box at least its end from r_origin (the shader's
+e_eyepos) needs no capture: it stays out of GLBE_WaterViewsBegin's choice and GLBE_WaterGather's merged visibility, and
+GLBE_GenerateBatchTextures draws it at once (r_capturelog "waterlod"). The fragment and box tests agree, so a skipped
+capture is never sampled. Review 1 (two lenses): the Source default above; r_origin not vieworg (stereo); an off-screen
+batch counted cheap and drawn; gathered into the capture's visibility; the cheap mix under the base layer (a seam at the
+end); derivatives after the early return.
+
+**Measured.** bhop_canals (water_lod_control 1000/2000), noclip over the canal: 1166 units up the capture still renders
+(inside the end), picture nearly unchanged; with the pair forced to 200/500 there lod 0 captures 138 of 549 views and lod 1
+none, drawn as Source's opaque fog-coloured cheap water; with 0/0 lod 1 captures as lod 0. Replay route: canal water in 18
+of 19,846 views, so no change. ahop_coast (3000/5000, water_coast02 has the WaterLOD proxy):
+the route never gets 5000 units from the ocean -- views with a capture 10.8% either way (5268 of 48,760 at lod 0, 4905 of
+45,323 at lod 1), fps within noise (warm 558/569, run 598/556) -- so there it changes how the far ocean looks (cheap past
+3000-5000), not the cost. It pays where the eye is far from all the water on screen. Review 2: text only.
+
+## Patch 1724 - r_shadows re-parses the shader programs when it changes (engine client/renderer.c)
+
+**Cause.** 22 Nov 2026, the ahop_coast/bhop_canals visual audit (Lex: "do all the stuff you said is not done yet"): turning
+`r_shadows 2` on in a running game on a Source map broke every vmt/vertexlit permutation -- `C1503 undefined variable
+"s_shadowmap"`. A program declares the sampler by `!!samps =FAKESHADOWS shadowmap`, which Com_PermuOrFloatArgument
+answers from r_shadows when the program is PARSED; programs parsed at 0 then compiled the FAKESHADOWS permutation with no
+sampler. The cold-start half of this was fixed before (the r_shadows.ival == 2 clause); a live change was not.
+
+**Change.** r_shadows is CVAR_SHADERSYSTEM: a change re-parses the programs. One shader rebuild per toggle.
+
+**Evidence.** ahop_coast at Lex's save-7 vantage, `r_shadows 2` typed after load: before, two vmt/vertexlit compile
+errors; after, none. The game's Sun_MapLight (P1724, game) sets r_shadows_throwdirection from the map's shadow_control.
+
+**Not shown / left.** r_shadows 2 on a Source map is not Source's shadowing: props shadow themselves (the depth map has
+no caster identity), the tint is a fixed 50% rather than shadow_control's colour, it disables instanced props, and on a
+Strata map it darkens the baked sun's shade a second time. BACKLOG "P1717".
+
+## Patch 1723 - r_bloom_mapscale: the map's SetBloomScale (engine gl/gl_bloom.c, gl/r_bishaders.h, shaders/glsl/bloom_final.glsl)
+
+**Cause / change.** env_tonemap_controller's SetBloomScale (from a logic_auto at map spawn: ahop_coast 0.1) replaces
+Source's mat_bloomscale. New cvar r_bloom_mapscale (default 1, not archived), set by the game at map load, multiplies
+r_bloom in bloom_final. Exposure (SetAutoExposureMin/Max) is deliberately NOT copied: ahop_coast's 0.8-0.9 band would
+darken a frame that already matches Momentum's world at scale 1 (P1717's measurement), and dynamic auto-exposure is
+not worth a per-frame luminance readback in a movement game.
+
+**Evidence.** ahop_coast: r_bloom_mapscale reads 0.1 after load; maps without the input read 1. r_bloom 1 with
+r_postprocess 1 compiles bloom_final clean. Review 1: the edit first reached only shaders/glsl/bloom_final.glsl, not the
+built-in r_bishaders.h entry that is compiled; both now carry it. Vulkan's blob does not (it ignores the scale).
+
+## Patch 1722 - The sun on unbaked Source models (plugin hl2/mod_vbsp.c; engine gl/gl_rlight.c)
+
+**Cause.** Patch 302 added a map's local worldlights to the model light cube and dropped emit_skylight for want of a
+"does this point see sky" trace, so no movable prop, player or unbaked static prop ever received the sun (ahop_coast's
+1.92 1.74 1.29 linear, 20 degrees up from the NE).
+
+**Change.** The first unstyled emit_skylight not already in the cube is kept at load; VBSP_SunVisible traces 65536 toward
+it through the world-only occluder tree (now also built for a map whose only light is the sun) and admits it only when
+the trace ENDS on a SURF_SKY/SKY2D face -- Source's light-cache rule; a miss is not sky. VBSP_AddSunCube adds it into
+the cube like Patch 302's lights, on the flat path and the bump-cube path, for every caller except baked static props
+(their bake has it), under hl2_lt_worldlight (its pre-302 control) and hl2_lt_sun; both are in the model-light cache
+hash and the static-prop relight list.
+
+**Evidence.** ahop_coast at the save-7 vantage: the fence (shaded by the cliff, as in Momentum) unchanged; the crate's
+top and edges catch the sun (2999 pixels > 6 levels, all on it, after review 1's sky-hit rule). Review 1: the tree was
+never built on sun-only maps, a miss counted as sky, the bump cube lacked the sun; fixed.
+
+## Patch 1721 - Infodecals at Source's size (plugin hl2/mat_vmt.c; engine gl/shader.h, gl/gl_shader.c, client/cl_ents.c, client/client.h)
+
+**Cause.** The game drew every infodecal as a 32-unit square (vbsp_decal_size); Source sizes one by its base texture's
+top mip x $decalscale (HL2's trash/plaster 512 x 0.25 = 128 units, ivy 512 x 0.5 = 256, industrial numbers 64x128 x 1),
+and the plugin ignored $decalscale.
+
+**Change.** For $decal (and Decal/DecalModulate) materials the plugin reads the VTF header and emits `decalsize W H`
+(shader keyword, appended shader_t field). A static decal asking PDC_SOURCESIZE (2) takes it: side's length 1/H, aspect
+W/H. A static decal's tris past the depth fade at every corner are dropped, so an invisible clip is not "placed".
+
+**Evidence.** With the game half (P1721, cl_decals.qc): ahop_coast 18 -> 45 of 48 infodecals placed, bhop_canals 80 ->
+383 of 416; bhop_canals' ivy covers its walls at full size. Review 1: four findings, all fixed.
+
+**Left.** Brush-entity decals (clipped only from the entity packet, absent at world load); the depth fade stays +-4, so a
+large decal on a curved displacement fades where the surface leaves its plane.
+
+## Patch 1717 - Source models lit at Source's scale and split: dynamic props and viewmodels take Patch 304's fold through model_t.LightPointFold, the fold encodes its lit level whole, and Strata maps read their leaf light (engine gl/gl_alias.c, gl/gl_model.[ch], common/plugin.c, common/com_mesh.h; plugin hl2/mod_vbsp.c)
+
+**Cause.** 22 Nov 2026 Lex, with Momentum and WoS screenshots of ahop_coast at one vantage: "The model vertex?
+brightness rendering is a bit inaccurate compared to momentum mod". The world and the VRAD-baked static props matched
+(shed wall 77 vs 76); the prop_dynamic fences and crate drew about twice as bright (fence 185 vs 94, crate 97 vs 51).
+Three faults on the leaf-ambient-cube path. (1) Patch 304's fold (flat base = the cube's level turned away from the
+light, directional half = the difference to the lit level, ramped by the half-lambert vertexlit.glsl/animated.glsl
+compile under hl2_lt_fold) reached only static props without a .vhv (prv->fold_prop). Every engine-lit Source MDL --
+prop_dynamic, prop_physics, viewmodels -- got the legacy split (base ~ the brightest face, the six-face mean on top)
+under that same half-lambert ramp, the mismatched pair hl2_lt_fold's note calls unreachable. Against Source's n^2 read
+of the fence's own cube that is 2.38x on its front, 2.35x on the crate's (display). (2) R_CalcModelLighting multiplies
+every model's light by 255/200 (Quake's fudge); HL2_CalcModelLighting's static props never get it, so Source models
+lit by the engine sat 1.275x over the same cube on a static prop. (3) The fold encoded its directional half on its
+own, sRGB(unlit) + sRGB(lit - unlit) > sRGB(lit): up to 1.47x on the lit end of unbaked static props (reviewer's
+offline check). Separately, Strata (v25) maps had no leaf light: their index lump is two uint32 per leaf (bhop_canals
+82208 bytes = 10276 x 8; the counts sum to its 54901 samples, every first in order) and the loader took only v20's two
+ushort, so every model there fell back to a fixed 64/192.
+
+**Change.** model_t gains LightPointFold (appended; answered as FTESurfModelTail/1717; zeroed on load, cleared on
+purge). R_CalcModelLighting samples through it for an MDLF_SOURCEPITCH model, entity and viewmodel alike; both light
+caches key on which sampler ran; a local `foldlit` (set only in the world branch) skips the 255/200 and floors a
+viewmodel's base, not the fold's lit-unlit range. The plugin sets it, only on an exe that answers, to the cube path
+with the fold forced. The fold encodes the two LEVELS and hands the shader their difference (hl2_lt_face's debug
+copy excepted). VBSP_LoadLeafLight reads the v25 index as uint32 pairs. The submodel copy in VBSP_LoadMap
+(`*mod = *wmod`) copies only the exe's model_t, by its tails -- on an older exe the whole-struct copy ran past the slot
+into the next model's name, since Patch 1440.
+
+**Evidence.** ahop_coast at Lex's save-7 vantage, headless client (visual/vprobe.py, 1918x1052): fence front 177 ->
+77 (x0.433; the cube predicts x0.432: Source 0.466, legacy 1.107, new 0.478), fence side 151 -> 67, crate 71 -> 33;
+the baked shed wall 67 and the road 60 unchanged. Scaled onto Lex's frame: fence 80 / side 73 / crate 45 against
+Momentum's 94 / 98 / 51 (were 185 / 165 / 90). An old exe with the new plugin draws the frame identical to the old
+build (no LightPointFold); the final tree (review 2) draws it identical to review 0's. bhop_canals: "leaf ambient HDR,
+54901 points, 54622 non-zero" (the old build read none); its drums, cans, crates and benches now take the room's tone
+instead of a pale flat grey. Three review rounds (boundary/lifetimes, lighting math, fix rounds): round 1 found the
+viewmodel gap, the r_softwarebanding fudge case, the hl2_lt_face copy and the old struct overrun; round 2
+the no-world fudge and the viewmodel floor; round 3 nothing.
+
+**Not shown.** A Source viewmodel (knife) on screen, and Momentum itself at the same vantage after the change (the
+residual: fences 15-25% under Momentum's frame with the cube math within 5% of Source's; Momentum/Strata's tonemap is
+the unmeasured term). The sun (emit_skylight) still reaches no dynamic model: Patch 302's missing sky-visibility trace.
+
+**Boundary.** Client only: lobbies draw nothing. Quake-format models (the player) are unchanged. A Source MDL whose
+material falls back to defaultskin.glsl (missing VMT) gets the fold under plain lambert.
+
+## Patch 1720 - Prediction reuses a move it already ran: the replayed commands stop costing a whole PM_PlayerMove each (engine client/cl_pred.c, common/pmove.c, common/cvar.c, common/com_bih.c)
+
+**Problem.** Lex's BACKLOG list of 22 Nov: after Patch 1714 prediction still cost 0.72 ms a frame moving at 150 ms on
+ahop_coast and 1.75 ms on bhop_canals, almost all of it PM_PlayerMove (slow frames: pmove 1.0-1.7 ms for ~11 moves on
+ahop_coast, 3.2-3.8 ms for ~16 on bhop_canals; the CSQC hook 0.03-0.3). Client prediction replays every unacknowledged
+command each rendered frame (CL_PredictMovePNum), and most of those moves ran last frame from exactly the same state.
+Source repredicts only after an error (cl_pred_optimize 2); here CSQC's trigger hook is built on the full replay
+(TG_ChainStart rebuilds its chain from the acknowledged command every frame), so the replay itself has to stay.
+
+**Change.** CL_PredictUsercmdPart keeps the replay and the CSQC hooks either side of every move, but CL_PredictMemoMove
+gives a move whose inputs are byte-for-byte those of a move already run that run's result instead of running it: key =
+pmove's bytes but the physents and the touch list (which the move rebuilds), movevars, the game speed, every physent's
+fields, BIH's collision epoch, a new cvar epoch (cvar.c: any pm_ or bih_ cvar changing) and the cvars the traces read
+under other names (sv_prop_collision, r_meshpitch, r_meshroll); value = pmove after the move (same regions), its touch
+list and pmove.c's forward/right/up. 256 direct-mapped slots, full-key compare. A move during which a portal's
+camera_transform QC ran (it reads and writes beyond the key; pmove.c counts the runs) is never kept, so a kept move ran no
+QC and the same inputs reach none. Not used for the QuakeWorld mover (it keeps groundplane across calls), beside terrain
+(streams in without an epoch), under pm_dispprobe/pm_ladderprobe, or off the main thread. cl_predict_memo 0 runs every move; 1
+reuses (default); 2 also runs every reused move and compares it byte for byte; cl_predict_memostats prints the counts.
+Review 1 found those five unkeyed inputs/side effects (all off the default Source/AG path); all closed.
+
+**Evidence.** Task root FTESurf-worktrees/coastperf-20261122-08 (plans p1720_*, p1720f_*): lobby.cfg server at
+sv_minping 150, lobby QC, moving, alternated. First build: ahop_coast 527/544 -> 646/672 fps (memo off/on), bhop_canals
+266/272 -> 301/334; about 70% of moves reused on ahop_coast, ~47% on bhop_canals (its moving entities change the
+physents). cl_predict_memo 2: 275 k (ahop_coast) and 118 k (bhop_canals) reused moves re-run, 0 different.
+Final build (rebased on Patch 1719), 150 ms, alternated: bhop_canals 271/272 -> 343/315 fps (budget 267 -> 304), 49%
+of moves reused (its six linked_portal_doors: the first review fix, no memo beside any portal, had made every move
+unkeyed there; the QC-run guard replaced it); ahop_coast 476/533 -> 594/648 (a peer's probe overlapped that pair).
+cl_predict_memo 2 on the final builds: ahop_coast 232 k, bhop_canals 113 k, surf_classics (60 ms, surfing) 253 k reused
+moves re-run, 0 different.
+
+## Patch 1719 - The 3D sky's water shares the main view's last water capture whatever its age (engine gl/gl_backend.c, client/renderer.c)
+
+**Problem.** Lex's BACKLOG list of 22 Nov (from the ahop_coast audit): water inside the 3D sky room rendered its own
+reflection and refraction (two extra scene renders) whenever the outer view had not captured water in its last two
+world views -- on ahop_coast, looking out over the sky room's ocean with no level water on screen, 0.31 nested views a
+frame, even on frames with no water on screen at all. Source's skybox water never renders targets: it samples
+_rt_WaterReflection/_rt_WaterRefraction as the main view left them.
+
+**Change.** BE_SkyroomSharesWater shares the outer level's capture of each kind it reads whatever its age, while the
+stamp is this seat's and the target exists; the sky room captures its own only until the seat has captured each kind
+there (after a map change or a resize, a kind only it reads), and always for ripple-map or portal water.
+r_waterskyroomcapture 2 keeps Patch 1018's rule (0 the new default, 1 always its own). Review 1: a door (portalfbo) or a
+dp_camera surface renders into the same refraction target without stamping it, so under "any age" the sky water could
+sample a door's far side (or a refused door's black clear) as its refraction -- the portal branch now clears that
+level's refraction and depth stamps; a refraction rendered without its depth (reflective glass) clears the depth stamp,
+so colour and depth cannot come from different renders.
+
+**Verified.** ahop_coast, Akatosh's replay 85773 at 4x, path line off, alternated: nested depth-2 views 0.31 -> 0.00 a
+frame; 526/544 -> 581/566 fps (review-fixed build: 519 -> 537). Paused screenshots at eight points of the run differ only
+in the HUD's frame-time graph and the level water's animation; at 0:20 (no water on screen, where the old rule still
+rendered sky-room captures) the picture is the same. One review round (findings above, fixed).
+
+## Patch 1718 - qcframes as a build gate; three menu globals out of function frames (game QC + build.ps1 only; no engine change)
+
+**Problem.** fteqcc can give a function with only temporaries a frame (parm_start, locals) that covers file-scope
+globals declared near it, and qclib restores that range on every return -- with 0 warnings. P1617 shipped one for days,
+P1715 another for two (run lines never native). tools/qcframes.py finds them in a built .dat, but nothing ran it: on
+22 Nov's main the menu held three more -- dl_have_cancel in ui_dl_cancel_ready (a cache, so harmless: asked each time),
+and the tournament's request id mt_req in MF_PresencePoll and Sty_AskMe (overwritten by their temporaries while they run,
+any change made under them undone on return).
+
+**Change.** Each of the three functions declares a local (as P1617/P1715). src/build.ps1 runs tools/qcframes.py on the
+three built .dats after compiling and before deploying, and throws on its exit 1 (or 2, unreadable) -- so a release,
+which builds through build.ps1, cannot ship one. wos-build.sh (outside git) runs it after its QC build and fails.
+
+**Verified.** menu.dat 3 globals inside a frame -> 0 (qwprogs and csprogs 0). build.ps1 -NoDeploy on Linux pwsh: passes
+on this tree; with Sty_AskMe's change reverted it stops with "FRAME Sty_AskMe holds global mt_req" and nothing deployed.
+
+## Patch 1715 - Run lines draw natively again: ln_nath/ln_nat were inside Line_Alloc's frame (game QC only; no engine change)
+
+**Problem.** `lines native` read "native builtins 0": fteqcc put ln_nath and ln_nat inside Line_Alloc's frame, so the VM
+put them back to 0 when Line_Alloc returned and Patch 645's lines_draw never ran. Every replay path, board line, live
+trail and ghost line went through the QC loop (a replay path 0.38 ms of a 2.16 ms frame on ahop_coast). In every csprogs
+built since 20 Nov, the lobbies' included (cl_lines.qc and pr_csqc_lines.inc unchanged since mid-November: other code
+moved the frame).
+
+**Change.** A declared local in Line_Alloc.
+
+**Verified.** tools/qcframes.py: 2 globals inside a frame -> 0. bhop_canals Momentum replay (rep 9286): `lines native`
+builtins 1, in use 1, refused 0; native and QC report the same work (153 points, 151 segments, 25 clipped); path 0.24 ->
+0.08 ms. Lobby build (v0.1.56 + P1710 + this, 0.1.56's fteqcc; qwprogs 8bbf41ba unchanged, csprogs 20be3cff) on the
+0.1.56 engine: native, no errors; LIVE on all 12 lobbies 22 Nov 01:52Z (game tools/backend-pending.md).
+
+## Patch 1714 - Prediction skips the physents a move cannot reach: lobbies at ping no longer halve the frame rate (engine common/pmovetst.c, com_bih.c, common.c)
+
+**Cause.** 22 Nov 2026 Lex: a player reports ahop_coast and bhop_canals "awful in a lobby" but better in a local
+game. His own dumps (Windows, 0.1.56): CPU-bound at 3.9 ms standing, 8.6 ms (116 fps) while playing, `prediction`
+1.9-2.4 ms of it, slow frames "pmove 1.34 ms, 43 physents, 12 moves". Client prediction replays every unacknowledged
+command each rendered frame (ping / tick of them: 11-12 at 150 ms on a 100-tick bhop/ahop map), and every trace of
+every replayed command visited every physent: PM_TransformedHullCheck had a bounds test only for an axis-aligned
+model, so a rotated prop or brush went to the full transformed trace. Linux rig, lobby.cfg dedicated server at
+sv_minping 150, moving: ahop_coast ran ~80 million BIH traces in 30 s (~7,700 a frame; bih_tracecache reused 13%
+and was a net loss: off 418 fps, on 346), prediction 0.55 ms -> 1.88 ms, 600 -> 345 fps.
+
+**Change.** PM_TransformedHullCheck is a wrapper: a physent the trace cannot reach is not traced (PM_PhysentOutOfReach).
+The bound is on the trace origin. In the model's frame every claimed leaf is capped by axial planes at its box grown
+by the trace's size -- a triangle by BIH's caps, a brush by its own six axial sides -- and that size is at most rho,
+the player box's farthest corner from the origin, however the box is turned or the planes pushed (triangle caps:
+|h| + |c| <= sqrt(2) rho in all). So contact needs the origin within R + sqrt(3) rho of the physent origin (R: the
+geometry box's farthest corner, times max(1, scale)) + 10 units (a triangle's 4-unit back face for point traces, a
+brush side up to a unit off its box, epsilons); a segment outside that cube on any axis would have returned no
+contact. Claimed: a BIH tree BIH_Build made in which every leaf is a capped triangle with area or a brush carrying all six axial
+sides at its box, with finite boxes -- BIH_Build now keeps their union in a header in front of the nodes
+(BIH_LeafBounds; model_t is untouched, the plugin reads it by offset) -- unioned with the model's bounds and its .phy
+tree's (Patch 888). Not claimed (traced as before): the convex hull paths, Quake/GoldSrc hulls, Q2/Q3, Mod_Trace
+meshes, the box_planes fallback, capsules, non-finite input. `pm_physentcull` 0 traces every physent as before; 1
+(default) skips; 2 decides, traces the skipped anyway and counts any that touched (fraction, startsolid, allsolid,
+inwater); `pm_physentstats` prints and resets the counters (main thread only: pmovetst.c also runs on TAS workers).
+Review 1 found the first cut (a world-aligned box against a model cube) inexact for rotated models -- every rotated
+path turns the box with the model or pushes the model's planes out by the box's reach (a 45-degree platform's corner
+reached 12 units past it); review 2 found brush caps unenforced (VBSP adds the axial sides, Patch 318 skips them),
+NaN bounds dropped by max(), and the hull path's near-axial bevel substitution unbounded; review 3 found a zero-area
+triangle startsolid to any point trace whose box overlaps it (zero normals); all closed by not claiming those trees.
+
+**Evidence.** Task root FTESurf-worktrees/coastperf-20261122-08 (artifacts/RESULTS.md, coast.py, plans p1714r3_*):
+headless sway on the RTX 2080 SUPER, local dedicated server on lobby.cfg (run_evidence_ul 0) at sv_minping 150, the
+lobby's own QC (v0.1.56 + P1710), moving with +forward +jump +left, 25-30 s windows alternated. Final build, cull 0
+vs 1: ahop_coast 322 -> 534/490/525 fps (r_budget prediction 1.88 -> 0.72 ms), bhop_canals 171/178 -> 294/284/268
+(prediction 3.23 -> 1.75 ms); after review 3, ahop_coast 331/334 -> 570/529.
+pm_physentcull 2: 289 M skipped-and-rechecked client traces (both maps, circling and strafing, the last 62 M on the
+final build) and 327 k on the dedicated server touched 0 times. Review 2's randomized model (4,000 boxes/triangles/hulls at random yaw, pitch and
+roll; AG, Source, ducked and Quake player boxes) reached at most 0.90 of the radius. Exact on what it claims, so
+movement and run verification are unchanged; the cvar is client-only and not part of a run's record for that reason.
+
+## Patch 1713 - Mover 15: a landing zeroes vertical speed, and SOLID_VPHYSICS brush entities collide through their vcollide (engine common/pm_source.c, common/com_bih.c, common/pmovetst.c, gl/gl_model.[ch]; plugin hl2/mod_vbsp.c, hl2/mod_phy.c)
+
+**Cause.** 22 Nov 2026 Lex, of P1709's "three ahop_coast spots where Momentum stays airborne at 1.75 units": "please
+fix"; then "do whatever you need to make it correct ... proper across all map fixes". Held against Momentum's ten
+ahop_coast bhop demos with pm_stepsim (P1709's harness, game tools/momstep.py), the 25 ground-flag disagreements P1709
+left on its five 2026 demos had two causes, neither geometry. (1) The three spots are teleport exits (34b1f4d9 ticks
+6380/10784, 987b7fe0 15983): the teleport moves the player after that tick's CategorizePosition, so Momentum records
+them airborne 1.5-1.8 up, falling 218-298 u/s; next tick it re-grounds them at the top (a game-moved body) and jumps at
+293.99, a from-rest jump. Ours re-grounded too, but Source's SetGroundEntity zeroes vertical speed (SDK 2013
+gamemovement.cpp:3649; Momentum's override calls it) and ours did not, so CheckJumpButton added the jump to the fall
+(-302 + 302 = -0.01) and the jump went a tick late. (2) Twenty-two, every hop up the climb at x 11400-12700, are
+func_brush *134: 16 player-clip wedges over the ramp, `solidbsp 0`, so SOLID_VPHYSICS. Source sweeps a BOX against
+such an entity's vcollide, not its brushes (CEngineTrace::ClipRayToVPhysics: "do ray traces with normal code, but use
+vphysics to do box traces"), and VBSP builds that vcollide from the brushes without their bevel sides (utils/vbsp/
+ivp.cpp BuildConvexForBrush). Seven of the wedges carry a compile bevel 22-34 units inside their own top; our brush
+trace honours it, so we stood on a cut-down ramp 2.2-4.3 units under Momentum's floor and landed a tick or more late.
+Against the stored hull (IVP ledges, decoded and checked equal to the brushes minus bevels): Momentum lands from up to
+2.44 above it with a 2-unit ground trace and takes off (sv_jump_z_offset 0's trace down) 0.53-0.57 above it -- the
+half unit of vphysics' 0.25 separation radius on each shape (ivp.cpp:31-37) plus the trace's 1/32.
+
+**Change.** PMSRC_VERSION 15 (SV_PMSrcVer accepts it at any fixslopes). (1) CategorizePosition zeroes velocity[2]
+whenever it sets a ground, except in PM_NONE/PM_FREEZE (our frozen holds). (2) The hl2 plugin decides at load, from the
+entity lump and Source's Spawn()s (SDK 2013 server/), which submodels Source collides as VPHYSICS: func_brush,
+func_door_rotating, func_rotating, momentary_rot_button unless solidbsp 1; func_door/func_water unless under a SOLID_BSP
+root parent; func_rot_button, func_movelinear, momentary_door, func_water_analog, func_physbox(_multiplayer),
+simple_physics_brush; func_pushable without SF_PUSH_BREAKABLE; func_tracktrain without SF_TRACKTRAIN_HL1TRAIN. For each
+it decodes the vcollide's solid 0 from LUMP_PHYSCOLLIDE (Mod_PHY_SolidPieces: the .phy parser, plus each ledge's
+client_data -- VBSP's brush number -- for its contents), builds it as Patch 764 builds a prop's hull with every side
+VBSP_VPHYS_MARGIN (0.5) out, into the submodel's new `vphysalt` tree (model_t, appended; freed with the model).
+BIH_TraceUncached sweeps a BOX against vphysalt while bih_vphys (Source movers from 15) is set; rays keep the brushes.
+PM_TransformedHullCheck's early-out reads vphysalt's bounds.
+
+**Evidence.** pm_stepsim over all ten ahop_coast demos and 13 surf demos (surf_ab, surf_kz_protraining, surf_classics),
+180,046 graded ticks, mover 14 -> 15: ahop_coast ground-flag disagreements 50 -> 16 (P1709's five 2026 demos 25 -> 6);
+the surf demos 0 -> 0 with not one tick changed. 57 ticks changed in all: the three teleport exits now jump at exactly
+Momentum's 293.99, the ramp's landings land and its four jump ticks take off within 0.002 of Momentum's position (were
+1.46-2.60 off), 42 better / 3 worse at the velocity level. Shapes tried and rejected on the same demos: a half unit kept
+only along the sweep (fixes two grazing passes, loses ten real hits on func_brush *25: 48 better / 12 worse); margin
+on faces and axial planes only (40 better, two landings lost). pm_selftest all checks passed; pm_dettest identical on
+surf_classics, surf_sandtrap2, ahop_coast. Lobby gate (arm64, the Pi, eng1713-20261122-88): the live patch-1709 engine
+and this one identical on pm_dettest over 7 maps and pm_verify over 12 real lobby runs (9 PASS, 3 REFUSE as before);
+serverinfo pm_sourceversion 15 under the lobby cfg. Load census: ahop_coast 27 brush entities through their vcollide (62
+pieces), surf_classics 62 (144), none refused.
+
+**Review.** Two lenses (control flow and parsing; recorded evidence, version gates and what a cheater gains), no
+defect at movers <= 14. Fixed: VBSP_VPhysClass recursed without bound on a func_door parentname loop (a crafted map
+crashed lobby, verifier and clients at load) -- now a bounded walk; VBSP_VPhysSolids read lumps 0/29 unchecked against
+the buffer -- VBSP_DecompressLumps now reports its size; the plugin wrote model_t.vphysalt on any exe -- now only on
+one answering `FTESurfModelTail/1713` (Patch 1440's probe; an old exe beside a new plugin would have taken the write
+in the next model's slot); the twin's bounds started as the world's (no early-out ever fired); the copied vcollides
+leaked on a later failed load -- now in the model's group; vphysalt pieces now take Patch 1248's crease rule as a
+prop's do (7367486c tick 5811 snagged: |dv| 1447 -> 49, mover 14 had 71); func_reflective_glass (CFuncBrush) and
+func_tanktrain (CFuncTrackTrain) join the class list. Rebased on Patch 1714: vphysalt joins PM_PhysentOutOfReach's
+reach union (pm_physentcull 2 over a 16887-tick ahop_coast chain: 2381 skipped-but-checked, 0 touched). Regrade after
+the fixes: identical to the reviewed build on every graded tick.
+
+**Not shown.** No mover-15 RECORDING has been verified end to end: a TAS run Jargon recorded at pin 15 (surf_sandtrap2
+bonus 4, 0:07.815) is refused by pm_verify as a save-state run on any build, and its project's last saved revision
+stops short of the finish. The first plain mover-15 runs (a canary lobby before the fleet) are that check.
+
+**Left (BACKLOG "P1713").** The 3 worse ticks: Momentum twice passes within 0.40/0.47 of a *134 wedge EDGE mid-sweep
+without a hit -- vphysics' radius is a sphere, ours is offset planes, so our edges stand further out. Strata (v25) maps'
+physcollide is VPHY version 257, not the IVP layout: bhop_canals' 23 VPHYSICS entities are refused and keep their
+brushes, as before this patch. The remaining 16 ahop_coast disagreements: three landings on displacements 2.016-2.033
+below (inside Source's 1/32 trace reach, but a 1.97-2.00 band of airborne ticks argues against a simple reach rule),
+and the 2025 demos' different jump settings. Source categorizes at the top of a tick only for a game-moved body; we
+still do it for any body not rising past 140 (c6c68413 tick 789).
+
+**Boundary.** A mover bump is one-way for the fleet: the lobbies' engine is also surfd's verifier, so it, the client
+release and this engine go together (an older verifier REFUSEs a 15 pin; an older client predicts 14 and mispredicts
+a teleport-exit jump and any func_brush ramp). Recordings replay at their own pmsrcver. Players on 0.1.56 or older
+predict 14 on a mover-15 server until they update.
+## Patch 1712 - acct_sign kind -7: the TAS upload offer sends itself, signed as no key press (engine client cl_receipt.c, pr_csqc.c)
+
+Lex (22 Nov): a new TAS best should pop up "like the f6 to report an error, or ... do it automatically if they don't
+press anything". The in-game upload (P1696) signs kind -6 and only under a real press; with nobody pressing there is no
+statement to send. Kind -7 is that statement: CL_Receipt_AcctSign takes it with `keyed` forced false (the text says
+"key 0"), the server field fixed to play.proto.bar:443 as -6's, and PF_cl_acct_sign never spends the press's one
+signature on it. And only on a loopback connection -- a game this client hosts, CL_FriendsSign's test -- so a VM a
+remote server sent gets no -7 at all (review 1, defence in depth: tasupd would refuse its code anyway) -- and only
+while the window is in front (vid.activeapp). `float() cl_windowactive` (new, by name) tells CSQC the same, so the
+offer's countdown waits while the player is tabbed out (review 2: CSQC never gets IE_FOCUS, so the game's own focus
+flag never changed). Every other
+check stands: connected to the server whose VM this is, one named main file of code, a 32-hex nonce.
+
+What a -7 signature is good for: only surfd/tasupd.py's game route verifies one (header FTESURF-TASUP 2,
+GAME_AUTO_KIND), and only for game code it knows (the lobbies' csprogs, releases, owner allow-codes) -- so code from a
+third-party server signs nothing useful with it. Every other service formats its own kind into the statement it
+verifies (accounts.py `proven`, zonepub.py KIND -6, key 1), so a -7 statement checks out nowhere else. Our csprogs asks
+for it only when the offer's countdown runs out in a game it hosts (cl_tasupload.qc TASUp_Send). An older engine
+returns "" for -7 (its range check), and the game then says F6 sends it.
+
+## Patch 1709 - Mover 14: Momentum 0.10's RNGFix landings and ahop rules; pm_stepsim holds a Momentum demo against the mover (engine common/pm_source.c, server)
+
+**Cause.** 22 Nov 2026 Lex: ahop_coast's movement "hasn't felt right bhopping on the displacements especially riding
+up them". ahop_coast plays as bhop here (its published zone says gamemode 2). New dev command `pm_stepsim` seeds the
+mover from each recorded tick of a Momentum demo (game tools/momstep.py) and grades the next tick, so a difference is
+that tick's physics. Ten Momentum bhop demos of ahop_coast (top 10, 0.10, 2025-10 .. 2026-11) and 15 2026 surf demos:
+air, ramp and ground ticks matched (|dv| p95 0.2), landings and jumps did not. Three causes, each measured:
+(1) Momentum grounds within 2 units in every demo, never past it (airborne ticks' floor distance >= 1.97, landings'
+<= 2.0); our default.cfg had 1 from the public source. (2) Momentum lands a fast uphill landing whose next-tick clip
+would still rise past 140 u/s -- only its sv_rngfix_enable arm (mom_gamemovement.cpp:1806-1838) does; Patch 176
+ported the RNGFix-off arm. (3) 2026 demos take off from the floor itself (the jump-z pin at 0), 2025's 1.5 above it;
+2026 jumps are normalized (standing 293.99 = ducked), 2025's stock (289.99). Momentum's ahop (gamemode 9): the HL2
+jump boost (ABH) on every jump, which our ahop mode lacked (WR jump ticks: +1500 u/s there, 0 here).
+
+**Change.** PMSRC_VERSION 14 (SV_PMSrcVer knows it). pm_fixslopes 2 (RNGFix, PMSrc_RNGFix): every standable landing
+lands, adopting the next tick's clip only if it gains 2D speed; an airborne trace hitting a standable face we move
+into, whose clip would not gain 2D speed, is not taken (pm.fraction = 1 at the contact, cpp:2578-2614; not while
+wedged: a fraction-0 hit after a ground or air interaction this tick); StepMove keeps one attempt whole and returns
+after a rising flat attempt (cpp:404-483); the top-of-tick CategorizePosition does not land an airborne player
+(Source's sv_optimizedmovement never categorizes there; ours jumped a tick early from up to 2 units above an
+upslope; only a body still rising past 140 u/s at the last tick's end, so a QC teleport or load is still re-grounded
+there); the jump-z pin runs at any offset. Both 2 and 3 count leaving the ground as an interaction; a mover-14 pin
+below fixslopes 2 is stamped 13 (it moves as 13, so an older verifier replays it). pm_fixslopes 3 (Momentum ahop): the RNGFix landing only, the clamped HL2
+boost (PMSrc_HL2JumpBoost's post formula, cpp:1463-1486), no jump in the unduck transition with duck released (cpp:1390;
+our FinishDuck keeps `ducking` on a re-press, Momentum's clears it), no takeoff pin. The uphill rule skips ladders. Both read as 1
+below mover 14. `pm_stepsim <in> <out> [chain]`: one tick a line from the stated state under this server's movevars
+(chain: open loop), output with contact and floor probes.
+
+**Evidence.** game tools/momstep.py over pm_stepsim, task root FTESurf-worktrees/ahopcoast-20261122-5a. Five 2026 bhop
+demos, current settings -> mover 14 with pm_groundtracedist 2, pm_fixslopes 2, pm_jumpzoffset 0: ground-flag
+disagreements 627 -> 25; jump |dv| p95 302 -> 0.25 u/s, landing 298 -> 0.26, origin p95 0.003; air/ramp unchanged.
+15 surf demos: disagreements 3 -> 0, jumps/landings p95 302 -> 0.09, ramps unchanged. Open loop up ahop_coast's
+displacement climbs (Akatosh, ticks 7985-8460 and 12910-13290, Momentum's inputs): current settings lose 30-40 u/s a
+hop, register 5 of 11 and 2 of 13 landings and leave the route; mover 14 stays within 0.2 / 0.8 units of Momentum's
+path for 4.75 s with every landing. Ahop WR with pm_fixslopes 3 + pm_normalizejump 0: jump ticks without +walk exact
+(0.0-0.2 u/s); ground disagreements 28 -> 2-4. pm_selftest: all checks passed.
+
+**Review.** Two lenses (control flow; evidence, verification, prediction), no blocking findings. Fixed: the top-of-tick
+block also stopped QC teleports re-grounding (now the rising band only); the ahop unduck gate stuck on a re-pressed
+duck; ladders; un-grounding as an interaction; ahop pinned the takeoff when jumpzoffset > 0; pm_stepsim read its
+old-buttons column as engine bits and wrote anywhere (now momstep/*.txt); an old verifier refused every mover-14 pin
+(fixslopes < 2 now pins 13). Deploy order (review): the configs, the lobby engine, surfd's verifier and the client
+release go together -- an older client predicts fixslopes 2/3 as 1 and an older engine with the new configs runs a
+third ruleset; TAS projects refuse an identity load across the change (the pin moved). Delta round (one reviewer):
+no blocking; PMSrc_RNGFix reads a NaN fixslopes as SV_PMSrcVer does, and ahop's FinishDuck ends the transition when
+already ducked. Left (BACKLOG): with pm_fixedges on, the top-of-tick landing re-decides an edge-fix refusal with the
+next tick's buttons (Source re-grounds only a game-moved body); a teleport left rising at 134-140 u/s is not
+re-grounded at the top.
+
+**Not changed.** +walk (Momentum ahop's 150 u/s: its boost limit and air accel use it; a walked jump here is ~60 u/s
+slower, air ticks 6.0 u/s), HL2's duck timings and duck-jump. Three ahop_coast spots where Momentum stays airborne at
+1.75 units (geometry, unexplained). Lobbies, verifier and clients: mover 14 needs the next surfd generation's verifier
+and a client release (an older client predicts fixslopes 2/3 as 1).
+## Patch 1706 - Noclip, ghost, the rewind's resume and a plain load ride a command: predicted at 350 ms (game QC only; no engine change)
+
+**Problem.** A player at ~350 ms (muri, 22 Nov local) reported: after a rewind's resume "a crazy .3s stutter until I can
+resume", noclip toggles "skip a few ticks until it synchronizes", and loading saves the same. Read and measured:
+- Rewind: the countdown's end called SaveLoc_Release with rw_on still set; WarpOp_Able refuses under rw_on, so the release
+  went as the stringcmd sl_holdoff. The client held the body a round trip, then re-predicted every command since at speed:
+  the forward jump in the player's clip. The go itself (`sl_saveat ... go`) also waited a round trip before the countdown.
+- Noclip: the engine client forwards `noclip` (cl_main.c registers it with no function) as a stringcmd, and the lobbies'
+  SV_ParseClientCommand branch (the engine hands QC the command first, noqchandling 0) flips the movetype between packets:
+  the client predicted the old mode a round trip, then snapped. muri's use is flying in noclip to 1-2k and turning it off.
+- Loads: a plain `sl_load` bind (Momentum's mom_saveloc_current) never rode a command (only the +sl_hold key and 3-6 did).
+  After any load the run line dropped a round trip of the predicted path (tr_kfrom = now at the answer; TF_FROZEN read a
+  round trip late after the release; the 128 u settle filter for 0.5 s).
+- Ghost: `cmd rec_ghost` and a client that detaches only on STAT_FS_GHOST: a round trip before the camera leaves.
+
+**Change (game QC; ops below WOP_SAVE, each behind its serverinfo published with fs_wop).**
+- WOP_NOCLIPON/OFF 199/198 (fs_wopnoclip): CSQC_ConsoleCommand takes a bare `noclip` (the engine offers it before
+  forwarding) and queues on/off from the newest replayed command's movetype; WarpOp_Apply sets PM_SPECTATOR/PM_NORMAL at
+  that command. SV_NoclipSet is shared with the stringcmd; under a save-lock hold it sets rec_sl_holdmove ("noclip ON when
+  you let go") and the client mirrors wop_heldmode. Turning it on calls SV_NoclipWatch at the op, and SV_SaveLocRelease
+  does for every release into noclip: an op pair inside one packet would otherwise fly a command unmarked (the watch in
+  the thinks runs per packet). Expiry sends the toggle only when STAT_FS_MOVETYPE differs; refused under TAS states.
+- Rewind: Rewind_Finish (the countdown's end and Esc in it) takes the mode down first, so the release is WOP_RELEASE,
+  predicted from the held row; every other way out (Rewind_Abandon: a load key or replay over the countdown, a lost
+  answer) keeps sl_holdoff ahead of the caller's reliables, as before. Browsing arms the cursor: `rw_arm <serial> <ticks>
+  x y z` (reliable, 10/s, a 30/s server bucket); SV_RewindArm answers STAT_FS_RWARM 212 with P682's read-only
+  SV_MovePrepRewind body (mp_rw_bodyonly: a previous go or a full list but that row does not change the body). ENTER on
+  the newest answered request is WOP_RWGO 197 (fs_woprwgo): SV_RewindOpGo does `sl_saveat ... go` with the armed request
+  (two rate tokens, the ticket FS_SaveOpTag kept through SV_SaveLocGo so its LOADED event trims the line and saves the
+  picture); the client lands and holds at the press, the countdown runs from it, the release follows in order. An
+  unanswered cursor sends the stringcmd go. Refusal (ticket-matched answer absent 0.15 s after the ack): browse again;
+  after the countdown has ended, rec_watch 0 void as Rewind_Close's refused resume. No reopen while it is unanswered.
+- WOP_LOADNOW 196 (fs_woploadnow): a plain `sl_load` predicted like 3-6's rows (same gates, walk and charge).
+- Run line: a predicted load's answer keeps the frames after its own command (WarpOp_PredLoad: the newest load op,
+  matched by landing origin, consumed once), re-emitting ones drawn into the old line; the settle filter is skipped for
+  it; TF_FROZEN does not drop frames after a predicted release while the stats are older than it.
+- WOP_GHOSTON/OFF 195/194 (fs_wopghost): `ghost` rides a command; rec_gh_on follows the press until the server has run
+  it (STAT_FS_GHOST then; a refusal shows there after 0.25 s); the ghost input branch carries the op.
+- Rewind S stays the save key when S is bound to a strafe (it became a scrub key on an ESDF layout).
+
+**Verified.** Linux rig (FTESurf-worktrees/ping350-20261122-88/arm/p1706arm.py): lobby.cfg dedicated server, sv_minping
+350, surf_shady, client in a headless nested labwc; control = main 146f961f's progs, subject = this branch, same fteqcc.
+`prederr:` lines undercount a mode switch (one acknowledged command), so an ARM-ONLY probe csprogs printed the predicted
+origin per rendered frame and snaps are |moved - v dt|:
+| gesture (350 ms) | control | subject |
+|---|---|---|
+| noclip on, flying to 2080 u/s | 648 u view snap (prederr 27.5) | max 2.1 u |
+| noclip off at 2080 u/s | 48 u (one round trip of gravity) | max 1.3 u |
+| plain sl_load x2 while moving | teleport at +0.48/+0.57 s, prederr 352/592 | teleport at the press, prederr <= 1.6 |
+| rewind resume, countdown 0 | lands +0.70 s, 1211 u then a 162 u catch-up at +1.40 s | lands at the press, nothing after, prederr 0 |
+| rewind resume via the stringcmd go, countdown 1 | 1228 u then a 141 u catch-up | 1237 u (the teleport), no catch-up |
+| ghost on, status right after | off (asked for on) | on |
+Rewind S through Rewind_InputEvent saved on both builds (`rewind: save N ... 260 u/s`). Zero new compiler warnings.
+Independent review (one round, eight findings: release-into-noclip under every hold end, the go's ticket, the abandon
+order, a refused go after the countdown, noclip under a stringcmd hold, the toggle fallback, TAS, the line's event match)
+-- all fixed, the last batch re-run on the fixed build. Limits and leftovers: game BACKLOG "P1706"; human checks lextest.
+Not verified: muri's "S does nothing" (not reproduced); real packet loss (net_fakeloss) was not armed.
+
+**Deployed.** Lobbies 21 Nov 15:50:49Z-15:51:10Z, all 12 restarted once after a 10 s warning: qwprogs 7079778d /
+csprogs 3a2ae666 (main 0d6e5ea6, the 0.1.55 QC + P1706 + a P1707 comment; byte-identical to the measured subject),
+predecessors 7177ed74 / f93beacb as *.pre1706-20261121T155017Z, codes.txt 170. Live check from this PC on lobby 12
+(agtricks): fs_wop, fs_wopsave, fs_wopnoclip, fs_woprwgo, fs_woploadnow, fs_wopghost published, noclip ON/OFF answered,
+no prederr. Players get it on the lobbies at once (the lobby serves csprogs); local games with the next release.
+
+## Patch 1705 - FS_Rename refuses a path it could not clean instead of segfaulting (engine fs.c; lobbies)
+
+**Cause.** 21 Nov 2026 a player reported the game freezing at the end zone on segmented surf_the_gloaming and
+surf_2pacisalive finishes, then the lobby on another map. The lobbies had segfaulted (lobby 4 11:43Z, 12 11:46Z,
+1 12:16Z, 8 twice, the second 12:21Z; the old patch-1683 engine did the same on an akatosh bonus run earlier). Symbolized:
+FS_NativePath <- FS_Rename2 <- FS_Rename <- PF_frename <- SSQC (SV_PostRunCmd). SSQC's Archive_Seal /
+Archive_SealFile (sv_archive.qc) write `<run>.rec.owner-p<port>-<edict>.part` beside the recording and frename it
+to `<run>.rec.owner`; on long map names plus `_segmented` that part path is 129 characters. fopen(FILE_WRITE) only
+buffers, so fclose's COM_WriteFile refuses it ("filename too long" x2), then FS_Rename's FS_GetCleanPath refuses
+it (x3) and returns NULL, which FS_Rename passed on; FS_NativePath dereferenced it. 7 of 4632 recordings since
+1 Nov overflow with that suffix; no recording or `.owner` name does (longest 110).
+
+**Fix.** FS_Rename returns false when either cleaned path is NULL (2 lines). PF_frename then returns -5, the QC
+calls fremove(partial), which FS_NativePath refuses without a crash, and the run keeps its recording without an
+owner seal (the seal's own comment: "A failed seal leaves the original stage intact but grants no retrieval").
+
+**Evidence.** Falsifier (agent-work eng1705-20261121-2c/test1705.sh): a test qwprogs whose first StartFrame writes
+and frenames a 129-character path -- live patch-1704 binary: 3 "filename too long", SIGSEGV, exit 1; patch-1705:
+`frename returned -5, server still running`, `fremove returned -5`, exit 0, nothing left. Gate old vs new: 129
+lines identical (105 pm_dettest on 7 maps, 12 pm_verify), pm_sourceversion 13 both. Independent review: no
+blocking findings; every FS_Rename caller handles false (PF_frename -5; sv_user, log.c, cl_parse unreachable with
+a long name; qkupdate uses FS_SYSTEM); also closes frename("file:x", ...) and hidden-segment names from any VM.
+
+**Deployed.** Lobbies 21 Nov 12:49Z (fteqw-svarm64 0ac1d567, plugin a13569dd, stamp
+git-8978-patch-1704-1-g33284da9c; predecessors *.pre1705-20261121T124919Z). Clients get it with the next release.
+
+**Not changed (review notes).** The commit message's "every other FS_GetCleanPath caller already checks" is not
+quite true: FS_EnumerateFilesEachSys (fs.c ~4895) can pass a NULL match to Sys_EnumerateFiles (only via
+search_begin FORCESEARCH|FULLPACKAGE on an inactive gamedir; our QC never asks; a server's CSQC could). Not
+hardened: a NULL guard at the top of FS_NativePath. common.h's "0 on success" comment on FS_Rename/FS_Remove is
+wrong (both return true on success; no caller relies on it). The QC still loses those seals (game BACKLOG).
+
+## Patch 1704 - Run views go to the HTTPS collector, so top-10 evidence arrives (engine client + server + fs + cmd, surfd, nginx)
+
+**Cause.** P1699's count (21 Nov) found 167 of 239 recent WOS top-10 rows with no view sidecar. The lobby logs of
+18-21 Nov: 67 receipts signed a view; the server asked for 51 (16 were never asked -- `not asking again`, the one
+netchan upload slot still held by an earlier run), 47 clients started sending, 23 views landed (34%). The netchan
+upload goes one chunk per round trip behind every reliable message (a sample run: 85 `archive get2/ack2` downloads in
+the same connection, then a drop), and a disconnect or the next run's arming ends it. Journals already went to the
+HTTPS collector (P774); views did not. A signed view digest does not prove a staged copy: without online consent the
+client signs its local sidecar and drops the upload copy (`replay: sidecar dropped`).
+
+**Change.** engine server/sv_user.c SV_UploadAsk: on a server with `sv_recupload_https 1` (new, default 0; lobby.cfg
+ships 0; the live lobbies get 1 from the Pi-only lobby_local.cfg at deploy -- the collector keeps only runs whose
+receipts it can read), a view asked of a client advertising `fsviewhttp 1`, for a map named as the collector names
+maps (no leading + - ., no ..), is stuffed as `rec_ul_http <nonce> view <map> <runid>` and the journal after it is
+asked at once; nothing stays armed on the server, so `not asking again` cannot happen for these clients. Logged with
+Con_Printf (`sv_recupload: asked <name> for <path> over HTTPS`). client/cl_receipt.c: `fsviewhttp 1` (userinfo,
+NOSET); rec_ul_http takes `view`. rec_sign PINS the view and journal digests it signs, by nonce and server (16
+latest); a request is accepted only for a run signed on the server asking, copies that digest, and its bytes must hash
+to it when sent, so a file another server's csprogs armed or rewrote is not signed or sent (`not the file this game
+signed for that run`). Every accepted HTTPS request (journals too) has its armed file taken from data/staged/ (the
+gamecode keeps two runs there and clears it at every csprogs load) to httpq/<nonce>.<kind> under FS_ROOT (the install
+root -- default.fmf disables the home dir -- outside every game searchpath; FS_GamedirIsOkay refuses an httpq* gamedir
+or package in any case or trailing dot, so neither a server's gamedir nor a package search can mount it) -- a journal
+MOVED (no raw journal left for the next server's csprogs; an arming that ends unsent, by a disconnect or the ring
+dropping it, removes its journal too), a view COPIED (cl_watch.qc rebuilds the player's own replay from the staged
+view) -- and joins one queue (40; 20 per host -- an IP address, all its ports and schemes (a v4-mapped or NAT64
+64:ff9b::/96 address counts as its IPv4), and for the quota and fair share an IPv6 /64 as one -- whose oldest journal
+then oldest view goes first; a full queue keeps room for the running request's retry; a host group at its quota
+replaces its oldest unproven or own entry (never another proven host's; refused if none), and a host with fewer than
+the fullest takes the oldest slot of the fullest host that has never had an upload stored this session -- only once
+its own file is taken -- so a proven lobby's waiting evidence is never pushed out and no junk host keeps more than a
+fair share; a proven host may always take an unproven host's slot; proven hosts' requests go first; a request whose
+file already exists is refused; a file another program holds (Windows will not move it: antivirus, the indexer) is
+copied instead, checked to the last byte; a host whose requests of one kind the collector called junk -- 400
+malformed, 410 no such run -- 3 times without a stored upload between is not served that kind again this session, and
+its queued ones of that kind go); any refused request's armed journal is removed (a raw journal left in data/staged/
+is readable by the next server's csprogs); a request needs the online terms (rec_terms 9 or more: a server's own
+csprogs checks nothing for the engine); a request keeps its file's system path, so a server switching the gamedir
+cannot strand it;  the first rec_sign of a nonce on a server wins, as its first receipt does; one runs at a time,
+views first; no answer or a broken connection (0, 900+), 404 (a rolled-back collector), 408, 429 or 500-504 is tried
+again after 30, 90, 270, 600 and 1200 s (6 tries, ~36 min; a backend restart takes ~5); anything else is given up; a
+POST has the larger of 300 s and 120 s plus 1 s per 32 KB before it counts as unanswered; the file is removed once
+stored or given up, never from the CL_Receipt_HTTPStart work item (file calls take the worker lock, which runs queued
+main-thread work: its verdict is acted on in CL_Receipt_Think); httpq/ is emptied at the first frame (a previous
+launch's requests died with it) and whenever rec_upload goes to 0; rec_hid_upload 0 removes waiting journals at once.
+A view is signed as `FTESURF-VIEW 1 / server / map / runid / nonce / view <sha256> <len>` (the server its run was
+signed on) and posted to https://play.proto.bar/api/view (rec_hid_testurl's /api/hid -> /api/view for a local test);
+cap RCPT_ULMAX (4 MiB), as over the netchan. A view needs rec_upload only (a journal also rec_hid_upload). A
+disconnect no longer cancels: CL_Receipt_Disarm still clears the armed slots (Patch 418: an arming is an offer to one
+server) but accepted requests go only to the fixed collector. common/cmd.c: cfg_reset/resetcfg refuse an insecure
+caller (a server's stufftext or csprogs): they reset every cvar at local level, past "a server may not reset what it
+may not set", which would put rec_upload back on after an opt-out and rec_hid_upload off. rec_upload's description
+names the collector and says an upload asked for finishes after the player leaves. surfd/hidupload.py: POST /api/view
+takes only `FTESURF-VIEW 1`, /api/hid only `FTESURF-HID 1`; the rate count is per route before anything is read (views
+30/min, journals 12); a view's statement must name the receipt's signed server (schemes such as dtls:// included) and
+carry exactly its signed view digest (a mismatch is refused, as a journal's is: stored it would read as a FAULT, and a
+server's csprogs can arm a file under a visitor's public nonce; since an honest client cannot send one, the first
+refused offer is kept as <runid>.viewrefused, which surfd/sweep.py reads as the digest FAULT the netchan route gave,
+on its first read or when the marker appears later), needs a finished run (signed ticks a positive integer) and fits
+min(4 MiB, 256 KiB + 4 KiB per tick -- a view line per rendered frame, ~6800 fps); a missing receipt, or a view
+statement naming another server than its receipt, answers 410 on both routes (final, and P1704 clients count it as
+junk), a missing map directory 503 only while the evidence root is empty or unreadable (a wrong deployment) and 410
+otherwise, an oversized receipt and an unfinished run's journal budget 403, not 503 -- clients now retry a 503; every
+stored or refused upload is logged, with its map and runid once the receipt's own key signed it. surfd/surfd.nginx:
+`location = /api/view` with its own zones (surfdview 30r/m burst 10, 2 connections per address, 64 in all, 4 MiB body,
+5 s between reads); the exposure manifest lists it. setup_public.sh: `--view-only` adds that location and zones to a
+live site the way `--hid-only` adds the journal's (the same checked, rolled-back installer, parameterised by route);
+its full install and install_board_endpoint.sh write the view zones too. game menu m_main.qc: the online terms say
+where the view goes.
+
+Old clients keep the netchan route; a new client on an old lobby engine gets `rec_ul_send` for views and answers it as
+before, while the journals that engine already asks over HTTPS (P774) take the new queue (pin, terms, retries). Deploy
+order: the surfd generation and `setup_public.sh --view-only`, then the lobby engine, then `set sv_recupload_https 1`
+in the Pi-only lobby_local.cfg plus rcon; the client release goes AFTER the surfd generation (it retries a 503, and
+the old collector answers 503 to every community server's journal: up to six full re-sends each). Before rolling surfd
+or nginx back past this patch, rcon it to 0 and remove it from lobby_local.cfg (rcon alone does not survive a lobby
+restart; a 404 is retried ~36 minutes).
+
+**Verified.** Rig arms (arms/p1704.py, private; a local collector = the patched hidupload.py, 3 s before each request
+is read): patched client + server -- V1 view and journal both `over HTTPS`, stored, digests equal the receipt's; V2
+`disconnect` once asked: both stored, `view HTTP stored` after the disconnect (the first cut printed `view HTTP
+cancelled` there); V3 two runs back to back: four files through the queue; V4 `reconnect` once asked: a witness file
+in data/staged/ is gone (the new csprogs cleared it) and both files are still stored from the queue. `retry`: the
+collector answers the first request 429 -- `trying again in 30 s`, the journal goes meanwhile, the view is stored 30 s
+later. `tamper`: as retry, and the queued view is overwritten during its wait -- the client refuses it (`not the file
+this game signed`), the collector sees no second view request, the journal is stored. `noterms`: `rec_terms 1` after
+the menu published 10 (csprogs still arms from consent.txt) -- the engine refuses both (`the online terms are not
+accepted`), the collector sees no request. `nomove`: an LD_PRELOAD shim fails rename() of a staged file into httpq/
+(as Windows does when another program holds it) -- the client prints `could not be moved; copied` for the journal
+(none in the control) and both files are stored. After a patched or nomove run the staged view is still there for the
+own replay and the staged journal is not. (The arm overwrites the queued copy from outside the game.) `gateoff`
+(sv_recupload_https 0): the view over the netchan, the journal over HTTPS. Released client + new server: view over the
+netchan, journal over HTTPS. New client + released server: the netchan route. Every case: httpq/ empty at the end, and
+(P1704 clients) a planted leftover removed by the first frame; `gamedir httpq` and `gamedir HTTPQ.` refused; with
+rec_upload 0, a server's `stuffcmd Player cfg_reset` is refused and rec_upload stays 0. surfd/test_hidupload.py 29 (12
+for views: stored against the receipt, routes take only their kind, no view without a commitment, a mismatch refused,
+logged and marked once, a statement naming another server refused, a dtls:// server name accepted, no receipt final,
+unfinished runs refused, the run-clock budget, an existing view kept, the 4 MiB cap, per-route rate counts including
+malformed requests; and the journal route's missing receipt now 410, missing map directory 503 for an empty evidence
+root and 410 otherwise, an unknown budget clock 403); surfd/test_sweep.py: a .viewrefused marker reads as the digest
+FAULT, its control as VALID, and a marker that arrives after the first read wakes the run into the FAULT and ends its
+wait for a view; test_hid_proxy_install.py 10 (the view route added after the journal's, idempotent; an unknown route
+refused). Menu, csprogs and server progs build with 0 warnings. Local Linux build note: GCC 16 makes fs_zip.c's
+crc-table pointer type an error; the test build passed -Wno-error=incompatible-pointer-types (unrelated; release
+builds use the bullseye chroot).
+
+**Review.** Round 1 (control flow, evidence, adversary): queued requests held only a path and the gamecode deleted the
+staged file first (all three) -- moved to data/httpq/; nginx's one journal budget (12/min, 4 connections in all,
+shared with reports) and no retry -- own route and zones, retries; views skipped the run budget -- finished runs only,
+clock-sized; self-hosted servers would have sent views to a collector without their receipts -- sv_recupload_https; a
+server's csprogs could fill the queue; views 4-16 MiB would newly have reached the angle checker -- 4 MiB cap; the
+terms text; the HTTPS ask was a dprint; malformed requests were not rate-counted. Round 2: BLOCKER -- round 1's "store
+a mismatched view for the sweep" let any server plant a FAULT on a visitor's official run (its csprogs arms a file
+under the run's public nonce and asks for it) -- mismatches refused again, and rec_sign's pin; a later server's
+csprogs could rewrite a queued file -- the pin; network failures arrive as 900+ codes and were not retried; a 300 s
+whole-POST limit retried a slow 64 MiB journal four times; the view budget assumed a line per tick (it is per frame);
+install_board_endpoint.sh would have failed nginx -t without the view zones; retries ended at 390 s and the queue held
+4 runs (a backend restart is ~5 min); a hostile server could evict another's requests -- per-server quota; leftovers
+swept only at an accept; the terms claimed a client-side "official lobbies" rule there is not; the manifest. Round 3:
+the pin was a 16-nonce ring checked at send, so an active player's retries after a backend restart (and any later
+server's csprogs calling rec_sign) deleted honest queued files -- copied into the request at accept and bound to the
+server; data/httpq/ was still gamecode-writable and a second arming could rename onto a queued file -- httpq/ at the
+root, read-sandboxed, existing destinations refused; drop-oldest on a full queue let a server evict others -- refused
+instead, and junk loops cut after 3 final refusals; HTTPStart removed files from a work item under the worker lock --
+deferred to Think; the forget message was printed after FS_Remove clobbered va buffers; rec_hid_upload 0 left queued
+journals; the view statement did not name its server (a server's csprogs could put misleading mismatch lines under a
+visitor's run); lobby.cfg shipped 1 beside the generation and a rollback by rcon does not survive a restart -- ships
+0; a refused mismatch left only a log line -- marker; 503 retries re-sent community servers' journals. Round 4: the
+server pattern refused dtls://, tls:// and ws:// names (honest views on those transports refused, and the strikes then
+cut the lobby's journals too) and the pin and request held 64 of rec_sign's 128 characters; any final refusal was a
+strike shared by views and journals and never checked against what was already queued -- now 400/410 per kind, queued
+entries dropped; permanent 503s (no map directory, an oversized receipt, an unfinished run's budget) were retried six
+times and held queue slots, so a server could block the next lobby with junk naming an unknown map -- 410/403, and
+quotas per host; a server switching the gamedir made every queued file "missing"; search_begin listed httpq/; a
+re-sign overwrote the pin; the journal text did not say journals finish after leaving; the rollback note missed rcon;
+queue removals could be undone by an HTTP completion run inside a worker-lock drain -- out of the queue first, then
+the file. Round 5 (no blocker): views went over HTTPS without the engine checking the online terms (a hostile server
+could make an offline player post to play.proto.bar) -- rec_terms; junk naming real runs on another server drew no
+strike -- 410; a refused mismatch left the run looking clean -- the sweep reads the marker as the FAULT; a 410 for a
+missing map directory would have cut every lobby off on a wrong evidence root -- 503; maps starting with - + . passed
+the server and client but not the collector (a 400 strike) -- the server keeps them on the netchan; the queue's
+capacity ignored the running request, so its retry could be dropped; 8 per host was 4 runs in a backend restart;
+strikes never reset; the host key kept a URL's port; unsigned junk was logged under a real run; the flip belongs in
+the Pi-only lobby_local.cfg (test cfgs exec lobby.cfg); the journal text said rec_hid 0 stops queued journals. Round 6
+(no blocker): a server on two addresses could still fill the queue with retryable junk (an unknown map answers 503) --
+fair-share eviction; a refusal marker that arrived after the sweep's first read was never read; a file Windows would
+not move was lost; a map with .. went to HTTPS and was refused; a throwaway key could put a real run in the warning
+log. Round 7: every IPv6 address was its own host, so many addresses could evict a lobby's queued requests or crowd it
+out -- /24 and /64 keys, proven hosts never evicted and served first; eviction ran before the new file was taken; junk
+naming unknown maps drew retried 503s -- 410 when the evidence root has maps; the copy did not check its write; a
+strike landing during the file calls was not re-checked; a marker on the first read still left the run waiting for a
+view; two records still put the flip in lobby.cfg. Round 8: NAT64 put every IPv4 server in one /64 host; an eviction
+decided before the file calls was not re-checked after them; a proven host could not enter a full queue held by
+unproven hosts at quota; empty proven-table slots matched an empty host key; keying hosts by /24 or /64 let a
+neighbour there strike, share and prove the lobby's key (back to the IP address: since round 7 cheap addresses gain
+nothing against a proven lobby); refusals left the armed raw journal in data/staged/. Round 9: moving and removing
+views broke the player's own replay (cl_watch.qc reads the staged view) -- views copied, only journals moved or
+removed; exact-IP keys let one IPv6 /64 act as 40 hosts against a lobby not yet proven -- the quota and fair share
+count a /64 once; journals stayed staged after a disconnect or an arming dropped from the ring; an eviction re-check
+ignored a retry that brought the host to its quota. Round 10: a prefix check could not hide httpq/ from Windows'
+trailing-dot spelling (`httpq./`), so a later server's csprogs could list and read queued journals -- the queue moved
+under FS_ROOT and the read/list sandbox entries reverted; a group at quota could drop another proven host's entries;
+an arming drop could remove any data/**.hid -- only staged journals; texts claimed every upload finishes after leaving
+(only the HTTPS route does). Round 11 (all three, blocker): httpq/ was still a valid gamedir and package name -- a
+server could name it as its gamedir, or a package search could list and open it -- FS_GamedirIsOkay now refuses
+httpq*; Accept refuses before taking the file when the quota rule would; the existence check and the copy use the one
+system path (FS_ROOT may fall back to the base); only staged journals are moved or removed on the request path. Round
+12: control flow and evidence found nothing in the code above nit; csprogs could write data/consent.txt, from which
+the menu sets rec_terms (the upload gate) -- consent.txt joined QC_MenuTable (CSQC may not change it; any VM reads it
+only as the gamedir's loose file); the client must ship after the surfd generation; the POST deadline keeps the old
+300 s floor. Round 13: control flow and evidence found nothing above nit, and nothing can raise rec_terms; a server
+could still reset the client's settings with a stuffed cfg_reset (upstream, at local level) -- refused from insecure
+callers. Not changed: `fsviewhttp` is advertised without testing TLS (no cheap check; Windows uses SChannel, the Linux
+build loads GnuTLS, which desktops ship); nginx keys IPv6 by address, not /64, and its global connection caps can be
+held with slow bodies (no total body deadline; no Expect: 100-continue, so a refused attempt uploads its whole body);
+a second game instance on one install sweeps the first's httpq/; on Windows a file being read when uploads are turned
+off stays until the next launch; journals from community servers on maps the collector never hosted now answer 410
+(P774 sends journals from any server), counting toward that server's host -- BACKLOG.
+
+## Patch 1698 - A Source sky is a hole: the PVS behind it draws, and only the PVS (engine client + hl2 plugin + game QC/cfg)
+
+**Cause.** Lex, 21 Nov: the sky "culling" asked for earlier (other stages' ramps in the sky) "does some sort of
+distance culling ... stuff in the skybox will get culled out the closer I get to it"; they want the PVS drawn, the
+sky no hard cutoff, and of 2: "a broken implementation of what I wanted". It was r_sky_forcedepth 2 (Patch 296) with
+Patch 990's r_sky_forcedepth_scale 2: on a Source map the sky faces wrote a depth mask at twice their distance, so
+whatever lay D behind a face vanished once you were nearer than D. Source draws a sky face as a hole and culls every
+renderable through its client leaf system. World geometry here is PVS-culled (displacement records 1626, static
+props 1235, unvised maps by area 1271), but entities were not: r_ignoreentpvs 1 (HAVE_LEGACY) left network entities
+without leaf records and BE_GenModelBatches without a PVS test; decals and CSQC polygons had distance or frustum
+tests only. The mask had been hiding them.
+
+**Change.** gl_warp.c: r_sky_forcedepth defaults to 1 and a Source map's sky never writes the mask (2 means 1 there;
+Quake/HL keep it; the 3D sky room's own sky stays masked). r_entpvs_source 1 (renderer.c): on a Source map,
+BE_GenModelBatches (BEM_STANDARD) culls each entity with a leaf record by the view's unclipped cluster PVS --
+refdef.sceneentvis, PrepareFrame's entvis, set by Surf_DrawWorld only with a real eye cluster (none under r_novis or a
+sky camera in solid; an unvised map gets an all-visible row, so its entities are culled by area as Patch 1271 culls
+its world) -- and its areas, the area test dropped when the eye is in solid (area 0 is connected to nothing: the
+noclip margin, the void, maps whose leaves are all area 0). Weapon models are never culled; an entity with no record draws.
+Records: network entities on Source maps; CSQC entities re-take theirs each frame from where they are drawn (origin
++- model radius x |scale|, joined with the link's box: CSQC moves things by field writes, links ignore .scale, a
+RF_USEAXIS portal door is sized by setsize); a rotated brush uses its radius.
+Persistent decals keep a record and are culled by the same PVS unless a portal into another place drew last frame (a
+water capture no longer turns it off). r_entpvs_active (read-only, refreshed before Surf_DrawWorld's scene-cache
+return) tells CSQC, and CSQC's checkpvs takes the same rules there (no record is visible, an eye in solid judges from
+the last good cluster unless the void overview draws everything, area 0 tests no area, r_novis nothing, an unvised map
+areas only; rows kept for the last 8 clusters asked). Zones on maps whose leaves are all area 0 (bhop_anomalous)
+draw again: the old checkpvs refused every probe from an area-0 eye.
+r_voidscene_info counts both.
+mod_vbsp.c: VBSP_BoxLeafnums_r stops once its list is full (a map-sized box walked every node for nothing).
+Game: render_default.cfg restores 1 each map load (a saved `seta r_sky_forcedepth 2` is overridden), the
+surf_kvas/surf_boreas layers are gone; cl_scene.qc Scene_InPVS (r_entpvs_active, no TAS viz camera; checkpvs,
+else a portal eye; cached per 0.1 s or 64 units for static things) gates move_rope spans (linked over span and sag),
+particle-system ropes, CSQC emitters (a linked probe each; persistent glows are placed only in view, timed bursts out
+of view dropped as out of range), orbit systems (drawn per instance), and bodies: a trail is fed only while its body is
+in view (what was drawn fades by age), and a body's hat, crown and glow draw only while it is.
+
+**Verified.** Hidden rig, off the GPU (pixman labwc, llvmpipe client). Sky: ahop_coast 430 units past the west sky
+wall looking back (Lex's save 3, their screenshot ahop_coast_003): the mask cut the sea plane on a jagged diagonal and
+hid the zone outlines; without it both draw whole. 35 of Lex's saves on 9 maps and 9 sky-facing poses: no other pixel
+change. Entities, r_entpvs_source 0 against 1 at fixed poses: ahop_coast 38 of 175 culled inside the map and in the
+margin window (last cluster's PVS), entity setup 0.03 -> 0.07 ms; surf_insomnia 2-8 culled per pose; the unvised
+surf_leidenfrost, bhop_anomalous and ab_baume (area 0 everywhere) 0 culled; no visible change at 20 poses, including
+ahop_coast's power cables near and far. Reviews: the first cut (default flip) -- one reader found what the mask had
+hidden (sky-room entities at their real position, lobby avatars with trails and cosmetics, decals, particle ropes,
+trains, fish, func_lod). The second (entity cull) -- two readers found false culls, all fixed here: surfvis is
+frustum-clipped and all zero without vis (every entity and the weapon gone on unvised maps), the area test with the
+eye in solid, stale CSQC records (a Santa hat linked at 0 0 0), a trail hidden whole and judged from the wrong eye
+(portals, TAS camera); and leaks: emitters, crowns, decals beside water. The third (round two's fixes) -- two readers:
+fteqcc stores before && and ||, so the gate's solid-eye and TAS terms and its portal rescue were dropped; checkpvs
+with an area-0 eye failed everything (every gated thing gone on bhop_anomalous and ab_baume); the trail kept growing
+for its life after the body left view; a portal door's record shrank to its centre; unvised maps with areas were not
+culled; r_entpvs_active stuck on after the scene-cache path; bursts and orbits ungated -- all fixed above. The fourth
+(round three's fixes): no false cull in normal play; r_novis order, the far-void overview, the orbit probe's relink and
+a single-row cache thrashed by portal eyes, fixed. A fifth (that delta): the overview test read r_voidview, which any
+later no-world scene clears (the glow pass, the avatar preview) -- it reads the primary view's latched answer now. In the margin window (eye in solid, last cluster kept) ahop_coast's
+cables draw with r_entpvs_source on.
+
+**Boundary.** Render only. Not measured here: a lobby with other players, a sky-room entity seen through a sky face.
+A persistent particle glow, once placed in view, stays in the engine's particle list and shows through the sky after.
+Still ungated: engine trails and effects from packet entities, tesla arcs, explosions, world text, spotlight shafts
+and lasers (sky-traced, Patch 1218), the local player's own trail under a detached camera. An entity spanning three
+or more areas keeps two (Patch 257, as the server's send test) and can be culled from the third; more records reach
+that test now. A CSQC solid eye borrows the last good cluster for every checkpvs caller outside the noclip void overview
+(portal doors are offered in the margin window, as the world draws). CSQC answers lag up to 0.1 s or 64 units.
+
+## Patch 1702 - Keep the newest two: backup rotation on the Pi (game tools + ops; no engine change)
+
+**Cause.** Lex, 21 Nov 2026, on our procedures: "I like backups and I like safety, but sensible, I don't need every
+backup ever made, maybe like the last 2 at most? can you do that for me", then "delete the old trees and backups,
+ensure proper rotation". The Pi held six 1.5 GB surfd DB backups, 18 namespace-observer owner backups, every tasupd
+release, 681 copies in the surfd home, 142 in the lobby game folders, and 179 agent-work task roots (121 GB; /srv/nvme
+86% full), most kept by "retain everything" notes of sessions long finished.
+
+**Change.** Once, with Lex's go and a fresh reference check each time: DB backups to the newest two (6 GB); observer
+owner backups to two (Lex's root); 112 agent-work roots that nothing live named and nobody had touched for a week
+(61 GB, mostly old DB copies; two keep 28 KB of root-owned leftovers); the disk went from 86% to 71%. Lasting: game
+tools/pi_retention.py, daily as proto (systemd --user ftesurf-retention.timer, 17:17 UTC; tools/pi-retention.md):
+backup copies keep two per file (by the UTC stamp in the name, else mtime -- never ctime) plus the two
+csprogs.dat.pre[0-9]* tasupd trusts; agent-work roots go after 14 days without a change (mtime or ctime) unless a
+unit, drop-in, nginx, cron, the surfd home's files, the live generation's manifest/identity or a running process names
+them, they are one of the newest two gen<N>-*, or they hold RETAIN; tasupd-src checkouts keep two plus released ones.
+It fails closed (configuration it cannot read stops the run; only unreadable copies no loader picks up and TLS keys
+are passed over), keeps roots holding a mount, another user's files or unreadable parts, logs its plan before
+removing, re-checks each root, and caps its memory. tools/install_tasupd.py keeps the serving release and its rollback.
+The surfd drop-in still names ~50 old roots and ~230 copies: they go once a generation installs a drop-in that names
+only the live generation and its predecessor (P1702 kit work, next generation).
+
+**Guard (game bb2c86ca).** Lex: "The 91-file list is rigid -- also fix". tools/surfd_transition_guard.py profile
+`members-v1`: the manifest's own member list (schema 26, the three-converter closure, every non-test tour91-v1 module),
+hash-verified at every launch as before, so an added file (P1697's templates/admin_top10.html) needs no new profile.
+`members_ok` reads only the member list and fixed names: at most 512 members, plain relative paths (<= 3 deep, known
+suffixes), every import name -- X.py or X/ in runtime/ and in runtime/tools/ (both on sys.path) -- owned by exactly
+one member, no added name in SHADOW (stdlib, surfd's third-party stack, the game tools modules, tools, static), no added
+__init__/__main__ at the top or directly in templates/web/tools. Three independent review rounds: a package X/ beating
+a sealed X.py (also one level down in tools/), a find_spec check that made close/status depend on later installs and
+missed SURFD_TOOLS, static/ served by Flask. test_surfd_guard_members_profile 9 tests (15 mutants fail across rounds);
+the transition, candidate and tour/mapnew/fetch suites pass unchanged. Reaches the Pi only with a generation: the next
+one changes the guard (tools/backend-pending.md).
+
+**Verified.** test_pi_retention 34, test_install_tasupd 56; 23 mutants each fail a suite. Independent review, four
+rounds (what it can delete; an unattended deleter's failure modes): fail-open config reads, mtime-only idleness,
+chmod outside the tree, ctime ordering, links, a loader-blind exemption, same-disk bind mounts -- all fixed, round 4
+clean. A first draft read the surfd home whole and was OOM-killed at 4.8 GB on the Pi (only it; surfd, tasupd,
+nginx and the lobbies did not restart); the scan now reads one file at a time (12 MB). First run through the unit:
+117 copies removed, 0 problems; services answer.
+
+
+**Next-generation kit (offline, FTESurf-private/worktrees/gen1702-20261121-a03).** One maintained tool,
+FTESurf-private/genkit/advance.py, makes each kit from the previous one by its generation.json literals (no hand-written
+derive.py). The gen1702 kit ships the members-v1 guard and the files REF adds only when generation.json lists them
+(admin_top10.html; tasupd*.py excluded), adds P1694's runs/replays.pad by hand at step 2c (as gen1603's plat), writes a
+TRIMMED drop-in (1303 -> 139 lines, 17 -> 2 preflights: the live generation's section, the new one, /srv/nvme/surfd and
+its 104 live entries; 662 backup copies unnamed) and gives the owner installer keep-two rotation (it also removes the 23
+pre-9-Nov drop-in copies that kept every old root "named"). Two reviews + a fix round. Waits for Lex's generation.
+
+**Retention follow-up (game d97a23b9, deployed).** Roots named by the transition code of the newest two STAGED
+generations (backend/operator, retained, root-proposal) are kept: the trimmed drop-in stops naming ac-lexical-..., whose
+activation.lock every owner install takes. Old roots (~50 GB) go once both kept generations run trimmed drop-ins.
+
+**Static web board (game 7e7c9f7a..41ac3d7e).** nginx serves the board's page and seven assets from
+/srv/nvme/ftesurf-site/board/current with surfd's CSP; API/avatar/shot/link paths stay on surfd. tools/publish_board.py
+(Pi side tools/board_publish_pi.py) publishes as proto; proto's ftesurf-board-follow timer republishes the live
+generation's own files within 5 minutes of a swap or rollback; `--commit` ships a UI-only fix ahead of a generation by a
+byte rule (no live member outside web/ differs between the live source_ref and REF). install.sh probes the static copy
+(Last-Modified) and each file's CSP against the live surfd's. Four review rounds; test_site_routes 7/7 on the Pi's nginx.
+## Patch 1703 - The input journal is part of online play (menu + backend)
+
+**Cause.** Lex, 21 Nov 2026, after P1699's count found 188 recent Windows top-10 runs (of 239 WOS rows) with no input journal:
+"can you make that more mainstream? like when you play online, also accept input journal, and just make all runs
+before this point dated, and accepted since this wan't required yet. But it should be on if you're playing on a
+lobby." The journal was an opt-in box on the online terms (tier 9), pre-ticked only for players accepting for the
+first time, so nearly nobody sent one.
+
+**Change.** game src/shared/sh_defs.qc: FS_TERMS_JOURNAL 10, the online answer that includes the journal on lobby
+runs; every online gate stays FS_TERMS_ONLINE (9), and the client still reports 9 to servers, so 0.1.54's menu loses
+nothing. src/menu/m_main.qc: m_init asks a player whose stored answer is 9 once per launch (not under ui_bootcheck),
+with a lead saying what changed and a "Not now" that writes nothing; Play online writes 10 and sets rec_hid 1 and
+rec_hid_upload 1 (the Steam offer and the updates opt-in are left alone for a 9); the summary has no journal box; the
+full text, the F2 journal and Terms pages say the journal is part of online play and how to keep it local; at 10 the
+F2 journal page has no Stop switch but a "Resume journal uploads" button when rec_hid or rec_hid_upload is 0.
+m_settings.qc: Privacy opens F2's Terms page. No client forcing: the engine sends a journal only with rec_hid_upload 1
+(cl_receipt.c), and the first cut's csprogs forcing was reverted (review 1). surfd: SURFD_NOEV_JOURNAL_SINCE (epoch
+seconds) -- a missing Windows journal counts toward P1699's mark only for runs from then; unset, never.
+
+**Verified.** All three progs build with 0 warnings; surfd/test_noev.py (12 checks) adds the journal date (unset: not
+required; a run before it: accepted). The screens were not driven in a rig (a terms screen takes real clicks only);
+the paths were traced by four review rounds instead.
+
+**Review.** Round 1: the re-ask covered only hand-picked lobbies, the text pointed at a missing button, csprogs
+forcing could not beat the engine's own gate and made wrong HUD and local-server states -- redesigned (startup ask, no
+forcing). Round 2 (blocker): "Stay offline" for a 9 kept them online while promising offline -- now "Not now" with a
+lead; Settings opened the bare boot screen; per-tier F2 texts; a Resume button. Round 3: Not now wrote a fresh
+acceptance stamp, accepting re-enabled updates, a tier-1 page warned to update the engine. Round 4: nothing blocking.
+Numbered P1700 at first; renumbered (P1700 is worldofsurf-d9's TAS upload work).
+
+## Patch 1701 - Flying into the void no longer stalls: the overview edge keeps the particle shaders (engine client)
+
+**Cause.** Lex, 21 Nov: "ahop_coast has a fps spike when you transition from playable area, to void" (save 3,
+noclip backward). Patch 1345 clears particles at either edge of the noclip void overview (PF_R_RenderScene,
+P_ClearParticles), and PScript_ClearParticles also re-runs P_LoadTexture for every particle type: a shader
+registration each and the models dropped, which a map change needs and an overview edge does not.
+
+**Change.** p_script.c: pscript_clearkeeplooks, set by pr_csqc.c around the edge clear, skips that loop; live
+particles, decals and beams are still discarded. Map changes and the pointfile clear are unchanged.
+
+**Verified.** Hidden rig off the GPU (pixman labwc, llvmpipe client), ahop_coast, noclip from inside the map
+(-14600 7290 9286) backward through the west sky wall into the overview, with temporary timers inside
+PF_R_RenderScene (artifacts/spktrace2.diff, not shipped). Before: the first overview frame took 476.8 ms, 375.2 of
+it between R2D_Flush and R_PushDlights -- the edge clear (r_spikes 2: csqc 381.8, qc self CSQC_UpdateView 372.0);
+the same frame read csqc 253.9 and 581.8 ms in two earlier runs. After: that step 6.3 ms, no csqc spike in
+r_frametime_dump. The way back in takes the same branch (not driven). Ruled out on the way: late shader compiles
+and image uploads (0 at the edge), and the overview's own cost (964 batches against 317 in the map, cheaper per frame
+here than the in-map view). One independent review (state lifecycle): no defect -- every live type got its looks
+when parsed (FinishParticleType), vid_restart and r_particlesystem re-parse, the flag cannot stay set; it noted that
+the edge no longer repairs older faults by accident (a sprite model dropped by a mid-map Mod_Purge, a particle shader
+script from a pak mounted at load) -- they now last to the next map.
+
+**Boundary.** Client render only. The 6 ms left is the free-list rebuild over r_numparticles; frames just past the
+wall but inside r_voidvis_margin keep the last cluster (Patch 1627).
+
+## Patch 1700 - TAS uploads in the site menu; a map picker with thumbnails (game web only; no engine change)
+
+**Cause.** Lex, 21 Nov 2026, a screenshot of tasupd's "Find a course" (a map name and a bare number box): "you need to
+link it to the main website, put the TAS upload menu option to all of the worldofsurf webpages ... a number 0 to
+whatever with no info what that number is?? maybe like pick a map from a endless drop down, which loads the thumbnail
+and the main/stages/bonues you can select". The TAS pages had no site menu and no link from the site, and their
+"Link your Steam account" pointed at play.proto.bar/board/link, a 404 (the board lives at proto.bar/ftesurf/board/).
+
+**Change.** Game surfd/tasupd.py: every page carries the site's menu (SITE_NAV: Overview, Leaderboard, Players, Zoning,
+Anti-Cheat, TAS uploads current, Download). The course finder is a map name with the browser's own list of every map in
+the site's media/mapmeta.txt (`<datalist>`, no script; TASUPD_MAPMETA, re-read when the file changes). A map's page
+(`/tasup/board?map=`, Main by default) shows its thumbnail (/ftesurf/media/thumbs/<uuid>.jpg on the same origin; CSP
+gains img-src 'self'), tier, stage and bonus counts, and chips for Main, each bonus and any course with runs; a staged
+map says its main course is taken whole. The link page is proto.bar/ftesurf/board/link. The site's own pages link to
+play.proto.bar/tasup/: src/release/page.template.html, site/zoning.html, site/anticheat.html (menu and footer), and
+surfd/web/board.html (with the next surfd generation; tools/backend-pending.md). tools/install_tasupd.py passes
+TASUPD_MAPMETA and accepts each earlier installer's unit (ENV_ADDED groups: a8efd378's, then 73229378's).
+
+**Verified.** test_tasupd 283 (6 new: menu, finder list, map card and chips, staged map, unknown map, no mapmeta),
+test_install_tasupd 53; the live unit read from the Pi is the 73229378 form the upgrade accepts; the pages rendered
+with the site's real mapmeta.txt (2846 maps) and a live thumbnail in headless Chromium. Not independently reviewed:
+markup over validated names (MAPNAME, the thumbnail UUID pattern), all escaped.
+
+## Patch 1699 - The "no evidence" mark on top-10 runs, switched off until uploads are reliable (backend + QC)
+
+**Cause.** Lex, 21 Nov 2026, choosing among options for a top-10 run whose evidence never arrives: "Show it with a
+'no evidence' mark." Evidence (the receipt, the .view sidecar, the Windows .hid journal) was collected and checked
+but never shown on a board.
+
+**Change.** game surfd/surfd.py: noev_reasons(db, cands) names what is missing for WOS top-10 candidates -- "receipt"
+(none read, or no run id), "view" (angles empty after the receipt was read) or "journal" (plat 0 and journal ABSENT;
+Linux has none) -- and judges a run only once sweepmeta's receipts_through is NOEV_MARGIN (120 s) past its submission
+and only if it was submitted from NOEV_SINCE (21 Nov 2026 00:00 UTC). board_rows adds `noev` to WOS main-course and
+bonus rows ranked 10 or better (on the combined board a WOS row's place bounds its WOS rank; past 10 it is counted on
+the board's index); stage and TAS boards are not judged. web/board.js + board.css: a grey "no evidence" chip after the
+name, the reason in its tooltip. QC cl_online.qc / cl_scores.qc: ob_noev, a grey "no evidence" after the name and a
+tooltip line. NOEV_ON reads SURFD_NOEV: unset (the default) marks nothing.
+
+**Verified.** surfd/test_noev.py (10 checks): nothing without a watermark, before the reader passed the run, or with
+the switch off; with it on, the missing receipt/view/journal named on the ranked board and on the combined board (a
+WOS #10 at combined place 11 included), a Linux run without a journal unmarked, ranks 11-12 and older runs and stage
+rows not judged. test_admin (its key-decision board snapshot ignores `noev`, which follows the watermark by design),
+test_board, test_web, test_plat, test_pad pass; all three progs build with 0 warnings. Live db, read-only, 21 Nov: of
+239 WOS main/bonus rows from 14 days, 33 had no receipt, 167 no view, 188 Windows rows no journal, 13 complete --
+hence the switch.
+
+**Review.** None (display only, off by default). Before SURFD_NOEV=1: make top-10 uploads reliable (BACKLOG).
+
+## Patch 1697 - One review page for new top-10 runs (backend only)
+
+**Cause.** Lex's anti-cheat finish list (20 Nov 2026), item 7: "one review page for new top-10 runs". The admin
+listed runs by verdict only: no rank, no evidence columns, no start lag (P1675's `startlag` was counted by recplot and
+shown nowhere), so a new top-10 run could not be reviewed in one place.
+
+**Change.** game surfd/admin.py: list_top10 ranks every ranked board (ROW_NUMBER over map, track, leg, style in
+BOARD_ORDER; TAS boards excluded), keeps rows ranked 10 or better submitted in a window (default 14 days, ?days=
+1-3650), newest first, with the latest current non-ERROR verdict and current review (as _runs_base), the receipt
+(verdict, signature, view angles, journal; NULL until sweep.py's tables exist), plat and pad; a stage row with no
+recording of its own shows its run's replay as surfd._PARENT_SQL finds it (marked "(run)"). rec_startlag reads the
+first 256 KiB of the run's .rec through replay_file for `startlag <k> <s> <max>` (main and stage 1 only: a later stage
+starts with an unmeasured handover); 3+ ticks are flagged. Routes /admin/top10 and /admin/api/top10 (login as the
+other admin APIs; no paths in the JSON); templates/admin_top10.html (textContent only); "Top 10" beside Runs in the
+admin nav; recplot puts `startlag` into the admin cert and admin_run.html shows it. Read-only: no write anywhere.
+
+**Verified.** surfd/test_admin.py section 9t (28 checks): twelve runs on a board list ten (ranks 1-10, the fastest
+first by submission time), the receipt joins by runid, startlag read from the .rec ([4, 0.04, 0.06]) and None without
+it, stage rows open their run's replay with stage 1's start lag and stage 2's none, a ranked TAS-style row left out,
+the days window, bad parameters 400, login required, the page script parses. test_admin, test_recplot pass.
+
+**Review.** One reader (SQL against the board's rules, security, recplot, side effects): no blocker. Fixed: the stage
+fallback now uses _PARENT_SQL's conditions (it could open another player's replay of the same runid), start lag only
+where measured, a unique paging order, TAS boards left out, "(run)" on borrowed verdicts. Left: every request ranks all
+ranked rows (0.4-0.7 s on a 200k-row test db; rank inside the window via runs_board if it grows slow).
+
+## Patch 1694 - The controller tag: a run that used a controller is marked light fire red (engine + QC + backend)
+
+**Cause.** Lex, 20 Nov 2026, after the anti-cheat audit: gamepads are "100% allowed, it's a legit way to play", but
+controller runs should be TAGGED like Linux ones, in a "lite fire red". Nothing recorded controller use, and controller
+look frames are skipped by the mouse identity check (in_generic.c in_jrn_vjoyturn), so a run turned by a stick was
+indistinguishable from a mouse run.
+
+**Change.** Engine client: the read-only in_pad_frames (NOSET|NOSAVE|NOTFROMSERVER|NORESET, wraps at 2^24) counts frames
+in which IN_MoveJoystick changed the view or the movement (after the dead zones and the menu/console clear),
+controller key presses (K_JOY*, K_AUX*, K_GP_*) whose bind plays, and every input frame while such a key's release
+command is still pending (padheld, per key and device, cleared by that device's key-up first thing in Key_Event).
+Key_PadBindPlays splits the bind exactly as Cbuf_ExecuteLevel does (Key_CmdLineEnd; a + bind judged with its key number
+appended, as it runs) and plays unless every command's first word is empty or UI (menu, console, chat, voice, scores,
+weapon wheel, screenshot). CL_SendCounts carries the count in every move's cursor block beside Patch 376's mouse
+counts: cursor_screen x = count mod 32767 (+0.5 for the wire's x32767 truncation), y = 1 (Patch 376 left both 0,
+which an older client still sends). in_journal_synth gains `pad <v>` and `padkey [down|up] [dpad]` (local console;
+a script lapse every input frame while set; the journal is marked). Game: SV_PadCmd, first in PlayerPreThink, reads
+the count of each client command (kinds 1/2); a change in a command of the run marks run_t_pad, and run_st_pad for
+the open stage (restarted at its box exit), unless the body is not driven (spectate, replay/rewind watch, save-lock
+hold, frozen, ghost camera). Saves carry `pad 1` (raise-only), a load re-seeds the count, rewind and first-attempt
+keeps carry it, a load or resume reopening a stage gives it the run's mark; the finish writes `pad 1` after `plat`
+(not under held metadata); finish posts send `pad=1`, stage posts their stage's; `cmd timer` prints `pad` and
+`padin`. sv_rank_padcount (unset = 0) unranks a connection whose engine never sent a count (rec_padok; PW_PADCOUNT,
+"padcount"): 1 once a release with 1694 is out (0.1.54 has 1646 but not 1694). tools/reccheck.py reads the record
+(notes only) and the word; surfd: runs.pad and replays.pad (runs_pad, idempotent), the post and the finish tail raise
+it like `plat`, board and maps JSON `pad: 1`; board.js/css and the in-game board colour the name #FF6A4D over
+Linux's #3FC1FF with "Controller" in the tooltip; the admin run page shows it. The Linux build has no controller
+input at all (gl_vidlinuxglx.c), so a Linux run is never tagged.
+
+**Verified.** Rig (one dedicated server, one headless client; since the owner's compositor crash on 21 Nov the nested
+labwc renders with pixman and the client with Mesa llvmpipe), surf_ace with an end box 300 u east of the start
+(arms/p1694.py, private). Controller input injected with in_journal_synth: the same IN_JoystickAxisEvent/IN_KeyEvent
+calls XInput makes.
+- right stick 0.1 (inside the 0.19 dead zone): in_pad_frames +0.
+- stick in the start box, then walk out and finish: run pad 0, the .rec has no `pad`.
+- stick mid-run: pad 1 before the finish; the .rec ends `prof`, `plat 1`, `pad 1`; reccheck pad_end 1, 0 faults.
+- A button mid-run (default bind impulse 10): +1, pad 1. D-pad up held from inside the start box: pad 1.
+- sl_save in a marked run: state.txt `pad 1`; !r, then sl_goto: pad 1 again. A 0.15 s burst and an instant save: the
+  same (the first cut's out-of-band report missed it -- review 1).
+- control: the same engine with the deployed 0.1.53-era progs (P1692): the count moves, no mark; the released client
+  with these progs: padin 0, pad 0.
+- Not measured: the stage mark (no stage post in the rig), the not-driven predicate, focus loss while holding,
+  sv_rank_padcount (the headless client's `rawmice` verdict comes first; `padin` staying 1 across loads is the proxy),
+  a real XInput pad (the win64 client cross-compiles; the injected calls are the backend's).
+Key_CmdLineEnd against cmd.c's loop: a reviewer's differential fuzz, 20M random strings, no mismatch. reccheck
+1087/1087; surfd test_pad, test_plat, test_board, test_recplot, test_admin pass (scratch venv Flask; test_board's
+two-thread migration flake, test_ranked and test_replays fail identically on origin/main).
+
+**Review.** Round 1 (three lenses): the first cut reported the count by a throttled csprogs event; a save/load inside
+its 0.5 s window hid controller bursts on segmented boards (blocker), input before the start or a load was credited
+late, stage rows took the run's mark, UI binds counted, the header `pad` was never written. Redesigned in-band.
+Round 2 (three lenses): old engines ranked untagged (gate added), only a bind's first command was judged, a held button
+counted only at its press, holds and pad-button loads mis-marked, the stage mark ran from the boundary, not the box exit.
+Round 3 (two): the gate read the per-command baseline, so a load's or resume's latch would have unranked a current
+engine (blocker once enabled: now per connection, rec_padok); focus loss hid a held button; the test hook could be left
+on into a run; quoted first words; engine-made commands zeroed the baseline. Round 4 (two): a csqc-swallowed key-up
+could leave a stale count; the bind splitter differed from Cbuf's; a replay watch was "driven"; a pad-sent stringcmd
+load tagged the loaded run. Round 5 (two): a + bind runs with its key number appended; held counting stopped with the
+console open; run_t_frzon lagged a packet. Round 6 (one): a + bind's appended key number is judged only where an
+alias names it (`+showscores;` was a false tag); one command at an in-move save-lock release stays unmarked (such runs
+are practice). Round 7 (one): nothing. Engine commit 4661169a0; game: see ENGINE.txt's P1694 note.
+
+## Patch 1696 - Upload a TAS run from the game; your TAS runs as Jargon guides (game QC + tasupd; no engine change)
+
+**Cause.** Lex, 21 Nov 2026, after P1640's web uploads went live: "maybe a in game upload works? ... is it possible to
+make a in game upload?" then "Do we allow custom Jargons? ... please keep building until finished". A run made in the
+game had to be found on disk and sent through a browser; Jargon never offered the player's own TAS runs (every TAS
+finish carries TF_CHEAT, and its guide filter took clean PBs only).
+
+**Change.** Game src/client/cl_tasupload.qc: the TAS menu's third tab, Upload (cl_tasui.qc TAS_TAB_UPLOAD; Send is
+pressed inside the CSQC input event, TASUI_Input -> TASUp_Press). In a game the player hosts (`isserver()`) it lists
+the TAS runs that game finished: sv_timer.qc SV_TASUpNote, at each TAS finish of the host's own client (infokey ip
+exactly QLoopBack), hashes the run (only the player's own loose file: whichpack) and rewrites
+data/tasproj/<map>/uploads.txt through a .part -- the newest 50 whole-course runs still on disk -- a directory client
+code cannot write (pr_bgcmd.c QC_TasprojDenied) and that is read only as an own loose file (a server can make the client
+mount a package with a data/tasproj/ file); `cmd tas uploads` (sv_tasautosurf.qc SV_TASUpList) answers the host's
+client with TAS_EV_UPLIST events (61; cl_share.qc). So a file a server's csprogs put in data/runs/ is never offered as
+the player's run, and Upload refuses bytes that differ from the recorded hash. Upload: `POST /tasup/api/game/challenge
+{"sha"}` -> a stateless code (8 hex time, 8 hex salt, 16 hex HMAC over them and the hash). Send, on a real press:
+`acct_sign(sha256("ftesurf-tasup <code> <sha>")[:32], -6)` -- zone publishing's kind with the site fixed, over a digest
+that names this purpose and the file, so neither service's proof is the other's and no older game code can make one --
+then the 396-byte proof header (FTESURF-TASUP 1 / nonce / sha / pub / sig / game) and the raw .rec to /tasup/upload as
+application/x-ftesurf-tasup. The URL is a compile-time constant (a test build only: -DTUP_BASE). `tas upload [N]` from
+the player's own console only (cmdlevel_local). cl_history.qc no longer auto-downloads _tas.rec history files.
+cl_jargon.qc TASJargon_Own offers own _tas.rec runs with TF_TAS in two slots of their own ("my TAS 7.86s").
+surfd/tasupd.py: the game route checks, from the header before reading the file: the code (age, MAC), not spent
+(`nonces`, 'game ' rows pruned apart from Steam's), the game code -- the lobbies' csprogs and the newest two
+csprogs.dat.pre[0-9]*, released csprogs learned from releases/<ver>/update.json by BLAKE2b (one a platform; fetched once
+from the mirror, network failures retried doubling to an hour, a 404/410 or other bytes given up after 3), each carrying
+`ftesurf-tasup ` (the upload flow), or owner allow/deny rows (`allow-code`, `deny-code`, `codes`; deny first) -- the
+key's linked unbanned account, then the signature (the cryptography library when installed: 0.17 ms on the Pi against
+ed25519.py's 5-19 ms; small-order keys refused); spends the code, reads the file, then the web form's accept().
+Refusals answer 200 with ok=0 and the status (the game's HTTP client keeps no other body) and drain an unread body
+(nginx may still be sending it). Budgets: 20 game requests a minute an address, 1200 verified game uploads a minute
+for everyone. The tool reads "sent from the game" (how it came, not what made it). tools/install_tasupd.py ships
+tools/ed25519.py, TASUPD_GAMES / TASUPD_RELEASES; the upgrade accepts the unit the previous installer wrote, restores
+it as read on rollback and keeps it as <release>/unit.prev.
+
+**Review.** Four rounds of three lenses (control flow and honest players; the live host; what an attacker gains) and
+a delta round. Round 1: a stored challenge table 32 addresses from full; an unsigned 8 MB body read before any check;
+the upgrade refused the live unit; own TAS runs never offered; a server could plant a _tas.rec through history and open
+the tab. Round 2: a server's own csprogs could write the run (hence the local game's own list); an ICE host's chosen
+name passed the "local" test (hence isserver); network outages ended in "update your game"; refusals could reach the
+game as 502s; Windows-only releases; a QC bounds fault on an unopenable name; own TAS runs pushed out the PB. Round 3:
+`local_host = !Lobby_Active() && (...)` assigned before the && and the host prints as QLoopBack, not "loopback" (the
+list worked only by that accident); a package could supply data/tasproj/uploads.txt; a guest's finish was the host's;
+an append-only list read in full every 3 s. Round 4: nothing serious (account before signature, the fast verifier,
+exact bonus legs). The first end-to-end run after round 2 caught a missing TAS_EV_UPLIST dispatch: the client dropped
+the connection on the unknown event.
+
+**Verified.** test_tasupd 194, test_install_tasupd 52, test_tasplaus 75; cl/sv/menu progs 0 warnings. End to end in an
+isolated copy of the game in a headless labwc against a local tasupd (the test build's -DTUP_BASE): an unvouched
+_tas.rec in data/runs/ is not listed; a TAS finish (surf_ace bonus 1: TAS pause, a teleport into the end) is noted in
+data/tasproj/surf_ace/uploads.txt, listed once the reply is in, and Upload plus a real pointer press on Send store it
+under the linked account; an unlinked key is told to link. The live unit read from the Pi is the form the new
+installer accepts. **Not verified:** a genuine Jargon finish through tasplaus (Jargon did not finish surf_sandtrap2
+bonus 4 here; the one game-made file was held partly for lost packets).
+**Installed** 21 Nov 03:01Z by Lex's root run (`--upgrade-from a8efd378`; release /opt/ftesurf-tasupd/73229378, the old unit
+kept as its unit.prev): X-Tasupd-Source 73229378, a live game challenge, a proofless game upload refused; releases
+0.1.45-0.1.54 learned (none carries the upload flow); Lex's dev build allowed (`allow-code`). Records: game 46b645ac.
+**Known limits (BACKLOG):** a hostile server's csprogs can read a finished run and upload it first (predates P1696);
+runs finished before this build are not offered.
+
+## Patch 1695 - Stand-in skies: Half-Life's desert for GoldSrc maps, the game's own sky last (engine + data + menu)
+
+**Cause.** Lex, after P1669: "do we use a default replacement?", then yes to Half-Life's desert for GoldSrc maps, the
+tooltip wording and a free sky of our own. 333 of the 1,308 GoldSrc catalogue maps name a custom sky nobody has (P1669
+flag 8). R_SetSky drew r_skybox_default for them (Momentum's sky_cape_hill, loose files in Momentum's folder), else HL2's
+sky_day01_01 (P1627), else six black faces; a GoldSrc map naming no sky drew r_skybox_default where Half-Life draws
+desert. P1669's tooltip said the sky "draws plain", and `sky` said "drawing r_skybox_default" whatever it drew.
+
+**Change.** engine gl/gl_warp.c R_SetSky: a fg_halflife world whose declared sky has no face tries "desert" first
+(valve/gfx/env, mounted with Half-Life for every GoldSrc map), then r_skybox_default and sky_day01_01 as before; after
+those, the game's own "wos_day" while every face is still missing (P1627's gate: a sky was asked for, r_skybox empty).
+client/wad.c Mod_ParseInfoFromEntityLump: a GoldSrc map without skyname gets "desert" (Half-Life's sv_skyname default),
+as Quake 2 maps get unit1_. R_ForceSky_f names the sky drawn. Game: gfx/env/wos_day{rt,bk,lf,ft,up,dn}.jpg (1024 square,
+386 KB, CC0) from tools/wosdaysky.py: gradient, domain-warped fbm cloud layer, sun; faces in the Quake 2 / Half-Life
+layout, checked on desert's shared edges (matching pairs differ 1-7 of 255, wrong pairings 21-37; the generated faces'
+shared edges under 1). Ship set glob wos_day*.jpg (after loadwire). Menu m_goldsrc.qc tooltip and P1669's note: "a
+stand-in sky replaces the missing one".
+
+**Verified.** tools/p1695sky.py (lane launcherupd-20261120-75) on copies of the production 0.1.53 install under headless
+labwc; new engine against the P1670 engine (git-8947 bd7b4a119) as control, both copies holding the wos_day files.
+- A bhop_hellokapink_gs (declares nebo2, absent): "nebo2 (not found; drawing desert)", desert in the screenshot;
+  control sky_cape_hill.
+- B the same with HOME an empty folder (no Steam library: no Half-Life, Momentum, CS:S or HL2): wos_day drawn; control
+  black.
+- C kz_bhop_gs (no skyname): "Current per-map skybox is desert", desert drawn; control "Map declares no sky; using
+  r_skybox_default sky_cape_hill".
+- D surf_prelude (sky_day01_01, present): both engines report sky_day01_01.
+- E surf_prelude with HOME empty: "(not found; drawing wos_day)". This map's fog covers its sky in the screenshots (also
+  with r_skyfog 0), so the pixels of that fallback are B's.
+- F as B with the wos_day files moved aside: "nebo2 (not found, nor any stand-in)" (the report names a stand-in
+  only when it has a face).
+- G (HOME empty, `sky ""` so the map declares none): "r_skybox_default sky_cape_hill (loaded: no; drawing wos_day)";
+  with the wos_day files aside, "(loaded: no, nor any stand-in)".
+All three progs 0 warnings; linux64 client builds with no warning in either file.
+
+**Review.** Round 1 (one reader): nothing significant. Fixed: the `sky` report named a stand-in that had no face
+either; r_skybox_default's help still said it serves only maps declaring no sky; tooltip and note wording; the
+generator's cloud plane divided by zero at exactly dz = -0.12 (never sampled; it regenerates the committed faces byte
+for byte). Left: a worldspawn with an explicit empty "skyname" takes r_skybox_default, not desert.
+Round 2 (one reader): nothing significant; the no-sky report checked names before faces too (fixed, arm G).
+
+## Patch 1674 - One build per map in tournament pools; tournament standings with an Elo rating (backend only)
+
+**Cause.** Lex, 21 Nov 2026, after testing tournaments: "In tournament, only show 1 map of each, showing the momentum
+mod version of the fix/ksf/css version" and "Keep stats on how many tournaments people win, tournament statitics. Maybe
+even a tournament leaderboard, elo style?". The qualified pool listed every build of a map (surf_x and surf_x_css drew
+side by side) and surfd kept no standings.
+
+**Change.** game surfd/tournament_pool.py: `catalogue(..., fold=True)` folds the filtered, qualified rows by map family
+(surfd.variant_base, lowercase): the Momentum build (the family root) stays, else the smallest variant name; nothing is
+folded when the catalogue has no family. Only the automatic pool folds (`selected` folds when the host gave no pool);
+a host's own pool and `revalidate` of a frozen draft use exact names (fold=False), so a draft that holds a variant still
+revalidates. surfd.py passes variant_base to the tournaments and party_lobbies namespaces. surfd/tournament_rules.py
+`standings(matches, banned)`: finished matches that reached GO only; pairwise Elo from final places (K 32 / (n-1),
+applied simultaneously, everyone starts at 1000; shared places score 0.5), wins, shared wins, played, best; banned
+SteamIDs dropped; names trimmed to NAME_BYTES. party_lobbies.py serves them on the existing route as
+`GET /api/tournament-lobbies?stats=1&limit=` (1-200, default 50; play.proto.bar's nginx forwards exact paths only),
+replayed from all match states at most every 30 s per worker; opening a tournament room posts one lobby chat line
+(social.announce, always=True, so a personal-best line cannot silence it).
+
+**Review.** Two rounds. Found and fixed: folding broke revalidate of drafted variants; mixed-case families; a stale
+stats cache (now a 30 s TTL); banned players and matches without GO counted; the announce silenced by personal-best
+lines.
+
+**Verified.** surfd tests at main 9ccec5dc: test_tournaments 54 (Standings), test_party_lobbies 44 (stats route, one
+announce), test_tournament_pool 7 (fold, case, exact names), test_social 88. Reaches surfd with guarded generation
+gen1674 (game tools/p1672-delivery.md).
+
+## Patch 1673 - Tournament tab: equal cards, player pictures, variant thumbnails and a leaderboard (game menu QC only)
+
+**Cause.** Lex's 21 Nov tournament test list: the four how-it-works bubbles under the room list, the fourth smaller;
+"names in a tournament lobby have no display picture"; "allow the CSS/fix/ksf versions to use the Momentum Mod
+thumbnail"; a tournament leaderboard.
+
+**Change.** game src/menu/m_tournament.qc: the four cards share `floor((scr_x - 36) / 4)`; MT_SeatRow and MT_SpecRow draw
+the Steam picture (MP_Draw) when the row has room, else the dot-only row; a Leaderboard / Open rooms toggle beside
+Refresh shows MT_DrawStats (fetched from `/api/tournament-lobbies?stats=1&limit=100` every 30 s: rank, picture, name,
+rating, wins, shared, played; your own row pinned; tournaments-off, loading, old-server and empty states).
+src/menu/m_main.qc ui_meta_load: a variant row (ms_varof) with no picture of its own takes the base row's page and cell,
+and its uuid unless it has one.
+
+**Review.** Two rounds: the seat-row tag overlapped the picture; the tournaments-off message; the footer counted unrated
+matches; a variant's own uuid was replaced. All fixed.
+
+**Verified.** fteqcc m_progs 0 warnings on main 9ccec5dc; tools/tournament_playtest.py screenshots (cards, seat
+pictures). Reaches players with a release.
+
+## Patch 1672 - Tournament matches: competitors visible, a real hold lock, no vote spam, readable centre text (game QC only)
+
+**Cause.** Lex's 21 Nov tournament test list: competitors invisible in a match; holding space while held "bounces"
+("I want proper lock if you're going to do one"); the round winner's name and the knocked-out names overlap; the map's
+own centre text drawn over the tournament start text; "vote: vote cancelled" console spam after a tournament. Causes:
+a player re-entering a round map as a held spectator came through SpectatorConnect, so Lobby_AvatarSpawn never ran and
+no lobbyavatar drew them; the hold was run_pmhold on the server only, so MOVETYPE_WALK kept client prediction running;
+Tour_Clear ran on every idle poll, cancelling any vote and pushing lobby_cyc_next (the idle server never rotated); the
+centre sub line was placed with the UI font's height under a display-font title; MapMsg_Draw and Gfx_DrawMissing drew
+regardless.
+
+**Change.** game src/server/sv_tournament.qc: Tour_Avatar spawns the lobby avatar after every release respawn and frees
+it at the three forced-spectator sites; Tour_Hold releases spectate, save-location and replay-watch pins, voids the
+timer, saves the movetype and sets MOVETYPE_NONE (SV_PMTypeForClient -> PM_NONE: prediction stops), Tour_PreThink keeps
+it, Tour_Unhold restores it; sv_player.qc poses a held avatar (Pose_Capture). Tour_Clear acts only for a player who was
+held: tourney_clear, the cycle push, and Vote_Cancel only for a lobby vote. src/client/cl_tournament.qc
+Tour_CentreBusy (the same exits as Tour_Hud) hides MapMsg_Draw (cl_main.qc) and the missing-content banner (cl_gfx.qc)
+while the tournament text shows; the centre block sits on a dark plate with the sub line under the display-font title;
+the banner measures its title in the display font, width min(scr_x - 32, max(380, 68 * size)).
+
+**Review.** Two rounds: save-lock and replay pins clobbered by the hold; an orphan spectate; held avatars frozen in one
+pose; Tour_CentreBusy disagreeing with Tour_Hud (an empty plate); the wider banner over the run timer. All fixed.
+
+**Verified.** fteqcc sv/cl 0 warnings on main 9ccec5dc. tools/tournament_playtest.py (local server and two clients):
+run5 passed every check -- both competitors have avatars after release, no client-side bounce while held, no "vote
+cancelled" line, screenshots of the centre plate and banner. Lobbies on qwprogs 12412938 / csprogs 7efb318d 20 Nov
+17:55Z (game tools/p1672-delivery.md); later lobby deploys carry it.
+
+## Patch 1640 - TAS uploads: a physics-checked upload service for .rec files from any tool (backend only)
+
+**Cause.** Lex, 20 Nov 2026: TAS records from any tool, bot or fork are fine "as long as the run makes sense physics
+wise", from Steam-linked accounts only. The TAS board took only server re-simulated runs; nothing accepted a file.
+
+**Change.** game surfd/tasupd.py (+ tasupd_wsgi.py), an isolated Flask service beside tasrevd at
+https://play.proto.bar/tasup/ (127.0.0.1:8093, own SQLite store under /srv/nvme/ftesurf-ops/tasupd-state, surfd's
+accounts read-only; no surfd schema or generation change). Steam OpenID sign-in; the SteamID must have a World of Surf
+account and no ban. An upload is a FTESURF-REC at 0.015 tick, whole courses only (no stage legs), not a KSF/Momentum
+import, header within 64 KB, ASCII samples, 8 MB max. tools/tasplaus.py judges it: PASS shown on a per-course board
+("physics checked", file downloadable), HOLD waits for the owner (`tasupd.py list/show/approve/reject/remove` as proto),
+FAIL refused with reasons. Rules (all HOLD): whole-tick samples, precision, ground friction and acceleration, jumps
+from the ground (or vz up to 140 after a clip), jump ticks within air control (|v'|^2 <= |v|^2 + 900), air and
+contact-tick turns, unexplained travel per second, finish/teleport/start-speed checks, at most one lost packet after the
+start, the larger of the zone file's and cfg/maps' sv_maxvelocity. Record backstop: anything reaching the course's best
+known time (surfd's clean ranked/momentum/ksf record or the best shown upload), ties included, and the first upload on a
+course are held, since tasplaus has no collision. Another player's motion (velocity series on the tick grid, or the path
+itself) is held with a note; removed motion is refused; own re-uploads allowed. Caps per account, address and store;
+CSRF and Origin checks; CSP without scripts. tools/install_tasupd.py: root installer (dry run by default, the commit's
+own files under /opt/ftesurf-tasupd, nginx zones in conf.d, one include in play.proto.bar's site with an exact
+predecessor hash, loopback and public health probes, everything put back on failure; --upgrade-from).
+
+**Review.** Nine rounds, three lenses each (control flow and honest runs; the live host; what a cheater gains).
+Rounds 1-4 found and fixed: header read twice, made-up runs passing without friction, velocity-only copy checks beaten
+by 1-degree turns and by sub-tick time shifts, skipped-tick padding, honest slope landings/hops held, an unbounded copy
+comparison (four uploads: ~1 GB), rollback gaps in the installer. Rounds 5-9 (21 Nov, after the branch's first owner
+stopped mid-round): a slow decoy then the same motion as a record skipped the hold; one coarse or `3_4_8.4`-printed
+number widened every bound (speed-ups shown); clocks relabelled +9 ticks, or compressed by dropped ticks (with velocities
+turned or tilted to buy room), hid copies and shown 2-4% speed-ups; removed motion came back through ownership by upload
+order or a held copy; a regex took quadratic time; honest runs held for air wall hits, slow strafing, ramp-gaining short
+courses, %g/%e printing, slopes and stairs in a lost packet, a recorder's last sample a tick early -- all fixed, most
+with a test that fails on the commit before it, every one rerun against the reviewers' own scripts. Now: plain-number syntax, per-pair %g-aware precision, the start-zone
+leave within 2.5 ticks, median + trimmed mean + fast-step counts of the clock in 2D and 3D, copies matched 16 ticks
+either way and up to 10 per account, ownership by shown (or older held) runs, budgets (100000 samples, 20 s a copy
+call, one upload in flight per account, two at once, held-cap attempts counted), `unblock`.
+
+**Verified.** test_tasplaus 75 (+ 117/117 surf_sandtrap2 bonus-4 replays PASS), test_tasupd 81, test_install_tasupd 49
+(Flask 2.3.3 / Werkzeug 2.3.8; the Pi runs 2.2.2 with Python 3.11). Every reviewer exploit of rounds 5-9 rerun: held or
+refused. 276 honest recordings: no verdict changed from round 5 on except the four "never reaches end" fixed to PASS;
+the 117 replays reprinted %g/%e/%.18e at deep coordinates all PASS; no cross-player copy match among them.
+**Installed** 21 Nov 00:10Z by Lex's root run (release /opt/ftesurf-tasupd/a8efd378; game a8efd378 moved the port off
+8091, the Pi's twitch bot): health, page, Steam redirect, unsigned upload 401 and board JSON checked live.
+**Known limits (BACKLOG):** no map collision, so a made-up path is held only when it
+reaches the record; a public human replay with its import markers stripped passes; a copy re-timed as a whole by ~0.1%
+is not matched; fabricated steps can spend the fast-step allowance for 3-4 ticks; no in-game upload yet. A determined
+editor below the record remains possible without collision or re-simulation (EXACT in BACKLOG): the owner removes by id.
+
+## Patch 1693 - Jargon opens on the course you are on and downloads its top runs (game QC only)
+
+**Cause.** Lex, 21 Nov 2026, a screenshot of surf_sandtrap2 bonus 4 with the Jargon panel showing Course "Main", no
+guide run and an empty box: "when I open the Tas menu it's broken? doesn't display correctly?". Three causes: the panel's
+course was always the first (Main) whatever course the player was on; with no guide run TASOptUI_DrawJargon returned
+before the dropdown's list was drawn, so the Course dropdown opened an invisible list and the course could not be
+changed; and guide runs came only from leaderboard lines, data/online, KSF/Momentum replays and loose data/*.rec, never
+data/runs/<map>/<leg>/ where the player's own recordings are (Lex had no copy of any bonus 4 run).
+
+**Change.** game src/client/cl_tasoptui.qc: TASOptUI_FollowCourse picks the course you are on -- the leg being recorded
+(STAT_FS_RUNLEG, read only while TF_RECORDING: it outlives the run) else the timer's track and start stage -- whenever
+that changes, never re-picking between Main and Stage 1 (one start box) and never while Jargon surfs or is armed, so a
+dropdown pick stays. The dropdown list is TASOptUI_DropList, drawn on both paths. With no guide run the panel offers
+"Download the top runs of <course>" (also `tas jargon download`). cl_jargon.qc TASJargon_Dl*: Online_Fetch for the
+course on the KSF board, then World of Surf's (ranked), then Momentum's; up to three rows' replays through
+Online_ReplayFetchRow into data/online/<map>/<leg>/; it shares the one replay slot with the leaderboard's line fetches
+(waits while they hold it, counts only its own rep or the file on disk), refuses while a leaderboard name search is
+set, moves to the next board when the files fit no course here (a variant map's base replays), and says why when it
+cannot. TASJargon_Own lists up to two of your own clean runs (pb or run tags; FS_RunClass of the header's flags; the
+movement profile's folder), labelled "my run 52.89s" from movetickrate. `tas jargon guides` prints the course.
+
+**Review.** Two rounds (QuakeC control flow and what the player sees). Round 1: own runs missed PBs and offered cheated
+or segmented runs; the download could steal or miscount the leaderboard's line fetch and sent a stale name search;
+`!s 1` mapped to Main. Round 2: the RUNLEG fix brought Lex's bug back after a finished run (the stat outlives it);
+Main/Stage 1 flipped and wiped undo; a busy wait was timed from the wrong moment; a variant map's base replays ended
+"done" with nothing listed. All fixed above.
+
+**Verified.** fteqcc cl_progs and sv_progs 0 warnings on main c94477ca. An isolated copy of the game with Lex's data
+(not the shared install) in a headless labwc, 1920x1200: surf_sandtrap2, `!b 4` -> the panel opens on Bonus 4 with the
+download button; the download fetched 00m07.830s agentflwrs, 00m07.830s farsh and 00m07.860s x from the KSF board and
+the panel drew the full route (4 points, "Arm Bonus 4"); `tas jargon download` before the panel opened took Bonus 4;
+a dropdown pick of Main stayed; `tas jargon drop 1` draws the list with no guide run; surf_ace offers "my run 52.89s"
+(and a copy named _pb first); surf_dragonfall's only own run (flags 457) is not offered. Control, main's csprogs: the
+same steps open on Main and the open dropdown draws nothing. **Not driven:** the mouse click (the verb calls the same
+function), a finished run then `!b 4` (needs a live recording), a line fetch racing the download, a variant map's board.
+
+## Patch 1692 - A mid-run retry charges its time away to the clock (QC server only)
+
+**Cause.** Lex, 20 Nov 2026: a mid-run `retry` "stays clean; record a cut marker; add the away time to the clock".
+`retry` writes the player's state, restarts the map and restores the run at its saved ticks, so the restart -- the
+server's reload and the client's -- stood outside the clock: a free pause, reachable on a lobby by a lone player through
+`cmd rec_retry`. The cut marker (`retry <ticks>`, `pause retry`, `session`) already existed.
+
+**Change.** game src/server: SV_RetryPoint stamps gettime(1) into the registered, unarchived cvar rec_retry_at (latched
+and cleared with rec_retry_armed in SV_TimerMapInit); SV_RetryApply hands it to a running run (a missing or future stamp
+makes it practice). SV_RetryCharge adds ceil(now - stamp) whole seconds, at least 1, to run_t_viewsec -- the viewing
+carry SV_TimerTicks and SV_TimerElapsed already include -- and writes `parkclock <gap> <total>` right after
+SV_RecSession's session line, exactly as Multi-Session's offline gap (sv_resume.qc); an unrecorded run is charged after
+the restart latch. A gap that is unmeasurable, overflows, or cannot be stated makes the run practice. A retry, replay or
+Multi-Session park is refused while a charge is owed; a retry of a running recording in a format other than 13/14 is
+refused. No engine, verifier or backend change: the engine verifier already refuses retried runs before simulating, and
+tools/reccheck.py accepts a `parkclock` after a session.
+
+**Review.** Three independent rounds. 1: a second retry before the charge dropped the first; an early retry's bound read
+two clocks (false practice); Multi-Session could park an unrecorded run first; a missing stamp failed open. 2: a 0 s
+charge from a lowered local stamp; a replay could open before the charge (reccheck faults a `parkclock` inside a viewing
+window). 3: low notes only (game BACKLOG).
+
+**Verified.** Rig on surf_ace (game tools/p1692-arms.md): main's clock fell 1.70 s short of the wall across a retry;
+P1692 said "2 s away added to the clock" and ran 0.28-0.43 s ahead of the wall (the round-up), clean, also for a retry
+0.135 s into the run. **Not verified:** the record in a kept `.rec` (the arm's run never finishes), a listen-server
+retry through the client's own `retry`, a lobby (needs the QC deploy).
+
+## Patch 1646 - Scripts, waits and deferred presses are counted (in_script_lapses); a lapse in a run unranks it
+
+**Cause.** Lex, 20 Nov 2026, for the Normal (ranked) categories: "Scripts are not allowed, 1 button per key, no waits".
+Before this, a button press from the console, an alias, a multi-command bind or a forged key number, a `wait`, and
+plugin-injected input were indistinguishable from a key press on Linux (Windows' key guard covers injected keys only).
+
+**Change.** client/keys.c: Key_Event notes a key's own fresh press (not its repeat, not a synthetic event) when its bind
+is a single bare `+command` (+fire may carry weapon digits), with no `$`, at a bind level that may press buttons
+(CL_DirectPress). client/cl_input.c: KeyDown and +fire take the note back by command name and key number in the press's
+frame or the next (host_framecount; every frame that advances it runs Cbuf_Execute first); a new press with no note
+counts a lapse in the read-only, never-reset in_script_lapses. Counted on any thread, published on the main thread every
+frame (CL_ScriptLapseSync from Host_Frame). common/cmd.c: wait, waitms, every `in`, waitmap in a map, and an alias body
+queued below the executing level (it runs next frame) count; an old config's `alias +attack2 +button3` is dropped
+silently. +attack2/-attack2 are real commands on button 3 (the engine alias reached KeyDown without the key number, so
+every honest press counted). Smartjump's second button (noclip/fly) is judged once. common/plugin.c: plugin key/mouse
+injection counts. common/common.c: sys_platform is NOSET and NOTFROMSERVER. Game QC (P1646): csprogs steps the input
+report's bad on a change (IPG_SCRIPT 16), so a lapse during a run unranks it as `changed`; sv_rank_scriptguard (default
+0) unranks engines without the counter.
+
+**Review.** Four independent rounds. 1: waitmap and `in 0` uncounted, a smartjump double count, ring eviction within one
+frame, sys_platform settable by a map, a cvar written off the main thread. 2: the +attack2 alias, deferred alias bodies,
++fire unjudged, the smartjump skip after a repeat. 3: a note could outlive its own press and be spent by a script (now
+one frame; bare binds at a usable level only). 4: low residuals only, in the game's BACKLOG (rotate/impulse/toggle binds
+and cl_iDrive await an owner ruling; Linux outside injection).
+
+**Verified.** Linux rig (wtype under a headless compositor; game tools/p1646-arms.md): a bound key held or tapped,
++attack2 and noclip jump +0; console +jump, a forged key, an alias, a multi-command bind (+2), wait, waitms, in 0,
+waitmap, an aliaslevel body and console +fire +1 each; sys_platform and the counter refuse `set`. win64 client and
+server cross-compile clean. **Not verified:** Windows at runtime, a real gamepad, wheel or touch in hand; the smartjump
+branch (the rig cannot reach it; checked by reading).
+
+## Patch 1670 - Map downloads start during a local game (engine + menu)
+
+**Cause.** Lex: "you need to disconnect to download a map in my game? can that be fixed and allow downloading while in
+a server?" CL_CheckOrEnqueDownloadFile refused every download while this process hosts a game (sv.state: "no
+downloading if we're the one we'd be downloading from"), so the menu (P1094) queued a Download until the local game
+ended ("downloads when you leave this game"). On a remote server menu downloads already ran.
+
+**Change.** engine client/client.h DLLF_WEBONLY (1<<11), qdownload_t.progresstime; client/pr_menu.c
+PF_m_downloadmap; client/cl_parse.c CL_CheckOrEnqueDownloadFile, CL_RequestNextDownload, CL_DownloadFinished,
+CL_MapDownloadHolds; server/sv_ccmds.c SV_Map_f; http/httpclient.c HTTP_CL_Think; read-only cvar cl_download_localgame
+(1, WEBCLIENT builds only). Lane FTESurf-worktrees/launcherupd-20261120-75 (arms tools/p1670arm.py, p1670arm2.py).
+- During a local game the builtin marks its request DLLF_WEBONLY, which passes the sv.state refusal. Such a request is
+  queued only when it has a web address (the map mirror, or P1656's catalogue object for a GoldSrc package) and never
+  falls back to the netchan, which here is the player's own server; with no address it is refused (the menu says the
+  download failed).
+- The map the local game runs (svs.name, any case) is never fetched over: the server and client share one model cache
+  and a finished download reloads that world. The builtin returns 3, "after this game", and the menu queues it as P1094
+  did.
+- CL_RequestNextDownload returned at the top while any download ran, so a map change or join waited for the menu's
+  download to end. A DLLF_WEBONLY transfer no longer holds a signon that needs no file; one that has files queued still
+  waits for it (the world model does not wait for its own queued download).
+- A WEBONLY transfer is "aside" only while the local server runs: once the player leaves, a join whose world is that
+  very file waits for it as before.
+- SV_Map_f refuses a map whose download is queued or running (maps/<name>.bsp or goldsrc/<name>.pk3; maps/ prefix,
+  .bsp suffix, #modifier and case folded): it would land under the server and the model cache it shares with the
+  client. Not once the running web transfer has been silent 60 s (the menu's PJ_STALL; progresstime is stamped when
+  its bytes grow): nothing can cancel a web download, and a dead one would block that map for the session. The menu's
+  Play (ui_dl_holds) refuses the same map with a status line, by the engine's own dlstate and the same 60 s.
+- CL_DownloadFinished during a local game, as a net: a finished map that is the server's world (sv.modelname, or a
+  GoldSrc id equal to svs.name) is not purged, reloaded or remounted under the server; no CL_CheckModelResources scan
+  of a finished map (nothing may fetch what it names there, and it reads the whole BSP mid-run). Builds without
+  WEBCLIENT refuse WEBONLY.
+- Menu (game m_main.qc ui_dl_start): with cl_download_localgame it asks the engine at once; 3, or an engine without the
+  cvar, keeps the deferral. Older menus defer by themselves and never ask during a local game. A download that lands
+  with no menu open reloads the map list when the menu next opens (dl_reload, through ui_maplist_changed so the picked
+  map and a GoldSrc row's scroll stay), not mid-run.
+
+**Review.** Round 1, two readers (engine; menu and packer). Engine: the aside outlived the local game, so leaving and
+joining a server on the map still downloading went on to CL_LoadModels without its world ("Couldn't find ... cannot
+fully connect"); switching the local game to a map whose forced re-get was in flight purged the shared world model
+under the server when the file landed (a different build crashed the client); the finished map's resource scan read
+the whole BSP mid-run; no WEBCLIENT guard. Menu: the list reloaded mid-game when a download landed; the loading card
+lacked the warning; stale comments. All fixed, each reproduced first where it could be (arms Aw and B fail on the
+round-1 build and pass on the fix). Round 2 (one reader): the net above left the old build cached, or a GoldSrc package
+mounted, after the local game, so a later join on that map failed its checksum; hence SV_Map_f's refusal, which keeps
+the sequence from starting; the cvar now exists only with WEBCLIENT; the deferred reload kept neither selection nor
+scroll. Round 3: no blocking bug; a stalled transfer would have blocked its map for the session (hence the 60 s
+release); the menu-open already-present reload shifted the selection; Play followed menu state, not the engine's.
+Round 4: no high-severity bug; the in-flight test compared names exactly (a join fetches the server's spelling); Play
+let go of a map queued behind another transfer, and released a stalled netchan transfer the engine never releases;
+the menu's 60 s could end a frame before the engine's (now 62). Fixed. Round 5: nothing significant; the menu's stall
+clock now restarts when the engine's current file changes.
+
+**Verified.** tools/p1670arm.py (lane launcherupd-20261120-75) on a copy of the production 0.1.53 install under
+headless labwc, real downloads from the public mirrors: hosting surf_prelude, Download of agtricks (Source) and of
+bhop_continuous_gs (a P1669 package) both arrive during the game, which keeps running; bhop_alien_sewers (54 MB) is in
+flight when `map surf_prelude` restarts the level, the client is back in game after 2.4 s and the download then
+completes; a forced re-get of surf_prelude while hosting it is deferred (nothing fetched) and starts when the game
+ends; the GoldSrc map then loads and plays; no list reload in the game, the list reloads when the menu opens.
+Control: 0.1.53's engine with the new menu still defers (after local 1) and fetches once the game ends.
+tools/p1670arm2.py: Aw, hosting surf_prelude with another map's BSP installed as bhop_alien_sewers, force re-get it and
+`map bhop_alien_sewers` while it downloads: the round-1 build switches and its client dies when the file lands; the
+final build refuses the typed map and the menu's Play, stays on surf_prelude, and once the file is in loads the new
+build (1665 ms against 296 ms for the stand-in). S, the same re-get from a local HTTP server that sends 64 KB and goes
+silent: refused at once; after 60 s silent, Play loads the map; the dead transfer is still there. B, download kz_unicorn_gs
+(124 MB xz, nothing missing) in a local game, leave and join a dedicated server running it (a copy of the same install,
+so the join queues no file of its own) while it downloads: round 1 "Couldn't find maps/kz_unicorn_gs.bsp - cannot fully
+connect"; the fix waits for the package and joins. All of the above pass again on the landed trees (engine over main
+b8c359102, game over 8cf3dda6); linux64 and win64 build.
+Not fixed (BACKLOG): the package unpack (xz decode + sha256, P1656) runs on the main thread, about 12 MB/s here, so a
+download that lands during play stalls the frame for that long: 0.1 s for the median package (1.2 MB xz), 0.4 s or more
+for 137 packages over 5 MB, 4 to 10 s for the 4 over 50 MB (measured 11 s for kz_unicorn_gs).
+
+## Patch 1669 - Every GoldSrc map in the archive is offered, with a warning for missing files (game tools + data + menu)
+
+**Cause.** Lex: "Can you allow downloading and playing of all AG maps regardless of if it's missing assets please?
+just a warning, maybe a hover tool tip 'warning' in red." P1658 offered 923 of 1,308 maps: a map was left out (a gx
+row, greyed) when anything it names was found nowhere, or when it is not a bhop or kz map.
+
+**Change.** game tools/gsrcpack.py: every map whose BSP parses and whose name is usable is a gs row; what nobody has is
+left out of the package as before and flagged in the catalogue's flags field: 8 sky, 16 textures, 32 models, 64
+sounds (beside 1 KZ timer, 2 ladders, 4 water). gx keeps only bsp (unreadable) and name (unusable id); none today.
+Older readers take the new rows unchanged: the engine's FS_GoldSrc_Row never reads flags, and the 0.1.53 menu accepts
+a flags field of up to three digits and kind other (those rows show without the warning). Menu m_goldsrc.qc,
+m_maprows.qc: a flagged row downloads and plays like any other, with a red "warning" in its detail line (card and
+list) and a hover tooltip naming only what it lacks and what that looks like in game.
+Packages: 385 new (1,598 MB xz; largest kz_gigablockier_gs, 120 MB xz, 159 MB pk3), the 923 published rows
+byte-identical; uploaded with the Pi root's r2mirror (all 1,308 bodies verified), catalogue published 20 Nov 2026
+17:33Z (1,308 gs rows, 361 with a warning: 333 sky, 9 textures, 7 models, 26 sounds; 29 kind other).
+
+**Verified.** A dedicated server loads the smallest new map of each missing-file combination (13 maps: sky, textures,
+models, sounds, other, and their mixes) with no error. tools/p1670arm.py: bhop_continuous_gs (textures missing)
+downloads from the published object and plays (surfaces without a texture draw dark); its row shows the red warning
+and the tooltip is up over it in card and list view (screenshots p1670_warn_cards/list). The published catalogue is
+byte-identical to the built one.
+
+## Patch 1691 - Discord Rich Presence: map, stage, run clock and the map's picture
+
+**Cause.** Lex, 21 Nov 2026: "discord intergration, is it possible for people to see the map thumbnail and like your
+Stage and map name, your time on discord when you're playing?" -- "yes I want it, Ill sign up tomorrow".
+
+**Change.** engine client/cl_discord.c (new; Makefile, CMakeLists.txt, cl_main.c, client.h): talks to the running
+Discord client over its local IPC -- a unix socket discord-ipc-0..9 under $XDG_RUNTIME_DIR, $TMPDIR or /tmp (and the
+Flatpak/Snap folders), or the Windows pipe \\.\pipe\discord-ipc-N (PIPE_NOWAIT) -- with Discord's framing (LE opcode,
+length, JSON): handshake, READY, SET_ACTIVITY, ping/pong, close. No SDK or library. The engine builds the activity
+itself: details = the map (only when the local map table data/mapmeta*.txt or the GoldSrc catalogue lists it, else "a
+custom map"; " (bonus N)" on a bonus track), state = "Stage s/n" / "Linear" with Discord's elapsed clock from the run's
+start, "In the start zone", "Finished a run", "Local game" / "Online", "Spectating" or "Watching a replay" (stat 102
+says whose stats they are), "(paused)" when the ticks stop; large image = the map's thumbnail
+(https://play.proto.bar/ftesurf/media/thumbs/<id>.jpg, the menu's P1099 table) or the application's "logo" asset.
+At most one update per 4 s and only on a change; one start time per run. CL_Discord_Frame runs once a second from
+Host_Frame; closing the connection (cl_discord 0, quit) clears the presence. Cvars (CVAR_NOTFROMSERVER, which also
+refuses stuffcmd and CSQC localcmd/cvar_set): cl_discord 1 (archived; 0 hides), cl_discord_appid (default
+1573424786774696097, Lex's "World of Surf" application, made 21 Nov; empty = off), cl_discord_ipcdir (tests only). The
+logo is the brand kit's square export by URL (https://proto.bar/ftesurf/worldofsurf-512.png), so the application needs
+no art assets.
+
+**Review.** Round 1 (robustness, trust, correctness): no crash or memory-safety defect; real ones, all fixed above: a
+spectator's or demo's run shown as yours; the start re-rounded every second (a send every 4 s) and drifted while paused;
+a third-party server's map file name on the player's profile; a blocking Windows pipe write; no reconnect on an appid
+change; a wrong appid printing every 60 s; CMake missing the file. Round 2: a corrected appid waited out the wrong one's
+backoff, a 32+ digit id reconnected every second, a run could begin "(paused)" -- fixed (ids of 1-20 digits).
+
+**Verified.** Linux build with no warnings in the file; mingw -fsyntax-only clean. Rig against a fake IPC server
+(never the real Discord): handshake with the configured id, READY, "In the menu", then bhop_sandtrap2 with its
+thumbnail URL and the map's start time; ahop_coast after !r: "In the start zone"; cl_discord 0 closes the connection,
+1 reconnects and re-sends; disconnect -> "In the menu"; quit closes. With the id set, against Lex's running Discord (21 Nov): READY, and each
+SET_ACTIVITY reply names "World of Surf" / application_id 1573424786774696097 and keeps both image URLs (as Discord's
+mp:external proxies). **Not verified:** a running-run clock in the rig (the arm's walk did not leave ahop_coast's start
+box), Windows.
+
+## Patch 1690 - GoldSrc doors that hurt or heal knock the player back under the AG modes (game QC only)
+
+**Cause.** Lex, 21 Nov 2026, on bkz_goldbhop_gs's "healers" (five invisible func_doors over the start, dmg -10000,
+speed 10000, lip -32, triggered by trigger_multiples under them): "in AG mode I would prefer the knockback, in CS mode,
+nothing". GS_DoorBlocked ignored dmg, so they did nothing. Half-Life's CBaseDoor::Blocked calls TakeDamage(dmg), whose
+CBaseMonster::TakeDamage adds `dir * -DamageForce(dmg)` to the player (dir from the player's centre to the inflictor's
+minus 10 z; DamageForce = dmg * 5 * 73728 / volume, capped at +1000 only), so a negative dmg throws the player toward
+the door at sv_maxvelocity: the Half-Life ports' booster (HL kz files a run that used it as "pro", not "pure").
+
+**Change.** game src/server/sv_goldsrc.qc: GS_DamageKnock, called first in GS_DoorBlocked, under an ag-* profile only
+(serverkey *movementprofile; cs16 and Source modes push nothing), for a walking player; dmg truncated as
+CBasePlayer::TakeDamage's (int). A sliding door is moved back and the player restored before .blocked (WPhys_Push), so
+it applies at once, as HL does; a rotating door calls .blocked before either (WPhys_PushAngles), so it aims at its
+origin (HL's Center() for a rotated brush) and queues the knock for GS_KnockPost in PlayerPreThink (beside
+SV_VsVelPost; dropped across !r, skipped while held). GS_KnockApply records it as trigger_setspeed does: run_pushed for a
+lift, SV_RecWarp "speed"; GS_DoorActivate keeps the activator's bank_attempt and SV_BankSourceTaint, and the knock calls
+SV_BankCauseAffect, so a door another player opened makes the run practice.
+
+**Review.** Round 1 (control flow; evidence): the first cut wrote the warp from inside a rotating door's .blocked,
+where the player's origin is the engine's 1/8-unit nudge (a replay would start off and fail every sample after it), aimed
+at the rotated box, and never tainted a knock from a door someone else opened -- all fixed above. Round 2: a second
+rotating door in the same tick overwrote the first's cause (fixed); left in BACKLOG because GoldSrc profiles are unranked
+and never run on tournament servers: a delayed fire (gs_delay, multi_manager) reads the activator's attempt at
+activation, not when triggered; Tour_Hold leaves a queued knock for Tour_Unhold.
+
+**Verified.** Rig, dedicated server on bkz_goldbhop_gs, developer 1, walking from y -3720 through the healer column:
+ag-250 five knocks, the player thrown on at the 2000 u/s per-axis cap (y -3641 -> -3481 -> -3321 ... in 0.08 s
+samples); sv_goldsrcprofile cs16 no knock line, walks through at 250. Before the patch (instrumented build): the doors
+fire and block on the player with no effect. **Not verified:** a damaging rotating door (no test map has one).
 ## Patch 1685 - Chat names open profiles; a picture before every name (QC client + menu)
 
 **Problem.** Lex's 21 Nov list: "allow clicking on names in chats, to see their profiles. Also ensure peoples display

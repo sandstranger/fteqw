@@ -822,6 +822,28 @@ static qboolean CopyCSQCEdictToEntity(csqcedict_t *fte_restrict in, entity_t *ft
 	memset(out, 0, sizeof(*out));
 	out->model = model;
 	out->pvscache = in->pvsinfo;
+	{	//FTESurf Patch 1698: the record where it is drawn this frame, for any rotation and scale: CSQC moves
+		//entities by field writes (no relink) and links ignore .scale, so pvsinfo can be stale or too small
+		extern qboolean R_EntPVSSource(void);
+		if (R_EntPVSSource())
+		{
+			float sc = in->xv->scale ? fabs(in->xv->scale) : 1;
+			float r = (model->radius > 0 ? model->radius : RadiusFromBounds(model->mins, model->maxs)) * sc;
+			vec3_t amin, amax;
+			int i;
+			for (i = 0; i < 3; i++)
+			{
+				amin[i] = in->v->origin[i] - r;
+				amax[i] = in->v->origin[i] + r;
+				if (in->v->absmin[i] <= in->v->absmax[i])
+				{	//its link may be bigger (a RF_USEAXIS portal door sized by setsize); stale links only widen it
+					amin[i] = min(amin[i], in->v->absmin[i]);
+					amax[i] = max(amax[i], in->v->absmax[i]);
+				}
+			}
+			cl.worldmodel->funcs.FindTouchedLeafs(cl.worldmodel, &out->pvscache, amin, amax);
+		}
+	}
 
 	rflags = in->xv->renderflags;
 	if (csqc_isdarkplaces)
@@ -2906,6 +2928,76 @@ void QCBUILTIN PF_R_SetViewFlag(pubprogfuncs_t *prinst, struct globalvars_s *pr_
 
 void R2D_PolyBlend (void);
 void R_DrawNameTags(void);
+//FTESurf Patch 1698: checkpvs for CSQC, on a Source map under r_entpvs_source, with the entity cull's rules
+//(gl_alias.c BE_GenModelBatches): no record is visible, an eye in solid judges from the last good cluster (Patch
+//138) with no area unless the void overview draws everything, area 0 tests no area, r_novis nothing, an unvised map
+//areas only. Rows are kept for the last few clusters asked (portal eyes take turns with the main one).
+#define CS_PVSROWS 8
+static void QCBUILTIN PF_cs_checkpvs(pubprogfuncs_t *prinst, struct globalvars_s *pr_globals)
+{
+	extern qboolean R_EntPVSSource(void);
+	extern int Surf_LastGoodCluster(model_t *w);
+	extern qbyte *Surf_AllVis(model_t *w);
+	static struct { pvsbuffer_t buf; model_t *w; void *vis; int cluster; unsigned int used; } rows[CS_PVSROWS];
+	static unsigned int rowclock;
+	model_t *w = cl.worldmodel;
+	wedict_t *ent;
+	int cluster, area, areas[2], i, pick;
+	qbyte *pvs;
+	if (!R_EntPVSSource())
+	{
+		PF_checkpvs(prinst, pr_globals);
+		return;
+	}
+	ent = G_WEDICT(prinst, OFS_PARM1);
+	if (!ent->pvsinfo.num_leafs)
+	{
+		G_FLOAT(OFS_RETURN) = true;
+		return;
+	}
+	cluster = w->funcs.ClusterForPoint(w, G_VECTOR(OFS_PARM0), &area);
+	if (cluster < 0)
+	{
+		extern qboolean Surf_MainVoidView(void);
+		cluster = Surf_MainVoidView() ? -1 : Surf_LastGoodCluster(w);
+		area = 0;
+	}
+	if (r_novis.ival)
+		pvs = NULL;
+	else if (!w->vis)
+		pvs = Surf_AllVis(w);
+	else if (cluster < 0)
+		pvs = NULL;
+	else
+	{
+		for (i = 0, pick = 0; i < CS_PVSROWS; i++)
+		{
+			if (rows[i].w == w && rows[i].vis == w->vis && rows[i].cluster == cluster && rows[i].buf.buffersize >= w->pvsbytes)
+				break;
+			if (rows[i].used < rows[pick].used)
+				pick = i;
+		}
+		if (i == CS_PVSROWS)
+		{
+			i = pick;
+			w->funcs.ClusterPVS(w, cluster, &rows[i].buf, PVM_REPLACE);
+			rows[i].w = w;
+			rows[i].vis = w->vis;
+			rows[i].cluster = cluster;
+		}
+		rows[i].used = ++rowclock;
+		pvs = rows[i].buf.buffer;
+	}
+	if (!pvs)
+	{
+		G_FLOAT(OFS_RETURN) = true;	//nothing to judge from
+		return;
+	}
+	areas[0] = 1;
+	areas[1] = area;
+	G_FLOAT(OFS_RETURN) = w->funcs.EdictInFatPVS(w, &ent->pvsinfo, pvs, area > 0 ? areas : NULL);
+}
+
 static void QCBUILTIN PF_R_RenderScene(pubprogfuncs_t *prinst, struct globalvars_s *pr_globals)
 {
 	qboolean scissored;
@@ -2942,7 +3034,16 @@ static void QCBUILTIN PF_R_RenderScene(pubprogfuncs_t *prinst, struct globalvars
 	{
 		//P1345: discard hidden transient state at either edge, never replay it on reentry.
 		if (worldonly != lastworldonly && cl.splitclients <= 1 && pe)
+		{	//FTESurf Patch 1701: particles only, not every type's shader (p_script.c)
+#ifdef PSET_SCRIPT
+			extern qboolean pscript_clearkeeplooks;
+			pscript_clearkeeplooks = true;
 			P_ClearParticles();
+			pscript_clearkeeplooks = false;
+#else
+			P_ClearParticles();
+#endif
+		}
 		lastworldonly = worldonly;
 	}
 	//P1348: suppressed scenes must still retire the previous light epoch.
@@ -7011,6 +7112,11 @@ static void QCBUILTIN PF_resourcestatus(pubprogfuncs_t *prinst, struct globalvar
 
 void QCBUILTIN PF_CL_DrawTextField (pubprogfuncs_t *prinst, struct globalvars_s *pr_globals);
 
+/*P1712: float() cl_windowactive: the window has focus (vid.activeapp); the TAS upload offer's countdown waits for it*/
+static void QCBUILTIN PF_cl_windowactive(pubprogfuncs_t *prinst, struct globalvars_s *pr_globals)
+{
+	G_FLOAT(OFS_RETURN) = vid.activeapp ? 1 : 0;
+}
 static void QCBUILTIN PF_ui_native_gamefocus(pubprogfuncs_t *prinst, struct globalvars_s *pr_globals)
 {
 	//The engine owns console/menu/prompt precedence; QC cannot infer it from cursor mode.
@@ -7027,6 +7133,7 @@ static void QCBUILTIN PF_ui_native_gamefocus(pubprogfuncs_t *prinst, struct glob
 static void QCBUILTIN PF_cl_acct_sign (pubprogfuncs_t *prinst, struct globalvars_s *pr_globals);
 static void QCBUILTIN PF_cl_acct_random (pubprogfuncs_t *prinst, struct globalvars_s *pr_globals);
 static void QCBUILTIN PF_cl_acct_browse (pubprogfuncs_t *prinst, struct globalvars_s *pr_globals);
+static void QCBUILTIN PF_cl_sys_openfolder (pubprogfuncs_t *prinst, struct globalvars_s *pr_globals);
 static void QCBUILTIN PF_cl_tasrev_sign (pubprogfuncs_t *prinst, struct globalvars_s *pr_globals);
 static void QCBUILTIN PF_cs_movementprofile_switch (pubprogfuncs_t *prinst, struct globalvars_s *pr_globals);
 void CL_Receipt_VM(qboolean made);
@@ -7300,7 +7407,7 @@ static struct {
 	{"remapshader",				PF_remapshader,		0},
 	{"te_bloodqw",				PF_cl_te_bloodqw,	239},	// #239 void te_bloodqw(vector org[, float count]) (FTE_TE_STANDARDEFFECTBUILTINS)
 
-	{"checkpvs",				PF_checkpvs,		240},
+	{"checkpvs",				PF_cs_checkpvs,		240},	//FTESurf Patch 1698
 //	{"matchclientname",			PF_matchclient,		241},
 	{"sendpacket",				PF_cl_SendPacket,	242},	//void(string dest, string content) sendpacket = #242; (FTE_QC_SENDPACKET)
 
@@ -7454,6 +7561,7 @@ static struct {
 	{"drawsetcliparea",			PF_CL_drawsetcliparea,			324},	// #324 void(float x, float y, float width, float height) drawsetcliparea (EXT_CSQC_???)
 	{"drawresetcliparea",		PF_CL_drawresetcliparea,		325},		// #325 void(void) drawresetcliparea (EXT_CSQC_???)
 	{"ui_native_gamefocus",	PF_ui_native_gamefocus,	0},
+	{"cl_windowactive",		PF_cl_windowactive,		0},	//FTESurf P1712
 	{"ui_native_status",		PF_ui_native_status,		0},
 	{"ui_native_open",		PF_ui_native_open,		0},
 	{"ui_native_draw",		PF_ui_native_draw,		0},
@@ -7524,6 +7632,7 @@ static struct {
 	{"acct_sign",				PF_cl_acct_sign,				0},		//FTESurf Patch 625: string(string nonce, float kind)
 	{"acct_random",				PF_cl_acct_random,			0},		//FTESurf Patch 625: string(float bytes)
 	{"acct_browse",				PF_cl_acct_browse,			0},		//FTESurf Patch 625: float(string opener)
+	{"sys_openfolder",			PF_cl_sys_openfolder,		0},		//FTESurf Patch 1797: float(string gamepath)
 	{"tasrev_sign",				PF_cl_tasrev_sign,			0},		//FTESurf P1090: string(string sha, string parent, string mapcrc, float from, float to)
 	{"movementprofile_switch",	PF_cs_movementprofile_switch,	0},		//FTESurf P1598: float(string mode)
 	{"cmdlevel_local",		PF_cs_cmdlevel_local,		0},		//FTESurf P1598: float()
@@ -9797,6 +9906,7 @@ qboolean IN_RealKeyDown(void);
 void IN_RealKeyAbort(void);
 qboolean CL_Receipt_AcctSign(const char *nonce, int kind, qboolean keyed, char *out, size_t outlen);
 qboolean CL_Receipt_Browse(const char *opener);
+qboolean CL_OpenRunFolder(const char *gamepath);
 /*
   ONE PRESS BUYS ONE LINK SIGNATURE AND ONE BROWSER, and a held key's repeats
   buy nothing: the review looped both builtins inside one handler call.  The
@@ -9820,7 +9930,7 @@ static void QCBUILTIN PF_cl_acct_sign (pubprogfuncs_t *prinst, struct globalvars
 {
 	char out[512];
 	float f = G_FLOAT(OFS_PARM1);
-	int kind = (f >= -6 && f <= -2) ? (int)f : 0;	/*a NaN is nobody's kind*/
+	int kind = (f >= -7 && f <= -2) ? (int)f : 0;	/*a NaN is nobody's kind*/
 	qboolean keyed = CSQC_RealKey();
 
 	/*the statement names ONE file of code: a VM holding a second (an addon,
@@ -9828,7 +9938,9 @@ static void QCBUILTIN PF_cl_acct_sign (pubprogfuncs_t *prinst, struct globalvars
 	  guess from what the file hook was asked for.*/
 	if (prinst->numprogs != 1)
 		CL_Receipt_VMCode(NULL, 0);
-	if (kind != -2)
+	if (kind == -7)
+		keyed = false;	/*P1712: never keyed, and spends no press*/
+	else if (kind != -2)
 	{
 		/*a link's kind: this press's one signature, or none*/
 		if (!keyed || csqc_realkey_signs < 1)
@@ -9910,6 +10022,20 @@ static void QCBUILTIN PF_cl_acct_browse (pubprogfuncs_t *prinst, struct globalva
 		return;
 	csqc_realkey_browses--;
 	G_FLOAT(OFS_RETURN) = CL_Receipt_Browse(PR_GetStringOfs(prinst, OFS_PARM0));
+}
+/*float(string gamepath) sys_openfolder: a data/runs folder of this game in the file manager (Patch 1797), on a press.*/
+static void QCBUILTIN PF_cl_sys_openfolder (pubprogfuncs_t *prinst, struct globalvars_s *pr_globals)
+{
+	G_FLOAT(OFS_RETURN) = 0;
+	if (!CSQC_RealKey() || csqc_realkey_browses < 1)
+		return;
+	if (prinst->numprogs != 1)
+		CL_Receipt_VMCode(NULL, 0);	/*review 2: one file of code, as acct_sign asks*/
+	if (CL_OpenRunFolder(PR_GetStringOfs(prinst, OFS_PARM0)))
+	{
+		csqc_realkey_browses--;
+		G_FLOAT(OFS_RETURN) = 1;
+	}
 }
 
 qboolean CSQC_KeyPress(int key, int unicode, qboolean down, unsigned int devid)

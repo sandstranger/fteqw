@@ -1445,6 +1445,7 @@ YOU SHOULD NOT EDIT THIS FILE BY HAND
 #ifdef GLQUAKE
 {QR_OPENGL, 110, "bloom_final",
 "!!cvarf r_bloom\n"
+"!!cvarf r_bloom_mapscale=1.0\n"
 "!!cvarf r_bloom_retain=1.0\n"
 "!!samps 4\n"
 //add them together
@@ -1462,12 +1463,13 @@ YOU SHOULD NOT EDIT THIS FILE BY HAND
 "#endif\n"
 "#ifdef FRAGMENT_SHADER\n"
 "uniform float cvar_r_bloom;\n"
+"uniform float cvar_r_bloom_mapscale;\n"
 "uniform float cvar_r_bloom_retain;\n"
 "void main ()\n"
 "{\n"
 "gl_FragColor = \n"
 "cvar_r_bloom_retain * texture2D(s_t0, tc) +\n"
-"cvar_r_bloom*(\n"
+"cvar_r_bloom*cvar_r_bloom_mapscale*(\n"
 "texture2D(s_t1, tc) +\n"
 "texture2D(s_t2, tc) +\n"
 "texture2D(s_t3, tc)\n"
@@ -1766,6 +1768,7 @@ YOU SHOULD NOT EDIT THIS FILE BY HAND
 "!!permu TESS\n"
 "!!permu FRAMEBLEND\n"
 "!!permu SKELETAL\n"
+"!!samps =ALPHASHADOW diffuse\n"	//FTESurf Patch 1768: an alpha-tested caster (#ALPHASHADOW#MASK=ref[#MASKLT]) leaves its holes out of the depth map
 "!!cvardf r_tessellation_level=5\n"
 
 "#include \"sys/defs.h\"\n"
@@ -1777,6 +1780,9 @@ YOU SHOULD NOT EDIT THIS FILE BY HAND
 
 "#ifdef VERTEX_SHADER\n"
 "#include \"sys/skeletal.h\"\n"
+"#if defined(ALPHASHADOW) && !defined(TESS)\n"
+"varying vec2 tc;\n"
+"#endif\n"
 "#ifdef TESS\n"
 "varying vec3 vertex;\n"
 "varying vec3 normal;\n"
@@ -1788,6 +1794,9 @@ YOU SHOULD NOT EDIT THIS FILE BY HAND
 "vertex = v_position;\n"
 "#else\n"
 "gl_Position = skeletaltransform();\n"
+"#ifdef ALPHASHADOW\n"
+"tc = v_texcoord;\n"
+"#endif\n"
 "#endif\n"
 "}\n"
 "#endif\n"
@@ -1852,8 +1861,19 @@ YOU SHOULD NOT EDIT THIS FILE BY HAND
 
 
 "#ifdef FRAGMENT_SHADER\n"
+"#if defined(ALPHASHADOW) && !defined(TESS)\n"
+"varying vec2 tc;\n"
+"#endif\n"
 "void main ()\n"
 "{\n"
+"#if defined(ALPHASHADOW) && !defined(TESS) && defined(MASK)\n"
+"#ifdef MASKLT\n"
+"if (texture2D(s_diffuse, tc).a < float(MASK))\n"
+"#else\n"
+"if (texture2D(s_diffuse, tc).a >= float(MASK))\n"
+"#endif\n"
+"discard;\n"
+"#endif\n"
 //must always draw something, supposedly. It might as well be black.
 "gl_FragColor = vec4(0, 0, 0, 1);\n"
 "}\n"
@@ -2318,6 +2338,7 @@ YOU SHOULD NOT EDIT THIS FILE BY HAND
 #ifdef GLQUAKE
 {QR_OPENGL, 110, "defaultadditivesprite",
 "!!permu FOG\n"
+"!!cvarf r_autoexposure_sky\n"
 "!!samps 1\n"
 
 //meant to be used for additive stuff. presumably particles and sprites. though actually its only flashblend effects that use this at the time of writing.
@@ -2340,9 +2361,10 @@ YOU SHOULD NOT EDIT THIS FILE BY HAND
 "varying vec2 tc;\n"
 "varying mediump vec4 vc;\n"
 "uniform vec4 e_colourident;\n"
+"uniform float cvar_r_autoexposure_sky;\n"
 "void main ()\n"
 "{\n"
-"gl_FragColor = fog4additive(texture2D(s_t0, tc) * vc * e_colourident);\n"
+"gl_FragColor = fog4additive(texture2D(s_t0, tc) * vc * e_colourident * vec4(vec3(cvar_r_autoexposure_sky), 1.0));\n"
 "}\n"
 "#endif\n"
 },
@@ -4146,6 +4168,7 @@ YOU SHOULD NOT EDIT THIS FILE BY HAND
 "!!permu FOG\n"
 "!!samps reflectcube\n"
 "!!cvardf r_skyfog=0.5\n"
+"!!cvarf r_autoexposure_sky\n"
 "!!cvard4 r_glsl_skybox_orientation=0 0 0 0\n"
 "!!cvardf r_glsl_skybox_autorotate=1\n"
 "#include \"sys/defs.h\"\n"
@@ -4180,6 +4203,7 @@ YOU SHOULD NOT EDIT THIS FILE BY HAND
 "}\n"
 "#endif\n"
 "#ifdef FRAGMENT_SHADER\n"
+"uniform float cvar_r_autoexposure_sky;\n"
 "void main ()\n"
 "{\n"
 "vec4 skybox = textureCube(s_reflectcube, pos);\n"
@@ -4192,7 +4216,7 @@ YOU SHOULD NOT EDIT THIS FILE BY HAND
 "skybox.rgb = mix(skybox.rgb, fog3(skybox.rgb), float(r_skyfog));  //fog in terms of actual geometry distance\n"
 "#endif\n"
 "#endif\n"
-"gl_FragColor = skybox;\n"
+"gl_FragColor = vec4(skybox.rgb * cvar_r_autoexposure_sky, skybox.a);\n"
 "}\n"
 "#endif\n"
 },
@@ -5049,6 +5073,9 @@ YOU SHOULD NOT EDIT THIS FILE BY HAND
 
 "#ifdef FAKESHADOWS \n"
 "varying vec4 vtexprojcoord;\n"
+"#ifdef FAKESHADOWS_CASCADE\n"
+"varying vec3 shwpos; //FTESurf Patch 1762: world position for the sun cascades on a Source map (sys/pcf.h CascadeShadowFilter)\n"
+"#endif\n"
 "#endif\n"
 "#endif\n"
 
@@ -5098,6 +5125,9 @@ YOU SHOULD NOT EDIT THIS FILE BY HAND
 "#ifdef FAKESHADOWS \n"
 "gl_Position = ftetransform();\n"
 "vtexprojcoord = (l_cubematrix*vec4(v_position.xyz, 1.0));\n"
+"#ifdef FAKESHADOWS_CASCADE\n"
+"shwpos = (m_model*vec4(v_position.xyz, 1.0)).xyz;\n"
+"#endif\n"
 "#else\n"
 "gl_Position = ftetransform();\n"
 "#endif\n"
@@ -5424,7 +5454,7 @@ YOU SHOULD NOT EDIT THIS FILE BY HAND
 
 "#ifdef FAKESHADOWS\n"
 /*filter the light by the shadowmap. logically a boolean, but we allow fractions for softer shadows*/
-"col.rgb *= ShadowmapFilter(s_shadowmap, vtexprojcoord);\n"
+"col.rgb *= CascadeShadowFilter(s_shadowmap, vtexprojcoord, shwpos);\n"	//FTESurf Patch 1762: the single map unless cascades are live
 //col.g = ShadowmapFilter(s_shadowmap, vtexprojcoord);
 "#endif\n"
 
@@ -6740,6 +6770,7 @@ YOU SHOULD NOT EDIT THIS FILE BY HAND
 "!!ver 100-450\n"
 "!!samps 1\n"
 "!!cvarf shadows=0\n"
+"!!cvarf r_dither=0\n"
 //this shader is applies gamma/contrast/brightness to the source image, and dumps it out.
 
 "varying vec2 tc;\n"
@@ -6757,6 +6788,7 @@ YOU SHOULD NOT EDIT THIS FILE BY HAND
 "#endif\n"
 "#ifdef FRAGMENT_SHADER\n"
 "uniform float cvar_shadows;\n"
+"uniform float cvar_r_dither;\n"
 "void main ()\n"
 "{\n"
 "vec3 t = texture2D(s_t0, tc).rgb;\n"
@@ -6771,7 +6803,7 @@ YOU SHOULD NOT EDIT THIS FILE BY HAND
 "t = pow(max(t, vec3(0.0)), vec3(vc.r))*vc.g + vc.b;\n"
 // Stable, sub-LSB interleaved noise: no temporal shimmer or lifted black floor.
 "float noise = fract(52.9829189 * fract(dot(gl_FragCoord.xy, vec2(0.06711056, 0.00583715)))) - 0.5;\n"
-"float changed = (lift > 0.0 || vc.r != 1.0 || vc.g != 1.0 || vc.b != 0.0 || vc.a != 1.0) ? 1.0 : 0.0;\n"
+"float changed = (lift > 0.0 || vc.r != 1.0 || vc.g != 1.0 || vc.b != 0.0 || vc.a != 1.0 || cvar_r_dither > 0.0) ? 1.0 : 0.0;\n"
 "float toe = smoothstep(2.0/255.0, 0.04, y);\n"
 "gl_FragColor = vec4(t + vec3(noise * changed * toe / 255.0), 1.0);\n"
 "}\n"

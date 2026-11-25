@@ -19,8 +19,10 @@ Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
 */
 #include "quakedef.h"
 #include "pm_thread.h"
+#include "com_bih_ts.h"	//FTESurf Patch 1713: bih_vphys
 
 static qboolean PM_TransformedHullCheck (model_t *model, framestate_t *framestate, vec3_t start, vec3_t end, vec3_t mins, vec3_t maxs, trace_t *trace, vec3_t origin, vec3_t angles, float scale);
+extern cvar_t pm_physentcull;	//FTESurf Patch 1714, defined in common.c
 extern cvar_t pm_portalcsg_scanall;	//FTESurf Patch 283, defined in common.c
 extern cvar_t pm_skipent_portals;	//FTESurf Patch 283, defined in common.c
 int Q1BSP_HullPointContents(hull_t *hull, vec3_t p);
@@ -138,6 +140,37 @@ PM_PointContents
 
 ==================
 */
+/*
+FTESurf Patch 1733: the prediction memo's query box (cl_pred.c CL_PredictMemoMove). While pm_memoq is set, every
+physent query of the move grows it -- as two boxes, the union of the query origins (start/end/pos/p) and the union of
+the player boxes they swept: PM_PlayerTrace, PM_TestPlayerPosition, PM_ExtraBoxContents and PM_LadderEntPlane with the
+player box, PM_PointContents with none (the ladder's second trace only follows a hit on the same physent). The pair is
+P1714's own sweep and box, so PM_PhysentOutOfReach keeps its rotated-box allowance and its convex-hull refusal (review 1:
+a box flattened into a point sweep lost both). Portal physents are keyed whole by the memo (PM_PortalCSG scans them
+all). A non-finite query makes the sweep everything.
+*/
+FTE_TLS qboolean pm_memoq;
+FTE_TLS vec3_t pm_memoq_omins, pm_memoq_omaxs, pm_memoq_bmins, pm_memoq_bmaxs;
+static void PM_MemoQ (const vec3_t a, const vec3_t b, const vec3_t mins, const vec3_t maxs)
+{
+	int i;
+	if (!pm_memoq)
+		return;
+	for (i = 0; i < 3; i++)
+	{
+		if (!isfinite(a[i]) || !isfinite(b[i]) || !isfinite(mins[i]) || !isfinite(maxs[i]))
+		{
+			VectorSet(pm_memoq_omins, -INFINITY, -INFINITY, -INFINITY);
+			VectorSet(pm_memoq_omaxs, INFINITY, INFINITY, INFINITY);
+			return;
+		}
+		pm_memoq_omins[i] = min(pm_memoq_omins[i], min(a[i], b[i]));
+		pm_memoq_omaxs[i] = max(pm_memoq_omaxs[i], max(a[i], b[i]));
+		pm_memoq_bmins[i] = min(pm_memoq_bmins[i], mins[i]);
+		pm_memoq_bmaxs[i] = max(pm_memoq_bmaxs[i], maxs[i]);
+	}
+}
+
 int PM_PointContents (vec3_t p)
 {
 	int			num;
@@ -146,6 +179,7 @@ int PM_PointContents (vec3_t p)
 	physent_t *pe;
 	model_t *pm;
 
+	PM_MemoQ(p, p, vec3_origin, vec3_origin);	//FTESurf Patch 1733
 	//check world.
 	pm = pmove.physents[0].model;
 	if (!pm || pm->loadstate != MLS_LOADED)
@@ -201,6 +235,8 @@ int PM_ExtraBoxContents (vec3_t p)
 	model_t *pm;
 	trace_t tr;
 
+	PM_MemoQ(p, p, pmove.player_mins, pmove.player_maxs);	//FTESurf Patch 1733
+
 	for (num = 1; num < pmove.numphysent; num++)
 	{
 		pe = &pmove.physents[num];
@@ -240,6 +276,8 @@ int PM_LadderEntPlane (vec3_t origin, vec3_t normal)
 	model_t		*pm;
 	trace_t		tr;
 	vec3_t		centre;
+
+	PM_MemoQ(origin, origin, pmove.player_mins, pmove.player_maxs);	//FTESurf Patch 1733
 
 	for (num = 1; num < pmove.numphysent; num++)
 	{
@@ -451,7 +489,7 @@ static void PM_HullTrace (model_t *model, qboolean usedecomp, vec3_t origin, vec
 	}
 }
 
-static qboolean PM_TransformedHullCheck (model_t *model, framestate_t *framestate, vec3_t start, vec3_t end, vec3_t player_mins, vec3_t player_maxs, trace_t *trace, vec3_t origin, vec3_t angles, float scale)
+static qboolean PM_TransformedHullCheckFull (model_t *model, framestate_t *framestate, vec3_t start, vec3_t end, vec3_t player_mins, vec3_t player_maxs, trace_t *trace, vec3_t origin, vec3_t angles, float scale)
 {
 	vec3_t		start_l, end_l;
 	int i;
@@ -502,11 +540,14 @@ static qboolean PM_TransformedHullCheck (model_t *model, framestate_t *framestat
 		}
 		else
 		{
+			//FTESurf Patch 1713: a box the Source mover sweeps meets vphysalt, which stands up to its margin proud
+			const model_t *bm = (bih_vphys && model->vphysalt && !VectorEquals(player_mins, player_maxs) &&
+				(model->type != mod_alias || bih_vphysmdl)) ? model->vphysalt : model;	//(Patch 1812: likewise)
 			for (i = 0; i < 3; i++)
 			{
-				if (start_l[i]+player_mins[i] > model->maxs[i] && end_l[i] + player_mins[i] > model->maxs[i])
+				if (start_l[i]+player_mins[i] > bm->maxs[i] && end_l[i] + player_mins[i] > bm->maxs[i])
 					return false;
-				if (start_l[i]+player_maxs[i] < model->mins[i] && end_l[i] + player_maxs[i] < model->mins[i])
+				if (start_l[i]+player_maxs[i] < bm->mins[i] && end_l[i] + player_maxs[i] < bm->mins[i])
 					return false;
 			}
 			model->funcs.NativeTrace(model, 0, framestate, NULL, start_l, end_l, player_mins, player_maxs, pmove.capsule, MASK_PLAYERSOLID, trace);
@@ -532,6 +573,154 @@ static qboolean PM_TransformedHullCheck (model_t *model, framestate_t *framestat
 	trace->endpos[1] += origin[1];
 	trace->endpos[2] += origin[2];
 	return true;
+}
+
+/*
+  FTESurf Patch 1714: a physent the move cannot reach is not traced.
+
+  Client prediction replays every unacknowledged command each rendered frame (ping / tick of them: 11-12 at
+  150 ms on a 100-tick bhop/ahop map), and each command's traces visit every physent.  Only an axis-aligned
+  model had a bounds test (above); a rotated prop or brush went to the full transformed trace every time.
+  ahop_coast (43 physents) ran ~7,700 BIH traces a frame moving at 150 ms: prediction 1.9 ms of a 3.1 ms
+  frame here, 1.9-2.4 ms of a 3.9-4.5 ms frame on a player's PC.
+
+  The bound is on the trace ORIGIN, not on a world-aligned box: every rotated path turns the box with the model
+  or pushes the model's planes out by the box's reach (review 1).  In the model's own frame every claimed leaf is
+  capped by axial planes at its box grown by the trace's size (a triangle with area by BIH's caps; a brush by its six
+  axial sides, which BIH_Build checks, review 2), and that size on any axis is at most the player box's farthest
+  corner from the origin, rho (triangle caps: at most |h| + |c| <= sqrt(2) rho in all).  So a contact needs the
+  origin within R + sqrt(3) rho of the physent origin under any angles (R: the geometry box's farthest corner),
+  and a segment whose box misses that cube touches nothing: the full check would give no fraction below 1, no
+  startsolid/allsolid/inwater, which every caller treats as `false`.
+
+  Claimed: a BIH tree BIH_Build made whose every leaf is a capped triangle or a brush with its six axial sides
+  and a finite box (BIH_LeafBounds: their union), with the model's bounds and its .phy tree's (Patch 888).
+  PM_REACHSLOP adds a triangle's 4-unit back face (point traces get no caps) and BIH's epsilons.  Everything else
+  is traced as before: the convex hull paths (a near-axial hull face may stand in for an axial bevel), Quake/
+  GoldSrc hulls (a chosen hull may outgrow the player box), Q2/Q3, Mod_Trace meshes, the box_planes fallback,
+  capsules, non-finite input.
+
+  pm_physentcull 0: trace every physent, as before.  1: skip the unreachable (default).  2: decide, but trace
+  them anyway and count any that did touch (must stay 0): pm_physentstats.
+*/
+#define PM_REACHSLOP 10	//units: a triangle's 4-unit back face, a brush side up to a unit off its box, epsilons
+static unsigned int pm_pec_traced, pm_pec_culled, pm_pec_checked, pm_pec_bad;
+extern qboolean BIH_LeafBounds (const model_t *mod, vec3_t mins, vec3_t maxs);	//com_bih.c
+static qboolean PM_GrowReach (vec3_t reach, const vec3_t mins, const vec3_t maxs)
+{	//false on a non-finite bound: max() would drop it and shrink the reach (review 2)
+	int i;
+	for (i = 0; i < 3; i++)
+	{
+		if (!isfinite(mins[i]) || !isfinite(maxs[i]))
+			return false;
+		reach[i] = max(reach[i], max(fabs(mins[i]), fabs(maxs[i])));
+	}
+	return true;
+}
+static qboolean PM_PhysentOutOfReach (model_t *model, const vec3_t start, const vec3_t end, const vec3_t player_mins, const vec3_t player_maxs, const vec3_t origin, float scale)
+{
+	vec3_t reach = {0, 0, 0}, mins, maxs, pr = {0, 0, 0};
+	float r, rho, lo, hi;
+	int i;
+
+	if (!model || model->loadstate != MLS_LOADED || pmove.capsule)
+		return false;
+	for (i = 0; i < 3; i++)
+		if (!isfinite(start[i]) || !isfinite(end[i]) || !isfinite(origin[i]) || !isfinite(player_mins[i]) || !isfinite(player_maxs[i]))
+			return false;
+	//the convex hull paths of PM_TransformedHullCheckFull are not claimed (review 2: Mod_AddHullBevels may keep a
+	//near-axial face in place of an axial bevel, so the box does not cap the hull exactly)
+	if ((player_mins[0]!=player_maxs[0] || player_mins[1]!=player_maxs[1] || player_mins[2]!=player_maxs[2]) &&
+		(model->numhullplanes >= 4 || model->numhulls > 0))
+		return false;
+	if (!BIH_LeafBounds(model, mins, maxs))
+		return false;	//not a tree BIH_Build made and could bound: no claim
+	if (!PM_GrowReach(reach, mins, maxs) || !PM_GrowReach(reach, model->mins, model->maxs))
+		return false;
+	if (model->phyfixed)
+	{	//bih_phyfix may walk the .phy tree instead (Patch 888)
+		if (model->phyfixed->loadstate != MLS_LOADED || !BIH_LeafBounds(model->phyfixed, mins, maxs) ||
+			!PM_GrowReach(reach, mins, maxs) || !PM_GrowReach(reach, model->phyfixed->mins, model->phyfixed->maxs))
+			return false;
+	}
+	if (model->vphysalt)
+	{	//bih_vphys may walk the vcollide tree instead (Patch 1713); its pieces' axial sides sit at their margin-grown boxes
+		if (model->vphysalt->loadstate != MLS_LOADED || !BIH_LeafBounds(model->vphysalt, mins, maxs) ||
+			!PM_GrowReach(reach, mins, maxs) || !PM_GrowReach(reach, model->vphysalt->mins, model->vphysalt->maxs))
+			return false;
+	}
+	PM_GrowReach(pr, player_mins, player_maxs);	//finite: checked above
+	r = sqrt(DotProduct(reach, reach)) * max(1, scale);
+	rho = sqrt(DotProduct(pr, pr));
+	if (!(r > 0) || !isfinite(r) || !isfinite(rho))
+		return false;
+	r += 1.7320508f * rho + PM_REACHSLOP;
+	for (i = 0; i < 3; i++)
+	{
+		lo = min(start[i], end[i]) - origin[i];
+		hi = max(start[i], end[i]) - origin[i];
+		if (lo > r || hi < -r)
+			return true;
+	}
+	return false;
+}
+//FTESurf Patch 1733: may this physent touch anything the move asked (P1714's exact reject with the query origins as
+//the sweep and the player-box union as the box; a model-less physent's own axial box, grown by a unit, against the
+//swept union)? false only when it cannot.
+qboolean PM_PhysentReachesBox (const physent_t *pe, const vec3_t omins, const vec3_t omaxs, const vec3_t bmins, const vec3_t bmaxs)
+{
+	float s, lo, hi;
+	int i;
+	if (!(omins[0] <= omaxs[0] && omins[1] <= omaxs[1] && omins[2] <= omaxs[2]))
+		return false;	//nothing was asked
+	if (pe->model)
+		return !PM_PhysentOutOfReach(pe->model, omins, omaxs, bmins, bmaxs, pe->origin, pe->scale);
+	s = max(1, pe->scale);
+	for (i = 0; i < 3; i++)
+	{
+		lo = pe->origin[i] + pe->mins[i] * s - 1;
+		hi = pe->origin[i] + pe->maxs[i] * s + 1;
+		if (!isfinite(lo) || !isfinite(hi) || !isfinite(omins[i] + bmins[i]) || !isfinite(omaxs[i] + bmaxs[i]))
+			return true;
+		if (lo > omaxs[i] + bmaxs[i] || hi < omins[i] + bmins[i])
+			return false;
+	}
+	return true;
+}
+static qboolean PM_TransformedHullCheck (model_t *model, framestate_t *framestate, vec3_t start, vec3_t end, vec3_t player_mins, vec3_t player_maxs, trace_t *trace, vec3_t origin, vec3_t angles, float scale)
+{
+	qboolean hit, onmain = Sys_IsMainThread();
+	if (pm_physentcull.ival && PM_PhysentOutOfReach(model, start, end, player_mins, player_maxs, origin, scale))
+	{
+		if (pm_physentcull.ival < 2)
+		{
+			if (onmain)
+				pm_pec_culled++;
+			return false;
+		}
+		hit = PM_TransformedHullCheckFull(model, framestate, start, end, player_mins, player_maxs, trace, origin, angles, scale);
+		if (onmain)
+		{
+			pm_pec_checked++;
+			if (hit && (trace->fraction < 1 || trace->startsolid || trace->allsolid || trace->inwater))
+			{
+				if (pm_pec_bad++ < 8)
+					Con_Printf(CON_WARNING "pm_physentcull: %s at %g %g %g touched (fraction %g%s%s) from %g %g %g to %g %g %g\n",
+						model->name, origin[0], origin[1], origin[2], trace->fraction, trace->startsolid ? " startsolid" : "",
+						trace->allsolid ? " allsolid" : "", start[0], start[1], start[2], end[0], end[1], end[2]);
+			}
+		}
+		return hit;
+	}
+	if (onmain)
+		pm_pec_traced++;
+	return PM_TransformedHullCheckFull(model, framestate, start, end, player_mins, player_maxs, trace, origin, angles, scale);
+}
+void PM_PhysentStats_f (void)
+{
+	Con_Printf("pm_physentcull %i: %u traced, %u skipped, %u skipped-but-checked, %u of those touched (must be 0)\n",
+		pm_physentcull.ival, pm_pec_traced, pm_pec_culled, pm_pec_checked, pm_pec_bad);
+	pm_pec_traced = pm_pec_culled = pm_pec_checked = pm_pec_bad = 0;
 }
 
 
@@ -1032,6 +1221,7 @@ qboolean PM_TestPlayerPosition (vec3_t pos, qboolean ignoreportals)
 	trace_t		trace;
 	int			csged = false;
 
+	PM_MemoQ(pos, pos, pmove.player_mins, pmove.player_maxs);	//FTESurf Patch 1733
 	for (i=0 ; i< pmove.numphysent ; i++)
 	{
 		pe = &pmove.physents[i];
@@ -1201,6 +1391,7 @@ trace_t PM_PlayerTrace (vec3_t start, vec3_t end, unsigned int solidmask)
 	total.entnum = -1;
 	VectorCopy (end, total.endpos);
 
+	PM_MemoQ(start, end, pmove.player_mins, pmove.player_maxs);	//FTESurf Patch 1733
 	for (i=0 ; i< pmove.numphysent ; i++)
 	{
 		pe = &pmove.physents[i];

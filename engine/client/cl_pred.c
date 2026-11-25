@@ -1024,6 +1024,334 @@ static qboolean CL_PredictSourcePhase(int seat, int sequence, player_state_t *st
 	return true;
 }
 
+/*
+FTESurf Patch 1720: the prediction memo.
+
+Prediction replays every unacknowledged command each rendered frame (cl_pred.c CL_PredictMovePNum): at 150 ms on a
+100-tick map, 11-12 commands a frame, and most of them ran last frame from exactly the same state.  PM_PlayerMove is a
+function of the pmove state it starts from (all of it but the physents and the touch list, which it rebuilds), the
+movevars, the physents, the game speed, the collision models (BIH's epoch) and the pm_/bih_ cvars it reads (their
+epoch, cvar.c) -- its per-command scratch is reset each command (Patch 1467).  So a move whose inputs are byte-for-byte
+those of one already run gets that run's result instead of running again.  The CSQC hooks either side of the move
+(CSQC_PredictPlayerPreMove before, CSQC_PredictPlayerMove after) still run for every command as before, so QC's replay
+chain, its triggers and anything it imposes on the move are untouched; a hook that changes the state makes the next
+command's inputs differ, and that command runs.  Only the main thread uses it (TAS rollout workers run their own moves).
+Review 1: also keyed are the cvars the traces read under other names (sv_prop_collision, r_meshpitch/roll); pmove.c's
+forward/right/up are kept and restored; a move during which a portal's camera_transform QC ran is never kept (pm_portalqc);
+not used for the QuakeWorld mover (groundplane persists), beside terrain, or under pm_dispprobe/pm_ladderprobe.
+
+cl_predict_memo 0: run every move, as before.  1: reuse (default).  2: reuse, but also run every reused move and compare
+the result byte for byte (must be 0 differences): cl_predict_memostats.
+*/
+cvar_t	cl_predict_memo = CVARFD("cl_predict_memo", "1", CVAR_NOTFROMSERVER|CVAR_NOSAVE, "FTESurf Patch 1720: client prediction reuses PM_PlayerMove's result for a command whose inputs are byte-for-byte those of a move it already ran (the replay of the unacknowledged commands repeats most of them every frame). Exact by construction; the CSQC prediction hooks still run for every command.\n0: run every move. 1: reuse (default). 2: reuse, but also run every reused move and count any difference (must be 0): cl_predict_memostats.");
+/*
+FTESurf Patch 1742: Source's prediction optimisation (cl_pred_optimize).  Each rendered frame replays the unacknowledged
+commands from the server's state for the command it last finalised (pv->prop.sequence).  When a snapshot moves that
+base on, the server's state is the authority, but it is the same simulation with the same inputs, so it differs from
+what the client predicted for that command only by what the wire rounds away -- and every later command then starts
+from different bytes, so Patch 1720's memo reran them all: at sv_minping 300 prediction was 1.80 ms of bhop_canals'
+3.63 ms frame.  When the server's origin and velocity agree with the prediction within these tolerances (and its
+ground and jump state match), the replay starts from the prediction instead and the memo answers every older command;
+a real disagreement (a push, a teleport, a missed input) is past them and snaps to the server as before.  Each kept
+base is within the tolerance of that snapshot, so the client never sits further off than that (it does not add up);
+measured agreement is origin within 0.01 and velocity within ~0.24, so the defaults are tight on purpose (review 1: at
+0.25 a slow error -- the wire-rounded velocity a snap takes, an unpredicted slow push -- built up and popped in one
+step).  The server's simulation is untouched; the prederr ring still compares the server's state with the prediction.
+*/
+cvar_t	cl_predict_keep = CVARFD("cl_predict_keep", "1", CVAR_NOTFROMSERVER|CVAR_NOSAVE, "FTESurf Patch 1742: when a snapshot's state for the command the client last predicted agrees with that prediction (cl_predict_keep_origin / cl_predict_keep_velocity), prediction continues from the prediction rather than the server's rounded copy of it, so the older commands are not rerun (Source's cl_pred_optimize). A disagreement snaps to the server as before.\n0: always restart from the server's state. 1: keep an agreeing prediction (default).");
+cvar_t	cl_predict_keep_origin = CVARFD("cl_predict_keep_origin", "0.03", CVAR_NOTFROMSERVER|CVAR_NOSAVE, "FTESurf Patch 1742: units the server's origin may differ from the prediction for cl_predict_keep to keep it (at most 1).");
+cvar_t	cl_predict_keep_velocity = CVARFD("cl_predict_keep_velocity", "0.5", CVAR_NOTFROMSERVER|CVAR_NOSAVE, "FTESurf Patch 1742: units/s the server's velocity may differ from the prediction for cl_predict_keep to keep it (at most 8).");
+static unsigned int pkeep_kept, pkeep_snapped;
+static qboolean CL_PredictKeepAgrees(const player_state_t *s, const playerview_t *pv)
+{
+	vec3_t d;
+	float to = cl_predict_keep_origin.value, tv = cl_predict_keep_velocity.value;
+	int k;
+	for (k = 0; k < 3; k++)
+		if (!isfinite(s->origin[k]) || !isfinite(s->velocity[k]) || !isfinite(pv->prop.origin[k]) || !isfinite(pv->prop.velocity[k]))
+			return false;
+	if (!(to >= 0) || !(tv >= 0))
+		return false;
+	to = min(to, 1);	//review 1: a big tolerance would hide a teleport or reset locally
+	tv = min(tv, 8);
+	VectorSubtract(s->origin, pv->prop.origin, d);
+	if (DotProduct(d, d) > to * to)
+		return false;
+	VectorSubtract(s->velocity, pv->prop.velocity, d);
+	if (DotProduct(d, d) > tv * tv)
+		return false;
+	if ((cls.z_ext & Z_EXT_PF_ONGROUND) && !s->onground != !pv->prop.onground)
+		return false;
+	if ((cls.z_ext & Z_EXT_PM_TYPE) && !s->jump_held != !pv->prop.jump_held)
+		return false;
+	return true;
+}
+//the replay's base: a copy of the server's state carrying the prediction's origin, velocity, ground and jump, when they agree
+static player_state_t *CL_PredictKeep(playerview_t *pv, player_state_t *s, player_state_t *keep)
+{
+	if (!cl_predict_keep.ival || s == keep || !CL_PredictKeepAgrees(s, pv))
+		return s;
+	*keep = *s;
+	VectorCopy(pv->prop.origin, keep->origin);
+	VectorCopy(pv->prop.velocity, keep->velocity);
+	keep->onground = pv->prop.onground;
+	keep->jump_held = pv->prop.jump_held;
+	return keep;
+}
+
+#define PMMEMO_SLOTS	256
+#define PMMEMO_KEYMAX	(32*1024)
+#define PMMEMO_TOUCHMAX	32
+#define PMI_A1	offsetof(playermove_t, physents)
+#define PMI_B0	offsetof(playermove_t, cmd)
+#define PMI_B1	offsetof(playermove_t, numtouch)
+#define PMI_C0	offsetof(playermove_t, onground)
+#define PMI_SIZE	(PMI_A1 + (PMI_B1 - PMI_B0) + (sizeof(playermove_t) - PMI_C0))
+typedef struct
+{
+	unsigned int hash;
+	int keylen;
+	qbyte *key;		//PMMEMO_KEYMAX bytes, made on first use
+	int rellen;		//FTESurf Patch 1733: the reached physents' bytes in rel
+	qbyte *rel;
+	vec3_t omins, omaxs, bmins, bmaxs;	//the move's query origins and player-box union (pmovetst.c PM_MemoQ)
+	qbyte *img;		//PMI_SIZE: pmove after the move, but the physents and the touch list
+	vec3_t fwd, rt, upv;	//pmove.c's forward/right/up after it (review 1)
+	int numtouch;
+	int touchindex[PMMEMO_TOUCHMAX];
+	vec3_t touchvel[PMMEMO_TOUCHMAX];
+} pmmemo_t;
+static pmmemo_t pmmemo[PMMEMO_SLOTS];
+static unsigned int pmmemo_hits, pmmemo_runs, pmmemo_unkeyed, pmmemo_checked, pmmemo_bad;
+extern int cvar_physepoch;			//cvar.c, FTESurf Patch 1720
+extern int BIH_CollisionEpoch(void);	//com_bih.c
+extern cvar_t pm_dispprobe, pm_ladderprobe;
+extern vec3_t forward, right, up;		//pmove.c: written by the move, read after it (CL_CatagorizePosition)
+extern FTE_TLS int pm_portalqc;			//pmove.c: portal camera_transform QC runs
+extern FTE_TLS qboolean pm_memoq;			//pmovetst.c, FTESurf Patch 1733: the move's query box
+extern FTE_TLS vec3_t pm_memoq_omins, pm_memoq_omaxs, pm_memoq_bmins, pm_memoq_bmaxs;
+extern qboolean PM_PhysentReachesBox (const physent_t *pe, const vec3_t omins, const vec3_t omaxs, const vec3_t bmins, const vec3_t bmaxs);
+static void PMMemo_Image(qbyte *out)
+{
+	const qbyte *p = (const qbyte *)&pmove;
+	memcpy(out, p, PMI_A1);
+	memcpy(out + PMI_A1, p + PMI_B0, PMI_B1 - PMI_B0);
+	memcpy(out + PMI_A1 + (PMI_B1 - PMI_B0), p + PMI_C0, sizeof(playermove_t) - PMI_C0);
+}
+static void PMMemo_Restore(const qbyte *in)
+{
+	qbyte *p = (qbyte *)&pmove;
+	memcpy(p, in, PMI_A1);
+	memcpy(p + PMI_B0, in + PMI_A1, PMI_B1 - PMI_B0);
+	memcpy(p + PMI_C0, in + PMI_A1 + (PMI_B1 - PMI_B0), sizeof(playermove_t) - PMI_C0);
+}
+#define PMMEMO_PUT(x) do { if (n + (int)sizeof(x) > PMMEMO_KEYMAX) return -1; memcpy(key + n, &(x), sizeof(x)); n += sizeof(x); } while (0)
+//a physent's fields, as the key holds them
+static int PMMemo_Physent(qbyte *key, int n, const physent_t *pe)
+{
+	PMMEMO_PUT(pe->origin); PMMEMO_PUT(pe->angles); PMMEMO_PUT(pe->model); PMMEMO_PUT(pe->mins); PMMEMO_PUT(pe->maxs);
+	PMMEMO_PUT(pe->info); PMMEMO_PUT(pe->nonsolid); PMMEMO_PUT(pe->notouch); PMMEMO_PUT(pe->portalhalf);
+	PMMEMO_PUT(pe->portaltransform); PMMEMO_PUT(pe->isportal); PMMEMO_PUT(pe->slideflags);
+	PMMEMO_PUT(pe->forcecontentsmask); PMMEMO_PUT(pe->scale);
+	return n;
+}
+/*
+FTESurf Patch 1733: the physents the move's queries reach, index and fields, in order; -1 past the buffer. A physent
+they cannot reach answered nothing the move asked (pmovetst.c PM_MemoQ), so a move asked the same with the same
+reached physents is the same move however far-away movers or other players moved. Portals are in the key already.
+Never examined either: the skipent body when solid (PM_PointContents, PM_TestPlayerPosition and PM_PlayerTrace skip it;
+the other two read only nonsolid physents) -- at 150 ms the server's copy of the player trails it within reach and moved
+every snapshot, a third of bhop_canals' reruns -- and a nonsolid physent with no forced contents (read only by its mask).
+*/
+static int PMMemo_Reached(qbyte *key, const vec3_t omins, const vec3_t omaxs, const vec3_t bmins, const vec3_t bmaxs)
+{
+	int n = 0, i;
+	for (i = 0; i < pmove.numphysent; i++)
+	{
+		const physent_t *pe = &pmove.physents[i];
+		if (pe->isportal || (i && (pe->nonsolid ? !pe->forcecontentsmask : pe->info == pmove.skipent)))
+			continue;	//review 2: never the world (PM_PointContents and pm_ag_world.c read it whatever skipent is)
+		if (!PM_PhysentReachesBox(pe, omins, omaxs, bmins, bmaxs))
+			continue;
+		PMMEMO_PUT(i);
+		if ((n = PMMemo_Physent(key, n, &pmove.physents[i])) < 0)
+			return -1;
+	}
+	return n;
+}
+//the move's inputs, field by field where padding could differ. P1733: of the physents only the portals (PM_PortalCSG
+//scans every one when a trace starts solid; PM_AnyPortals switches the mover) and whether any is a slide (pm_source.c's
+//pms_anyslide gates a contact probe and the bank-gravity observer); the rest by reach (PMMemo_Reached)
+static int PMMemo_Key(qbyte *key, float gamespeed, qboolean anyslide)
+{
+	static cvar_t *propcol;
+	int n = PMI_SIZE, i, epoch = BIH_CollisionEpoch(), cm;
+	float meshpitch = r_meshpitch.value, meshroll = r_meshroll.value;
+	if (!propcol)
+		propcol = Cvar_FindVar("sv_prop_collision");
+	cm = propcol ? propcol->ival : 2;	//review 1: pmovetst.c picks a prop's collision by it
+	PMMemo_Image(key);
+	PMMEMO_PUT(movevars);
+	PMMEMO_PUT(gamespeed);
+	PMMEMO_PUT(epoch);
+	PMMEMO_PUT(cvar_physepoch);
+	PMMEMO_PUT(cm);
+	PMMEMO_PUT(meshpitch);	//review 1: AngleVectorsMesh turns a mesh prop's traces by them
+	PMMEMO_PUT(meshroll);
+	PMMEMO_PUT(anyslide);
+	for (i = 0; i < pmove.numphysent; i++)
+		if (pmove.physents[i].isportal)
+		{
+			PMMEMO_PUT(i);
+			if ((n = PMMemo_Physent(key, n, &pmove.physents[i])) < 0)
+				return -1;
+		}
+	return n;
+}
+#undef PMMEMO_PUT
+static size_t PMMemo_FieldOffset(size_t imgoff)
+{	//an image offset back to an offset in playermove_t (for the mismatch report)
+	if (imgoff < PMI_A1)
+		return imgoff;
+	if (imgoff < PMI_A1 + (PMI_B1 - PMI_B0))
+		return PMI_B0 + (imgoff - PMI_A1);
+	return PMI_C0 + (imgoff - PMI_A1 - (PMI_B1 - PMI_B0));
+}
+static void CL_PredictMemoMove(float gamespeed)
+{
+	static qbyte key[PMMEMO_KEYMAX];
+	static qbyte rel[PMMEMO_KEYMAX];
+	static qbyte img[PMI_SIZE];
+	unsigned int h, w;
+	int len, k, mode = cl_predict_memo.ival, qcruns, rellen = -1;
+	qboolean anyslide = false;
+	pmmemo_t *m;
+
+	//review 1: the Source and AG movers only (QuakeWorld's keeps groundplane across calls); never beside terrain,
+	//which streams in without a collision epoch (com_bih.c's trace cache steps aside for it too), nor under the probes
+	if (!mode || pm_dispprobe.ival || pm_ladderprobe.ival || !Sys_IsMainThread() ||
+		(movevars.physicsmode != PHYSMODE_SOURCE && movevars.physicsmode != PHYSMODE_AG) ||
+		(cl.worldmodel && cl.worldmodel->terrain))
+	{
+		PM_PlayerMove(gamespeed);
+		return;
+	}
+	//P1733: a slide anywhere is one bit of the key (the trace reads the flags of the physent it hit, which the reach
+	//keys). A traced physent whose model has no NativeTrace traces the box_planes the last PM_HullForBox left -- from
+	//any model-less physent near or far, or from a previous move -- state no key holds (review 1-2; Patch 1720 had the
+	//same hole): then the move is not remembered at all.
+	for (k = 0; k < pmove.numphysent; k++)
+	{
+		const physent_t *pe = &pmove.physents[k];
+		if (pe->slideflags)
+			anyslide = true;
+		if (pe->model && pe->model->loadstate == MLS_LOADED && !pe->model->funcs.NativeTrace &&
+			(!pe->nonsolid || pe->forcecontentsmask))
+		{
+			pmmemo_unkeyed++;
+			PM_PlayerMove(gamespeed);
+			return;
+		}
+	}
+	len = PMMemo_Key(key, gamespeed, anyslide);
+	if (len < 0)
+	{
+		pmmemo_unkeyed++;
+		PM_PlayerMove(gamespeed);
+		return;
+	}
+	for (h = 2166136261u, k = 0; k + 4 <= len; k += 4)
+	{
+		memcpy(&w, key + k, 4);
+		h = (h ^ w) * 16777619u;
+	}
+	for (; k < len; k++)
+		h = (h ^ key[k]) * 16777619u;
+	m = &pmmemo[(h ^ (h >> 15)) & (PMMEMO_SLOTS-1)];
+	if (m->key && m->hash == h && m->keylen == len && !memcmp(m->key, key, len) &&
+		(rellen = PMMemo_Reached(rel, m->omins, m->omaxs, m->bmins, m->bmaxs)) == m->rellen && !memcmp(rel, m->rel, rellen))
+	{
+		if (mode >= 2)
+		{
+			PM_PlayerMove(gamespeed);
+			PMMemo_Image(img);
+			pmmemo_checked++;
+			if (memcmp(img, m->img, PMI_SIZE) || pmove.numtouch != m->numtouch ||
+				!VectorCompare(forward, m->fwd) || !VectorCompare(right, m->rt) || !VectorCompare(up, m->upv) ||
+				(pmove.numtouch > 0 && pmove.numtouch <= PMMEMO_TOUCHMAX &&
+				 (memcmp(pmove.touchindex, m->touchindex, sizeof(int)*pmove.numtouch) ||
+				  memcmp(pmove.touchvel, m->touchvel, sizeof(vec3_t)*pmove.numtouch))))
+			{
+				size_t d;
+				for (d = 0; d < PMI_SIZE && img[d] == m->img[d]; d++)
+					;
+				if (pmmemo_bad++ < 8)
+					Con_Printf(CON_WARNING "cl_predict_memo: a reused move differs (playermove_t offset %u of %u%s)\n",
+						(unsigned int)(d < PMI_SIZE ? PMMemo_FieldOffset(d) : 0), (unsigned int)sizeof(playermove_t),
+						d < PMI_SIZE ? "" : ", touches");
+			}
+			return;	//the real result stands
+		}
+		PMMemo_Restore(m->img);
+		VectorCopy(m->fwd, forward);
+		VectorCopy(m->rt, right);
+		VectorCopy(m->upv, up);
+		pmove.numtouch = m->numtouch;
+		memcpy(pmove.touchindex, m->touchindex, sizeof(int)*m->numtouch);
+		memcpy(pmove.touchvel, m->touchvel, sizeof(vec3_t)*m->numtouch);
+		pmmemo_hits++;
+		return;
+	}
+	qcruns = pm_portalqc;
+	//P1733: record what the move asks
+	VectorSet(pm_memoq_omins, INFINITY, INFINITY, INFINITY);
+	VectorSet(pm_memoq_omaxs, -INFINITY, -INFINITY, -INFINITY);
+	VectorSet(pm_memoq_bmins, INFINITY, INFINITY, INFINITY);
+	VectorSet(pm_memoq_bmaxs, -INFINITY, -INFINITY, -INFINITY);
+	pm_memoq = true;
+	PM_PlayerMove(gamespeed);
+	pm_memoq = false;
+	pmmemo_runs++;
+	if (pm_portalqc != qcruns)
+		return;	//review 1: a portal's camera_transform QC ran inside it (reads and writes beyond the key): not kept.
+				//A kept move ran no QC, and the same inputs reach no portal QC again.
+	if (pmove.numtouch < 0 || pmove.numtouch > PMMEMO_TOUCHMAX)
+		return;	//too many touches to keep: this move is simply not remembered
+	if ((rellen = PMMemo_Reached(rel, pm_memoq_omins, pm_memoq_omaxs, pm_memoq_bmins, pm_memoq_bmaxs)) < 0)
+		return;	//P1733: reached too much to keep
+	if (!m->key)
+	{
+		m->key = BZ_Malloc(PMMEMO_KEYMAX);
+		m->img = BZ_Malloc(PMI_SIZE);
+		m->rel = BZ_Malloc(PMMEMO_KEYMAX);
+	}
+	m->rellen = rellen;
+	memcpy(m->rel, rel, rellen);
+	VectorCopy(pm_memoq_omins, m->omins);
+	VectorCopy(pm_memoq_omaxs, m->omaxs);
+	VectorCopy(pm_memoq_bmins, m->bmins);
+	VectorCopy(pm_memoq_bmaxs, m->bmaxs);
+	m->hash = h;
+	m->keylen = len;
+	memcpy(m->key, key, len);
+	PMMemo_Image(m->img);
+	VectorCopy(forward, m->fwd);
+	VectorCopy(right, m->rt);
+	VectorCopy(up, m->upv);
+	m->numtouch = pmove.numtouch;
+	memcpy(m->touchindex, pmove.touchindex, sizeof(int)*pmove.numtouch);
+	memcpy(m->touchvel, pmove.touchvel, sizeof(vec3_t)*pmove.numtouch);
+}
+static void CL_PredictMemoStats_f(void)
+{
+	Con_Printf("cl_predict_memo %i: %u reused, %u run, %u not keyed, %u reused-and-checked, %u of those differed (must be 0)\n",
+		cl_predict_memo.ival, pmmemo_hits, pmmemo_runs, pmmemo_unkeyed, pmmemo_checked, pmmemo_bad);
+	Con_Printf("cl_predict_keep %i: %u replays from an agreeing prediction, %u from the server's state\n",
+		cl_predict_keep.ival, pkeep_kept, pkeep_snapped);
+	pmmemo_hits = pmmemo_runs = pmmemo_unkeyed = pmmemo_checked = pmmemo_bad = 0;
+	pkeep_kept = pkeep_snapped = 0;
+}
+
 static void CL_PredictUsercmdPart (int pnum, int entnum, player_state_t *from, player_state_t *to, usercmd_t *u, float offsetmsec, qboolean *carrier_cleared, qboolean later)
 {
 	int preflags = 0;
@@ -1156,7 +1484,7 @@ static void CL_PredictUsercmdPart (int pnum, int entnum, player_state_t *from, p
 	r_spikes_pmoves++;	//FTESurf Patch 1446
 	{
 		double t0 = r_speeds_timing ? Sys_DoubleTime() : 0;
-		PM_PlayerMove (cl.gamespeed);
+		CL_PredictMemoMove (cl.gamespeed);	//FTESurf Patch 1720
 		if (r_speeds_timing)
 			r_spikes_pmus += (Sys_DoubleTime() - t0) * 1e6;
 	}
@@ -2294,6 +2622,7 @@ void CL_PredictMovePNum (int seat)
 	float		f;
 	outframe_t	*backdate;
 	player_state_t framebuf[2];	//need two framebufs so we can interpolate between two states.
+	player_state_t keepstate;	//FTESurf Patch 1742: the replay's base when the prediction is kept
 	static player_state_t nullstate;
 	int			oldphysent;
 	double		simtime;	//this is server time if nopred is set (lerp-only), and local time if we're predicting
@@ -2804,6 +3133,17 @@ void CL_PredictMovePNum (int seat)
 				from.state->pmsrc = pv->prop.pmsrc;
 				if (!(cls.fteprotocolextensions2 & PEXT2_REPLACEMENTDELTAS))
 					VectorCopy(pv->prop.gravitydir, from.state->gravitydir);
+				//FTESurf Patch 1742: an agreeing server state hands the replay the prediction itself (a copy: the
+				//snapshot ring keeps the server's), so the older commands' inputs are the bytes the memo holds
+				if (i == pring_firsti && from.state != &keepstate)
+				{
+					player_state_t *k = CL_PredictKeep(pv, from.state, &keepstate);
+					if (k != from.state)
+						pkeep_kept++;
+					else
+						pkeep_snapped++;
+					from.state = k;
+				}
 			}
 			//FTESurf Patch 754: the posture the hull states, propagated or not (a
 			//resume after a no-prediction stretch seeds a zeroed pmsrc).  Our own
@@ -2879,6 +3219,10 @@ void CL_PredictMovePNum (int seat)
 					from.state->pmsrc = pv->prop.pmsrc;	//FTESurf: duck/tick state
 					if (!(cls.fteprotocolextensions2 & PEXT2_REPLACEMENTDELTAS))
 						VectorCopy(pv->prop.gravitydir, from.state->gravitydir);
+					//FTESurf Patch 1742 review 1: the replay ran no pass (every command acked), so this extrapolates
+					//from the snapshot itself -- the same keep, or the camera alternates between kept and server states
+					if (from.state != &framebuf[0] && from.state != &framebuf[1])
+						from.state = CL_PredictKeep(pv, from.state, &keepstate);
 				}
 				CL_PredictSourcePhase(seat, from.frame, from.state);
 				PMSrc_ReconcileHull(&from.state->pmsrc, from.state->szmins, from.state->szmaxs, pv->statsf[STAT_VIEWHEIGHT]);	//Patch 754
@@ -3017,7 +3361,9 @@ void CL_PredictMovePNum (int seat)
 			  This does NOT touch the mover.  prop.velocity is read only to
 			  build the reported value; from.state is left exactly as the
 			  network delivered it, so CL_PredictUsercmd still seeds from the
-			  server's own state and no movement outcome or run time can move.*/
+			  server's own state and no movement outcome or run time can move.
+			  (Patch 1742: from the prediction instead when the two agree within
+			  cl_predict_keep_origin/_velocity; the server's own runs never read it.)*/
 			if (!nopred && pv->prop.sequence && from.frame == pv->prop.sequence &&
 				cl_predict_velblend.ival >= 2)
 				VectorCopy(pv->prop.velocity, blendfromvel);
@@ -3449,6 +3795,7 @@ static void CL_PredErrDump_f(void)
 	VFS_PRINTF(f, "FTESURF-PREDRING 2\n# engine %s\n# command_identity ack-seat-tag-v1\n# rows %i seat %i now %.4f\n"
 		"# t seq porg(3) sorg(3) pvel(3) svel(3) pground sground pmtype msec pitch yaw roll fwd side up buttons cmdvalid predvalid predpm seedseq seedcarry phasehit parts ticks\n",
 		version_string(), n, seat, realtime);
+	VFS_PRINTF(f, "# predict_keep %i origin %g velocity %g\n", cl_predict_keep.ival, cl_predict_keep_origin.value, cl_predict_keep_velocity.value);	//FTESurf Patch 1742 review 1
 	for (k = 0; k < n; k++)
 	{
 		const pring_t *r = &pring[seat][(pring_head[seat] - n + k + 2 * PRING_MAX) % PRING_MAX];
@@ -3485,6 +3832,11 @@ void CL_InitPrediction (void)
 	Cvar_Register (&cl_predict_velblend,	cl_predictiongroup);	//FTESurf Patch 269
 	Cvar_Register (&cl_predict_freshtype,	cl_predictiongroup);	//FTESurf Patch 243
 	Cvar_Register (&cl_predict_qchook,	cl_predictiongroup);	//FTESurf Patch 335
+	Cvar_Register (&cl_predict_memo,	cl_predictiongroup);	//FTESurf Patch 1720
+	Cvar_Register (&cl_predict_keep,	cl_predictiongroup);	//FTESurf Patch 1742
+	Cvar_Register (&cl_predict_keep_origin,	cl_predictiongroup);
+	Cvar_Register (&cl_predict_keep_velocity,	cl_predictiongroup);
+	Cmd_AddCommandD ("cl_predict_memostats", CL_PredictMemoStats_f, "FTESurf Patch 1720: print cl_predict_memo's counters since the last call, then reset them.");
 	Cvar_Register (&cl_predict_listen,	cl_predictiongroup);	//FTESurf Patch 862
 	Cvar_Register (&cl_predict_listenops,	cl_predictiongroup);	//FTESurf Patch 1588
 	Cvar_Register (&cl_prederror,	cl_predictiongroup);	//FTESurf Patch 335

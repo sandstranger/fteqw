@@ -62,7 +62,7 @@ overriding anything -- r_skybox still wins over both, which is the ordering
 below and is the whole design.  Empty by default so nothing outside FTESurf's
 own cfg changes.
 */
-cvar_t r_skybox_default						= CVARFCD("r_skybox_default", "", CVAR_ARCHIVE | CVAR_RENDERERCALLBACK, R_SkyBox_Changed, "Skybox to use on a map that declares no sky of its own. Empty (the default) leaves such a map drawing whatever its own sky surfaces carry. r_skybox overrides this, and also overrides a map that DOES declare a sky.");
+cvar_t r_skybox_default						= CVARFCD("r_skybox_default", "", CVAR_ARCHIVE | CVAR_RENDERERCALLBACK, R_SkyBox_Changed, "Skybox to use on a map that declares no sky of its own, or whose sky is missing (a Half-Life map tries Half-Life's desert first). Empty (the default) leaves a map that declares none drawing whatever its own sky surfaces carry. r_skybox overrides this, and also overrides a map that DOES declare a sky.");
 cvar_t r_skybox_orientation					= CVARFD ("r_glsl_skybox_orientation", "0 0 0 0", CVAR_SHADERSYSTEM, "Defines the axis around which skyboxes will rotate (the first three values). The fourth value defines the speed the skybox rotates at, in degrees per second.");
 cvar_t r_skybox_autorotate					= CVARFD ("r_glsl_skybox_autorotate", "1", CVAR_SHADERSYSTEM, "Defines the axis around which skyboxes will rotate (the first three values). The fourth value defines the speed the skybox rotates at, in degrees per second.");
 cvar_t r_skyfog								= CVARD  ("r_skyfog", "0.5", "This controls an alpha-blend value for fog on skyboxes, cumulative with regular fog alpha.");
@@ -103,8 +103,16 @@ chosen originally -- masking can slice a prop that intersects a sky brush, and
 under RDF_SKIPSKY it can depth-reject the world behind one.  Both are real; both
 were weighed against a fault the reporter can see from spawn on a map he plays,
 and 1 remains one word away.
+
+FTESurf Patch 1698: DEFAULT 2 -> 1.  Source draws a sky face as a hole (Patch 990), so
+anything in the PVS behind it draws, and the mask had become a distance cut: Patch 990's
+scale writes it at 2x the face's distance, so it hid more the nearer the face (Lex:
+"stuff in the skybox will get culled out the closer I get to it").  What Patch 296 hid
+is culled by the PVS now: displacement records (1626), static props (1235), unvised
+maps by area (1271).  Quake/Half-Life keep the mask; the 3D sky room keeps its own.
+2 no longer masks a Source map (Lex: "a broken implementation of what I wanted").
 */
-cvar_t r_sky_forcedepth						= CVARFD ("r_sky_forcedepth", "2", CVAR_ARCHIVE, "Write correct depth for sky surfaces even when the sky is drawn by a GLSL program. Stops entities in other parts of the map showing through the skybox.\n0: never mask (the pre-Patch-126 behaviour).\n1: auto -- mask on Quake/Quake2/Half-Life, do not mask on Source/Doom3/CoD, whose renderers do not.\n2: always mask, on every game (default since Patch 296; on a Source map this is the only setting that stops the rest of the level drawing through the sky).");
+cvar_t r_sky_forcedepth						= CVARFD ("r_sky_forcedepth", "1", CVAR_ARCHIVE, "Write correct depth for sky surfaces even when the sky is drawn by a GLSL program. Stops entities in other parts of the map showing through the skybox.\n0: never mask (the pre-Patch-126 behaviour).\n1: auto (default) -- mask on Quake/Quake2/Half-Life; on Source/Doom3/CoD the sky is a hole, as their renderers draw it, so whatever the PVS admits behind it is drawn.\n2 masked a Source map's sky at r_sky_forcedepth_scale times the face's distance, hiding more the nearer you were (the default from Patch 296 to 1697); removed by Patch 1698, it now means 1.");
 //FTESurf Patch 768: monolith B4's WindowImposter slab sits a few units in front of its sky brush,
 //and at some angles that is under one depth step, so the mask won and the real sky showed through.
 cvar_t r_sky_forcedepth_push				= CVARFD ("r_sky_forcedepth_push", "4", CVAR_ARCHIVE,"Pushes r_sky_forcedepth's sky mask this many depth steps away from the eye, so a surface just in front of a sky brush still beats it; the level far behind the sky stays masked. GL only, and only where the sky itself writes no depth (e.g. Source/Half-Life maps with a skyname). 0: the mask is written at the brush, as before Patch 768.");
@@ -112,7 +120,7 @@ cvar_t r_sky_forcedepth_push				= CVARFD ("r_sky_forcedepth_push", "4", CVAR_ARC
 //Patch 990: Source draws a sky face as a hole, so a prop poking through one is still drawn
 //(bhop_ceaseless's spawn roof rises 100 units past its sky ceiling). The mask keeps hiding what is
 //far behind the sky (Patch 296) but is written this many times farther from the eye than the face.
-cvar_t r_sky_forcedepth_scale				= CVARFD ("r_sky_forcedepth_scale", "2", CVAR_ARCHIVE, "Writes r_sky_forcedepth's sky mask this many times farther from the eye than the sky surface, on the same pixels, so a model poking through a sky brush (as Source draws it) is not cut off while the level far behind the sky stays hidden. Source maps only. 1: the mask is written at the sky surface, as before Patch 990.");
+cvar_t r_sky_forcedepth_scale				= CVARFD ("r_sky_forcedepth_scale", "2", CVAR_ARCHIVE, "Writes r_sky_forcedepth's sky mask this many times farther from the eye than the sky surface, on the same pixels, so a model poking through a sky brush (as Source draws it) is not cut off while the level far behind the sky stays hidden. Source maps only: since Patch 1698 the one mask written there is the 3D sky room's own sky. 1: the mask is written at the sky surface, as before Patch 990.");
 
 static shader_t *forcedsky;
 static shader_t *skyboxface;
@@ -195,6 +203,12 @@ void R_SetSky(const char *sky)
 		sky = r_skybox_default.string;
 
 	R_LoadSky(sky);
+	//FTESurf Patch 1695: a GoldSrc map's missing custom sky (333 of P1669's 1,308) draws Half-Life's stock sky first.
+	if (R_ForcedSkyEmpty() && mapsky && cl.worldmodel && cl.worldmodel->fromgame == fg_halflife && Q_strcasecmp(sky, "desert"))
+	{
+		Con_DPrintf("sky %s: no face found; drawing desert\n", sky);
+		R_LoadSky("desert");
+	}
 	//FTESurf Patch 1191: a declared sky with not one face found (surf_utopia's TF2 sky
 	//without TF2) gets the same fill as a map that declares none.
 	if (R_ForcedSkyEmpty() && mapsky && *r_skybox_default.string && Q_strcasecmp(sky, r_skybox_default.string))
@@ -208,6 +222,12 @@ void R_SetSky(const char *sky)
 	{
 		Con_DPrintf("sky %s: no face found; drawing sky_day01_01\n", sky);
 		R_LoadSky("sky_day01_01");
+	}
+	//P1695: the game's own sky (gfx/env/wos_day*.jpg), for an install with none of the above.
+	if (R_ForcedSkyEmpty() && *sky && Q_strcasecmp(sky, "wos_day") && !*r_skyboxname.string)
+	{
+		Con_DPrintf("sky %s: no face found; drawing wos_day\n", sky);
+		R_LoadSky("wos_day");
 	}
 }
 static void R_LoadSky(const char *sky)
@@ -388,11 +408,12 @@ static void R_ForceSky_f(void)
 			Con_Printf("Current user skybox is %s\n", r_skyboxname.string);
 		else if (*cl.skyname)
 			Con_Printf("Current per-map skybox is %s%s\n", cl.skyname,
-				(forcedsky && Q_strcasecmp(forcedsky->name+7, cl.skyname)) ? " (not found; drawing r_skybox_default)" : "");	//+7: "skybox_"
+				R_ForcedSkyEmpty() ? " (not found, nor any stand-in)" :	//P1695
+				Q_strcasecmp(forcedsky->name+7, cl.skyname) ? va(" (not found; drawing %s)", forcedsky->name+7) : "");	//+7: "skybox_"
 		else if (*r_skybox_default.string)
 			Con_Printf("Map declares no sky; using r_skybox_default %s (loaded: %s)\n", r_skybox_default.string,
-				!forcedsky ? "no" : Q_strcasecmp(forcedsky->name+7, r_skybox_default.string) ? va("no; drawing %s", forcedsky->name+7) :	//P1627
-				R_ForcedSkyEmpty() ? "no faces found" : "yes");
+				R_ForcedSkyEmpty() ? "no, nor any stand-in" :	//P1695
+				Q_strcasecmp(forcedsky->name+7, r_skybox_default.string) ? va("no; drawing %s", forcedsky->name+7) : "yes");	//P1627
 		else
 			Con_Printf("no skybox forced.\n");
 	}
@@ -744,8 +765,8 @@ static qboolean R_SkyMaskWantedForGame(void)
 		return true;
 	if (r_worldentity.model->fromgame == fg_quake3)
 		return false;	//q3map2's invisible skyportals, as before
-	if (r_worldentity.model->fromgame == fg_new && r_sky_forcedepth.ival < 2)
-		return false;	//Source et al: masking here clips props at the sky brush
+	if (r_worldentity.model->fromgame == fg_new)
+		return false;	//Source et al: the sky is a hole (Patch 1698 removed 2's mask here)
 	return true;
 }
 
@@ -1662,7 +1683,9 @@ static void GL_DrawSkyBox (texid_t *texnums, const float *tscale, batch_t *s)
 	vecV_t skyface_vertex[4];
 	vec2_t skyface_texcoord[4];
 	index_t skyface_index[6] = {0, 1, 2, 0, 2, 3};
-	vec4_t skyface_colours[4] = {{1,1,1,1},{1,1,1,1},{1,1,1,1},{1,1,1,1}};
+	extern cvar_t r_autoexposure_sky;	//FTESurf Patch 1764: the exposure, as Source scales its sky
+	float ex = r_autoexposure_sky.value;
+	vec4_t skyface_colours[4] = {{ex,ex,ex,1},{ex,ex,ex,1},{ex,ex,ex,1},{ex,ex,ex,1}};
 	mesh_t skyfacemesh = {0};
 
 	if (cl.skyrotate)
@@ -1749,7 +1772,9 @@ static void GL_DrawSkyBoxFull (batch_t *s, texid_t *texnums, const float *tscale
 	vecV_t v[4];
 	vec2_t tc[4];
 	index_t idx[6] = {0, 1, 2, 0, 2, 3};
-	vec4_t col[4] = {{1,1,1,1},{1,1,1,1},{1,1,1,1},{1,1,1,1}};
+	extern cvar_t r_autoexposure_sky;	//FTESurf Patch 1764
+	float ex = r_autoexposure_sky.value;
+	vec4_t col[4] = {{ex,ex,ex,1},{ex,ex,ex,1},{ex,ex,ex,1},{ex,ex,ex,1}};
 	mesh_t m = {0};
 
 	for (i = 0; i < 6; i++)

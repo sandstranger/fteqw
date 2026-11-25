@@ -85,7 +85,7 @@ cvar_t	com_protocolversion		= CVARAD("com_protocolversion", "3", NULL, "The prot
 cvar_t	com_parseutf8			= CVARD("com_parseutf8", "1", "Interpret console messages/playernames/etc as UTF-8. Requires special fonts. -1=iso 8859-1. 0=quakeascii(chat uses high chars). 1=utf8, revert to ascii on decode errors. 2=utf8 ignoring errors");	//1 parse. 2 parse, but stop parsing that string if a char was malformed.
 cvar_t	com_highlightcolor		= CVARD("com_highlightcolor", STRINGIFY(COLOR_RED), "ANSI colour to be used for highlighted text, used when com_parseutf8 is active.");
 cvar_t	com_gamedirnativecode	= CVARFD("com_gamedirnativecode", "0", CVAR_NOTFROMSERVER, FULLENGINENAME" blocks all downloads of files with a .dll or .so extension, however other engines (eg: ezquake and fodquake) do not - this omission can be used to trigger delayed eremote exploits in any engine (including "DISTRIBUTION") which is later run from the same gamedir.\nQuake2, Quake3(when debugging), and KTX typically run native gamecode from within gamedirs, so if you wish to run any of these games you will need to ensure this cvar is changed to 1, as well as ensure that you don't run unsafe clients.");
-cvar_t	sys_platform			= CVAR("sys_platform", PLATFORM);
+cvar_t	sys_platform			= CVARF("sys_platform", PLATFORM, CVAR_NOSET|CVAR_NOSAVE|CVAR_NOTFROMSERVER);	/*FTESurf Patch 1646: csprogs reports the platform from it*/
 cvar_t	host_mapname			= CVARAFD("mapname", "", "host_mapname", 0, "Cvar that holds the short name of the current map, for scripting type stuff");
 #ifdef HAVE_LEGACY
 cvar_t	ezcompat_markup			= CVARD("ezcompat_markup", "1", "Attempt compatibility with ezquake's text markup.0: disabled.\n1: Handle markup ampersand markup.\n2: Handle chevron markup (only in echo commands, for config compat, because its just too unreliable otherwise).");
@@ -112,6 +112,7 @@ cvar_t	pm_trisoup_bevels		= CVARFD("pm_trisoup_bevels", "1", CVAR_SERVERINFO, "F
 //is linked into client and server alike.  CVAR_SERVERINFO so a dedicated server
 //publishes it -- client and server MUST agree or prediction disagrees about where
 //every rotated prop's surface is.
+cvar_t	pm_physentcull			= CVARFD("pm_physentcull", "1", CVAR_NOSAVE|CVAR_NOTFROMSERVER, "FTESurf Patch 1714: a movement trace skips a physent its swept box cannot reach (a rotation-proof bounds test, pmovetst.c PM_PhysentOutOfReach). Client prediction replays the unacknowledged moves every frame and each trace visited every physent. Exact by construction.\n0: trace every physent. 1: skip the unreachable (default). 2: decide, trace the skipped anyway and count any that touched (must be 0): pm_physentstats.");
 cvar_t	bih_tracecache			= CVARFD("bih_tracecache", "1", CVAR_NOSAVE|CVAR_NOTFROMSERVER, "FTESurf Patch 1266: a collision trace asked again with exactly the same inputs, model, tree and clip rules returns the answer already computed (com_bih.c BIH_Trace). Client prediction replays the unacknowledged movement every rendered frame, so the same traces recur. Exact by construction; off while pm_dispprobe is on, which reads the per-trace probe record.\n0: trace every time. 1: reuse (default). 2: reuse, but also trace every reused answer again, compare, and print how many differed (must be 0).");
 cvar_t	pm_rotatedboxhulls		= CVARFD("pm_rotatedboxhulls", "1", CVAR_SERVERINFO, "FTESurf Patch 320. Treat the player's box as the ORIENTED box it is when tracing inside a rotated submodel. BIH_RecursiveTrace rotates the trace's start/end into the submodel's frame but hands the box through as an AABB, so a prop placed at a diagonal yaw collided against a box that had rotated with it -- zero error at 0/90/180/270, worst at 45. On surf_boreas's ramps (yaw -135) it put the player 7.73 units too deep in every ramp, which is why fixing the .phy winding in Patch 317 made the ride worse instead of better: the two errors had been cancelling. 0 restores the old behaviour exactly, for A/B against recorded times; it does not restore correctness.");
 cvar_t	pm_ladderprobe			= CVARFD("pm_ladderprobe", "0", CVAR_NOSAVE, "FTESurf Patch 260, temporary instrument. Fire the ladder-detection traces a Source-mode mover would fire, at the point in PMSrc_Tick where the ladder hook would live, and print what each one sees: a zero-length box trace at the origin and a forward trace, each run under MASK_PLAYERSOLID, under MASK_PLAYERSOLID|LADDER, and under an all-bits mask, plus PM_ExtraBoxContents for the entity path. Answers three questions at once -- does a ladder brush exist here, does the default mask hit it, and does trace.contents carry the LADDER bit when it does. 4Hz, and it prints even when nothing is hit so a negative is legible.");
@@ -6944,6 +6945,7 @@ void COM_Init (void)
 	Cvar_Register (&host_mapname, "Scripting");
 	Cvar_Register (&developer, "Debugging");
 	Cvar_Register (&sys_platform, "Gamecode");
+	Cvar_ForceSet (&sys_platform, PLATFORM);	/*Patch 1646: Cvar_Register keeps a launch +set's string*/
 	Cvar_Register (&pr_engine, "Gamecode");
 	Cvar_Register (&registered, "Copy protection");
 	Cvar_Register (&gameversion, "Gamecode");
@@ -6962,6 +6964,11 @@ void COM_Init (void)
 	{
 		extern void BIH_TraceStats_f(void);
 		Cmd_AddCommandD("bih_tracestats", BIH_TraceStats_f, "FTESurf Patch 1266: print bih_tracecache's counters since the last call, then reset them.");
+	}
+	Cvar_Register (&pm_physentcull, NULL);	//Patch 1714
+	{
+		extern void PM_PhysentStats_f(void);
+		Cmd_AddCommandD("pm_physentstats", PM_PhysentStats_f, "FTESurf Patch 1714: print pm_physentcull's counters since the last call, then reset them.");
 	}
 	Cvar_Register (&pm_ladderprobe, NULL);	//Patch 260, temporary
 	Cvar_Register (&pm_portalcsg_scanall, NULL);	//Patch 283

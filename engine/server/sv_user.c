@@ -159,6 +159,8 @@ int SV_PMSrcVer(const float *pin)
 	if (pin[1] == PHYSMODE_AG) return pin[0] == 1 ? 1 : 0;
 	if (strcmp(sv_pmpin_names[SV_PMPIN_FIXRAMPBUGS], "fixrampbugs"))
 		Sys_Error("SV_PMSrcVer: SV_PMPIN_FIXRAMPBUGS is \"%s\"", sv_pmpin_names[SV_PMPIN_FIXRAMPBUGS]);
+	if (strcmp(sv_pmpin_names[SV_PMPIN_FIXSLOPES], "fixslopes"))
+		Sys_Error("SV_PMSrcVer: SV_PMPIN_FIXSLOPES is \"%s\"", sv_pmpin_names[SV_PMPIN_FIXSLOPES]);
 	//Reject non-finite pins before the shortcut, even with fast-math enabled.
 	if (IS_NAN(f))
 		return 0;
@@ -169,7 +171,17 @@ int SV_PMSrcVer(const float *pin)
 	//Patch 888: v9 traces .phy hulls whose old 16-bit indices wrapped as they are.
 	//Patch 882: v10 honours momlimit/momcool/momslide.
 	//Patch 1630: v13 collides Patch 256's re-wound displacements as rendered (review: a mover-13 server pinned 2 without it).
-	if (pin[0] == 3 || pin[0] == 4 || pin[0] == 5 || pin[0] == 6 || pin[0] == 7 || pin[0] == 8 || pin[0] == 9 || pin[0] == 10 || pin[0] == 11 || pin[0] == 12 || pin[0] == 13)
+	//Patch 1709: v14 reads fixslopes 2/3 (Momentum 0.10's RNGFix, ahop).
+	//  Below fixslopes 2 it moves as 13, and pins 13 so an older verifier still replays it.
+	//Patch 1713: v15 zeroes vertical speed on every grounding (Source's SetGroundEntity), at any fixslopes.
+	//Patch 1748: v16 traces far brushes' rebuilt bevels; on a world without any it moves as 15 and pins 15.
+	//Patch 1812: v17 sweeps prop models' .phy pieces as brushes. It pins 17 on every map, as 15 did: a pin read from the
+	//  entities (solid props) could differ between the run and its replay (review 1: Enable/Disable, lazy loads).
+	if (pin[0] == 14 && !(pin[SV_PMPIN_FIXSLOPES] >= 2))
+		return 13;
+	if (pin[0] == 16 && !(sv.world.worldmodel && sv.world.worldmodel->farfixbrushes))
+		return 15;
+	if (pin[0] == 3 || pin[0] == 4 || pin[0] == 5 || pin[0] == 6 || pin[0] == 7 || pin[0] == 8 || pin[0] == 9 || pin[0] == 10 || pin[0] == 11 || pin[0] == 12 || pin[0] == 13 || pin[0] == 14 || pin[0] == 15 || pin[0] == 16 || pin[0] == 17)
 		return pin[0];
 	return f >= 2 ? 2 : f < 2 ? 1 : 0;
 }
@@ -3490,6 +3502,7 @@ qboolean SV_UploadStale (client_t *cl)
 */
 void SV_UploadAsk (client_t *cl)
 {
+	extern cvar_t sv_recupload_https;	//FTESurf Patch 1704
 	const char *kind = "";
 	size_t l = strlen(cl->uploadfn);
 
@@ -3517,9 +3530,15 @@ void SV_UploadAsk (client_t *cl)
 	}
 	/*P774: capable clients post journals to the fixed HTTPS collector. The
 	  basename still comes from SSQC's destination, not the client's path.
-	  No netchan destination remains armed and no empty .hid is published.*/
-	if (!strcmp(kind, "hid") && !*cl->uploadnext &&
-		!strcmp(InfoBuf_ValueForKey(&cl->userinfo, "fshidhttp"), "1") &&
+	  No netchan destination remains armed and no empty .hid is published.
+	  FTESurf Patch 1704: views too, on a server with sv_recupload_https 1 (the
+	  official lobbies), from clients that say so (fsviewhttp); over the netchan 23
+	  of 51 asked views landed. The client queues its POSTs, so the journal after
+	  the view is asked for at once.*/
+	if (((!strcmp(kind, "hid") && !*cl->uploadnext &&
+		  !strcmp(InfoBuf_ValueForKey(&cl->userinfo, "fshidhttp"), "1")) ||
+		 (!strcmp(kind, "view") && sv_recupload_https.ival &&
+		  !strcmp(InfoBuf_ValueForKey(&cl->userinfo, "fsviewhttp"), "1"))) &&
 		!strncmp(cl->uploadfn, "data/evidence/", 14))
 	{
 		const char *map = cl->uploadfn + 14;
@@ -3527,21 +3546,30 @@ void SV_UploadAsk (client_t *cl)
 		const char *p;
 		qboolean valid = true;
 		char mapname[65], runid[97], command[320];
+		size_t ext = strlen(kind) + 1;		/*".hid" or ".view"*/
 		size_t ml = slash ? (size_t)(slash - map) : 0;
-		size_t rl = slash ? strlen(slash + 1) - 4 : 0;
+		size_t rl = (slash && strlen(slash + 1) > ext) ? strlen(slash + 1) - ext : 0;
 		for (p = map; slash && *p; p++)
 			if (!( (*p >= 'a' && *p <= 'z') || (*p >= 'A' && *p <= 'Z') ||
 				(*p >= '0' && *p <= '9') || *p == '_' || *p == '-' || (*p == '+' && p < slash) || p == slash ||
-				(*p == '.' && (p < slash || p == cl->uploadfn + l - 4)) ))
+				(*p == '.' && (p < slash || p == cl->uploadfn + l - ext)) ))
 				valid = false;
-		if (valid && ml && ml < sizeof(mapname) && rl && rl < sizeof(runid))
+		if (valid && ml && ml < sizeof(mapname) && rl && rl < sizeof(runid) && *map != '+' && *map != '-' && *map != '.' && !strstr(map, ".."))	//surfd's MAP
 		{
 			Q_strncpyz(mapname, map, ml + 1);
 			Q_strncpyz(runid, slash + 1, rl + 1);
-			Q_snprintfz(command, sizeof(command), "rec_ul_http %s hid %s %s\n", cl->uploadnonce, mapname, runid);
+			Q_snprintfz(command, sizeof(command), "rec_ul_http %s %s %s %s\n", cl->uploadnonce, kind, mapname, runid);
 			ClientReliableWrite_Begin(cl, svc_stufftext, strlen(command) + 2);
 			ClientReliableWrite_String(cl, command);
-			SV_UploadCancel(cl);
+			Con_Printf("sv_recupload: asked %s for %s over HTTPS\n", cl->name, cl->uploadfn);	//the route, in production logs
+			if (*cl->uploadnext)
+			{	//the journal after the view (SV_RecUpload_f's order)
+				Q_strncpyz(cl->uploadfn, cl->uploadnext, sizeof(cl->uploadfn));
+				*cl->uploadnext = 0;
+				SV_UploadAsk(cl);
+			}
+			else
+				SV_UploadCancel(cl);
 			return;
 		}
 	}

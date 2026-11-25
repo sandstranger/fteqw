@@ -9,6 +9,8 @@
 #ifdef __linux__
 #include <sys/stat.h>
 #include <errno.h>
+#elif (defined(__unix__) || defined(__apple__)) && !defined(ANDROID)
+#include <sys/stat.h>	//FTESurf Patch 1739: FS_SteamClientRoot
 #endif
 
 #include "fs.h"
@@ -1120,7 +1122,8 @@ static qboolean FS_GamedirIsOkay(const char *path, qboolean verbose)
 		!Q_strncasecmp(path, "docs", 4) ||		//don't pollute this
 		!Q_strncasecmp(path, "help", 4) ||		//don't pollute this
 		!Q_strncasecmp(path, "bin", 3) ||		//if scripts try executing stuff here then we want to make extra sure that we don't allow writing anything within it.
-		!Q_strncasecmp(path, "lib", 3))			//same deal
+		!Q_strncasecmp(path, "lib", 3) ||		//same deal
+		!Q_strncasecmp(path, "httpq", 5))		//FTESurf Patch 1704: run evidence waiting for upload (cl_receipt.c); never a gamedir or package
 	{
 		if (verbose)
 			Con_Printf ("Gamedir should not be \"%s\"\n", path);
@@ -4582,6 +4585,8 @@ qboolean FS_Rename(const char *oldf, const char *newf, enum fs_relative relative
 	{
 		oldf = FS_GetCleanPath(oldf, false, cleanold, sizeof(cleanold));
 		newf = FS_GetCleanPath(newf, false, cleannew, sizeof(cleannew));
+		if (!oldf || !newf)
+			return false;	//FTESurf Patch 1705: a refused path (over MAX_QPATH) was passed on as NULL and the lobby segfaulted (QC frename of a 129-character .owner part)
 	}
 	return FS_Rename2(oldf, newf, relativeto, relativeto);
 }
@@ -14109,3 +14114,73 @@ done:
 	}
 }
 #endif
+
+/*
+  FTESurf Patch 1739: the Steam CLIENT's own folder -- where appcache/librarycache keeps each game's art -- for the
+  menu's mount-game icons (pr_menu.c PF_m_steam_libraryimage).  Not a search path: that art is read straight off
+  the disk, decoded into one named texture, and never enters the VFS or its content checks.  The candidates are
+  Sys_SteamVdfPath's homes; Windows asks the registry as Sys_SteamHasFile does.
+*/
+qboolean FS_SteamClientRoot(char *out, size_t outsize)
+{
+#if defined(_WIN32) && !defined(WINRT) && !defined(_XBOX)
+	static const struct {HKEY hive; const wchar_t *value; DWORD extra;} keys[] = {
+		{HKEY_CURRENT_USER, L"SteamPath", 0},
+		{HKEY_LOCAL_MACHINE, L"InstallPath", KEY_WOW64_32KEY},
+	};
+	HKEY key;
+	DWORD len, type;
+	wchar_t wide[MAX_OSPATH];
+	size_t i;
+	for (i = 0; i < countof(keys); i++)
+	{
+		key = NULL;
+		if (RegOpenKeyExW(keys[i].hive, L"SOFTWARE\\Valve\\Steam", 0, KEY_QUERY_VALUE|keys[i].extra, &key) != ERROR_SUCCESS)
+			continue;
+		len = sizeof(wide) - sizeof(wchar_t);
+		if (RegQueryValueExW(key, keys[i].value, NULL, &type, (LPBYTE)wide, &len) == ERROR_SUCCESS && type == REG_SZ && len)
+		{
+			wide[len / sizeof(wchar_t)] = 0;    //a REG_SZ need not be terminated
+			narrowen(out, outsize, wide);       //paths are UTF-8 here (Sys_SteamDirsWithFile does the same)
+			if (*out)
+			{
+				RegCloseKey(key);
+				return true;
+			}
+		}
+		RegCloseKey(key);                       //an empty SteamPath falls back to InstallPath
+	}
+	return false;
+#elif (defined(__linux__) || defined(__unix__) || defined(__apple__)) && !defined(ANDROID)
+	static const char *homes[] = {
+		".steam/steam", ".local/share/Steam", ".steam/root", ".var/app/com.valvesoftware.Steam/.local/share/Steam",
+		"snap/steam/common/.local/share/Steam", "snap/steam/common/.steam/steam", ".steam/debian-installation",
+		"Library/Application Support/Steam",
+	};
+	const char *home = getenv("HOME"), *xdg = getenv("XDG_DATA_HOME");
+	char probe[MAX_OSPATH];
+	struct stat st;
+	size_t i;
+	for (i = 0; i <= countof(homes); i++)
+	{
+		if (i < countof(homes))
+		{
+			if (!home || !*home)
+				continue;
+			Q_snprintfz(out, outsize, "%s/%s", home, homes[i]);
+		}
+		else
+		{
+			if (!xdg || !*xdg)
+				continue;
+			Q_snprintfz(out, outsize, "%s/Steam", xdg);
+		}
+		Q_snprintfz(probe, sizeof(probe), "%s/appcache/librarycache", out);
+		if (stat(probe, &st) == 0 && S_ISDIR(st.st_mode))
+			return true;
+	}
+	return false;
+#else
+	return false;
+#endif
+}
