@@ -8711,6 +8711,7 @@ static void SV_PublishCmdContext(const usercmd_t *ucmd, int kind, float totalmse
 
 #include "sv_bankgravity.inc"
 #include "sv_tas_rewind.inc"
+#include "sv_pm_snapshot.inc" /* P1827: ordinary save snapshots, not TAS gates */
 #include "sv_tas_plan.inc"
 #include "sv_tas_rollout.inc"
 

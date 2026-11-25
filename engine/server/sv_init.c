@@ -1069,6 +1069,8 @@ void SV_SpawnServer (const char *server, const char *startspot, qboolean noents,
 	if (fs_maploadhash.ival)
 		FS_RehashIfStale();
 
+	FS_LoadStats_Phase("retire packs / repair hash");
+
 	if (sv_cheats.ival)
 	{
 		sv_allow_cheats = true;
@@ -1204,6 +1206,7 @@ void SV_SpawnServer (const char *server, const char *startspot, qboolean noents,
 			Con_Printf(CON_WARNING "%s: the hl2 plugin predates mover 16 -- brushes far from the origin collide and record as mover 15; ship the plugin with this engine\n", sv.modelname);
 	}
 
+	FS_LoadStats_Phase("world model");
 	sv.state = ss_dead;
 
 	//make sure our map's package is loaded.
@@ -1838,6 +1841,7 @@ MSV_OpenUserDatabase();
 	SVQ2_BuildBaselines();
 #endif
 
+	FS_LoadStats_Phase("gamecode / entities / signon");
 	SV_FlushSignon(true);
 
 	// all spawning is completed, any further precache statements

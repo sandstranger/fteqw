@@ -1,5 +1,106 @@
 # Engine patches (fteqw `fteqw64.exe`)
 
+## Patch 1838 - faster lobby load readiness and scalable filesystem lookup
+
+**Problem.** A 1,024-bucket filename index produced long collision chains with large mounted
+libraries. Empty lobbies advertised readiness on the ordinary heartbeat cadence, while retention
+searches could run during map startup. Join admission also waited for a whole-library timer scan.
+
+**Change.** Use 262,144 filename buckets (2 MiB of bucket pointers on 64-bit) from the first rebuild.
+Keep case-insensitive bucket selection and removal consistent, including duplicate insertion,
+replacement and deletion. Add coarse phases to existing filesystem load statistics.
+
+Ordinary empty lobbies can use a one-second heartbeat (`lobby_empty_fast`); the occupied, reserved,
+custom and disabled paths retain their policy. The ordinary lobby cfg opts in. Retention is deferred
+until a successful ready heartbeat and serviced only while truly idle: one search/slot per turn,
+with iterator cleanup on invalidation and fresh metadata checks before deletion. This is NOT a
+hard millisecond budget: one search materialization can still be expensive. Ownership revocation
+closes the full-tree iterator; protected, future, malformed and unsupported data remain protected.
+Join admission resolves only the requested BSP and authoritative zone files, preserving validation,
+pool/class isolation, signed directive shape and current-file checks rather than scanning timers.
+
+A one-line debug inspector repair returns the actual FTE32/QTEST global definition instead of a
+stale 16-bit conversion object. It enables typed native state checks; cheat/write guards and normal
+simulation are unchanged. `hl2_dedicatedphy` is an experimental map-latched dedicated-only PHY-first
+candidate and remains **0 by default**. Unsupported models fall back to the old loader; no qualified
+real-model fast-path speedup or runtime enablement is claimed.
+
+**Verified.** Extracted production filesystem tests cover case folding, supplied/allocated buckets,
+duplicates, pure/depth/stand-in selection, stale guards, retirement, lock failure and incremental
+mutation, with discriminating old-size/old-unlink controls. A matched local FS-only ABBA experiment
+with a 184k-name library reduced median command-to-ready times by 21-48% over five maps; all retained
+collision/movement hashes matched. Native ARM extracted-body tests reduced the synthetic combined
+index/lookup workload from about 12.3 s to 0.40 s. That is NOT an ARM full-engine/map-load measurement.
+
+Client, dedicated and native plugin builds, all three QC VMs (zero warnings/frame-overlap failures),
+acting QC policy tests and isolated backend route controls passed. Real-engine HTTP/file-oracle
+fixtures passed owner, slow reply, non-owner, old-day data, iterator pause/resume, ownership revocation,
+connecting-client and spectator arms. The typed-global test executes the production lookup body:
+the old return fails definition identity; the repaired subject passes all four format/local/global
+paths. Independent review confirmed unchanged debug permissions and the 16-bit conversion path.
+
+**Limits / rollout.** These results distinguish local qualification from deployment. Fully spawned
+player and literal-midnight native cases, authored native-policy expiry objects and native transport
+failure arms were not reached by this fixture. No production latency, fleet-wide deployment, backend
+generation swap, native PHY fast-path qualification, release or qcbuild bump follows from these tests.
+Heartbeat load and maintenance latency need monitoring in a guarded coherent native/QC/config/backend
+cohort. `lobby_empty_fast 0` and `lobby_idle_maintenance 0` opt out; retain the matching rollback cohort.
+
+## Patch 1837 - public website cache and rendering performance (backend/site only)
+
+**Problem.** Browser-cold leaderboard/player list observations spent 3.16/1.57 seconds in API requests;
+rendering every map also created multi-thousand-row DOM work. Zoning fetched the aggregate catalogue
+for availability, and the board downloaded the run renderer even when no run was opened.
+
+**Change.** The public maps catalogue persists a validated last-good snapshot and refreshes off the
+request path with one builder per worker. Availability projects only already-public map/have metadata,
+including canonical names for incomplete maps, without waiting for a cold library scan. Explicit
+post-fork worker priming restores optional directory/map files and picture indexes before traffic.
+Map rows expand in 100-row batches while search/sort/counts retain the full catalogue; load-more appends
+and focuses the first new row. The run renderer is lazy and disposal cannot rewrite a newer route.
+Zoning fetches history independently, debounces input and skips unchanged catalogue redraws.
+
+**Validation.** Synthetic cache controls cover expiry, cold/recycled workers, concurrency, failed
+refresh/thread/atomic save, clock rollback, public allowlists, optional-snapshot corruption and startup
+reader ownership. Frontend controls include callback-faithful failed-navigation retry, incomplete-map
+canonical names, publication/rollback, last-good offline state, keyboard focus and row retention.
+Actual Chromium fixtures reduced 2,500-map DOM from 16,391 to 792 elements and desktop list paint from
+369 ms to 81 ms; real FSRun script failure/retry/disposal controls pass. These are synthetic local
+observations, not production p95. Guarded-generation activation and live remeasurement are separate gates.
+
+No engine/QC/native build, mover/ruleset or schema change. No join-admission freshness change.
+
+## Patch 1831 - public native-zone snapshot and explicit Shavit review proposals (QC tools/shavit_zones.py)
+
+**Problem.** Strict box conversion leaves many native rings/thin zones unrepresented; prefix-only selection
+misses catalogued maps with other stems. The owner requested complete published coverage, public downloads
+and a draft upstream contribution, and expressly confirmed source redistribution permission.
+
+**Change.** Opt-in geometry proposals retain native bytes and report exact AABB/short-height transformations,
+without relaxing strict mode or route/index/cap gates. Explicit retained public-catalogue selection records
+mode, original filename and catalogue hash without suffix aliases. Unsupported maps remain whole-map blocked.
+Public review packages preserve original attribution/terms, distinguish unchanged boxes from material timing
+changes, and never claim a new Unlicense dedication or Source hull/timing equivalence. No engine code/pin,
+live timer/style/stripper configuration, existing upstream zone or player data changes.
+
+**Verified.** 34 bounded converter tests; independent source/redirect-classification guard review; complete
+observed public manifest capture with all 1,769 native sizes/SHA256s checked and unchanged opening/closing
+zone inventories/catalogue bytes. 1,754 surf/bhop inputs yield 924surf(222strict/702geometry) and
+554bhop(340strict/214geometry) candidates, 200whole-map blockers and76existing names skipped. Another15
+other/unheld public natives remain in the full native archive only. 516missing-alias origin404 observations
+are not proof of absent embedded timers. All1,478 candidate hashes/schema/profile paths checked; ZIP members
+read back byte-identically; all107 original upstream tracked files(including81root z files) unchanged.
+
+**Published, not ranked-deployed.** Converter gamebcf7bc81; contribution50cccbad40170c8a92735ad653cea35f6283e123.
+Public prerelease https://github.com/ProtoAus/surf-zones/releases/tag/wos-zones-20261125-725567e8b6b9;
+all8assets independently downloaded anonymously HTTP200 and full-file SHA256 matched. Draft upstream
+https://github.com/wrldspawn/surf-zones/pull/1 isolates proposals from root z/; no merge or automatic adoption.
+Dataset725567e8b6b97e7563ffe4eaf4225edaca267fc2c1258d761b7fb62b9d0d74dc. Retained receipts:
+FTESurf-worktrees/shavit-publish-20261125-happy/artifacts/. Actual CS:S BSP/hull boundaries, thin-Z timing,
+ordered routes, bonuses/restarts and omitted speed/filter/physics settings remain unverified per map;
+vanilla bhop-style compatibility and upstream's sm_dumpzones/in-game gate are not claimed. See game
+tools/shavit_zones.md and lextest.md. No QC/engine build or fleet/game-updater release needed for this data task.
+
 ## Patch 1829 - native zone copies to offline Shavit Surf review candidates (QC tools/shavit_zones.py)
 
 **Problem.** Native polygon/track JSON cannot be copied directly into the Shavit Surf box/trigger JSON format;
@@ -28,6 +129,35 @@ real URLs, map names, import/storage formats and recording provenance remain unc
 Linux builds zero warnings, final integrated client build and qcframes pass. HUD screenshot shows CS:S tier.
 Local tested CSQC/menu installed with executable/plugin/SSQC hashes unchanged. A wait-unit harness timeout is
 retained separately from the corrected passing smoke. Full UI/replay interaction, lobbies and release untested.
+
+## Patch 1832 - Separate model world-light sample points and static Source lighting references (engine client/pr_csqc.c client/render.h gl/gl_alias.c server/pr_cmds.c; game client/cl_lightingorigin.qc)
+
+**Problem.** The canals entity audit found two otherwise ordinary props using `lightingoriginhack` and an `info_lighting_relative` frame. Ignoring it samples the wrong place; moving the rendered entity to that place would corrupt its pose, collision relationship and shadows.
+
+**Contract and scope.** Valve's released `C_InfoLightingRelative::GetLightingOffset` supplies `H_world * inverse(L_world)`, including rotation; a missing landmark supplies identity. The released draw hook supplies separate optional lighting inputs, but does not establish the closed renderer's final sampling centre, combined absolute/relative precedence or attenuation policy. This implementation explicitly transforms this engine's existing `origin + 24Z` world-light sample. It is not a claim of exact Source renderer parity. Baked-prop lookup, physical pose and dynamic-light attenuation keep their existing inputs. Static unparented, unanimated/body-zero consumers and reference frames are supported; authored incoming I/O, unsafe frames and ambiguous bindings retain the prior drawing path. Simultaneous absolute and relative inputs conservatively fall back because their precedence is unverified. No private/proprietary map or model assets are included.
+
+**Native API.** Optional named float-returning `addentity_lightingorigin(entity, vector)` and `addentity_lightingoffset(entity, translation, axisX, axisY, axisZ)` submit a model with a separate sample point. Success means accepted submission; failure leaves no partial entity/shadow submission and callers retain ordinary drawing. Weapons, invalid inputs/results and a full entity list refuse. Sampling is NOT done during submission: one internal render-entity vector plus pending state 4 carries it to ordinary late `R_CalcModelLighting`, after normal style/dlight setup. Existing memo states 0/1/2 remain unchanged and ordinary constructors never read the new vector. Explicit cache entries match mode, point AND physical origin and cannot borrow/blend ordinary moverate entries. Platform export includes both signatures. Internal renderer layout changed: rebuild the full engine and matching plugins; no entity-state protocol or fixed standard QC-edict layout changed.
+
+**QC activation.** Names and full rigid matrices resolve once at map load; listener bindings cache on first sight instead of scanning names every frame. The callback composes with exact tint, preserves draw fields and suppresses precisely one ordinary submission only after the native API succeeds. `vbsp_lightingorigin` defaults to 1; 0 retains the old drawing path. `lightingorigin_info` reports authored/resolved/missing/unsupported counts, actual binding attempts, accepted submissions and matrices/model bounds; metadata alone is not proof that a visible consumer acted. Reset frees owned metadata/strings. Missing APIs produce one diagnostic and ordinary rendering, not a guessed replacement.
+
+**Verified.** Full fresh-object Linux client/server/qcc plus HL2 and ui_imgui plugin builds passed. Production-body O0/O2 regressions cover late styles/dlights without resetting the submission memo, default/identity/fractional fallback, point/physical-origin cache dependencies, affine drawing and refusal paths; eager sampling, a missing physical-origin key and lost pending metadata all fail their mutation controls. Nine QC matrix/eligibility tests passed, including wrong-order and incoming bodygroup controls; the Python predicate tests are not claimed as QC execution. Integrated all-three-QC builds had zero warnings and qcframes passed. Actual rendered controls: five authored consumers, two valid relative consumers and three missing references; both bind, off gives zero custom submissions, on gives accepted submissions with zero refusals. Hide/enable, native entity hiding, video restart and cold map reload acted. A private derived input fixture with authored `SetBodygroup` declined that consumer while the other actively submitted (5/1/3/1 counts); original map bytes stayed unchanged. An old engine bound both consumers but used no new API, warned once and retained ordinary rendering. Photos were inspected for lighting-only change and correct visibility. The initial above-roof/vacuous controls and a diagnostic-format warning were retained, corrected and are not acceptance evidence. Human cross-Source appearance comparison remains on lextest; no FPS gain, quality reduction, Build bump or gameplay change is claimed for this feature.
+
+
+## Patch 1830 - Skip invisible smoke-volume work and reuse exact-view ordering (game client/cl_emit.qc)
+
+**Problem.** `func_smokevolume` sorted and filtered its static particle grid every draw, including volumes outside the current potentially visible set. This was a measured CSQC self-time hotspot in the bhop_canals continuation.
+
+**Change.** Each nonempty volume gets a shared scene-PVS probe enclosing the actual accepted particles plus their full rotating billboard radius. PVS is checked at the current eye, without the shared negative-verdict hold. A hidden volume contributes no quads. An exact eye/count key reuses the sort; exact forward and current PVS-mask keys govern the filtered list. Reset removes probes and clears validity. The Source grid, jitter, lighting, rotation, alpha and billboard basis are unchanged. `vbsp_smokevol_pvs` and `vbsp_smokevol_cache` default to 1; both 0 restore the old-behaviour comparison, not identical bookkeeping cost. `smokevol_info full` exposes complete tables for `tools/p1830_smokevol_check.py`.
+
+**Verified.** All three QCs built with zero warnings and qcframes passed. Acted runtime: 141 particles in 7 positive-density volumes, 5 density-zero volumes inert, zero escaped billboard bounds, six complete reference/cache/PVS/moving/re-entry snapshots. The identical-view reference and cache-only particle metadata, volume tables, full permutation/distances and filtered order were exactly equal; the float32-aware checker accepted all six and rejected seven malformed/stale controls. Current-frame negative-PVS handling passed fresh independent review. Video restart smoke passed. After latest-main integration, all three QCs again built warning-free; the shipped diagnostic fixture and seven complete runtime tables passed, including a dense visible-fog control (141 reference candidates / 50 visible-volume candidates), video restart and cold map reload. The visible fog pair was inspected without a grid/opacity change. Raw unprofiled paired samples were neutral/noisy in two static views and the moving sweep (under 1% apparent change); another hidden-volume view improved but included a high first control. Claim work avoidance, not a general FPS increase. Human fog feel remains on lextest. QC/client-only: no native, protocol, mover, ranking, Build or engine-pin change.
+
+## Patch 1827 - complete native checkpoints for verifiable segmented runs
+
+**Problem.** A retained save/load segment did not contain the complete native mover state and input boundary needed to check a run across the load. Rounded save coordinates cannot reconstruct that missing state.
+
+**Change.** A typed native snapshot API supports capture, non-mutating validation and atomic restore without importing live counters or property provenance. Supported ordinary recordings retain a closed input boundary and explicit checkpoint; replay checks the retained endpoint before continuing from that state. Held release, repeated joins and disk reload use the same contract. Missing legacy evidence remains unavailable rather than guessed; malformed present snapshots do not downgrade to legacy. Unsupported native-format/HPP admission and detector/ranking policy are unchanged.
+
+**Validation.** Native component 215 checks, structural reader 1133 checks, 44 adversarial proof cases and real 200 Hz baseline/held/two-join runs pass in isolated worktrees. Actual cold/buffered/retarget, NOCLIP practice compatibility, refused non-WALK restore/recovery and live-property preservation controls pass. Independent source reviews found no remaining blocker. Integration, matched fleet/verifier delivery and live submission are separate gates; no deployment is claimed by this entry.
 
 ## Patch 1825 - $envmaptint and $envmapsaturation read Source's "{r g b}" form (plugin hl2/mat_vmt.c)
 
