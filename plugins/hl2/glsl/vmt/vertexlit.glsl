@@ -100,6 +100,12 @@
 varying vec2 tex_c;
 varying vec3 norm;
 varying vec4 light;	//.a: FTESurf Patch 1780, Strata's baked direct sun share (the .vhv alpha), 0 without
+#ifdef MISSPAT
+	//FTESurf Patch 1824: a missing image's relief detail (mat_vmt.c VMT_MissPatternSet), projected down the model's own
+	//axes at MISSPAT tiles per unit -- its UVs were laid out for the absent texture, at any scale. Weighted by the
+	//triangle's own normal: a Propper box's smoothed corner normals blend in the projections edge-on to its faces (streaks).
+	varying vec3 mp_pos;
+#endif
 #ifdef VC
 	uniform vec3 cvar_r_shadows_vhvsun;	//FTESurf Patch 1780: linear sun per unit of it, set by the game on a cascade map
 #endif
@@ -197,6 +203,9 @@ uniform float cvar_r_autoexposure_sky;	//FTESurf Patch 1811: Source exposes the 
 		#endif
 	#endif
 		norm = n = normalize(n);
+	#ifdef MISSPAT
+		mp_pos = w * float(MISSPAT);
+	#endif
 		s = normalize(s);
 		t = normalize(t);
 		light.rgba = vec4(e_light_ambient, 1.0);
@@ -317,7 +326,14 @@ uniform float cvar_r_autoexposure_sky;	//FTESurf Patch 1811: Source exposes the 
 	#if defined(INSTANCED) && defined(BUMPCUBE) && defined(BUMP)
 		instcube();
 	#endif
+	#ifdef MISSPAT
+		vec3 mp_w = cross(dFdx(mp_pos), dFdy(mp_pos));
+		mp_w = pow(abs(normalize(dot(mp_w, mp_w) > 1e-20 ? mp_w : norm)), vec3(4.0));
+		mp_w /= dot(mp_w, vec3(1.0));
+		vec4 diffuse_f = mp_w.x*texture2D(s_diffuse, mp_pos.zy) + mp_w.y*texture2D(s_diffuse, mp_pos.xz) + mp_w.z*texture2D(s_diffuse, mp_pos.xy);
+	#else
 		vec4 diffuse_f = texture2D(s_diffuse, tex_c);
+	#endif
 		diffuse_f.rgb *= vec3(COLOR);
 
 #ifdef MASKLT
@@ -662,5 +678,18 @@ uniform float cvar_r_autoexposure_sky;	//FTESurf Patch 1811: Source exposes the 
 	if (e_alphacoverage > 0.0)
 		gl_FragColor.a = min(a2c, 1.0);
 #endif
+	//FTESurf Patch 1814: an alpha-blended pass blended as in linear light (GLBE_LinearBlend): the colour and alpha that make
+	//the blender's mix of display values linear light's exactly over black and over white (within ~0.05 between)
+	if (e_linearout > 0.5)
+	{
+		vec3 s = max(gl_FragColor.rgb, vec3(0.0));
+		float a = clamp(gl_FragColor.a, 0.0, 1.0);
+		vec3 l = a * mix(s / 12.92, pow((s + 0.055) / 1.055, vec3(2.4)), step(0.04045, s));
+		vec3 l1 = l + (1.0 - a);
+		vec3 g0 = mix(l * 12.92, 1.055 * pow(l, vec3(1.0/2.4)) - 0.055, step(0.0031308, l));
+		vec3 g1 = mix(l1 * 12.92, 1.055 * pow(l1, vec3(1.0/2.4)) - 0.055, step(0.0031308, l1));
+		float ap = clamp(1.0 - dot(g1 - g0, vec3(0.2126, 0.7152, 0.0722)), 1e-3, 1.0);
+		gl_FragColor = vec4(g0 / ap, ap);
+	}
 	}
 #endif

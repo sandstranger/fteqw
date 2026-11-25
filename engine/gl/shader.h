@@ -568,7 +568,6 @@ struct programpermu_s
 	int a2cval;			//the value last written to it, -1 none
 	int lmsizeuniform;	//FTESurf Patch 1275: e_lmsize, the batch's lightmap page (w, h, 1/w, 1/h)
 	int lmsizew, lmsizeh;	//the size last written to it, 0 none
-
 	//gl_shadercache.c: gpu program residency (bounded, LRU). A permutation whose binary is known to be on disk
 	//(or in the ram cache) may have its gl program evicted when unused; the next use reloads the binary.
 	struct programpermu_s *lru_prev, *lru_next;
@@ -578,6 +577,7 @@ struct programpermu_s
 	qboolean haskey;
 	qboolean persisted;			//a valid binary for cachekey exists on disk or in the ram cache
 	qboolean resident;			//linked into the residency list
+	int linuniform, linval;	//FTESurf Patch 1814: e_linearout and the value last written to it (-1 none)
 #endif
 	unsigned int permutation;
 	unsigned int attrmask;

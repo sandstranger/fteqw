@@ -1,5 +1,136 @@
 # Engine patches (fteqw `fteqw64.exe`)
 
+## Patch 1829 - native zone copies to offline Shavit Surf review candidates (QC tools/shavit_zones.py)
+
+**Problem.** Native polygon/track JSON cannot be copied directly into the Shavit Surf box/trigger JSON format;
+a blind bounds conversion or reuse of a restart target name can change timing or bind the wrong trigger.
+
+**Change.** Standard-library offline exporter keeps bounded native inputs byte-identical, writes deterministic
+candidate arrays and an explicit loss report, and skips existing upstream map names. Strict mode refuses slants;
+enclosing boxes require an explicit approximation option. Whole-map gates cover unsupported routes, caps,
+malformed geometry and ambiguous extra tracks. No native/game/server edits or automatic publication.
+
+**Verified.** 26 bounded tests, independent review/fix/re-review acceptance, and a read-only local inventory
+pass: 1,140 selected stored files (personal editor drafts excluded), 414 candidates (114 surf/300 bhop), 63
+existing upstream names skipped, 663 refused. Native originals/copies/hashes agree. These are not complete
+Source coverage, in-engine CS:S timing certification, source-data rights or publication approval. No public
+corpus/download deployment; exact inspected target refs and manual validation steps: tools/shavit_zones.md.
+
+## Patch 1828 - player-facing source labels say CS:S (QC client/menu)
+
+**Problem.** Boards, map tiers, profiles and replay UI exposed the importer/provider label instead of the game.
+A replay info panel also concatenated its raw machine source token.
+
+**Change.** CS:S / Counter-Strike: Source display names and a display-only replay source mapper. Internal keys,
+real URLs, map names, import/storage formats and recording provenance remain unchanged. No gameplay change.
+
+**Verified.** Three label/identifier regressions and a failing pre-change control; isolated server/client/menu
+Linux builds zero warnings, final integrated client build and qcframes pass. HUD screenshot shows CS:S tier.
+Local tested CSQC/menu installed with executable/plugin/SSQC hashes unchanged. A wait-unit harness timeout is
+retained separately from the corrected passing smoke. Full UI/replay interaction, lobbies and release untested.
+
+## Patch 1825 - $envmaptint and $envmapsaturation read Source's "{r g b}" form (plugin hl2/mat_vmt.c)
+
+**Problem.** Lex, 25 Nov, surf_thesteve save 18: the graffiti ramps lack Momentum's reflective sheen ("missing
+reflective material/property, and maybe bumpmapping?"). The material is LightmappedGeneric with a $bumpmap, an
+$envmapmask, a per-face patched cubemap and `$envmaptint "{69 69 69}"`. The two tint keys parsed "[r g b]" or one number;
+the curly 0-255 form went to atof("{69 69 69}") = 0, so the program compiled ENVTINT=0,0,0 and drew no reflection at all
+(shader_here). 5 of the 56 maps in the dev install carry the form (cat_brick*, cat_lava1, wall_1, carbon).
+
+**Change.** VMT_ParseTint: brackets or braces through VMT_ParseVec3 (braces divided by 255, not clamped), a bare number
+into all three as before.
+
+**Verified.** Rig, the save 18 pose at 1680x1050: ENVTINT 0,0,0 before, 0.270588 after; the ramp shows the masked
+cubemap sheen with the normal map through it, close to Lex's Momentum shot of the same ramp. The bump was already drawn
+(normalmap in the shader); it reads as flat without the reflection.
+
+## Patch 1824 - broad relief patterns for missing-texture colours (plugin hl2 mat_vmt.c mod_vbsp.c glsl/vmt/vertexlit.glsl; game gfx/misspattern)
+
+**Problem.** Missing Source images draw as flat average colours, losing surface detail and speed cues.
+
+**Change.** Seven original periodic 256px grey detail/normal pairs: brick, grass, concrete, wood, metal, glass,
+cracks. Pick by material/base-image/surfaceprop keywords, approximately retain the existing tint. World brush
+faces map in their own plane at 256 world units per tile, independent of texinfo scale/shear; displacements
+retain base-face mapping and may stretch with deformation. Normal maps use the radiosity basis (relief needs
+directional baked/live lighting). Models use object-space projected detail only, not normal maps.
+`hl2_missingpattern 0`, tint off, or either pattern file absent preserves the prior fallback on the next map
+load. Cutouts, unlit and mixed installed transitions are not patterned. Game release globs include all 14 PNGs.
+
+**Verified.** Linux HL2 plugin build; deterministic PNG regeneration; real C helpers pass selection/off/either-
+file-absent controls and 500 sloped/scaled/sheared plane projections plus a degenerate guard. Current-source
+matched on/off runtime smoke passes on surf_bikini_bottom. Recovery evidence: lexlist-20261125-e0/artifacts/
+p1824-resume-worker.md; current-main integration and local installation: misspat-20261125-happy/artifacts/.
+No Windows build, release/archive, speed-readability acceptance or performance measurement.
+
+## Patch 1823 - An entity too big for its leaf record is culled by the leaves it touches (engine client/renderer.c cl_ents.c cl_parse.c r_surf.c pr_csqc.c render.h, gl/gl_alias.c)
+
+**Problem.** Lex, 25 Nov, surf_thesteve save 6: "why does ramps way outside the PVS in the BSP get render in the
+skybox?" -- two dark blocks hang in the sky through the stage-3 window, and P1698's culling had not removed them. They
+are func_brush *130 (and four more big ramps on the map): its box touches more than MAX_ENT_LEAFS (32) clusters, so its
+record overflows (num_leafs -1) and VBSP_EdictInFatPVS tests the headnode -- visible when ANY leaf under the smallest
+node holding the box is. For a 4352x3584 ramp that node is half the map. From the save, none of *130's own leaves are in
+the eye's PVS (offline BSP walk). Source's client leaf system files each renderable in every leaf it touches and draws it
+only from visible leaves.
+
+**Change.** A client record that overflows keeps its box in the unused leaf slots with a marker (R_FindEntLeafs, at
+the network and CSQC entity fill sites; static entities keep the headnode answer, since their boxes ignore rotation and
+scale). The entity cull (BE_GenModelBatches, r_entpvs_source's record path; viewmodels exempt, as at the record gate)
+and CSQC checkpvs (on the link box joined with origin +/- radius x scale, the box the cull uses) split such a box along
+its longest axis until each part's record fits (8 levels, 511 queries at most; past that a part keeps the headnode
+answer) and draw the entity if any part is in the PVS. Areas stay untested for these entities, as before (Patch 257).
+Server records, the server's entity sends and every other reader are unchanged. `r_entpvs_exact 0` restores the
+headnode answer; r_voidscene_info counts the split culls and their box queries.
+
+**Verified.** Rig, the original save 6 pose (Lex deleted and re-numbered the slot; the deleted copy matches the
+screenshot's time): the two blocks drawn at r_entpvs_exact 0, gone at 1 (5 entities culled by a split box). All 35 of
+Lex's surf_thesteve save poses, on against off: only far ramps through sky windows differ (saves 5 and the original 6);
+the other pixel differences are rotating rings and dust motes that moved between the two shots; after review 1 the
+save 6 frame culls the 5 in 29 box queries. One independent review (viewmodels, static boxes, checkpvs's box: fixed).
+
+**Limits.** Frame time not measured; an unseen overflowed entity walks every part. Persistent decals, the plugin's
+detail-cell entities and r_ignoreentpvs 0 still take the headnode answer. An entity whose record fits is unchanged: a box touching a visible cluster draws even if the model's
+triangles there are hidden, as Source's would.
+
+## Patch 1822 - `!s N` on the stage a segmented run is on ends that run (game sv_timer.qc)
+
+**Problem.** Lex, 25 Nov: "!s 3 should end a segmented run if you're on one on stage 3". `!s N` on the stage you are
+already on, mid-run past the run's first stage, is a restart in place (SV_TimerWouldRestartSeg -> SV_TimerRestartSeg):
+the run and its clock survive, so a segmented run carried on.
+
+**Change.** SV_TimerChatLeg, which SV_ZoneChatCommand calls for `!s` just before the move (after the missing-destination
+refusal), voids a segmented run (FS_RunClass RC_SEGMENT) when that move would restart its stage; the move then arms a
+fresh stage-N attempt. A clean run still restarts the stage on its clock; `!r` is unchanged; the stage warp buttons
+reach it through the same command.
+
+**Verified.** Fixture with surf_thesteve's stage-2 zone moved into the start room: walk out, into stage 2, sl_save,
+sl_load ("segmented run"), `!s 2`. Control progs: "stage 2 restarted -- the run clock keeps going", still segmented.
+P1822 progs: "run cancelled (!s ends a segmented run)", then leg 2 startseg 1, class clean. A clean run, same walk,
+`!s 2`: "stage 2 restarted" with either build.
+
+## Patch 1821 - Players on the HUD: name, stage and live run time; the stage on the boards (game cl_players.qc cl_hud.qc cl_hudedit.qc cl_main.qc cl_scores.qc sv_timer.qc sv_main.qc, cfg default.cfg defaultuser.cfg)
+
+**Problem.** Lex, 25 Nov: "Better On screen display for players in the server, their time, and the stage they are on.
+I want this as a hud widget you can turn off and on via hud_edit. Just plain text names like in the leaderboard, also
+put which stage they are on on the leaderboard." No channel told a client another player's run: stats are the own
+player's, the spectate mirror the watched player's, and the only player list (the TAB board's float, P1590) had names
+and PBs, shown only while TAB was held.
+
+**Change.** Server: userinfo `*run = "state track seg segs flags value"` from a 0.25 s StartFrame walk (SV_RunKeyFrame);
+flags 1 stage run, 2 clock stopped (hold, TAS pause, stall, finish), 4 held/spectating. While the clock runs, value is
+the server time it read 0 at and clients count on with their own `time` (the mapclock key's way), otherwise the ticks;
+a key is rewritten only on a change or a drift past 0.2 s (at most once a second). Client: hud_edit element "Players"
+(hud_players, _x/_y/_size/_rows/_stage/_time/_solo), right-anchored under the map info: plain names in the colour worn,
+"stage 3/5" / "stage 3" / start / finished / spectating, m:ss.d live or the exact finish; on by default, drawn only with
+someone else on the server, never under a replay or the TAB board; the own row from the own stats. The TAB float gains
+a stage lane (dropped when squeezed beside the board, 1280x720), the Players view a STAGE column. HE_MAX/HUDE_MAX 32.
+`players_status` prints each slot's key and texts. An older server sends no key: names only.
+
+**Verified.** Build 0 warnings, qcframes clean. Linux rig, a dedicated server and two clients on surf_kitsune: A's
+"stage 1/9" clock 0:02.5 -> 0:06.4 on one publish; `!s 2` "stage 2 start" -> "stage 2"; the finish 0:10.875 as the
+server's line; the own row as the big timer; the hud_edit row, pane and switch; the float and Players view with the
+stage at 1080p, names only at 720p; installed qwprogs with the new csprogs: names only. Not run: a stage crossing inside
+a full run (the same run_t_seg the own HUD reads), bonus tracks, spectating, a lobby.
+
 ## Patch 1820 - map and zone downloads; one site menu; the admin and TAS upload pages in the site's look; admin runs explained and ~10x faster (game src/release/site, surfd/web, surfd/admin.py + templates, surfd/tasupd.py, tools/sitenav.py)
 
 **Problem.** Lex, 25 Nov: "it would be cool if people could download any map on the leaderboard with a button, also same
@@ -34,8 +165,61 @@ mutation) pass; two review rounds (round 1: the Reports badge, a mis-indented ma
 misfiles, the zoning Zones button moving between lists -- all fixed with falsifiers; round 2 clean). Game main cbefd439.
 LIVE 24 Nov UTC: site 19:08Z (sitepage.ps1 into releases/0.1.68, read back byte for byte; 0.1.69 is cut after it), board
 19:09Z (publish_board.py --commit e0905e56, cut from gen1745's source_ref c2cbe46f), reportd templates 19:09Z (HUP).
-tasupd: re-staged at cbefd439 for Lex's one root upgrade (with P1806). The admin half waits for the next surfd generation
-(tools/backend-pending.md).
+tasupd LIVE at cbefd439 (Lex's root upgrade, 25 Nov 00:51Z). The admin half LIVE in surfd generation gen1820 (primary
+b80a84f5, REF 281b7417; Lex's root install 05:07:55Z, swap 05:24:15-05:27:19Z, POSTFLIGHT PASS; tools/backend-pending.md).
+
+## Patch 1814 - Source glass and translucent props blend as in linear light (engine gl/gl_backend.c gl_vidcommon.c shader.h client/renderer.c; plugin hl2/glsl/vmt/lightmapped.glsl vertexlit.glsl)
+
+**Problem.** Lex, 24 Nov, save 36 (canals barn window): "Window/reflections are to reflective, and the white mark is a
+bit to visable?" -- ours shows the barn interior sharply through the pane, Momentum's pane is milky (upper pane 53 vs
+113, middle 52 vs 101). The material is plain LightmappedGeneric $translucent with a masked envmap; Source's blend is
+the ordinary SRC_ALPHA/ONE_MINUS_SRC_ALPHA (lightmappedgeneric_dx9_helper.cpp SetDefaultBlendingShadowState, alpha =
+base alpha). Forcing the pane opaque here gave Momentum's milk, so the layers matched and the blend did not: Source's
+HDR writes an sRGB target, which DX10+ hardware blends in linear light. Re-blending our own layers in linear light gave
+114 against Momentum's 107.
+
+**Change.** A program that reads the new e_linearout uniform gets 1 there on its alpha-blended passes (GLBE_LinearBlend,
+beside P1262's alpha coverage; cached per permutation; off in 2D and under r_linearblend 0). vmt/lightmapped and
+vmt/vertexlit then output the colour s' and alpha a' that make the blender's display-value mix equal linear light's
+over black and over white: g0 = srgb(a lin(s)), g1 = srgb(a lin(s) + 1 - a), a' = 1 - luma(g1 - g0), s' = g0/a' --
+within about 0.05 between (worst mid-grey behind). Hardware linear blending (an sRGB scene with GL_FRAMEBUFFER_SRGB)
+was built first and dropped: the scene is a float target holding display values, which P1785's dither needs. vmt/unlit
+is left out: func_smokevolume draws through it and P1772 matched Momentum's smoke under the old blend (the tunnel
+smoke at save 38 went opaque yellow linearly).
+
+**Verified.** Save 36: pane upper 52.8 -> 82.6 (Momentum 113.2), middle 51.7 -> 102.3 (101.1), the interior beams faint
+and the white streak blended into the haze; the wall around it identical. All 43 canals saves on/off: beyond save 36
+only glass and grilles change, 0.2-0.8% of a frame (barn windows from inside, the bars at save 17, the tower's panels);
+saves 1/11/38 differ by their moving water and smoke.
+
+**Limits.** Exact only for a black or white background, one alpha for three channels (luma). Unlit translucent
+materials, sprites and particles keep blending in display values. The scene's other blends are unchanged.
+
+## Patch 1813 - The Strata live sun held to its baked page beside a cascade shadow: no lit strips at contact edges (plugin hl2/glsl/vmt/lightmapped.glsl transition.glsl, mod_vbsp.c)
+
+**Problem.** Lex, 25 Nov, saves 42/43 (bhop_canals, under the concrete overpass): "The fancy new shadowmap now has a
+gap" -- a thin sunlit strip along the foot of a wall and along a beam's edge, in places fully in shade. P1781 lights a
+Strata world face with the live sun times the cascade's lit fraction; at a contact edge the cascades' bias lets the sun
+through for a few texels. hl2_sunpage 0 (the bake) shows no strip: VRAD's page has no sun there.
+
+**Change.** Under live cascades the sun is multiplied by a gate from the page: clamp(bake x hl2_sungate / full sun, 0,
+1), full sun being VRAD's 0.984 N.L^1.4, so a penumbra of 1/8 of full sun or more keeps the cascade's sharp edge and only
+a luxel VRAD baked dark takes the sun out. The gate applies only where the cascade lights the pixel AND a cascade shadow
+lies within 3 or 8 texels (CascadeShadowNear: the least lit of 8 taps on each ring, in the tightest cascade holding the
+pixel): a leak is a strip beside the cascade's own shadow, while VRAD leaves some open ground unlit (save 22, the grass
+behind the half-pipe: no sun and no indirect in the bake, sunlit under the cascades) where the gate alone painted it
+black. hl2_sungate (default 8; 0 off) is a client cvar.
+
+**Verified.** Rig, every Lex canals save 1-43 with the gate off and on: saves 42/43's strips gone; leak lines along the
+barn's beams and walls (saves 6/15), a wall corner (19) and a cliff lip (13) gone; saves 22/23/24 within 0.2% of
+ungated (the bake-only gate changed 3-7% of those frames to black); the rest differ only by moving water and smoke
+(saves 1/11/38). A debug view (bake and indirect per pixel) showed the save 42 strip and save 22's patch both have
+indirect near 0, so indirect cannot tell them apart -- hence the cascade-shadow test.
+
+**Limits.** A leak wider than 8 cascade texels from its shadow stays. Where the bake has a shadow the cascades lack
+(save 41, a far building's shadow on the road) the gate does nothing unless a cascade shadow is near. The 16 taps run
+only where the bake is under 1/8 of full sun and the cascade lights the pixel. Other Strata maps' layout 2 (no page)
+are unaffected.
 
 ## Patch 1812 - Mover 17: a solid Source prop collides through its .phy pieces as brushes (engine common/pmove.h pm_source.c com_bih.c com_bih_ts.h pmovetst.c com_mesh.h plugin.c, server/sv_user.c sv_phys.c; plugin hl2/mod_vbsp.c mod_hl2.c)
 

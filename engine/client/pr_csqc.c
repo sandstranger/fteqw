@@ -841,7 +841,7 @@ static qboolean CopyCSQCEdictToEntity(csqcedict_t *fte_restrict in, entity_t *ft
 					amax[i] = max(amax[i], in->v->absmax[i]);
 				}
 			}
-			cl.worldmodel->funcs.FindTouchedLeafs(cl.worldmodel, &out->pvscache, amin, amax);
+			R_FindEntLeafs(cl.worldmodel, &out->pvscache, amin, amax);	//FTESurf Patch 1823
 		}
 	}
 
@@ -2996,6 +2996,26 @@ static void QCBUILTIN PF_cs_checkpvs(pubprogfuncs_t *prinst, struct globalvars_s
 	areas[0] = 1;
 	areas[1] = area;
 	G_FLOAT(OFS_RETURN) = w->funcs.EdictInFatPVS(w, &ent->pvsinfo, pvs, area > 0 ? areas : NULL);
+	{	//FTESurf Patch 1823: an overflowed record answers by the leaves its link box touches, as the entity cull does
+		extern cvar_t r_entpvs_exact;
+		if (G_FLOAT(OFS_RETURN) && ent->pvsinfo.num_leafs == -1 && r_entpvs_exact.ival && ent->v->absmin[0] <= ent->v->absmax[0])
+		{	//the box the cull judges it by (CopyCSQCEdictToEntity): links ignore .scale and can be stale
+			model_t *m = CSQC_GetModelForIndex(ent->v->modelindex);
+			vec3_t amin, amax;
+			VectorCopy(ent->v->absmin, amin);
+			VectorCopy(ent->v->absmax, amax);
+			if (m && m->loadstate == MLS_LOADED)
+			{
+				float r = (m->radius > 0 ? m->radius : RadiusFromBounds(m->mins, m->maxs)) * (ent->xv->scale ? fabs(ent->xv->scale) : 1);
+				for (i = 0; i < 3; i++)
+				{
+					amin[i] = min(amin[i], ent->v->origin[i] - r);
+					amax[i] = max(amax[i], ent->v->origin[i] + r);
+				}
+			}
+			G_FLOAT(OFS_RETURN) = R_EntPVSSplit(w, amin, amax, pvs, 0);
+		}
+	}
 }
 
 static void QCBUILTIN PF_R_RenderScene(pubprogfuncs_t *prinst, struct globalvars_s *pr_globals)

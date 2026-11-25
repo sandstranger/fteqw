@@ -7002,7 +7002,7 @@ void CL_LinkPacketEntities (void)
 				VectorAdd(model->mins, ent->origin, absmin);
 				VectorAdd(model->maxs, ent->origin, absmax);
 			}
-			cl.worldmodel->funcs.FindTouchedLeafs(cl.worldmodel, &ent->pvscache, absmin, absmax);
+			R_FindEntLeafs(cl.worldmodel, &ent->pvscache, absmin, absmax);	//FTESurf Patch 1823: keeps an overflowed record's box
 		}
 
 		cl_numvisedicts++;

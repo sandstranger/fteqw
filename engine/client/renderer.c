@@ -145,11 +145,34 @@ cvar_t r_ignoreentpvs						= CVARD ("r_ignoreentpvs", "0", "Disables pvs culling
 //FTESurf Patch 1698: with the sky a hole (gl_warp.c), what is drawn must be what the PVS holds, as Source's client leaf system culls.
 cvar_t r_entpvs_source = CVARD("r_entpvs_source", "1", "FTESurf Patch 1698: on a Source map, entities and persistent decals with a leaf record are culled by each view's PVS and areas even under r_ignoreentpvs 1, as Source culls every renderable; one without a record is still drawn. 0: frustum only (before Patch 1698).");
 cvar_t r_entpvs_active = CVARFD("r_entpvs_active", "0", CVAR_NOSET|CVAR_NOSAVE|CVAR_NORESET, "Set by the engine: 1 while r_entpvs_source applies to the loaded map (a Source map). CSQC culls its own polygons by the PVS when it reads 1.");
+cvar_t r_entpvs_exact = CVARD("r_entpvs_exact", "1", "FTESurf Patch 1823: under r_entpvs_source, an entity too big for its leaf record is drawn only when a leaf its box touches is in the view's PVS (the box is split until each part's record fits). 0: any visible leaf under the node holding the box draws it (before Patch 1823).");
 qboolean R_EntPVSSource(void)
 {
 	model_t *w = cl.worldmodel;
 	return r_entpvs_source.ival && w && w->loadstate == MLS_LOADED && (w->engineflags & MDLF_SOURCEBSP) &&
 		w->funcs.EdictInFatPVS && w->funcs.FindTouchedLeafs;
+}
+//FTESurf Patch 1823: a client record that overflowed to its headnode keeps its box in the unused leaf slots, so the
+//entity cull (gl_alias.c R_EntPVSSplit) can test the leaves that box touches. Network and CSQC entities only: the
+//static entities' boxes ignore rotation and scale (their FIXMEs). Server records never carry it.
+#define R_PVSBOX_MAGIC 0x50313832u
+void R_FindEntLeafs(model_t *w, pvscache_t *pc, const vec3_t mins, const vec3_t maxs)
+{
+	w->funcs.FindTouchedLeafs(w, pc, mins, maxs);
+	if (pc->num_leafs == -1 && mins && maxs)
+	{
+		memcpy(&pc->leafnums[0], mins, sizeof(vec3_t));
+		memcpy(&pc->leafnums[3], maxs, sizeof(vec3_t));
+		pc->leafnums[6] = R_PVSBOX_MAGIC;
+	}
+}
+qboolean R_EntLeafsBox(const pvscache_t *pc, vec3_t mins, vec3_t maxs)
+{
+	if (pc->num_leafs != -1 || pc->leafnums[6] != R_PVSBOX_MAGIC)
+		return false;
+	memcpy(mins, &pc->leafnums[0], sizeof(vec3_t));
+	memcpy(maxs, &pc->leafnums[3], sizeof(vec3_t));
+	return true;
 }
 
 cvar_t mod_md3flags							= CVARD  ("mod_md3flags", "1", "The flags field of md3s was never officially defined. If this is set to 1, the flags will be treated identically to mdl files. Otherwise they will be ignored. Naturally, this is required to provide rotating pickups in quake.");
@@ -364,6 +387,7 @@ cvar_t r_lightstylesmooth_limit				= CVAR	("r_lightstylesmooth_limit", "2");
 cvar_t r_lightstylespeed					= CVAR	("r_lightstylespeed", "10");
 cvar_t r_lightstylescale					= CVAR	("r_lightstylescale", "1");
 cvar_t r_lightmap_scale						= CVARFD ("r_shadow_realtime_nonworld_lightmaps", "1", 0, "Scaler for lightmaps used when not using realtime world lighting. Probably broken.");
+cvar_t r_linearblend						= CVARD("r_linearblend", "1", "FTESurf Patch 1814: Source materials' alpha-blended surfaces (glass, translucent props) blend as in linear light, as Source's HDR does -- exactly over black and over white, within ~0.05 between: a bright pane over a dark room reads milky as in Source rather than see-through. 0: blend in display values.");
 cvar_t r_hdr_framebuffer					= CVARFCD("r_hdr_framebuffer", "0", CVAR_ARCHIVE, R_HDR_FramebufferFormat_Changed, "If enabled, the map will be rendered into a high-precision image framebuffer. This avoids issues with shaders that contribute more than 1 in any single pass (like overbrights). Can also be set to the name of an image format, to force rendering to that format first - interesting formats are L8, RGB565, B10G11R11F, and others.");
 cvar_t r_hdr_irisadaptation					= CVARF	("r_hdr_irisadaptation", "0", CVAR_ARCHIVE);
 cvar_t r_exposure							= CVARD	("r_exposure", "1", "FTESurf Patch 1732 (test): a fixed exposure, Source's linear tonemap scale -- lightmaps, model light, dynamic lights, scripted particles and sprites are multiplied by its 1/2.2 power (as Source's scale reaches them); the sky and classic particles are not. 1 = off. The game sets it from the map's env_tonemap_controller when vbsp_exposure is 1.");
@@ -1630,6 +1654,7 @@ void Renderer_Init(void)
 	Cvar_Register(&r_lightmap_format, GRAPHICALNICETIES);
 
 	Cvar_Register(&r_hdr_framebuffer, GRAPHICALNICETIES);
+	Cvar_Register(&r_linearblend, GRAPHICALNICETIES);
 	Cvar_Register(&r_hdr_irisadaptation, GRAPHICALNICETIES);
 	Cvar_Register(&r_exposure, GRAPHICALNICETIES);	//FTESurf Patch 1732
 	Cvar_Register(&r_autoexposure, GRAPHICALNICETIES);	//FTESurf Patch 1764
@@ -1783,6 +1808,7 @@ void Renderer_Init(void)
 	Cvar_Register (&r_ignoreentpvs, "Hacky bug workarounds");
 	Cvar_Register (&r_entpvs_source, GRAPHICALNICETIES);	//FTESurf Patch 1698
 	Cvar_Register (&r_entpvs_active, GRAPHICALNICETIES);
+	Cvar_Register (&r_entpvs_exact, GRAPHICALNICETIES);
 	Cvar_Register (&r_fullbright, SCREENOPTIONS);
 	Cvar_Register (&r_drawentities, GRAPHICALNICETIES);
 	Cvar_Register (&r_drawviewmodel, GRAPHICALNICETIES);
