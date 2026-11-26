@@ -378,8 +378,13 @@ prints
 =====================================================================
 */
 static void RRGI_Com_Print(const char *msg)
-{
+{	//the game's own messages (its debug ones among them: "G_PickTarget called with nullptr targetname"): the console's,
+	//as KEX keeps them - not notify lines over the game. What the player is told comes by Client_Print/centerprints.
+#ifndef SERVERONLY
+	Con_PrintFlags(msg, PFS_NONOTIFY, 0);
+#else
 	fgi->dprintf("%s", msg);
+#endif
 }
 static void RRGI_Broadcast_Print(int32_t level, const char *msg)
 {
