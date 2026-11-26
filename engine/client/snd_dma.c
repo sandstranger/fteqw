@@ -3804,6 +3804,10 @@ static void S_Q2_AddEntitySounds(soundcardinfo_t *sc)
 				if (sounds[j] == sfx)
 				{
 					sounds[j] = NULL;
+					//each at its own volume and distances (Daikatana's loops of one sound differ: its rain's four)
+					c->dist_mult = attenuations[j] / snd_nominaldistance.value;
+					c->dist_min = distmins[j];
+					c->master_vol = bound(0, 255 * volumes[j], 255);
 					SND_AccumulateSpacialization(sc, c, positions[j]);
 				}
 			}

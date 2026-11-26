@@ -1056,9 +1056,17 @@ void SVQ2_BuildClientFrame (client_t *client)
 	pvsbuffer_t	clientpvs;
 	qbyte	*clientphs = NULL;
 	int		seats;
+	qboolean	soundsbydistance = true;	//Quake II's: no sound-only entity past 400
 
 	if (client->state < cs_spawned)
 		return;
+
+#ifdef DAIKATANA
+	//Daikatana's ambient sounds are heard to their own dist_max (640..1024: its rain from 768): its engine dropped
+	//this ("sounds are mapped defined attn"), and here they went silent past 400 (most of a level, after a load)
+	if (SVDK_IsDaikatana())
+		soundsbydistance = false;
+#endif
 
 	SVQ2_Ents_Init();
 
@@ -1197,7 +1205,7 @@ void SVQ2_BuildClientFrame (client_t *client)
 							continue;		// not visible
 					}
 
-					if (!ent->s.modelindex)
+					if (!ent->s.modelindex && soundsbydistance)
 					{	// don't send sounds if they will be attenuated away
 						vec3_t	delta;
 						float	len;
