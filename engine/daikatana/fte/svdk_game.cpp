@@ -211,11 +211,23 @@ static void DK_EdictToShadow(int i)
 		se->client = NULL;
 
 	se->inuse = de->inuse;
-	if (!de->inuse && !se->inuse)
+	if (!de->inuse)
+	{	//freed: nothing of it goes out. FTE's Quake II server sends what has a model, sound or effect, inuse or not (as
+		//Quake II's: its G_FreeEdict cleared them): the shadow kept its last state and a removed entity stayed on
+		//every client (the intro's Hiro actor after a skip; what a savegame's load removed)
+		se->s.number = i;
+		se->s.modelindex = se->s.modelindex2 = se->s.modelindex3 = se->s.modelindex4 = 0;
+		se->s.effects = 0;
+		se->s.renderfx = 0;
+		se->s.sound = 0;
+		se->s.event = 0;
+		se->svflags = SVF_NOCLIENT;
+		se->solid = SOLID_NOT;
+		se->owner = NULL;
 		return;
+	}
 
-	if (de->inuse)
-		de->s.number = i;	//its engine's, as it sent them (the game tags a weapon with its owner's)
+	de->s.number = i;	//its engine's, as it sent them (the game tags a weapon with its owner's)
 	se->s.number = i;
 	for (k = 0; k < 3; k++)
 	{
