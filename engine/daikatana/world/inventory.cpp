@@ -1,7 +1,7 @@
 #include "world.h"
 //#include "ai_frames.h"// SCG[1/23/00]: not used
 #include "ai_info.h"
-#include "sidekick.h"
+#include "Sidekick.h"
 
 #define ACTION_WEAPONS_DISABLE	0x00000001
 #define ACTION_ITEMS_DISABLE	0x00000002

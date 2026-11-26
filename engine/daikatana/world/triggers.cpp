@@ -12,7 +12,7 @@
 #include "ai.h"
 #include "ai_func.h"
 #include "ai_utils.h"
-#include "sidekick.h"
+#include "Sidekick.h"
 #include "ai_info.h"
 #include "actorlist.h"
 #include "coop.h"

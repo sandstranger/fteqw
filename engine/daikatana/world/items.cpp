@@ -13,7 +13,7 @@
 #include "client.h"
 #include "ai_utils.h"
 //#include "actorlist.h"// SCG[1/23/00]: not used
-#include "sidekick.h"
+#include "Sidekick.h"
 
 ///////////////////////////////////////////////////////////////////////////////
 //	exports

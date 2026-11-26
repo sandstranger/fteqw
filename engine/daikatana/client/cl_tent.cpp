@@ -54,7 +54,7 @@ CVector     vecBobOffset;       // calculated offset from normal ent origin, run
                                 // a 1st person weapon entity is added to the view
 
 // --------------------------------------------------------------------
-#include "Projectile_Fx.h"
+#include "Projectile_fx.h"
 
 extern cvar_t *sv_violence;
 

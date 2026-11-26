@@ -14,7 +14,7 @@
 #include "ai_frames.h"
 #include "nodelist.h"
 #include "ai_func.h"
-#include "monstersound.h"
+#include "MonsterSound.h"
 
 
 /* ***************************** define types ****************************** */
