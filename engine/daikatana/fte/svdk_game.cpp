@@ -1526,16 +1526,20 @@ static FILE *DK_FileFromBuffer(const void *buf, int len)
 		}
 	}
 #else
-	//in memory: android's tmpfile always fails (no /tmp), and there's no disk round trip
-	f = fmemopen(NULL, len > 0 ? len : 1, "w+b");
+	//in memory: android's tmpfile always fails (no /tmp), and there's no disk round trip. A byte to spare: bionic's
+	//fmemopen keeps room for a terminating nul even in binary mode, so exactly len bytes fail to fit (every file
+	//failed to open there: no AI data, no cinematic scripts)
+	f = fmemopen(NULL, (len > 0 ? len : 0) + 1, "w+b");
 #endif
-	if (f && len > 0 && fwrite(buf, 1, len, f) != (size_t)len)
+	if (!f)
+		return NULL;
+	//(all of it, flushed: a short write may only show as the buffer goes out)
+	if ((len > 0 && fwrite(buf, 1, len, f) != (size_t)len) || fflush(f) || fseek(f, 0, SEEK_END) || ftell(f) != len)
 	{
 		fclose(f);
 		return NULL;
 	}
-	if (f)
-		rewind(f);
+	rewind(f);
 	return f;
 }
 static FILE *DK_OpenCopy(const char *filename, int *length)
