@@ -98,20 +98,28 @@ static void CG_CvarsUpdate(void)
 	for (m = cgcvars; m; m = m->nextmirror)
 		CG_CvarUpdate(m);
 }
+//its cvars whose names are FTE's with another meaning: its own instead
+static const char *CG_CvarName(const char *name)
+{
+	if (!strcmp(name, "scr_printspeed"))
+		return "cg_printspeed";	//its seconds a centerprint's character (0.04), FTE's characters a second (16): 16s each,
+								//its typed out centerprints hung at their first letters
+	return name;
+}
 static rr_cvar_t *CGI_cvar(const char *name, const char *value, uint32_t flags)
 {
-	return CG_CvarMirror(Cvar_Get(name, value, flags & (CVAR_ARCHIVE|CVAR_USERINFO|CVAR_SERVERINFO), "Quake2 rerelease cgame"));
+	return CG_CvarMirror(Cvar_Get(CG_CvarName(name), value, flags & (CVAR_ARCHIVE|CVAR_USERINFO|CVAR_SERVERINFO), "Quake2 rerelease cgame"));
 }
 static rr_cvar_t *CGI_cvar_set(const char *name, const char *value)
 {
-	cvar_t *v = Cvar_FindVar(name);
+	cvar_t *v = Cvar_FindVar(CG_CvarName(name));
 	if (v)
 		Cvar_Set(v, value);
 	return CG_CvarMirror(v);
 }
 static rr_cvar_t *CGI_cvar_forceset(const char *name, const char *value)
 {
-	cvar_t *v = Cvar_FindVar(name);
+	cvar_t *v = Cvar_FindVar(CG_CvarName(name));
 	if (v)
 		Cvar_ForceSet(v, value);
 	return CG_CvarMirror(v);
