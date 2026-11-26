@@ -442,20 +442,44 @@ static void CL_MusicPath(char *out, size_t outsize, const char *name)
 	else
 		snprintf(out, outsize, "music/%s.mp3", name);
 }
+//its MP3 channels: the map's and the menu's music (one at a time) are FTE's music track; the rest (voices:
+//sounds/voices/..., the sound menu's cinematic volume preview) play as sounds of their own channels, heard everywhere
+//(FTE decodes mp3 as sounds: snd_minimp3.c). The map's is remembered: the menu pauses it as it comes up
+//(S_StopMusic(CHAN_MUSIC_MAP)) and brings it back as it goes (S_StartMusic(NULL, CHAN_MUSIC_MAP)).
+static int dkmusicchan = -1;
+static char dkmapmusic[MAX_QPATH];
+static bool dkmapmusicloop;
+static bool CL_IsMusic(const char *name)
+{
+	return !strncasecmp(name, "music/", 6) || !strncasecmp(name, "data/music/", 11) || !strchr(name, '/');
+}
+static void CL_PlayMusic(const char *path, int chan, bool loop)
+{
+	if (chan == CHAN_MUSIC_MAP)
+	{
+		snprintf(dkmapmusic, sizeof(dkmapmusic), "%s", path);
+		dkmapmusicloop = loop;
+	}
+	CLDKF_Music(path, loop);
+	dkmusicchan = chan;
+}
 static void CLDK_S_StartMusic(const char *name, int chan)
 {
 	char path[MAX_QPATH];
 	if (!name || !*name)
+	{	//the map's again, after the menu's
+		if (chan == CHAN_MUSIC_MAP && *dkmapmusic && dkmusicchan != CHAN_MUSIC_MAP)
+		{
+			snprintf(path, sizeof(path), "%s", dkmapmusic);
+			CL_PlayMusic(path, chan, dkmapmusicloop);
+		}
 		return;
+	}
 	CL_MusicPath(path, sizeof(path), name);
-	CLDKF_Music(path, true);
-}
-//its MP3 channels: the music's is FTE's music track; the rest (voices: sounds/voices/...) play as sounds of their own
-//channels, heard everywhere (FTE decodes mp3 as sounds: snd_minimp3.c)
-static int dkmusicchan = -1;
-static bool CL_IsMusic(const char *name)
-{
-	return !strncasecmp(name, "music/", 6) || !strncasecmp(name, "data/music/", 11) || !strchr(name, '/');
+	if (chan == CHAN_MUSIC_MAP || chan == CHAN_MUSIC_MENU)
+		CL_PlayMusic(path, chan, true);
+	else	//(the sound menu's preview of the cinematics' volume)
+		CLDKF_PlayStream(path, chan, CLDKF_CvarValue("s_cine", "1"), false);
 }
 static void CLDK_S_StartMP3(const char *name, int chan, float vol, int play_count, qboolean bRestart)
 {
@@ -465,8 +489,7 @@ static void CLDK_S_StartMP3(const char *name, int chan, float vol, int play_coun
 	if (CL_IsMusic(name))
 	{
 		CL_MusicPath(path, sizeof(path), name);
-		CLDKF_Music(path, play_count <= 0);
-		dkmusicchan = chan;
+		CL_PlayMusic(path, chan, play_count <= 0);
 		return;
 	}
 	snprintf(path, sizeof(path), "%s", strncasecmp(name, "data/", 5)?name:name+5);
@@ -474,6 +497,18 @@ static void CLDK_S_StartMP3(const char *name, int chan, float vol, int play_coun
 }
 static void CLDK_S_StopMP3(int chan)
 {
+	if (chan == CHAN_MUSIC_MAP)
+		*dkmapmusic = 0;	//(the server's: gone, not paused)
+	if (chan == dkmusicchan)
+	{
+		CLDKF_Music(NULL, false);
+		dkmusicchan = -1;
+	}
+	else
+		CLDKF_StopStream(chan);
+}
+static void CLDK_S_StopMusic(int chan)
+{	//the menu's (the map's stays remembered)
 	if (chan == dkmusicchan)
 	{
 		CLDKF_Music(NULL, false);
@@ -485,6 +520,7 @@ static void CLDK_S_StopMP3(int chan)
 void (*S_StartMusic)(const char *name, int chan) = CLDK_S_StartMusic;
 void (*S_StartMP3)(const char *name, int chan, float fvol, int play_count, qboolean bRestart) = CLDK_S_StartMP3;
 void (*S_StopMP3)(int chan) = CLDK_S_StopMP3;
+void (*S_StopMusic)(int chan) = CLDK_S_StopMusic;
 
 /*
 =====================================================================
@@ -511,6 +547,7 @@ void CLDK_SceneReset(void);	//cldk_scene.cpp
 extern "C" void CLDK_Reset(void)
 {
 	CLDK_Init();
+	*dkmapmusic = 0;	//(the new map's server says its own)
 	CLDK_SceneReset();
 	CLDK_ModelsReset();
 	CLDK_SurfSpritesReset();

@@ -358,6 +358,7 @@ void CLDKF_StopStream(int chan)
 }
 void CLDKF_Music(const char *name, int loop)
 {
+	Con_DPrintf("Daikatana: music %s%s\n", name?name:"off", (name && loop)?" (looped)":"");
 	if (!name)
 		Media_NamedTrack(NULL, NULL);
 	else
@@ -537,6 +538,7 @@ void *CLDKF_RegisterParticleShader(void)
 	return R_RegisterShader("dkparticles", SUF_NONE,
 		"{\n"
 			"nomipmaps\n"
+			"cull disable\n"
 			"{\n"
 				"map pics/particles/particles.tga\n"
 				"blendfunc blend\n"
@@ -789,6 +791,7 @@ static const char *CLDK_CvarName(const char *name)
 	static const struct {const char *dk, *fte;} names[] =
 	{
 		{"s_volume",	"volume"},
+		{"s_music",		"bgmvolume"},	//its sound menu's music volume
 		{"s_mp3_volume",	"bgmvolume"},
 		{"vid_gamma",	"gamma"},
 		{"in_mouse",	"in_mouse"},

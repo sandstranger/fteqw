@@ -141,6 +141,7 @@ typedef struct
 	vec3_t	origin;			// origin of sound effect
 	vec3_t	velocity;		// velocity of sound effect
 	vec_t	dist_mult;		// distance multiplier (attenuation/clipK)
+	vec_t	dist_min;		// full volume this close, dist_mult's falloff from there (Daikatana's looping sounds')
 	int		master_vol;		// 0-255 master volume
 #ifdef Q3CLIENT
 	unsigned int starttime;	// start time, to replicate q3's 50ms embargo on duped sounds.

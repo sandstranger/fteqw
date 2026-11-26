@@ -1382,9 +1382,9 @@ static void OpenAL_ChannelUpdate(soundcardinfo_t *sc, channel_t *chan, chanupdat
 				//unfortutely due to the nature of javascript and exceptions, this is fucking everything else up. thanks chrome!
 				palSourcef(src, AL_REFERENCE_DISTANCE, 0.01);
 #else
-				palSourcef(src, AL_REFERENCE_DISTANCE, 0);
+				palSourcef(src, AL_REFERENCE_DISTANCE, chan->dist_min);	//(full volume to there: 0 but for Daikatana's loops)
 #endif
-				palSourcef(src, AL_MAX_DISTANCE, 1/chan->dist_mult);
+				palSourcef(src, AL_MAX_DISTANCE, chan->dist_min + 1/chan->dist_mult);
 				break;
 			}
 		}

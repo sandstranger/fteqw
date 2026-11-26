@@ -2714,7 +2714,8 @@ static void SND_AccumulateSpacialization(soundcardinfo_t *sc, channel_t *ch, vec
 // calculate stereo seperation and distance attenuation
 	VectorSubtract(origin, listener[seat].origin, world_vec);
 
-	dist = VectorNormalize(world_vec) * ch->dist_mult;
+	dist = VectorNormalize(world_vec);
+	dist = (dist > ch->dist_min)?(dist - ch->dist_min) * ch->dist_mult:0;
 
 	if ((ch->flags & CF_NOSPACIALISE) || !ch->dist_mult)
 	{
@@ -2847,7 +2848,8 @@ static void SND_Spatialize(soundcardinfo_t *sc, channel_t *ch)
 // calculate stereo seperation and distance attenuation
 	VectorSubtract(ch->origin, listener[seat].origin, world_vec);
 
-	dist = VectorNormalize(world_vec) * ch->dist_mult;
+	dist = VectorNormalize(world_vec);
+	dist = (dist > ch->dist_min)?(dist - ch->dist_min) * ch->dist_mult:0;
 
 	if ((ch->flags & CF_NOSPACIALISE) || !ch->dist_mult)
 	{
@@ -2954,6 +2956,7 @@ static void S_UpdateSoundCard(soundcardinfo_t *sc, qboolean updateonly, channel_
 		VectorClear(target_chan->velocity);
 	target_chan->flags = flags;
 	target_chan->dist_mult = attenuation / snd_nominaldistance.value;
+	target_chan->dist_min = 0;
 	target_chan->master_vol = vol;
 	target_chan->entnum = entnum;
 	target_chan->entchannel = entchannel;
@@ -3415,6 +3418,7 @@ void S_StaticSound (sfx_t *sfx, vec3_t origin, float vol, float attenuation)
 		VectorCopy (origin, ss->origin);
 		ss->master_vol = vol*255;
 		ss->dist_mult = attenuation / snd_nominaldistance.value;
+		ss->dist_min = 0;
 		ss->pos = 0;
 		ss->flags = CF_FORCELOOP|CF_CLI_STATIC;
 
@@ -3715,16 +3719,16 @@ static void S_Q2_AddEntitySounds(soundcardinfo_t *sc)
 	vec3_t positions[2048];
 	int entnums[countof(positions)];
 	sfx_t *sounds[countof(positions)];
-	float volumes[countof(positions)], attenuations[countof(positions)];
+	float volumes[countof(positions)], attenuations[countof(positions)], distmins[countof(positions)];
 	unsigned int count;
 	unsigned int j;
 	channel_t *c;
 
 	for (j = 0; j < countof(positions); j++)
-		volumes[j] = 1, attenuations[j] = 3;	//(what doesn't say: full, ATTN_STATIC)
+		volumes[j] = 1, attenuations[j] = 3, distmins[j] = 0;	//(what doesn't say: full, ATTN_STATIC)
 #ifdef Q2CLIENT
 	if (cls.protocol == CP_QUAKE2)
-		count = CLQ2_GatherSounds(positions, entnums, sounds, volumes, attenuations, countof(sounds));
+		count = CLQ2_GatherSounds(positions, entnums, sounds, volumes, attenuations, distmins, countof(sounds));
 	else
 #endif
 #ifdef VM_CG
@@ -3783,6 +3787,7 @@ static void S_Q2_AddEntitySounds(soundcardinfo_t *sc)
 			c->sfx = NULL;
 		}
 		c->dist_mult = attenuations[count] / snd_nominaldistance.value;
+		c->dist_min = distmins[count];
 		c->master_vol = bound(0, 255 * volumes[count], 255);
 		if (sc->ChannelUpdate)
 		{	//hardware mixing doesn't support merging
@@ -4522,6 +4527,7 @@ void S_RawAudio(int sourceid, const qbyte *data, int speed, int samples, int cha
 				c->entnum = 0;
 				c->entchannel = 0;
 				c->dist_mult = 0;
+				c->dist_min = 0;
 				c->master_vol = 255 * volume;
 				c->pos = 0;
 				c->rate = 1<<PITCHSHIFT;

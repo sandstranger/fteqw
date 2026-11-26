@@ -467,11 +467,9 @@ int dk_GetSpecificAnimSequences(int modelindex, char *fName, frameData_t *pFrame
 static void CLDK_S_StopAllSounds(void)			{CLDKF_StopAllSounds();}
 static void CLDK_S_BeginRegistration(void)		{}
 static void CLDK_S_EndRegistration(int seq)		{}
-static void CLDK_S_StopMusic(int chan)			{}
 void (*S_StopAllSounds)(void) = CLDK_S_StopAllSounds;
 void (*S_BeginRegistration)(void) = CLDK_S_BeginRegistration;
-void (*S_EndRegistration)(int nFreeSequenceCode) = CLDK_S_EndRegistration;
-void (*S_StopMusic)(int chan) = CLDK_S_StopMusic;
+void (*S_EndRegistration)(int nFreeSequenceCode) = CLDK_S_EndRegistration;	//(S_StopMusic: cldk_main.cpp's, with its music)
 
 void M_ForceMenuOff(void)
 {

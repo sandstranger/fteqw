@@ -1870,7 +1870,7 @@ extern	qboolean care_f_modified;
 //random files (fixme: clean up)
 
 #ifdef Q2CLIENT
-unsigned int CLQ2_GatherSounds(vec3_t *positions, unsigned int *entnums, sfx_t **sounds, float *volumes, float *attenuations, unsigned int max);
+unsigned int CLQ2_GatherSounds(vec3_t *positions, unsigned int *entnums, sfx_t **sounds, float *volumes, float *attenuations, float *distmins, unsigned int max);
 qboolean CLQ2_BSPSoundOrigin(int entnum, vec3_t org);	//s_bsp_soundpos: a brush model's sounds come from the model
 void CLQ2_ParseTEnt (void);
 void CLQ2_AddEntities (void);
@@ -2080,7 +2080,7 @@ qboolean CLDK_InCinematic(void);	//its cinematics letterbox the view (the escape
 qboolean CLDK_OpenMenu(void);		//its own menus, as FTE's while it's the game
 qboolean CLDK_OpenMenuAt(int button);
 char *CLDK_DefaultConfig(void);		//its default.cfg (Z_Malloced), from its daikatana.cfg
-void CLDK_LoopSoundParams(int entnum, float *volume, float *attenuation);	//its entity's looping sound's (daikatana/client)
+void CLDK_LoopSoundParams(int entnum, float *volume, float *attenuation, float *distmin);	//its entity's looping sound's (daikatana/client)
 qboolean CLDK_ContentsColour(int contents, cshift_t *shift);	//its water's fog (and tint) for the view in it
 void CLDK_WaterTint(float *rgba);	//the screen's tint (the server's blend) with its water's under it
 qboolean CMDK_SurfaceColour(struct model_s *mod, const vec3_t point, vec3_t rgb);	//gl_q2bsp.c: its maps' surface colours

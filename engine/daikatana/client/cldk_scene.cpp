@@ -248,7 +248,7 @@ static int		numparts;
 static float	pxyz[MAX_DKPARTICLES*3*3], pst[MAX_DKPARTICLES*3*2], prgba[MAX_DKPARTICLES*3*4];
 static CVector	pvieworg, pvpn, pvright, pvup;
 
-static void CL_ParticleTri(const CVector &org, float alpha, particle_type_t type, const CVector &rgb, float pscale)
+static void CL_ParticleTri(const CVector &org, float alpha, particle_type_t type, const CVector &rgb, float pscale, int flags = 0)
 {
 	particle_def_t *d;
 	CVector up, right, origin, o;
@@ -259,14 +259,40 @@ static void CL_ParticleTri(const CVector &org, float alpha, particle_type_t type
 	d = &pdefs[type];
 	//GL_DrawComplexParticles': a triangle facing the view, bigger with distance
 	scale = (org.x - pvieworg.x) * pvpn.x + (org.y - pvieworg.y) * pvpn.y + (org.z - pvieworg.z) * pvpn.z;
-	up = pvup * d->fScale;
-	right = pvright * d->fScale;
-	if (pscale > 1.0)
-		scale = pscale;
-	else if (scale < 20)
-		scale = 1;
+	if (type == PARTICLE_RAIN)
+	{	//but rain's a long faint streak the way it falls (GL_GenerateRainVectors', from its own velocity, cl_pv.cpp's,
+		//where it had them all straight down), as wide as it is from every side
+		CVector fall(0, 0, -400), toview = org - pvieworg, side;
+		float len;
+		if (flags & PF_RAIN_NORTH)
+			fall.y = 300;
+		else if (flags & PF_RAIN_SOUTH)
+			fall.y = -300;
+		else if (flags & PF_RAIN_EAST)
+			fall.x = 300;
+		else if (flags & PF_RAIN_WEST)
+			fall.x = -300;
+		CrossProduct(toview, fall, side);
+		len = side.Length();
+		if (len < 0.001)
+			return;	//looking right along it
+		fall.Normalize();
+		up = fall * (20 * d->fScale * 0.8);
+		right = side * (-0.8 * d->fScale * 0.8 / len);
+		scale = (scale < 10)?2.0:d->fScale;
+		alpha /= scale;
+	}
 	else
-		scale = 1 + scale * 0.004;
+	{
+		up = pvup * d->fScale;
+		right = pvright * d->fScale;
+		if (pscale > 1.0)
+			scale = pscale;
+		else if (scale < 20)
+			scale = 1;
+		else
+			scale = 1 + scale * 0.004;
+	}
 	o = (up + right) * scale;
 	o.Multiply(0.33);
 	origin = org - o;
@@ -301,11 +327,11 @@ void V_AddParticleRGB(CVector &org, int color, float alpha, particle_type_t type
 }
 void V_AddComParticle(CVector &org, int color, float alpha, particle_type_t type, float pscale, short flags, CVector &color_rgb)
 {
-	CL_ParticleTri(org, alpha, type, color_rgb, pscale);
+	CL_ParticleTri(org, alpha, type, color_rgb, pscale, flags);
 }
 void V_AddComParticle2(cparticle_t *cp)
 {
-	CL_ParticleTri(cp->org, cp->alpha, (particle_type_t)cp->type, cp->color_rgb, cp->pscale);
+	CL_ParticleTri(cp->org, cp->alpha, (particle_type_t)cp->type, cp->color_rgb, cp->pscale, cp->flags);
 }
 
 /*
@@ -399,6 +425,7 @@ static void CLDK_SceneFrame(void)
 	int i;
 	float org[3], ang[3];
 	int serverframe = CLDKF_ServerFrame();
+	cl.time = CLDKF_Milliseconds();	//this frame's (its HUD's, which set it too, comes after the scene)
 	CLDK_ConfigStrings();
 
 	//its fog (the server's ET_FOG, fading by its increment), as FTE's, as it changes
