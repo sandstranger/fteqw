@@ -1620,6 +1620,8 @@ void CL_CheckForResend (void)
 		case NETERR_SENT:		//yay, works!
 			break;
 		default:
+			if (to->type == NA_LOOPBACK && connectinfo.tries < 12)
+				break;	//our own server's not up (yet: a map, a save still loading on a slow device): wait for it a minute
 			keeptrying = false;
 			break;
 		}
@@ -1677,6 +1679,8 @@ void CL_CheckForResend (void)
 		case NETERR_SENT:		//yay, works!
 			break;
 		default:
+			if (to->type == NA_LOOPBACK && connectinfo.tries < 12)
+				break;	//(as above: our own server, still coming up)
 			keeptrying = false;
 			break;
 		}
