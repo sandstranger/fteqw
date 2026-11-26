@@ -334,8 +334,9 @@ typedef struct
 #define LFLAG_CREPUSCULAR	(1<<10)	//weird type of sun light that gives god rays
 #define LFLAG_ORTHO			(1<<11)	//sun-style -light
 #define LFLAG_FORCECACHE	(1<<12)	//shadowmap/surfaces should be cached from one frame to the next.
+#define LFLAG_LINEARFALLOFF	(1<<13)	//the Quake II rerelease's shadow lights: linear falloff, as KEX/Q2REPRO's (l_lightlinear), not 1-d²/r²
 
-#define LFLAG_INTERNAL		(LFLAG_LIGHTMAP|LFLAG_FLASHBLEND|LFLAG_FORCECACHE)	//these are internal to FTE, and never written to disk (ie: .rtlights files shouldn't contain these)
+#define LFLAG_INTERNAL		(LFLAG_LIGHTMAP|LFLAG_FLASHBLEND|LFLAG_FORCECACHE|LFLAG_LINEARFALLOFF)	//these are internal to FTE, and never written to disk (ie: .rtlights files shouldn't contain these)
 #define LFLAG_DYNAMIC (LFLAG_LIGHTMAP | LFLAG_FLASHBLEND | LFLAG_NORMALMODE)
 
 typedef struct dlight_s

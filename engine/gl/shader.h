@@ -491,6 +491,7 @@ typedef struct {
 		SP_S_COLOUR,
 
 		SP_LIGHTRADIUS, /*these light values are realtime lighting*/
+		SP_LIGHTLINEAR,	//LFLAG_LINEARFALLOFF: 64 (Q2REPRO's DLIGHT_CUTOFF), the falloff is linear; 0 as before
 		SP_LIGHTCOLOUR,
 		SP_LIGHTCOLOURSCALE,
 		SP_LIGHTPOSITION,

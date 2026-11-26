@@ -2545,7 +2545,7 @@ static void CLQ2EX_UpdateRTLight(int key, vec3_t org, unsigned int rgba)
 				l->dirty = true;
 			}
 			l->seen = q2ex_rtlight_frame;
-			dl->flags |= LFLAG_NORMALMODE|LFLAG_REALTIMEMODE;	//(again, if its entity was hidden: the game's use toggles it)
+			dl->flags |= LFLAG_NORMALMODE|LFLAG_REALTIMEMODE|LFLAG_LINEARFALLOFF;	//(on again if its entity was hidden: the game's use toggles it; KEX's linear falloff)
 			if (l->rgba != rgba)
 			{
 				l->rgba = rgba;
@@ -2606,16 +2606,13 @@ static void CLQ2EX_HideUnseenRTLights(void)
 	}
 }
 
-//whether the eye sees a flare's origin, as the rerelease's occlusion query of it does: the world's windows and the surfaces
-//it can be seen through (alpha tested grates, translucent glass) don't hide it, though a solid trace stops at them
-static qboolean CLQ2EX_FlareVisible(const float *eye, const float *org)
+//whether the eye sees a point: the world's windows and the surfaces it can be seen through (alpha tested grates,
+//translucent glass) don't hide it, though a solid trace stops at them
+static qboolean CLQ2EX_PointSeen(model_t *mod, const float *eye, const float *org)
 {
-	model_t *mod = cl.worldmodel;
 	trace_t tr;
 	vec3_t start, dir;
 	int i;
-	if (!mod || mod->loadstate != MLS_LOADED || !mod->funcs.NativeTrace)
-		return true;
 	VectorCopy(eye, start);
 	VectorSubtract(org, eye, dir);
 	VectorNormalize(dir);
@@ -2629,6 +2626,37 @@ static qboolean CLQ2EX_FlareVisible(const float *eye, const float *org)
 			!(tr.surface && (tr.surface->flags & (TI_TRANS33|TI_TRANS66|TI_Q2EX_ALPHATEST|TI_KINGPIN_ALPHATEST))))
 			return false;
 		VectorMA(tr.endpos, 1, dir, start);	//on, from inside it: a trace leaving a brush isn't stopped by it
+	}
+	return false;
+}
+//whether a flare shows, as Q2REPRO's occlusion query of it (GL_OccludeFlares): a little square facing the eye, 2.5 units
+//from its middle and more with distance, moved 5 units towards the eye from inside solid (a flare's origin is often in
+//its lamp), shows if any of it is seen - here its middle or a corner
+static qboolean CLQ2EX_FlareVisible(const float *eye, const float *org)
+{
+	model_t *mod = cl.worldmodel;
+	vec3_t dir, right, up, mid, p;
+	float dist, size;
+	int i;
+	if (!mod || mod->loadstate != MLS_LOADED || !mod->funcs.NativeTrace)
+		return true;
+	VectorSubtract(org, eye, dir);
+	dist = VectorNormalize(dir);
+	if (dist <= 0)
+		return true;
+	VectorCopy(org, mid);
+	if (mod->funcs.PointContents && (mod->funcs.PointContents(mod, NULL, org) & FTECONTENTS_SOLID))
+		VectorMA(org, -5, dir, mid);
+	if (CLQ2EX_PointSeen(mod, eye, mid))
+		return true;
+	size = 2.5 + ((dist > 20) ? dist * 0.004 : 0);
+	VectorVectors(dir, right, up);
+	for (i = 0; i < 4; i++)
+	{
+		VectorMA(mid, (i&1)?size:-size, right, p);
+		VectorMA(p, (i&2)?size:-size, up, p);
+		if (CLQ2EX_PointSeen(mod, eye, p))
+			return true;
 	}
 	return false;
 }
@@ -2708,7 +2736,7 @@ static void CLQ2EX_AddFlare(const entity_t *src, const entity_state_t *s1, q2cen
 	}
 
 	s = ent.scale ? ent.scale : 1;
-	ent.rtype = RT_SPRITE;
+	ent.rtype = (renderfx & 1/*RF_FLARE_LOCK_ANGLE: the rerelease's RF_MINLIGHT*/) ? RT_Q2EXFLARE_LOCKED : RT_Q2EXFLARE;
 	ent.model = NULL;
 	ent.forcedshader = shader;
 	ent.scale = (def ? 50 : 25) * s * frac;	//Q2REPRO's quad: 25 units from its middle per unit of scale (50 with the default image)
@@ -2722,6 +2750,11 @@ static void CLQ2EX_AddFlare(const entity_t *src, const entity_state_t *s1, q2cen
 	else
 		VectorSet(ent.shaderRGBAf, 1, 1, 1);
 	ent.shaderRGBAf[3] = ((def ? 160 : 128) / 255.0) * alpha * frac;
+	//the edge: its RF_SHELL_* rim's colour (each one full), else its own
+	if (renderfx & (Q2RF_SHELL_RED|Q2RF_SHELL_GREEN|Q2RF_SHELL_BLUE))
+		VectorSet(ent.glowmod, (renderfx & Q2RF_SHELL_RED)?1:0, (renderfx & Q2RF_SHELL_GREEN)?1:0, (renderfx & Q2RF_SHELL_BLUE)?1:0);
+	else
+		VectorCopy(ent.shaderRGBAf, ent.glowmod);
 	V_AddEntity(&ent);
 }
 

@@ -1882,6 +1882,8 @@ static const char *glsl_hdrs[] =
 				/*rtlight properties, use with caution*/
 				"uniform vec2	l_lightscreen;"
 				"uniform float	l_lightradius;"
+				"uniform float	l_lightlinear;\n"	//LFLAG_LINEARFALLOFF (rtlight.glsl)
+				"#define FTE_LIGHTLINEAR 1\n"
 				"uniform vec3	l_lightcolour;"
 				"uniform vec3	l_lightposition;"
 				"uniform vec3	l_lightdirection;"

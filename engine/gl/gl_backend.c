@@ -5912,6 +5912,9 @@ static void BE_Program_Set_Attributes(const program_t *prog, struct programpermu
 		case SP_LIGHTRADIUS:
 			qglUniform1fARB(ph, shaderstate.lightradius);
 			break;
+		case SP_LIGHTLINEAR:
+			qglUniform1fARB(ph, (shaderstate.curdlight && (shaderstate.curdlight->flags & LFLAG_LINEARFALLOFF)) ? 64 : 0);
+			break;
 		case SP_LIGHTCOLOUR:
 			qglUniform3fvARB(ph, 1, shaderstate.lightcolours);
 			break;

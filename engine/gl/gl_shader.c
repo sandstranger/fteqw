@@ -3473,6 +3473,7 @@ struct shader_field_names_s shader_unif_names[] =
 	/*rtlight properties, use with caution*/
 	{"l_lightscreen",			SP_LIGHTSCREEN},	//screenspace position of the current rtlight
 /**/{"l_lightradius",			SP_LIGHTRADIUS},	//radius of the current rtlight
+/**/{"l_lightlinear",			SP_LIGHTLINEAR},	//its linear falloff's term (LFLAG_LINEARFALLOFF), or 0
 /**/{"l_lightcolour",			SP_LIGHTCOLOUR},	//rgb values of the current rtlight
 /**/{"l_lightposition",			SP_LIGHTPOSITION},	//light position in modelspace
 	{"l_lightdirection",		SP_LIGHTDIRECTION},	//light direction in modelspace (ortho lights only, instead of position)

@@ -10068,6 +10068,10 @@ YOU SHOULD NOT EDIT THIS FILE BY HAND
 "float colorscale = 1.0;\n"
 "#else\n"
 "float colorscale = max(1.0 - (dot(lightvector, lightvector)/(l_lightradius*l_lightradius)), 0.0);\n"
+"#ifdef FTE_LIGHTLINEAR\n"
+"if (l_lightlinear > 0.0)\n"
+"colorscale = max(l_lightradius - length(lightvector), 0.0) / (l_lightradius + l_lightlinear);\n"
+"#endif\n"
 "#endif\n"
 "#ifdef PCF\n"
 /*filter the light by the shadowmap. logically a boolean, but we allow fractions for softer shadows*/

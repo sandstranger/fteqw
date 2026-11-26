@@ -242,6 +242,11 @@ void main ()
 	float colorscale = 1.0;
 #else
 	float colorscale = max(1.0 - (dot(lightvector, lightvector)/(l_lightradius*l_lightradius)), 0.0);
+#ifdef FTE_LIGHTLINEAR
+	//the Quake II rerelease's shadow lights (LFLAG_LINEARFALLOFF): linear, as KEX/Q2REPRO's dynamic lights
+	if (l_lightlinear > 0.0)
+		colorscale = max(l_lightradius - length(lightvector), 0.0) / (l_lightradius + l_lightlinear);
+#endif
 #endif
 #ifdef PCF
 	/*filter the light by the shadowmap. logically a boolean, but we allow fractions for softer shadows*/

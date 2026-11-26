@@ -3450,6 +3450,90 @@ static void R_Beam_GenerateTrisoup(entity_t *e, int bemode)
 }
 #endif
 
+//the Quake II rerelease's flares (client/clq2_ents.c CLQ2EX_AddFlare), as Q2REPRO's GL_DrawFlares: four triangles about
+//the middle, which has shaderRGBAf's colour, the edge glowmod's (the flare's RF_SHELL_* rim, or its own colour), both
+//shaderRGBAf's alpha; scale units from the middle to each side. RT_Q2EXFLARE faces the eye, RT_Q2EXFLARE_LOCKED
+//(RF_FLARE_LOCK_ANGLE) lies in the view's plane. Over the world (the caller decided it is seen), added.
+static void R_Q2EXFlare_GenerateTrisoup(entity_t *e)
+{
+	static const float tc[5][2] = {{0.5,0.5}, {0,1}, {0,0}, {1,0}, {1,1}};
+	static const int idx[12] = {0,1,2, 0,2,3, 0,3,4, 0,4,1};
+	const unsigned int batchflags = BEF_NOSHADOWS|BEF_FORCEADDITIVE|BEF_FORCENODEPTH;
+	shader_t *shader = e->forcedshader;
+	vec3_t right, up, dir, corner[4];
+	scenetris_t *t;
+	int i;
+
+	if (!shader || e->scale <= 0)
+		return;
+	if (e->rtype == RT_Q2EXFLARE_LOCKED)
+	{
+		VectorScale(vright, e->scale, right);
+		VectorScale(vup, e->scale, up);
+	}
+	else
+	{
+		VectorSubtract(e->origin, r_origin, dir);
+		if (VectorNormalize(dir) <= 0)
+			return;
+		VectorVectors(dir, right, up);
+		VectorScale(right, e->scale, right);
+		VectorScale(up, e->scale, up);
+	}
+	//down+left, up+left, up+right, down+right
+	for (i = 0; i < 3; i++)
+	{
+		corner[0][i] = e->origin[i] - up[i] - right[i];
+		corner[1][i] = e->origin[i] + up[i] - right[i];
+		corner[2][i] = e->origin[i] + up[i] + right[i];
+		corner[3][i] = e->origin[i] - up[i] + right[i];
+	}
+
+	if (cl_numstris && cl_stris[cl_numstris-1].shader == shader && cl_stris[cl_numstris-1].flags == batchflags)
+		t = &cl_stris[cl_numstris-1];
+	else
+	{
+		if (cl_numstris == cl_maxstris)
+		{
+			cl_maxstris += 8;
+			cl_stris = BZ_Realloc(cl_stris, sizeof(*cl_stris)*cl_maxstris);
+		}
+		t = &cl_stris[cl_numstris++];
+		t->shader = shader;
+		t->numidx = 0;
+		t->numvert = 0;
+		t->firstidx = cl_numstrisidx;
+		t->firstvert = cl_numstrisvert;
+		t->flags = batchflags;
+		t->lightmap = -1;
+	}
+	if (cl_numstrisidx+12 > cl_maxstrisidx)
+	{
+		cl_maxstrisidx = cl_numstrisidx+12 + 64;
+		cl_strisidx = BZ_Realloc(cl_strisidx, sizeof(*cl_strisidx)*cl_maxstrisidx);
+	}
+	if (cl_numstrisvert+5 > cl_maxstrisvert)
+		cl_stris_ExpandVerts(cl_numstrisvert+64);
+
+	for (i = 0; i < 12; i++)
+		cl_strisidx[cl_numstrisidx++] = t->numvert + idx[i];
+	VectorCopy(e->origin, cl_strisvertv[cl_numstrisvert]);
+	for (i = 0; i < 4; i++)
+		VectorCopy(corner[i], cl_strisvertv[cl_numstrisvert+1+i]);
+	for (i = 0; i < 5; i++)
+	{
+		Vector2Copy(tc[i], cl_strisvertt[cl_numstrisvert+i]);
+		if (i)
+			VectorCopy(e->glowmod, cl_strisvertc[cl_numstrisvert+i]);
+		else
+			VectorCopy(e->shaderRGBAf, cl_strisvertc[cl_numstrisvert+i]);
+		cl_strisvertc[cl_numstrisvert+i][3] = e->shaderRGBAf[3];
+	}
+	t->numidx += 12;
+	t->numvert += 5;
+	cl_numstrisvert += 5;
+}
+
 static void R_Sprite_GenerateTrisoup(entity_t *e, int bemode)
 {
 	vec3_t	point;
@@ -4252,6 +4336,11 @@ void BE_GenModelBatches(batch_t **batches, const dlight_t *dl, unsigned int bemo
 			break;
 		case RT_SPRITE:
 			R_Sprite_GenerateTrisoup(ent, bemode);
+			break;
+		case RT_Q2EXFLARE:
+		case RT_Q2EXFLARE_LOCKED:
+			if (bemode == BEM_STANDARD)
+				R_Q2EXFlare_GenerateTrisoup(ent);
 			break;
 
 		case RT_BEAM:

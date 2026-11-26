@@ -88,6 +88,8 @@ typedef enum {
 
 	//fte ones start here
 	RT_PORTALCAMERA,		// an alternative to RT_PORTALSURFACE.
+	RT_Q2EXFLARE,			// the Quake II rerelease's flare (misc_flare), facing the eye (gl_alias.c R_Q2EXFlare_GenerateTrisoup)
+	RT_Q2EXFLARE_LOCKED,	// and one in the view's plane (RF_FLARE_LOCK_ANGLE)
 
 	RT_MAX_REF_ENTITY_TYPE
 } refEntityType_t;
