@@ -50,6 +50,7 @@ static fq2::gclient_t		*shadowcl;		//and of its clients
 static int					shadowmax;
 static int					dkmaxclients;
 static bool					dklevelloaded;	//a level's been spawned (so the next needs the last's cleared away)
+static bool					dkshuttingdown;	//DK3_Shutdown's: nothing more is sent
 static bool					dkloadinggame;	//a saved game's been read: its level's to spawn as such (then read)
 static unsigned char		dkbegun[256];	//which clients the game's begun (only those does it disconnect)
 static bool					dksentvalid[256];	//DK_SendStats has sent them their stats
@@ -427,7 +428,13 @@ static void DKGI_configstring(int i, char *val)
 {
 	int q2 = DK_ConfigstringToQ2(i);
 	DK_SetConfigstring(i, val);
-	if (q2 >= 0)
+	if (i == CS_SKY && val && *val && !strchr(val, '/'))
+	{	//its skyboxes are env/32bit/<sky><side>.tga (gl_warp.cpp's R_SetSky): FTE's looks in env/<sky>
+		char sky[MAX_QPATH];
+		snprintf(sky, sizeof(sky), "32bit/%s", val);
+		fgi->configstring(q2, sky);
+	}
+	else if (q2 >= 0)
 		fgi->configstring(q2, val?val:"");
 }
 static char *DKGI_GetConfigString(int i)
@@ -1281,14 +1288,14 @@ static void DK_SendAllEntX(int playernum)
 static void DKGI_multicast(const CVector &origin, multicast_t to)
 {
 	float o[3] = {origin.x, origin.y, origin.z};
-	if (DK_TranslateMessage())
+	if (!dkshuttingdown && DK_TranslateMessage())	//(a cinematic's music stopped at the quit crashed in FTE's freed world)
 		fgi->multicast(o, to);
 	dkmsglen = 0;
 	dkmsgoverflow = false;
 }
 static void DKGI_unicast(edict_t *ent, qboolean reliable)
 {
-	if (ent && DK_TranslateMessage())
+	if (ent && !dkshuttingdown && DK_TranslateMessage())
 		fgi->unicast(DK_ToShadow(ent), reliable);
 	dkmsglen = 0;
 	dkmsgoverflow = false;
@@ -1842,6 +1849,9 @@ extern "C++" void DKCIN_Command(const char *text)
 	DK_TokenizeArgs(buf);
 	if (dkargc > 0 && !strncasecmp(dkargv[0], "cin_", 4) && CIN_Command())
 		;
+	else if (dkargc == 4 && !strcasecmp(dkargv[0], "sky"))
+		;	//a shot's "sky 0 0 <skynum>": its engine's SetSky(NULL, NULL, skynum) returned at once (a null name). FTE's
+			//sky command took the "0" for the sky's name: no sky after a cinematic
 	else if (dkargc > 0 && (c = DK_FindCommand(dkargv[0])) && dkge && (player = DKEDICT(1))->inuse && player->client)
 	{
 		c->function(player);
@@ -1983,6 +1993,7 @@ static void FQ2_VARGS DK3_Init(void)
 
 static void FQ2_VARGS DK3_Shutdown(void)
 {
+	dkshuttingdown = true;	//(what's sent on the way out goes nowhere: FTE's world may be gone already)
 	if (dkge)
 	{
 		CIN_Stop(NULL);
@@ -1991,6 +2002,7 @@ static void FQ2_VARGS DK3_Shutdown(void)
 			dkge->LevelExit();
 		dkge->UnloadDLLs();
 	}
+	dkshuttingdown = false;
 	dklevelloaded = false;
 	dkge = NULL;
 	DK_Free();

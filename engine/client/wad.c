@@ -1178,6 +1178,11 @@ void Mod_ParseInfoFromEntityLump(model_t *wmodel)	//actually, this should be in 
 		}
 		else if (!strcmp("sky", key)) // for Quake2 maps
 		{
+#if defined(Q2CLIENT) && defined(DAIKATANA)
+			if (CLDK_IsDaikatana() && *token && !strchr(token, '/'))	//its skyboxes are in env/32bit (svdk_game.cpp's CS_SKY too)
+				Q_snprintfz(skyname, sizeof(skyname), "32bit/%s", token);
+			else
+#endif
 			Q_strncpyz(skyname, token, sizeof(skyname));
 		}
 		else if (!strcmp("skyrotate", key))	//q2 feature
