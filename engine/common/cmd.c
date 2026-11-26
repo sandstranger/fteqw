@@ -915,13 +915,18 @@ static const char *replacementq2binds =
         "bind		MWHEELUP	cmd weapnext\n"
         "bind		MWHEELDOWN	cmd weapprev\n"
         "bind		I        	cmd inven\n"
-        "bind		С        	+movedown\n"
+        "bind		C        	+movedown\n"	//(was a Cyrillic С: C stayed unbound, the crouch button did nothing)
         "bind		SPACE       +moveup\n"
+        "bind		Q        	+moveup\n"		//the on-screen swim up/down buttons, as quake's and hexen 2's
+        "bind		Z        	+movedown\n"
+        "bind		R        	+wheel\n"		//the rerelease's weapon wheel and powerup wheel (on-screen buttons of their own:
+        "bind		F        	+wheel2\n"		//its own E/Q are use and swim up here)
         "bind		B        	cmd invdrop\n"
         "bind		E        	cmd invuse\n"
         "bind		[        	cmd invprev\n"
         "bind		]        	cmd invnext\n"
         "bind		ENTER		+attack\n"
+        "bind		F6			\"save quick\"\n"	//the on-screen quick save button (quake 2's own is F5)
         "bind		F11	        \"zoom_in\"\n"
         "alias zoom_in \"fov 90;wait;fov 70;wait;fov 50;wait;fov 30;wait;fov 10;wait;fov 5;bind F11 zoom_out\"\n"
         "alias zoom_out \"fov 5;wait;fov 10;wait;fov 30;wait;fov 50;wait;fov 70;wait;fov 90;bind F11 zoom_in\"\n"
@@ -958,7 +963,8 @@ static const char *replacementhexen2binds =
         "bind		J           impulse 105\n"
         "bind		K           impulse 106\n"
         "bind		L           impulse 107\n"
-        "bind		F6          impulse 108\n"
+        "bind		F6          \"save quick\"\n"	//the on-screen quick save button (the glyph was here)
+        "bind		F7          impulse 108\n"
         "bind		R           impulse 109\n"
         "bind		T           impulse 110\n"
         "bind		F4          impulse 111\n"
@@ -972,6 +978,28 @@ static const char *replacementhexen2binds =
         "alias zoom_in \"fov 90;wait;fov 70;wait;fov 50;wait;fov 30;wait;fov 10;wait;fov 5;bind F11 zoom_out\"\n"
         "alias zoom_out \"fov 5;wait;fov 10;wait;fov 30;wait;fov 50;wait;fov 70;wait;fov 90;bind F11 zoom_in\"\n"
         "cl_forwardspeed 400\n";
+
+//daikatana's own binds (default_keys.cfg, by CLDK_DefaultConfig) and what the on-screen buttons need over them: Enter
+//attacks (its +use goes to E, the use button), Q/Z swim, the wheel goes as its icons say, N is its sidekicks' back off
+//again (its default_keys.cfg ends with a cheat block binding it to noclip), quick save and load. Its sidekick and hud
+//keys (F V M N G P, O L K ;) and inventory ([ ] BACKSPACE) stay as they are: its on-screen buttons send those.
+#ifdef DAIKATANA
+static const char *replacementdkbinds =
+        "%s\n"
+        "bind		ENTER		+attack\n"
+        "bind		E			+use\n"
+        "bind		Q			+moveup\n"
+        "bind		Z			+movedown\n"
+        "bind		MWHEELUP	weapnext\n"
+        "bind		MWHEELDOWN	weapprev\n"
+        "bind		N			sidekick_backoff\n"
+        "bind		F6			\"save quick\"\n"
+        "bind		F9			\"load quick\"\n"
+        "seta sensitivity \"12.0\"\n"
+        "bind		F11	        \"zoom_in\"\n"
+        "alias zoom_in \"fov 90;wait;fov 70;wait;fov 50;wait;fov 30;wait;fov 10;wait;fov 5;bind F11 zoom_out\"\n"
+        "alias zoom_out \"fov 5;wait;fov 10;wait;fov 30;wait;fov 50;wait;fov 70;wait;fov 90;bind F11 zoom_in\"\n";
+#endif
 
 static const char *replacementq3binds =
         "%s\n"
@@ -1292,7 +1320,7 @@ static void Cmd_Exec_f (void)
         RemoveLine("alias zoom_out",s);
 #if defined(Q2CLIENT) && defined(DAIKATANA)
 		if (CLDK_IsDaikatana())
-			;	//its own (CLDK_DefaultConfig), not quake's
+			s = va(replacementdkbinds, s);	//its own (CLDK_DefaultConfig), not quake's, and the on-screen buttons'
 		else
 #endif
         if (activeGame == MGT_QUAKE1 || (l == 1914 && CalcHashInt(&hash_md4, f, l) == 0x2d7b72b9)) {
