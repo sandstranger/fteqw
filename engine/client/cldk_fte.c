@@ -974,23 +974,22 @@ static qboolean CLDK_MenuKeyEvent(menu_t *m, qboolean isdown, unsigned int devid
 	case K_GP_LEFT_THUMB_UP:	case K_GP_LEFT_THUMB_DOWN:	case K_GP_LEFT_THUMB_LEFT:	case K_GP_LEFT_THUMB_RIGHT:
 		return true;	//(the pointer: CLDK_MenuPadPointer)
 	}
-	//a finger is the mouse: its button down where it touches, up as it lifts (dragging sliders between), whatever
-	//gesture FTE makes of it after (a finger that moved a little was a slide, held a second a long press: no click)
-	if (key == K_TOUCHTAP || key == K_TOUCHLONG || key == K_TOUCHSLIDE)
-		return true;
-	if (key == K_TOUCH)
-	{
-		static qboolean touchdown;	//(a finger that was down before the menu came up lifts without a click)
-		if (!isdown && !touchdown)
-			return true;
-		touchdown = isdown;
-		key = K_MOUSE1;
+	{	//a tap clicks, unless the launcher's touch already pressed mouse1 (its touch press events): not twice
+		static double mouse1time = -10;
+		if (key == K_MOUSE1 && isdown)
+			mouse1time = realtime;
+		if (key == K_TOUCHTAP)
+		{
+			if (realtime - mouse1time < 1.5)
+				return true;
+			key = K_MOUSE1;
+		}
 	}
 	if (isdown && unicode >= 32 && unicode < 127 && !keydown[K_LCTRL] && !keydown[K_RCTRL])
 		dk = unicode;	//typed text by character (shift, layouts)
 	else
 		dk = CLDK_DKKey(key);
-	if (key == K_MOUSE1)
+	if (key == K_MOUSE1 || key == K_TOUCHTAP)
 	{
 		int x, y;
 		CLDKF_MousePos(&x, &y);
