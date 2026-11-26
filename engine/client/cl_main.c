@@ -8019,10 +8019,8 @@ double Host_Frame (double time)
 		{
 			cl.playerview[i].audio.defaulted = true;
 			cl.playerview[i].audio.entnum = cl.playerview[i].viewentity;
-			VectorClear(cl.playerview[i].audio.origin);
-			VectorSet(cl.playerview[i].audio.forward, 1, 0, 0);
-			VectorSet(cl.playerview[i].audio.right, 0, 1, 0);
-			VectorSet(cl.playerview[i].audio.up, 0, 0, 1);
+			//where the last scene had it stays, for frames that draw none (after a savegame's load the host runs
+			//many frames per drawn one: the listener at the world's origin silenced every looping sound)
 			cl.playerview[i].audio.reverbtype = 0;
 			VectorClear(cl.playerview[i].audio.velocity);
 		}
