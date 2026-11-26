@@ -67,7 +67,15 @@ cvar_t r_shadow_realtime_world_shadows		= CVARF ("r_shadow_realtime_world_shadow
 cvar_t r_shadow_realtime_world_lightmaps	= CVARFD ("r_shadow_realtime_world_lightmaps", "0", 0, "Specifies how much of the map's normal lightmap to retain when using world realtime lights. 0 completely replaces lighting.");
 float r_shadow_realtime_world_lightmaps_force;
 cvar_t r_shadow_realtime_world_importlightentitiesfrommap = CVARFD ("r_shadow_realtime_world_importlightentitiesfrommap", "0", CVAR_ARCHIVE, "Controls default loading of map-based realtime lights.\n0: Load explicit .rtlight files only.\n1: Load explicit lights then try fallback to parsing the entities lump.\n2: Load only the entities lump.");
-cvar_t r_shadow_realtime_dlight				= CVARAFD ("r_shadow_realtime_dlight", "1", "r_shadow_realtime_dynamic", CVAR_ARCHIVE, "Enables the use of dynamic realtime lights, allowing explosions to use bumpmaps etc properly.");
+//Android: the baked lightmaps (dynamic lights added into them, as Quake II drew them). Realtime lights are passes of
+//their own over everything they reach, and the scene through an offscreen target: 400 world batches instead of 35,
+//most of a Mali-G57's frame. r_shadow_realtime_dlight 1 brings them back (the Q2 rerelease's shadow lights too).
+#ifdef __ANDROID__
+#define RTLIGHT_DLIGHT_DEFAULT "0"
+#else
+#define RTLIGHT_DLIGHT_DEFAULT "1"
+#endif
+cvar_t r_shadow_realtime_dlight				= CVARAFD ("r_shadow_realtime_dlight", RTLIGHT_DLIGHT_DEFAULT, "r_shadow_realtime_dynamic", CVAR_ARCHIVE, "Enables the use of dynamic realtime lights, allowing explosions to use bumpmaps etc properly.");
 cvar_t r_shadow_realtime_dlight_shadows		= CVARFD ("r_shadow_realtime_dlight_shadows", RTLIGHT_SHADOWS_DEFAULT, CVAR_ARCHIVE, "Allows dynamic realtime lights to cast shadows as they move.");
 cvar_t r_shadow_realtime_dlight_ambient		= CVAR ("r_shadow_realtime_dlight_ambient", "0");
 cvar_t r_shadow_realtime_dlight_diffuse		= CVAR ("r_shadow_realtime_dlight_diffuse", "1");
