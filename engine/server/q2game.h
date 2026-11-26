@@ -152,6 +152,7 @@ typedef struct
 	qbyte			alpha;			//in 255ths; 0: the default (opaque, or as the effects have it)
 	qbyte			scale;			//in 16ths; 0: the default (1)
 	qbyte			instance_bits;	//the players (by number, the first 8) who can't see it
+	qbyte			castshadow;		//RF_CASTSHADOW: a shadow light (dynamic_light), no model but sent (by PHS) for its light
 } q2entityex_t;
 #endif
 #if defined(Q2SERVER)

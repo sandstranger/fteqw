@@ -465,6 +465,7 @@ typedef struct {
 		SP_E_EYEPOS, /*viewer's eyepos, in model space*/
 		SP_V_EYEPOS, /*viewer's eyepos, in world space*/
 		SP_W_FOG,
+		SP_W_HEIGHTFOG,	//the Quake II rerelease's height fog: vec4[5], GLBE_HeightFog
 		SP_W_USER,	//user-specified blob of data.
 
 		SP_M_ENTBONES_PACKED,

@@ -3428,6 +3428,7 @@ struct shader_field_names_s shader_unif_names[] =
 	/*viewer properties*/
 	{"v_eyepos",				SP_V_EYEPOS},	//eye pos in worldspace
 /**/{"w_fog",					SP_W_FOG},		//read by sys/fog.h
+/**/{"w_heightfog",				SP_W_HEIGHTFOG},	//read by sys/fog.h (heightfog())
 	{"w_user",					SP_W_USER},		//set via VF_USERDATA
 
 	/*ent properties*/

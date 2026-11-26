@@ -248,6 +248,14 @@ typedef struct
 
 	float time;	//timestamp for when its current.
 } fogstate_t;
+typedef struct
+{	//the Quake II rerelease's height fog (svc_fog, Q2EX): thicker below a height, coloured from start to end by height
+	//(sys/fog.h heightfog() as KEX/Q2REPRO). Density 0: none.
+	vec4_t start;		//rgb, height (w_heightfog[0])
+	vec4_t end;			//rgb, height (w_heightfog[1])
+	float density;
+	float falloff;
+} heightfog_t;
 void CL_BlendFog(fogstate_t *result, fogstate_t *oldf, float time, fogstate_t *newf);
 void CL_ResetFog(int fogtype);
 
@@ -338,6 +346,7 @@ typedef struct refdef_s
 	int			frustum_numplanes;	//includes far plane (which is reduced with fog).
 
 	fogstate_t	globalfog;
+	heightfog_t	heightfog;
 	float		hdr_value;
 
 	vec3_t		skyroom_pos;		/*the camera position for sky rooms*/

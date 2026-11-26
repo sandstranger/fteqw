@@ -111,6 +111,8 @@ typedef struct q2centity_s
 	float		stair_height;		// the rerelease's RF_STAIR_STEP: the step still to smooth out
 	double		stair_time;
 	float		flashlightfrac;		// EF_FLASHLIGHT: how far its light is, smoothed
+	float		flarefrac;			// RF_FLARE: how much of it shows (its origin seen from the eye, faded in and out)
+	double		flaretime;			// RF_FLARE: cl.time flarefrac is from
 
 	float		fly_stoptime;
 } q2centity_t;
@@ -2484,7 +2486,10 @@ static struct q2ex_rtlight_s
 	float radius, intensity, fade[2], cone, conedir[3];
 	vec3_t axis[3];
 	vec3_t angles;
+	unsigned int rgba;	//its entity's skinnum: the rerelease's game puts the light's _color there (0: white)
+	int seen;			//q2ex_rtlight_frame its entity was last in
 } q2ex_rtlight[Q2EXMAX_RTLIGHTS];
+static int q2ex_rtlight_frame;	//counts CLQ2_AddPacketEntities: a light whose entity is not in the frame is off
 void CLQ2EX_ParseLightConfigString(int i, const char *s)
 {
 	struct q2ex_rtlight_s *l = &q2ex_rtlight[i];
@@ -2507,7 +2512,20 @@ void CLQ2EX_ParseLightConfigString(int i, const char *s)
 	VectorNegate(l->axis[1], l->axis[1]);
 	VectorAngles(l->axis[0], l->axis[2], l->angles, false);
 }
-static void CLQ2EX_UpdateRTLight(int key, vec3_t org)
+static dlight_t *CLQ2EX_FindRTLight(int key)
+{
+	int i;
+	dlight_t *dl = cl_dlights+rtlights_first;
+	for (i=rtlights_first ; i<rtlights_max ; i++, dl++)
+	{
+		if (dl->key == key)
+			return dl;
+	}
+	return NULL;
+}
+//a shadow light's entity in this frame (the rerelease's dynamic_light: RF_CASTSHADOW, CS_SHADOWLIGHTS): its light, coloured
+//by the entity's skinnum (RGBA, as Q2REPRO's CL_AddShadowLights)
+static void CLQ2EX_UpdateRTLight(int key, vec3_t org, unsigned int rgba)
 {
 	int			i;
 	dlight_t	*dl;
@@ -2519,22 +2537,22 @@ static void CLQ2EX_UpdateRTLight(int key, vec3_t org)
 		{	//okay, we found the configstring entry...
 
 			//see if its current or not...
-			dl = cl_dlights+rtlights_first;
-			for (i=rtlights_first ; i<rtlights_max ; i++, dl++)
-			{
-				if (dl->key == key)
-					break;
-			}
-
-			if (i==rtlights_max)
+			dl = CLQ2EX_FindRTLight(key);
+			if (!dl)
 			{
 				dl = CL_AllocSlight();
-				dl->flags = LFLAG_NORMALMODE|LFLAG_REALTIMEMODE;
 				dl->key = key;
 				l->dirty = true;
 			}
+			l->seen = q2ex_rtlight_frame;
+			dl->flags |= LFLAG_NORMALMODE|LFLAG_REALTIMEMODE;	//(again, if its entity was hidden: the game's use toggles it)
+			if (l->rgba != rgba)
+			{
+				l->rgba = rgba;
+				l->dirty = true;
+			}
 
-			if (!l->dirty && !(dl->flags&LFLAG_FORCECACHE))
+			if (!l->dirty)
 			{
 				if (!VectorCompare(org, dl->origin))
 				{	//it moved :( keep the light tracking the ent and invalidate the cache.
@@ -2544,6 +2562,7 @@ static void CLQ2EX_UpdateRTLight(int key, vec3_t org)
 			}
 			else
 			{	//LOTS of stuff changed.
+				vec3_t rgb = {1,1,1};
 				l->dirty = false;
 				dl->flags |= LFLAG_FORCECACHE;
 
@@ -2553,7 +2572,9 @@ static void CLQ2EX_UpdateRTLight(int key, vec3_t org)
 				//config string info
 				dl->radius = l->radius;
 //FIXME: we're not using the suggested resolution.
-				VectorSet(dl->color, l->intensity,l->intensity,l->intensity);
+				if (rgba)
+					VectorSet(rgb, ((rgba>>24)&0xff)/255.0, ((rgba>>16)&0xff)/255.0, ((rgba>>8)&0xff)/255.0);
+				VectorScale(rgb, l->intensity, dl->color);
 				dl->fade[0] = l->fade[0];
 				dl->fade[1] = l->fade[1];
 				dl->style = l->style;
@@ -2571,6 +2592,137 @@ static void CLQ2EX_UpdateRTLight(int key, vec3_t org)
 			break;
 		}
 	}
+}
+//shadow lights whose entity was not in this frame (hidden by the game, or out of the PHS) are off until it is again
+static void CLQ2EX_HideUnseenRTLights(void)
+{
+	int i;
+	dlight_t *dl;
+	struct q2ex_rtlight_s *l;
+	for (i = 0, l = q2ex_rtlight; i < countof(q2ex_rtlight); i++, l++)
+	{
+		if (l->key > 0 && l->seen != q2ex_rtlight_frame && (dl = CLQ2EX_FindRTLight(l->key)))
+			dl->flags &= ~(LFLAG_NORMALMODE|LFLAG_REALTIMEMODE);
+	}
+}
+
+//whether the eye sees a flare's origin, as the rerelease's occlusion query of it does: the world's windows and the surfaces
+//it can be seen through (alpha tested grates, translucent glass) don't hide it, though a solid trace stops at them
+static qboolean CLQ2EX_FlareVisible(const float *eye, const float *org)
+{
+	model_t *mod = cl.worldmodel;
+	trace_t tr;
+	vec3_t start, dir;
+	int i;
+	if (!mod || mod->loadstate != MLS_LOADED || !mod->funcs.NativeTrace)
+		return true;
+	VectorCopy(eye, start);
+	VectorSubtract(org, eye, dir);
+	VectorNormalize(dir);
+	for (i = 0; i < 8; i++)
+	{
+		memset(&tr, 0, sizeof(tr));
+		mod->funcs.NativeTrace(mod, 0, NULLFRAMESTATE, NULL, start, org, vec3_origin, vec3_origin, false, FTECONTENTS_SOLID|Q2CONTENTS_WINDOW, &tr);
+		if (tr.fraction >= 1)
+			return true;
+		if (!(tr.contents & Q2CONTENTS_WINDOW) &&
+			!(tr.surface && (tr.surface->flags & (TI_TRANS33|TI_TRANS66|TI_Q2EX_ALPHATEST|TI_KINGPIN_ALPHATEST))))
+			return false;
+		VectorMA(tr.endpos, 1, dir, start);	//on, from inside it: a trace leaving a brush isn't stopped by it
+	}
+	return false;
+}
+
+//the rerelease's flares (misc_flare, RF_FLARE): a sprite over the world while its origin can be seen, fading in and out
+//(Q2REPRO's GL_DrawFlares: occlusion queries, there; a trace from the eye, here), and faded out near the viewer
+static void CLQ2EX_AddFlare(const entity_t *src, const entity_state_t *s1, q2centity_t *cent, unsigned int renderfx)
+{
+	static shader_t *defaultflare;
+	shader_t *shader = NULL;
+	qboolean def = false;
+	float d, alpha, frac, s, visible;
+	float fade_start = s1->modelindex2, fade_end = s1->u.q2.modelindex3;
+	unsigned int rgba = s1->skinnum;
+	const float *eye = cl.playerview[0].simorg;	//(as the effects' view, CLQ2FX_BeginFrame)
+	const char *image;
+	entity_t ent = *src;	//(the caller's is reused for the next entity)
+
+	//how much of it shows: towards whether the eye sees its origin, 8 per second (gl_flarespeed's default); one that
+	//was not drawn for a while starts as it is
+	visible = CLQ2EX_FlareVisible(eye, ent.origin);
+	frac = cent->flarefrac;
+	if (cent->flaretime && cl.time >= cent->flaretime && cl.time - cent->flaretime < 0.5)
+	{
+		float step = (cl.time - cent->flaretime) * 8;
+		frac = (frac < visible) ? min(visible, frac + step) : max(visible, frac - step);
+	}
+	else
+		frac = visible;
+	cent->flarefrac = frac;
+	cent->flaretime = cl.time;
+	if (frac <= 0)
+		return;
+
+	{
+		vec3_t delta;
+		VectorSubtract(ent.origin, eye, delta);
+		d = VectorLength(delta);
+	}
+	if (d < fade_start)
+		return;
+	if (d > fade_end)
+		alpha = 1;
+	else
+		alpha = (d - fade_start) / (fade_end - fade_start);
+
+	if ((renderfx & Q2RF_CUSTOMSKIN) && (unsigned int)s1->frame < countof(cl.image_name) && (image = cl.image_name[s1->frame]) && *image)
+		shader = R_RegisterShader(va("q2exflare/%s", image), SUF_NONE, va(
+			"{\n"
+				"surfaceparm nodlight\n"
+				"surfaceparm noshadows\n"
+				"sort additive\n"
+				"{\n"
+					"map \"%s\"\n"
+					"blendfunc GL_SRC_ALPHA GL_ONE\n"
+					"rgbgen vertex\n"
+					"alphagen vertex\n"
+				"}\n"
+			"}\n", image));
+	if (!shader || R_GetShaderSizes(shader, NULL, NULL, true) <= 0)
+	{
+		if (!defaultflare)
+			defaultflare = R_RegisterShader("q2exflare/misc/flare", SUF_NONE,
+				"{\n"
+					"surfaceparm nodlight\n"
+					"surfaceparm noshadows\n"
+					"sort additive\n"
+					"{\n"
+						"map \"misc/flare.tga\"\n"
+						"blendfunc GL_SRC_ALPHA GL_ONE\n"
+						"rgbgen vertex\n"
+						"alphagen vertex\n"
+					"}\n"
+				"}\n");
+		shader = defaultflare;
+		def = true;
+	}
+
+	s = ent.scale ? ent.scale : 1;
+	ent.rtype = RT_SPRITE;
+	ent.model = NULL;
+	ent.forcedshader = shader;
+	ent.scale = (def ? 50 : 25) * s * frac;	//Q2REPRO's quad: 25 units from its middle per unit of scale (50 with the default image)
+	ent.flags = RF_NODEPTHTEST | RF_ADDITIVE;
+	if (rgba)
+	{
+		ent.shaderRGBAf[0] = ((rgba>>24)&0xff)/255.0;
+		ent.shaderRGBAf[1] = ((rgba>>16)&0xff)/255.0;
+		ent.shaderRGBAf[2] = ((rgba>> 8)&0xff)/255.0;
+	}
+	else
+		VectorSet(ent.shaderRGBAf, 1, 1, 1);
+	ent.shaderRGBAf[3] = ((def ? 160 : 128) / 255.0) * alpha * frac;
+	V_AddEntity(&ent);
 }
 
 /*
@@ -2603,6 +2755,7 @@ static void CLQ2_AddPacketEntities (q2frame_t *frame)
 	autoanim = 2*cl.time;
 
 	memset (&ent, 0, sizeof(ent));
+	q2ex_rtlight_frame++;
 
 	for (timerlink = &cl.itemtimers; (timer=*timerlink); )
 	{
@@ -2756,6 +2909,7 @@ static void CLQ2_AddPacketEntities (q2frame_t *frame)
 * `s.modelindex2` is the start distance of fading the flare out.
 * `s.modelindex3` is the end distance of fading the flare out.
 * `s.skinnum` is the RGBA of the flare.*/
+			CLQ2EX_AddFlare(&ent, s1, cent, renderfx);
 			continue;
 		}
 		if (renderfx & Q2EXRF_CUSTOM_LIGHT)
@@ -2769,7 +2923,7 @@ static void CLQ2_AddPacketEntities (q2frame_t *frame)
 		}
 		if (renderfx & Q2REX_CASTSHADOW)
 		{
-			CLQ2EX_UpdateRTLight(ent.keynum, ent.origin);
+			CLQ2EX_UpdateRTLight(ent.keynum, ent.origin, s1->skinnum);
 			continue;
 		}
 
@@ -3148,6 +3302,8 @@ static void CLQ2_AddPacketEntities (q2frame_t *frame)
 
 		VectorCopy (ent.origin, cent->lerp_origin);
 	}
+
+	CLQ2EX_HideUnseenRTLights();
 }
 
 

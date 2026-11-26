@@ -1141,8 +1141,9 @@ void SVQ2_BuildClientFrame (client_t *client)
 		SVQ2RR_EntityExtras(ent, &ex);	//(the rerelease's game's)
 
 		// ignore ents without visible models unless they have an effect
+		//(and the rerelease's shadow lights: dynamic_light has no model, its light is the client's to draw - as KEX/Q2REPRO)
 		if (!ent->s.modelindex && !ent->s.effects && !ex.effects_hi && !ent->s.sound
-			&& !ent->s.event)
+			&& !ent->s.event && !ex.castshadow)
 			continue;
 
 		for (seat = 0; seat < seats; seat++)
@@ -1163,8 +1164,8 @@ void SVQ2_BuildClientFrame (client_t *client)
 						continue;		// blocked by a door
 				}
 
-				// beams just check one point for PHS
-				if (ent->s.renderfx & Q2RF_BEAM)
+				// beams just check one point for PHS (as do shadow lights: their light reaches past the PVS)
+				if ((ent->s.renderfx & Q2RF_BEAM) || ex.castshadow)
 				{
 					l = ent->clusternums[0];
 					if ( !(clientphs[l >> 3] & (1 << (l&7) )) )

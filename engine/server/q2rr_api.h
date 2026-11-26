@@ -51,6 +51,7 @@ typedef float rr_vec3_t[3];			//vec3_t: x, y, z
 #define RR_CS_LIGHTS			(RR_CS_IMAGES + RR_MAX_IMAGES)
 #define RR_CS_SHADOWLIGHTS		(RR_CS_LIGHTS + RR_MAX_LIGHTSTYLES)
 #define RR_CS_ITEMS				(RR_CS_SHADOWLIGHTS + RR_MAX_SHADOW_LIGHTS)
+#define RR_RF_CASTSHADOW		(1u<<14)	//the entity is a shadow light (CS_SHADOWLIGHTS says how), drawn by the client as one
 #define RR_CS_PLAYERSKINS		(RR_CS_ITEMS + RR_MAX_ITEMS)
 #define RR_CS_GENERAL			(RR_CS_PLAYERSKINS + RR_MAX_CLIENTS)
 #define RR_CS_WHEEL_WEAPONS		(RR_CS_GENERAL + RR_MAX_GENERAL)

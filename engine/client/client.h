@@ -1052,6 +1052,15 @@ typedef struct
 	qboolean	fog_locked;			//FIXME: make bitmask
 	fogstate_t	fog[FOGTYPE_COUNT];	//0 = air, 1 = water. if water has no density fall back on air.
 	fogstate_t	oldfog[FOGTYPE_COUNT];
+	struct
+	{	//the Quake II rerelease's fog as its svc_fogs left it: each sends only what changed
+		float density;
+		qbyte skyfactor, rgb[3];
+		float hf_falloff, hf_density;
+		qbyte hf_start[3], hf_end[3];
+		int hf_startdist, hf_enddist;
+	} q2exfog;
+	heightfog_t	heightfog;			//the rerelease's height fog (r_refdef.heightfog each frame)
 
 	char		levelname[40];	// for display on solo scoreboard
 	char		*windowtitle;	// fully overrides the window caption.

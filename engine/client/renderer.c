@@ -1076,6 +1076,7 @@ cvar_t r_fog_cullentities					= CVARD ("r_fog_cullentities", "1", "0: Never cull
 cvar_t r_fog_linear							= CVARD ("r_fog_linear", "0", "0: Use Exp/Exp2 fog. 1: Use linear fog.");
 cvar_t r_sourcewater = CVARFD("r_sourcewater", "1", CVAR_ARCHIVE, "Source BSPs: replace Quake's orange water overlay with material distance fog, independent of water warp. Use a subtle blue-green fallback if no material declares fog. 0 restores legacy rendering.");
 cvar_t r_fog_exp2							= CVARD ("r_fog_exp2", "1", "Expresses how fog fades with distance. 0 (matching DarkPlaces's default) is typically more realistic, while 1 (matching FitzQuake and others) is more common.");
+cvar_t r_heightfog							= CVARD ("r_heightfog", "1", "The Quake II rerelease's height fog (thicker below a height), as its maps ask for. 0: none.");
 cvar_t r_fog_permutation					= CVARFD ("r_fog_permutation", "1", CVAR_SHADERSYSTEM, "Renders fog using a material permutation. 0 plays nicer with q3 shaders, but 1 is otherwise a better choice.");
 //FTESurf Patch 266: r_fog_permutation only reaches shaders that HAVE a program.
 //This covers the ones that do not, which until now were never fogged at all.
@@ -1184,6 +1185,7 @@ void GLRenderer_Init(void)
 	Cvar_Register (&r_fog_linear, GLRENDEREROPTIONS);
 	Cvar_Register (&r_sourcewater, GLRENDEREROPTIONS);
 	Cvar_Register (&r_fog_exp2, GLRENDEREROPTIONS);
+	Cvar_Register (&r_heightfog, GLRENDEREROPTIONS);
 	Cvar_Register (&r_fog_permutation, GLRENDEREROPTIONS);
 	Cvar_Register (&r_fog_progless, GLRENDEREROPTIONS);	//FTESurf Patch 266
 	Cvar_Register (&r_fog_radial, GLRENDEREROPTIONS);	//FTESurf Patch 1213

@@ -3203,6 +3203,14 @@ void GLR_RenderView (void)
 			r_refdef.globalfog.density = 0;
 	}
 
+	//the Quake II rerelease's height fog (svc_fog), beside it; none in the void either
+	{
+		extern cvar_t r_voidfog, r_heightfog;
+		r_refdef.heightfog = cl.heightfog;
+		if ((r_voidview && r_voidfog.ival) || !r_heightfog.ival)
+			r_refdef.heightfog.density = 0;
+	}
+
 	if (!(r_refdef.flags & RDF_NOWORLDMODEL))
 	{
 		//FTESurf Patch 1459: r_postprocess 0 (the gfx menu's Post-process row) draws the scene as rendered:

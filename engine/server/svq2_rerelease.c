@@ -992,6 +992,7 @@ void SVQ2RR_EntityExtras(q2edict_t *ent, q2entityex_t *out)
 	if (re->s.scale > 0)	//0 is the default: 1
 		out->scale = bound(1, (int)(re->s.scale*16 + 0.5f), 255);
 	out->instance_bits = re->s.instance_bits;
+	out->castshadow = !!(re->s.renderfx & RR_RF_CASTSHADOW);
 }
 
 //the rerelease's pmove_state_t as it is (game API 3's is rounded), for Q2EX clients to predict with the rerelease's own pmove

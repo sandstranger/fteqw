@@ -9314,40 +9314,54 @@ static void CLR1Q2_ParseSetting(void)
 			Con_Printf("warning: fps rate changed mid-game\n");	//fixme: we need to clean up lerping stuff. if its now lower, we might have a whole load of things waiting ages for a timeout.
 	}
 }
+//the rerelease's svc_fog (svc_fog_data_t): only what changed is in it, the rest stays as the last ones left it. Global
+//fog (over its transition time, in ms) and height fog (at once: cl.heightfog, drawn by sys/fog.h heightfog())
 static void CLQ2EX_ParseFog(void)
 {
-	float d=0;
-	qbyte r=255, g=255, b=255;
 	unsigned short t=0;
 	unsigned int flags = MSG_ReadByte();
+	int i;
 	if (flags & (1<<7))
 		flags |= MSG_ReadByte()<<8;
 
-	if (flags & (1<<0))		d = MSG_ReadFloat();	//density
-	if (flags & (1<<0))		MSG_ReadByte();	//density
-	if (flags & (1<<1))		r = MSG_ReadByte();		//r
-	if (flags & (1<<2))		g = MSG_ReadByte();		//g
-	if (flags & (1<<3))		b = MSG_ReadByte();		//b
+	if (flags & (1<<0))		cl.q2exfog.density = MSG_ReadFloat();	//density
+	if (flags & (1<<0))		cl.q2exfog.skyfactor = MSG_ReadByte();	//sky factor
+	if (flags & (1<<1))		cl.q2exfog.rgb[0] = MSG_ReadByte();		//r
+	if (flags & (1<<2))		cl.q2exfog.rgb[1] = MSG_ReadByte();		//g
+	if (flags & (1<<3))		cl.q2exfog.rgb[2] = MSG_ReadByte();		//b
 	if (flags & (1<<4))		t = MSG_ReadUInt16();	//time
 
-	if (flags & (1<<5))		MSG_ReadFloat();	//h falloff
-	if (flags & (1<<6))		MSG_ReadFloat();	//h density
-	if (flags & (1<<8))		MSG_ReadByte();		//h s r
-	if (flags & (1<<9))		MSG_ReadByte();		//h s g
-	if (flags & (1<<10))	MSG_ReadByte();		//h s b
-	if (flags & (1<<11))	MSG_ReadLong();		//h s dist
-	if (flags & (1<<12))	MSG_ReadByte();		//h e r
-	if (flags & (1<<13))	MSG_ReadByte();		//h e g
-	if (flags & (1<<14))	MSG_ReadByte();		//h e b
-	if (flags & (1<<15))	MSG_ReadLong();		//h e dist
+	if (flags & (1<<5))		cl.q2exfog.hf_falloff = MSG_ReadFloat();	//h falloff
+	if (flags & (1<<6))		cl.q2exfog.hf_density = MSG_ReadFloat();	//h density
+	if (flags & (1<<8))		cl.q2exfog.hf_start[0] = MSG_ReadByte();	//h s r
+	if (flags & (1<<9))		cl.q2exfog.hf_start[1] = MSG_ReadByte();	//h s g
+	if (flags & (1<<10))	cl.q2exfog.hf_start[2] = MSG_ReadByte();	//h s b
+	if (flags & (1<<11))	cl.q2exfog.hf_startdist = MSG_ReadLong();	//h s dist
+	if (flags & (1<<12))	cl.q2exfog.hf_end[0] = MSG_ReadByte();		//h e r
+	if (flags & (1<<13))	cl.q2exfog.hf_end[1] = MSG_ReadByte();		//h e g
+	if (flags & (1<<14))	cl.q2exfog.hf_end[2] = MSG_ReadByte();		//h e b
+	if (flags & (1<<15))	cl.q2exfog.hf_enddist = MSG_ReadLong();		//h e dist
 
-	CL_ResetFog(FOGTYPE_AIR);
-	cl.fog[FOGTYPE_AIR].density = d;
-	cl.fog[FOGTYPE_AIR].colour[0] = SRGBf(r/255.0f);
-	cl.fog[FOGTYPE_AIR].colour[1] = SRGBf(g/255.0f);
-	cl.fog[FOGTYPE_AIR].colour[2] = SRGBf(b/255.0f);
-	cl.fog[FOGTYPE_AIR].time += (t) / 100.0;
-	cl.fog_locked = !!cl.fog[FOGTYPE_AIR].density;
+	if (flags & 0x1f)
+	{
+		CL_ResetFog(FOGTYPE_AIR);
+		cl.fog[FOGTYPE_AIR].density = cl.q2exfog.density;
+		cl.fog[FOGTYPE_AIR].colour[0] = SRGBf(cl.q2exfog.rgb[0]/255.0f);
+		cl.fog[FOGTYPE_AIR].colour[1] = SRGBf(cl.q2exfog.rgb[1]/255.0f);
+		cl.fog[FOGTYPE_AIR].colour[2] = SRGBf(cl.q2exfog.rgb[2]/255.0f);
+		cl.fog[FOGTYPE_AIR].time += t / 1000.0;
+		cl.fog_locked = !!cl.fog[FOGTYPE_AIR].density;
+	}
+
+	for (i = 0; i < 3; i++)
+	{
+		cl.heightfog.start[i] = SRGBf(cl.q2exfog.hf_start[i]/255.0f);
+		cl.heightfog.end[i] = SRGBf(cl.q2exfog.hf_end[i]/255.0f);
+	}
+	cl.heightfog.start[3] = cl.q2exfog.hf_startdist;
+	cl.heightfog.end[3] = cl.q2exfog.hf_enddist;
+	cl.heightfog.density = cl.q2exfog.hf_density;
+	cl.heightfog.falloff = cl.q2exfog.hf_falloff;
 }
 static char *CLQ2EX_ReformatBinds(int seat, const char *source, char *buffer, size_t buffersize)
 {	//q2e has various "%bind:cmd:$desc%" tags that should be expanded to some "<BUTTON> Desc\n" string instead, for tutorialy areas.

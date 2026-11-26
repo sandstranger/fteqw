@@ -1329,6 +1329,7 @@ void GLBE_RenderShadowBuffer(unsigned int numverts, int vbo, vecV_t *verts, unsi
 }
 
 static void GLBE_FogRadial(float *out);	//FTESurf Patch 1213
+static void GLBE_HeightFog(float *out);
 void GL_CullFace(unsigned int sflags)
 {
 	if (shaderstate.flags & BEF_FORCETWOSIDED)
@@ -5922,6 +5923,13 @@ static void BE_Program_Set_Attributes(const program_t *prog, struct programpermu
 				qglUniform4fvARB(ph, 3, fog);
 			}
 			break;
+		case SP_W_HEIGHTFOG:
+			{
+				float hfog[20];
+				GLBE_HeightFog(hfog);
+				qglUniform4fvARB(ph, 5, hfog);
+			}
+			break;
 		case SP_W_USER:
 			qglUniform4fvARB(ph, countof(r_refdef.userdata), r_refdef.userdata[0]);	//and density
 			break;
@@ -6135,8 +6143,8 @@ static void BE_RenderMeshProgram(const shader_t *shader, const shaderpass_t *pas
 	  (1-f)*fogcolour lift from a negative fogstart.  Fixing only the
 	  fixed-function path would leave the bug alive wherever there is a program,
 	  i.e. exactly where the renderer is going.*/
-	if (r_refdef.globalfog.density && !shaderstate.force2d && !shaderstate.curshader->materialnofog)
-		perm |= PERMUTATION_FOG;
+	if ((r_refdef.globalfog.density || r_refdef.heightfog.density) && !shaderstate.force2d && !shaderstate.curshader->materialnofog)
+		perm |= PERMUTATION_FOG;	//(the Quake II rerelease's height fog is drawn by the fog permutation too: sys/fog.h)
 //	if (TEXLOADED(shaderstate.curtexnums->bump) && shaderstate.curbatch->lightmap[0] >= 0 && lightmap[shaderstate.curbatch->lightmap[0]]->hasdeluxe)
 //		perm |= PERMUTATION_DELUXE;
 	/*
@@ -6836,6 +6844,32 @@ static void GLBE_FogRadial(float *out)
 	out[1] = 2 / (vh * p[5]);
 	out[2] = (p[8] - 1 - 2 * vx / vw) / p[0];
 	out[3] = (p[9] - 1 - 2 * vy / vh) / p[5];
+}
+
+//w_heightfog[5] for sys/fog.h heightfog(), the Quake II rerelease's height fog (r_refdef.heightfog): [0] start rgb and
+//height, [1] end rgb and height, [2] density, falloff, the eye's height, on; [3] the z of the view's forward, right and up
+//axes and [4] eye xy / depth from gl_FragCoord.xy (as GLBE_FogRadial's, always): the fragment's height from its depth.
+static void GLBE_HeightFog(float *out)
+{
+	const float *p = r_refdef.m_projection_std;
+	float vx = r_refdef.pxrect.x, vy = r_refdef.pxrect.maxheight - (r_refdef.pxrect.y + r_refdef.pxrect.height);
+	float vw = r_refdef.pxrect.width, vh = r_refdef.pxrect.height;
+	memset(out, 0, sizeof(float)*20);
+	if (!r_refdef.heightfog.density || vw <= 0 || vh <= 0 || !p[0] || !p[5] || p[11] != -1 || p[15] != 0)
+		return;	//(off, or no perspective to get the height from)
+	Vector4Copy(r_refdef.heightfog.start, out+0);
+	Vector4Copy(r_refdef.heightfog.end, out+4);
+	out[8] = r_refdef.heightfog.density;
+	out[9] = r_refdef.heightfog.falloff;
+	out[10] = r_origin[2];
+	out[11] = 1;
+	out[12] = vpn[2];
+	out[13] = vright[2];
+	out[14] = vup[2];
+	out[16] = 2 / (vw * p[0]);
+	out[17] = 2 / (vh * p[5]);
+	out[18] = (p[8] - 1 - 2 * vx / vw) / p[0];
+	out[19] = (p[9] - 1 - 2 * vy / vh) / p[5];
 }
 
 /*
