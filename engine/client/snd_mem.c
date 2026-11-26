@@ -33,6 +33,9 @@ typedef struct
 	int		loopstart;
 	int		samples;
 	int		dataofs;		// chunk starts this many bytes from file start
+	int		datalen;		// the data chunk's bytes
+	int		blockalign;		// nBlockAlign (IMA ADPCM: a block's bytes)
+	int		samplesperblock;	// IMA ADPCM: the samples (per channel) a block decodes to
 } wavinfo_t;
 
 static wavinfo_t GetWavinfo (char *name, qbyte *wav, int wavlength);
@@ -737,6 +740,68 @@ static qboolean QDECL S_LoadDoomSound (sfx_t *s, qbyte *data, size_t datalen, in
 }
 #endif
 
+//IMA ADPCM (WAVE_FORMAT_IMA_ADPCM, 0x11: Daikatana's sounds) to 16 bit samples. Each block: per channel a header (the
+//first sample, the step index, a pad byte), then 4 bit codes - mono a byte two samples (the low nibble first), stereo
+//4 bytes (8 samples) of the left channel, then 4 of the right, in turn. outframes: the samples per channel wanted.
+static void S_DecodeIMAADPCM(const qbyte *in, size_t inlen, int blockalign, int channels, int samplesperblock,
+	short *out, int outframes)
+{
+	static const int steps[89] = {
+		7, 8, 9, 10, 11, 12, 13, 14, 16, 17, 19, 21, 23, 25, 28, 31, 34, 37, 41, 45, 50, 55, 60, 66, 73, 80, 88, 97,
+		107, 118, 130, 143, 157, 173, 190, 209, 230, 253, 279, 307, 337, 371, 408, 449, 494, 544, 598, 658, 724, 796,
+		876, 963, 1060, 1166, 1282, 1411, 1552, 1707, 1878, 2066, 2272, 2499, 2749, 3024, 3327, 3660, 4026, 4428, 4871,
+		5358, 5894, 6484, 7132, 7845, 8630, 9493, 10442, 11487, 12635, 13899, 15289, 16818, 18500, 20350, 22385,
+		24623, 27086, 29794, 32767};
+	static const int indexadjust[16] = {-1, -1, -1, -1, 2, 4, 6, 8, -1, -1, -1, -1, 2, 4, 6, 8};
+	int frame = 0;
+
+	while (frame < outframes && inlen > (size_t)(4*channels))
+	{
+		size_t blocklen = min(inlen, (size_t)blockalign);
+		int pred[2], index[2], c, i, n, blockframes;
+		const qbyte *code = in + 4*channels;
+
+		for (c = 0; c < channels; c++)
+		{
+			pred[c] = (short)(in[c*4+0] | (in[c*4+1]<<8));
+			index[c] = bound(0, in[c*4+2], 88);
+			out[frame*channels + c] = pred[c];
+		}
+		blockframes = min(samplesperblock, (int)((blocklen - 4*channels)*2/channels + 1));
+		blockframes = min(blockframes, outframes - frame);
+
+		//the codes after the header: per channel runs of 8 samples (4 bytes), channel after channel
+		for (i = 1; i < blockframes; i++)
+		{
+			for (c = 0; c < channels; c++)
+			{
+				int k = i - 1;	//the code's number for this channel
+				size_t byte = (size_t)(k/8)*4*channels + c*4 + (k%8)/2;
+				int step, diff;
+				if (4*channels + byte >= blocklen)
+					break;
+				n = (k & 1) ? (code[byte]>>4) : (code[byte]&15);
+
+				step = steps[index[c]];
+				diff = step>>3;
+				if (n & 1) diff += step>>2;
+				if (n & 2) diff += step>>1;
+				if (n & 4) diff += step;
+				pred[c] += (n & 8) ? -diff : diff;
+				pred[c] = bound(-32768, pred[c], 32767);
+				index[c] = bound(0, index[c] + indexadjust[n], 88);
+				out[(frame+i)*channels + c] = pred[c];
+			}
+		}
+		frame += blockframes;
+		in += blocklen;
+		inlen -= blocklen;
+	}
+	//(a short file: silence after it)
+	if (frame < outframes)
+		memset(out + frame*channels, 0, sizeof(*out)*(outframes-frame)*channels);
+}
+
 static qboolean QDECL S_LoadWavSound (sfx_t *s, qbyte *data, size_t datalen, int sndspeed, qboolean forcedecode)
 {
 	wavinfo_t	info;
@@ -856,6 +921,16 @@ static qboolean QDECL S_LoadWavSound (sfx_t *s, qbyte *data, size_t datalen, int
 		format = QAF_S16;
 	}
 #endif
+	else if (info.format == 0x11 && info.bitwidth == 4 && info.blockalign > 4*info.numchannels && info.samples > 0)
+	{	//IMA ADPCM (Daikatana's sounds): decoded to 16 bit samples
+		qboolean ok;
+		size_t len = (info.dataofs < datalen) ? min((size_t)info.datalen, datalen - info.dataofs) : 0;
+		short *pcm = BZ_Malloc(sizeof(short) * info.samples * info.numchannels);
+		S_DecodeIMAADPCM(data + info.dataofs, len, info.blockalign, info.numchannels, info.samplesperblock, pcm, info.samples);
+		ok = ResampleSfx (s, info.rate, info.numchannels, QAF_S16, info.samples, info.loopstart, (qbyte*)pcm);
+		BZ_Free(pcm);
+		return ok;
+	}
 	else
 	{
 		s->loadstate = SLS_FAILED;
@@ -1307,8 +1382,14 @@ static wavinfo_t GetWavinfo (char *name, qbyte *wav, int wavlength)
 	info.numchannels = (unsigned short)GetLittleShort(&ctx);
 	info.rate = GetLittleLong(&ctx);
 	ctx.data_p += 4;	//nAvgBytesPerSec
-	ctx.data_p += 2;	//nBlockAlign
+	info.blockalign = (unsigned short)GetLittleShort(&ctx);	//nBlockAlign
 	info.bitwidth = (unsigned short)GetLittleShort(&ctx);	//meant to be a multiple of 8, but when its not we will treat it as 'nValidBits' and assume the lower bits are padded to bytes.
+
+	if (info.format == 0x11 && chunklen >= 20)	//IMA ADPCM: cbSize, wSamplesPerBlock
+	{
+		GetLittleShort(&ctx);
+		info.samplesperblock = (unsigned short)GetLittleShort(&ctx);
+	}
 
 	if (info.format == 0xfffe)
 	{
@@ -1358,7 +1439,32 @@ static wavinfo_t GetWavinfo (char *name, qbyte *wav, int wavlength)
 	}
 
 	ctx.data_p += 8;
-	samples = (chunklen<<3) / ((info.bitwidth+7)&~7) / info.numchannels;
+	info.datalen = chunklen;
+	if (info.format == 0x11)
+	{	//IMA ADPCM: whole blocks (a header per channel, its first sample, then 4 bits a sample), and what a last short
+		//block has; the fact chunk's count when there is one (the last block is padded)
+		int head = 4*info.numchannels;
+		qbyte *data_p = ctx.data_p;
+		samples = 0;
+		if (info.blockalign > head)
+		{
+			int spb = info.samplesperblock>0?info.samplesperblock:(info.blockalign-head)*2/info.numchannels + 1;
+			int rest = chunklen % info.blockalign;
+			info.samplesperblock = spb;
+			samples = (chunklen / info.blockalign) * spb + ((rest > head)?(rest-head)*2/info.numchannels + 1:0);
+			if (FindChunk(&ctx, "fact") >= 4)
+			{
+				int fact;
+				ctx.data_p += 8;
+				fact = GetLittleLong(&ctx);
+				if (fact > 0 && fact < samples)
+					samples = fact;
+			}
+		}
+		ctx.data_p = data_p;
+	}
+	else
+		samples = (chunklen<<3) / ((info.bitwidth+7)&~7) / info.numchannels;
 
 	if (info.samples)
 	{
