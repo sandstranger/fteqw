@@ -2116,7 +2116,9 @@ void	dll_ServerInit (void)
 			   gstate->FS_Seek,
 			   gstate->FS_Tell,
 			   gstate->FS_Getc,
-			   gstate->FS_Gets );
+			   gstate->FS_Gets,
+			   TRUE );	//FTE: through the game's file system (its paks and data/, any case), not fopen("./data/...")
+						//from the process's directory: elsewhere (android) there was no AIData, no MonsterSounds
 
 	// read in the AI attributes for all monsters at load time
 	if ( AIATTRIBUTE_ReadFile( "AIData.cs2" ) == FALSE )

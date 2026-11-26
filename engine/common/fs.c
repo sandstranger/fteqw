@@ -3296,6 +3296,7 @@ static int FS_FLocateFilePurpose(const char *filename, unsigned int lflags, floc
 	unsigned int found = FF_NOTFOUND;
 	const char *preferhint = fs_preferhint;
 	qboolean knife_texture = false;
+	const char *requested = filename;
 
 	if (!loc)
 		loc = &allownoloc;
@@ -3507,6 +3508,21 @@ static int FS_FLocateFilePurpose(const char *filename, unsigned int lflags, floc
 		}
 	}
 fail:
+	if (found == FF_NOTFOUND && com_fs_cache.ival && com_fschanged && !knife_texture && !*preferhint &&
+		!(lflags & (FSLF_IGNOREPURE|FSLF_UNCACHED)) && !fs_hash_rebuilding && com_searchpaths && Sys_IsMainThread())
+	{	//missed by name as asked for while the hash was stale (anything written since it was built: a config, a
+		//savegame): on a case-sensitive file system a loose file in another case (Daikatana's data/aidata.vsc as
+		//AIData.vsc, music/E1A.mp3) is only found through the hash, so rebuild it and look again (the once)
+		static qboolean rehashing;
+		if (!rehashing)
+		{
+			rehashing = true;
+			FS_RebuildFSHash(true);
+			rehashing = false;
+			if (!com_fschanged)
+				return FS_FLocateFilePurpose(requested, lflags, loc, readonly_asset);
+		}
+	}
 	if (found != FF_NOTFOUND && found != FF_DIRECTORY && loc->len != -1)
 		if (!FS_TASCheckSelectionPurpose(filename, loc->search, readonly_asset))
 		{

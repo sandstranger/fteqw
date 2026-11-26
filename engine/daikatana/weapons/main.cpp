@@ -1019,7 +1019,8 @@ void    dll_ServerInit (void)
 			   gstate->FS_Seek,
 			   gstate->FS_Tell,
 			   gstate->FS_Getc,
-			   gstate->FS_Gets );
+			   gstate->FS_Gets,
+			   TRUE );	//FTE: through the game's file system, as world.cpp's (Weapons.csv)
 
 	// read the weapon attribute files
 	WEAPONATTRIBUTE_ReadFile( "Weapons.csv" );
