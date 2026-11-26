@@ -55,12 +55,20 @@ cvar_t r_shadow_shadowmapping_bias = CVAR("r_shadow_shadowmapping_bias", "0.03")
 cvar_t r_shadow_scissor = CVARD("r_shadow_scissor", "1", "constrains stencil shadows to the onscreen box that contains the maxmium extents of the light. This avoids unnecessary work.");
 
 cvar_t r_shadow_realtime_world				= CVARFD ("r_shadow_realtime_world", "0", CVAR_ARCHIVE, "Enables the use of static/world realtime lights.");
-cvar_t r_shadow_realtime_world_shadows		= CVARF ("r_shadow_realtime_world_shadows", "1", CVAR_ARCHIVE);
+//Android: off by default. A light's shadows are a shadowmap (6 for a point light) of everything near it, every
+//frame: on a phone's GPU and driver that was most of the frame (the Q2 rerelease's shadow lights, every blaster
+//bolt's and muzzle flash's light in a firefight), for little to see.
+#ifdef __ANDROID__
+#define RTLIGHT_SHADOWS_DEFAULT "0"
+#else
+#define RTLIGHT_SHADOWS_DEFAULT "1"
+#endif
+cvar_t r_shadow_realtime_world_shadows		= CVARF ("r_shadow_realtime_world_shadows", RTLIGHT_SHADOWS_DEFAULT, CVAR_ARCHIVE);
 cvar_t r_shadow_realtime_world_lightmaps	= CVARFD ("r_shadow_realtime_world_lightmaps", "0", 0, "Specifies how much of the map's normal lightmap to retain when using world realtime lights. 0 completely replaces lighting.");
 float r_shadow_realtime_world_lightmaps_force;
 cvar_t r_shadow_realtime_world_importlightentitiesfrommap = CVARFD ("r_shadow_realtime_world_importlightentitiesfrommap", "0", CVAR_ARCHIVE, "Controls default loading of map-based realtime lights.\n0: Load explicit .rtlight files only.\n1: Load explicit lights then try fallback to parsing the entities lump.\n2: Load only the entities lump.");
 cvar_t r_shadow_realtime_dlight				= CVARAFD ("r_shadow_realtime_dlight", "1", "r_shadow_realtime_dynamic", CVAR_ARCHIVE, "Enables the use of dynamic realtime lights, allowing explosions to use bumpmaps etc properly.");
-cvar_t r_shadow_realtime_dlight_shadows		= CVARFD ("r_shadow_realtime_dlight_shadows", "1", CVAR_ARCHIVE, "Allows dynamic realtime lights to cast shadows as they move.");
+cvar_t r_shadow_realtime_dlight_shadows		= CVARFD ("r_shadow_realtime_dlight_shadows", RTLIGHT_SHADOWS_DEFAULT, CVAR_ARCHIVE, "Allows dynamic realtime lights to cast shadows as they move.");
 cvar_t r_shadow_realtime_dlight_ambient		= CVAR ("r_shadow_realtime_dlight_ambient", "0");
 cvar_t r_shadow_realtime_dlight_diffuse		= CVAR ("r_shadow_realtime_dlight_diffuse", "1");
 cvar_t r_shadow_realtime_dlight_specular	= CVAR ("r_shadow_realtime_dlight_specular", "4");	//excessive, but noticable. its called stylized, okay? shiesh, some people
