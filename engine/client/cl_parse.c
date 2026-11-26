@@ -4610,6 +4610,7 @@ static void CLQ2_ParseServerData (void)
 	{	// playing a cinematic or showing a pic, not a level
 		SCR_EndLoadingPlaque();
 		CL_MakeActive("Quake2");
+		Media_NamedTrack(NULL, NULL);	//as its SCR_PlayCinematic's CDAudio_Stop: not the last level's music over it
 		if (!COM_FCheckExists(str) && !COM_FCheckExists(va("video/%s", str)))
 		{
 			int i;
