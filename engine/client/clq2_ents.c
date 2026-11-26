@@ -233,7 +233,7 @@ void CLQ2_FlyEffect(q2centity_t *ent, vec3_t org)
 
 
 #define MAX_Q2EDICTS 1024
-#define	MAX_PARSE_ENTITIES	1024
+#define	MAX_PARSE_ENTITIES	Q2MAX_PARSE_ENTITIES
 
 
 static q2centity_t cl_entities[MAX_Q2EDICTS];

@@ -1323,6 +1323,11 @@ enum {
 #define	Q2UPDATE_BACKUP	16	// copies of entity_state_t to keep buffered
 							// must be power of two
 #define	Q2UPDATE_MASK		(Q2UPDATE_BACKUP-1)
+//the client's ring of the frames' entity states (a power of two). Quake II's was 1024: a rerelease firefight's 200
+//entities a frame (gibs, debris, effects), 40 frames a second to a slow client acking few of them, ran through it
+//within the frames a delta may go back. The server deltas from no frame whose entities it may be past (svq2_ents.c).
+#define	Q2MAX_PARSE_ENTITIES	8192
+#define	Q2VANILLA_PARSE_ENTITIES	1024	//(other clients')
 
 #define	Q3UPDATE_BACKUP	32	// copies of entity_state_t to keep buffered
 							// must be power of two

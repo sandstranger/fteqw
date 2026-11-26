@@ -191,7 +191,7 @@ extern usercmd_t cl_pendingcmd[MAX_SPLITS];
 
 #ifdef Q2CLIENT
 #include "../server/q2rr_api.h"
-#define	MAX_PARSE_ENTITIES	1024
+#define	MAX_PARSE_ENTITIES	Q2MAX_PARSE_ENTITIES
 extern entity_state_t	clq2_parse_entities[MAX_PARSE_ENTITIES];
 
 char *Get_Q2ConfigString(int i);

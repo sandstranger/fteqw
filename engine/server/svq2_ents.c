@@ -987,6 +987,22 @@ void SVQ2_WriteFrameToClient (client_t *client, sizebuf_t *msg)
 		lastframe = client->delta_sequence;
 	}
 
+	if (oldframe)
+	{	//not from a frame whose entities either side has written over since (its ring, or the client's): the client
+		//would take what's there for the frame's (and the rerelease's coords' sizes depend on its solid: the rest of
+		//the message unreadable, "Illegible server message", the game gone). The whole frame instead.
+		int ring = svs_num_client_entities;
+		int clientring = (client->protocol == SCP_QUAKE2EX && client->netchan.remote_address.type == NA_LOOPBACK)?
+			Q2MAX_PARSE_ENTITIES:Q2VANILLA_PARSE_ENTITIES;	//(our own client's, or what Quake II's had)
+		if (clientring < ring)
+			ring = clientring;
+		if (svs_next_client_entities - oldframe->first_entity > ring - 256)
+		{
+			oldframe = NULL;
+			lastframe = -1;
+		}
+	}
+
 	MSG_WriteByte (msg, svcq2_frame);
 	MSG_WriteLong (msg, sv.framenum);
 	MSG_WriteLong (msg, lastframe);	// what we are delta'ing from
@@ -1267,7 +1283,7 @@ void SVQ2_Ents_Init(void)
 	extern cvar_t	maxclients;
 	if (!svs_client_entities)
 	{
-		svs_num_client_entities = maxclients.value*Q2UPDATE_BACKUP*64;
+		svs_num_client_entities = maxclients.value*Q2UPDATE_BACKUP*512;	//(Quake II's 64 a frame: a rerelease firefight has 200)
 		svs_client_entities = Z_Malloc (sizeof(entity_state_t)*svs_num_client_entities);
 		svs_client_entities_ex = Z_Malloc (sizeof(*svs_client_entities_ex)*svs_num_client_entities);
 	}
