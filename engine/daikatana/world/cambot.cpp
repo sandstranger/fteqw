@@ -1105,7 +1105,8 @@ void monster_cambot( userEntity_t *self )
 	}
 
 	// turn on the cambot light
-	self->curWeapon->use( self->curWeapon, self );
+	if ( self->curWeapon )
+		self->curWeapon->use( self->curWeapon, self );
 	self->movetype			= MOVETYPE_HOVER;
     gstate->LinkEntity( self );
 

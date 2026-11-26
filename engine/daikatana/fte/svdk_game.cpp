@@ -1510,6 +1510,34 @@ static const char *DK_FilePath(const char *path)
 		path += l+1;
 	return path;
 }
+static FILE *DK_FileFromBuffer(const void *buf, int len)
+{	//a FILE read with fread/fseek, holding a copy of buf (fclose frees it)
+	FILE *f;
+#ifdef _WIN32
+	//microsoft's tmpfile wants to write to the root directory: a named temp file, deleted on close
+	f = tmpfile();
+	if (!f)
+	{
+		char *fname = _tempnam(NULL, "dktmp");
+		if (fname)
+		{
+			f = fopen(fname, "w+bD");
+			free(fname);
+		}
+	}
+#else
+	//in memory: android's tmpfile always fails (no /tmp), and there's no disk round trip
+	f = fmemopen(NULL, len > 0 ? len : 1, "w+b");
+#endif
+	if (f && len > 0 && fwrite(buf, 1, len, f) != (size_t)len)
+	{
+		fclose(f);
+		return NULL;
+	}
+	if (f)
+		rewind(f);
+	return f;
+}
 static FILE *DK_OpenCopy(const char *filename, int *length)
 {
 	int len;
@@ -1517,12 +1545,9 @@ static FILE *DK_OpenCopy(const char *filename, int *length)
 	FILE *f;
 	if (!buf)
 		return NULL;
-	f = tmpfile();
-	if (f)
-	{
-		fwrite(buf, 1, len, f);
-		rewind(f);
-	}
+	f = DK_FileFromBuffer(buf, len);
+	if (!f)
+		fgi->dprintf("Daikatana: can't open a temporary copy of %s\n", filename);
 	SVDK_FreeFile(buf);
 	*length = len;
 	return f;
@@ -1829,17 +1854,7 @@ extern "C++" FILE *DKCIN_OpenFile(const char *path)
 	FILE *f;
 	if (!buf)
 		return NULL;
-	f = tmpfile();
-	if (f)
-	{
-		if (fwrite(buf, 1, len, f) != (size_t)len)
-		{
-			fclose(f);
-			f = NULL;
-		}
-		else
-			rewind(f);
-	}
+	f = DK_FileFromBuffer(buf, len);
 	SVDK_FreeFile(buf);
 	return f;
 }
