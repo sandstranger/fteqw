@@ -3811,6 +3811,11 @@ static void S_Q2_AddEntitySounds(soundcardinfo_t *sc)
 					SND_AccumulateSpacialization(sc, c, positions[j]);
 				}
 			}
+			//no louder than one at full volume, as Quake II's S_AddLoopSounds: a firefight's dozen blaster bolts
+			//(misc/lasfly.wav each) added up to a dozen times that, clipping into a roaring hiss
+			for (j = 0; j < countof(c->vol); j++)
+				if (c->vol[j] > 255)
+					c->vol[j] = 255;
 		}
 		if (!c->sfx)
 		{
