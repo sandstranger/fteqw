@@ -494,7 +494,9 @@ void CLDKF_AddLight(const float *origin, float radius, float r, float g, float b
 {
 	vec3_t org;
 	VectorCopy(origin, org);
-	V_AddLight(0, org, radius, r, g, b);
+	//its colours are Quake II's (1 is full), V_AddLight's a fifth of that (it scales by 5: clq2_ents.c passes 0.2s):
+	//as they were, lights were five times too bright (its disruptor's flash turned the walls blue)
+	V_AddLight(0, org, radius, r*0.2f, g*0.2f, b*0.2f);
 }
 //triangles (numverts a multiple of 3) in the scene with a shader of its own
 void CLDKF_AddTriangles(void *shader, int numverts, const float *xyz, const float *st, const float *rgba)
