@@ -767,6 +767,11 @@ static qboolean R_SkyMaskWantedForGame(void)
 		return false;	//q3map2's invisible skyportals, as before
 	if (r_worldentity.model->fromgame == fg_new)
 		return false;	//Source et al: the sky is a hole (Patch 1698 removed 2's mask here)
+	//Quake 2's renderer never wrote depth for its sky: the skybox went to the far plane and anything behind a sky face
+	//covered it. Maps rely on that - Ground Zero's caves are full of LIGHT|SKY|NODRAW faces in front of the rock
+	//(rmine1: 170 of them, metal19_1). Masked here, they cut the cave open onto the sky.
+	if (r_worldentity.model->fromgame == fg_quake2)
+		return false;
 	return true;
 }
 

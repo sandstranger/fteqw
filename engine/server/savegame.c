@@ -618,6 +618,11 @@ qboolean SV_LoadLevelCache(const char *savename, const char *level, const char *
 				Z_Free((char*)sv.strings.q2_extramodels[i]);
 				sv.strings.q2_extramodels[i] = NULL;
 			}
+			//past the list's terminating empty string (it was left in place: the sounds list below read nothing,
+			//and the portal state was read 2 bytes early - "expected 1024, but only 1026 available" - so the area
+			//portals of the loaded game were shifted: open ones closed, the world behind them not drawn)
+			if (s < file+filelen && !*s)
+				s++;
 			for (i = 0; s < file+filelen; i++)
 			{
 				if (!*s)
@@ -634,6 +639,8 @@ qboolean SV_LoadLevelCache(const char *savename, const char *level, const char *
 				Z_Free((char*)sv.strings.q2_extrasounds[i]);
 				sv.strings.q2_extrasounds[i] = NULL;
 			}
+			if (s < file+filelen && !*s)
+				s++;
 			//Read portal state
 			sv.world.worldmodel->funcs.LoadAreaPortalBlob(sv.world.worldmodel, s, (file+filelen)-s);
 			FS_FreeFile(file);
@@ -641,8 +648,14 @@ qboolean SV_LoadLevelCache(const char *savename, const char *level, const char *
 
 		ge->ReadLevel(loc.rawname);
 
-		for (i=0 ; i<100 ; i++)	//run for 10 secs to iron out a few bugs.
-			ge->RunFrame ();
+		//Coming back to a level of the unit left before: run it for ten seconds, as Quake 2 does
+		//(SV_CheckForSavegame). Not for a saved game: it was run for those ten seconds too, the player not connected
+		//yet - saved under fire, the player was shot all that time and the game came back with the player dead.
+		if (!isloadgame)
+		{
+			for (i=0 ; i<100 ; i++)
+				ge->RunFrame ();
+		}
 		return true;
 	}
 #endif

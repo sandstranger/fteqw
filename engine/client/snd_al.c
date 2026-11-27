@@ -71,6 +71,7 @@ We also have no doppler with WebAudio.
 #define palGetError				alGetError
 #define palSourcef				alSourcef
 #define palSourcei				alSourcei
+#define palSource3i				alSource3i
 #define palSourcePlayv			alSourcePlayv
 #define palSourceStopv			alSourceStopv
 #define palSourcePlay			alSourcePlay
