@@ -623,7 +623,12 @@ void SVQ2_WritePlayerstateToClient (client_t *client, int seat, int extflags, q2
 	if (ps->rdflags != ops->rdflags)
 		pflags |= Q2PS_RDFLAGS;
 
-	if (ps->gunframe != ops->gunframe)
+	//as yquake2: the gun's offset and angles (the sway while walking, the swing when turning) travel with its
+	//frame, so a change of them alone must send it too. Sent only on a new gunframe, the gun froze whenever
+	//the idle animation sat on a pause frame (most of the time), and walking looked like floating.
+	if (ps->gunframe != ops->gunframe
+		|| !VectorEquals(ps->gunoffset, ops->gunoffset)
+		|| !VectorEquals(ps->gunangles, ops->gunangles))
 		pflags |= Q2PS_WEAPONFRAME;
 
 	if (ps->gunindex != ops->gunindex)
@@ -869,12 +874,13 @@ void SVQ2_WritePlayerstateToClient (client_t *client, int seat, int extflags, q2
 		if (q2e)
 		{
 			unsigned short fl = ps->gunframe&0x1ff;
-			if (ps->gunoffset[0]) fl |= 1<<9;
-			if (ps->gunoffset[1]) fl |= 1<<10;
-			if (ps->gunoffset[2]) fl |= 1<<11;
-			if (ps->gunangles[0]) fl |= 1<<12;
-			if (ps->gunangles[1]) fl |= 1<<13;
-			if (ps->gunangles[2]) fl |= 1<<14;
+			//a value that went back to 0 must be sent as well: the client keeps the old one for a missing bit
+			if (ps->gunoffset[0] || ps->gunoffset[0] != ops->gunoffset[0]) fl |= 1<<9;
+			if (ps->gunoffset[1] || ps->gunoffset[1] != ops->gunoffset[1]) fl |= 1<<10;
+			if (ps->gunoffset[2] || ps->gunoffset[2] != ops->gunoffset[2]) fl |= 1<<11;
+			if (ps->gunangles[0] || ps->gunangles[0] != ops->gunangles[0]) fl |= 1<<12;
+			if (ps->gunangles[1] || ps->gunangles[1] != ops->gunangles[1]) fl |= 1<<13;
+			if (ps->gunangles[2] || ps->gunangles[2] != ops->gunangles[2]) fl |= 1<<14;
 			//if (ps->gunrate[2]) fl |= 1<<15;
 
 			MSG_WriteShort (msg, fl);
