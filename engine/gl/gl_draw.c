@@ -737,7 +737,8 @@ static void GL_Texturemode_Apply(GLenum targ, unsigned int flags)
 	else
 	{
 		// Point-sampled world texels can still blend user-selected mip levels.
-		if ((filter[1] && (!(flags & IF_NEAREST) || !(flags & IF_UIPIC))) || (flags & IF_LINEAR))
+		// Not palette indices (r_softwarebanding): a blend of two indices is some other colour.
+		if ((filter[1] && (!(flags & IF_NEAREST) || !(flags & (IF_UIPIC|IF_PALETTIZE)))) || (flags & IF_LINEAR))
 		{
 			if ((filter[0] && !(flags & IF_NEAREST)) || (flags & IF_LINEAR))
 				min = GL_LINEAR_MIPMAP_LINEAR;
@@ -766,7 +767,7 @@ static void GL_Texturemode_Apply(GLenum targ, unsigned int flags)
 		// Keep their nearest MAG filter and leave UI/nonmip textures alone. Old Intel
 		// drivers can force linear magnification with anisotropy; factor 1 opts out.
 		if (min == GL_LINEAR_MIPMAP_LINEAR || min == GL_LINEAR_MIPMAP_NEAREST
-			|| ((flags & IF_NEAREST) && !(flags & IF_UIPIC) && min == GL_NEAREST_MIPMAP_LINEAR))
+			|| ((flags & IF_NEAREST) && !(flags & (IF_UIPIC|IF_PALETTIZE)) && min == GL_NEAREST_MIPMAP_LINEAR))
 			qglTexParameterf(targ, GL_TEXTURE_MAX_ANISOTROPY_EXT, gl_anisotropy_factor);
 		else
 			qglTexParameterf(targ, GL_TEXTURE_MAX_ANISOTROPY_EXT, 1);
