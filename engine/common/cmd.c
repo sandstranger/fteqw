@@ -4883,6 +4883,7 @@ static void Cmd_WriteConfig_f(void)
 	VFS_PRINTF(f, "// %s config file (%s)\n\n", *fs_gamename.string?fs_gamename.string:FULLENGINENAME, curtime);
 	Cmd_WriteConfigContents(f, all, nohidden);
 	VFS_CLOSE(f);
+	FS_FlushFSHashWritten(fname);	//so that it is found as it is now (Cmd_ConfigUnsaved reads it back)
 
 	Cvar_Saved();
 
@@ -4892,32 +4893,52 @@ static void Cmd_WriteConfig_f(void)
 /*
 "Unsaved settings" was a flag that any bind and any archived cvar set raised, even one that put back the value it
 had (a game's default binds run again, a latched cvar set to itself...): the quit menu asked to save every session,
-saved or not. What cfg_save would write is hashed when the settings are loaded or saved, and they are unsaved only
-while that differs.
+saved or not. A snapshot taken at startup did not do either: a game's own archived cvars (Quake 2's game library:
+g_select_empty...) and the renderer's come later, so every session that loaded a map differed from it. What cfg_save
+would write now (without its dated first line) is compared with the main config it wrote: the settings are unsaved
+only while those differ.
 */
-static unsigned int cfg_savedhash;
-static unsigned int Cmd_ConfigHash(void)
+static char *Cmd_ConfigContentsText(size_t *outlen)
 {
 	vfsfile_t *f = VFSPIPE_Open(1, false);
-	unsigned int h = 2166136261u;	//fnv-1a
-	qbyte buf[4096];
-	int len, i;
+	size_t n = 0, cap = 65536;
+	char *t;
+	int len;
 	if (!f)
-		return 0;
+		return NULL;
 	Cmd_WriteConfigContents(f, cfg_save_all.ival, false);
-	while ((len = VFS_READ(f, buf, sizeof(buf))) > 0)
-		for (i = 0; i < len; i++)
-			h = (h ^ buf[i]) * 16777619u;
+	t = BZ_Malloc(cap);
+	while ((len = VFS_READ(f, t + n, cap - n)) > 0)
+	{
+		n += len;
+		if (n == cap)
+			t = BZ_Realloc(t, cap *= 2);
+	}
 	VFS_CLOSE(f);
-	return h;
-}
-void Cmd_ConfigSaved(void)
-{
-	cfg_savedhash = Cmd_ConfigHash();
+	*outlen = n;
+	return t;
 }
 qboolean Cmd_ConfigUnsaved(void)
 {
-	return Cmd_ConfigHash() != cfg_savedhash;
+	const char *name = *fs_manifest->mainconfig ? fs_manifest->mainconfig : "config.cfg";
+	qofs_t disklen = 0;
+	size_t nowlen = 0;
+	char *disk, *body, *now;
+	qboolean differs = true;
+
+	disk = FS_MallocFile(name, FS_GAME, &disklen);
+	if (!disk)
+		return true;	//never saved
+	body = strchr(disk, '\n');	//past the dated first line and the empty one after it
+	if (body)
+		body += (body[1] == '\n') ? 2 : 1;
+	now = Cmd_ConfigContentsText(&nowlen);
+	if (body && now)
+		differs = (size_t)(disk + disklen - body) != nowlen || memcmp(body, now, nowlen);
+	if (now)
+		BZ_Free(now);
+	BZ_Free(disk);
+	return differs;
 }
 
 static void Cmd_Reset_f(void)

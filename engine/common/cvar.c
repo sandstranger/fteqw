@@ -895,9 +895,7 @@ void Cvar_ConfigChanged(void)
 }
 void Cvar_Saved(void)
 {
-	extern void Cmd_ConfigSaved(void);
 	cvar_archivedvaluechanged = false;
-	Cmd_ConfigSaved();
 }
 
 /*

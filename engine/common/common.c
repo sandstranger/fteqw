@@ -8204,6 +8204,8 @@ void InfoBuf_WriteToFile(vfsfile_t *f, infobuf_t *info, const char *commandname,
 		val = info->keys[k].value;
 		if (*key == '*')	//unsettable, so don't write it for later setting.
 			continue;
+		if (cvarflags == CVAR_SERVERINFO && !strcmp(key, "map"))
+			continue;	//the server's own (the map running now, sv_init.c): no setting, and it made every config differ
 
 		if (cvarflags)
 		{
