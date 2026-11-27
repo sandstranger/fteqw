@@ -714,10 +714,13 @@ void CLQ2_InitMenus(void)
 		Cmd_AddCommand("loading", CLQ2M_Loading_f);
 }
 
+//yquake2's menus for Quake 2 (1), or FTE's own (0, the default)
+cvar_t cl_q2menus = CVARFD("cl_q2menus", "0", CVAR_ARCHIVE, "Quake 2's menus: 0 FTE's own, 1 yquake2's (the original menu tree). Takes effect when the menus restart (a game change, or menu_restart).");
+
 /* opens one of yquake2's menus by its command (menu_main, ...); false when they are not in use */
 qboolean CLQ2_OpenMenu(const char *command)
 {
-	if (M_GameType() != MGT_QUAKE2)
+	if (M_GameType() != MGT_QUAKE2 || !cl_q2menus.ival)
 		return false;
 	if (!q2m_menu.drawmenu)	//opened before the menus were (re)started with Quake 2 as the game
 		CLQ2_InitMenus();

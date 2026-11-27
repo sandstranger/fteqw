@@ -1420,8 +1420,11 @@ void M_Init_Internal (void)
 #endif
 
 #ifdef Q2CLIENT
-	if (M_GameType() == MGT_QUAKE2)
-		CLQ2_InitMenus();	//yquake2's menus, over the commands above that they share names with
+	{
+		extern cvar_t cl_q2menus;
+		if (M_GameType() == MGT_QUAKE2 && cl_q2menus.ival)
+			CLQ2_InitMenus();	//yquake2's menus, over the commands above that they share names with
+	}
 #endif
 }
 
@@ -1543,6 +1546,12 @@ void M_Init (void)
 
 	Cvar_Register(&m_preset_chosen, "Menu thingumiebobs");
 	Cvar_Register(&m_helpismedia, "Menu thingumiebobs");
+#ifdef Q2CLIENT
+	{
+		extern cvar_t cl_q2menus;
+		Cvar_Register(&cl_q2menus, "Menu thingumiebobs");
+	}
+#endif
 
 	Media_Init();
 #ifdef CL_MASTER
