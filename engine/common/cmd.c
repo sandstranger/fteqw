@@ -4895,10 +4895,12 @@ static void Cmd_WriteConfig_f(void)
 had (a game's default binds run again, a latched cvar set to itself...): the quit menu asked to save every session,
 saved or not. A snapshot taken at startup did not do either: a game's own archived cvars (Quake 2's game library:
 g_select_empty...) and the renderer's come later, so every session that loaded a map differed from it. What cfg_save
-would write now (without its dated first line) is compared with the main config it wrote: the settings are unsaved
-only while those differ.
+would write now is compared with the main config it wrote, as settings: the statements in them, comments and empty
+lines left out, sorted. The text itself is no measure: a cvar a config created ("seta") is written in another place,
+under another group, than the same cvar once the code that owns it registered it (Quake 2's game cvars, registered
+only when a map loads), so the same settings were a different text in every other session.
 */
-static char *Cmd_ConfigContentsText(size_t *outlen)
+static char *Cmd_ConfigContentsText(void)
 {
 	vfsfile_t *f = VFSPIPE_Open(1, false);
 	size_t n = 0, cap = 65536;
@@ -4908,35 +4910,82 @@ static char *Cmd_ConfigContentsText(size_t *outlen)
 		return NULL;
 	Cmd_WriteConfigContents(f, cfg_save_all.ival, false);
 	t = BZ_Malloc(cap);
-	while ((len = VFS_READ(f, t + n, cap - n)) > 0)
+	while ((len = VFS_READ(f, t + n, cap - 1 - n)) > 0)
 	{
 		n += len;
-		if (n == cap)
+		if (n >= cap - 1)
 			t = BZ_Realloc(t, cap *= 2);
 	}
 	VFS_CLOSE(f);
-	*outlen = n;
+	t[n] = 0;
 	return t;
+}
+static int QDECL Cmd_ConfigLineCompare(const void *a, const void *b)
+{
+	return strcmp(*(char *const *)a, *(char *const *)b);
+}
+//a config's statements, sorted: its text cut into lines in place, comments ("//" outside quotes) and blanks dropped
+static char **Cmd_ConfigStatements(char *text, size_t *count)
+{
+	size_t n = 0, max = 1;
+	char *s, **lines;
+	for (s = text; *s; s++)
+		if (*s == '\n')
+			max++;
+	lines = BZ_Malloc(sizeof(*lines) * max);
+	for (s = text; *s; )
+	{
+		char *line = s, *end;
+		qboolean quoted = false;
+		while (*s && *s != '\n')
+			s++;
+		if (*s)
+			*s++ = 0;
+		for (end = line; *end; end++)
+		{
+			if (*end == '\"')
+				quoted = !quoted;
+			else if (!quoted && end[0] == '/' && end[1] == '/')
+				break;
+		}
+		while (end > line && (end[-1] == ' ' || end[-1] == '\t' || end[-1] == '\r'))
+			end--;
+		*end = 0;
+		while (*line == ' ' || *line == '\t')
+			line++;
+		if (*line)
+			lines[n++] = line;
+	}
+	qsort(lines, n, sizeof(*lines), Cmd_ConfigLineCompare);
+	*count = n;
+	return lines;
 }
 qboolean Cmd_ConfigUnsaved(void)
 {
 	const char *name = *fs_manifest->mainconfig ? fs_manifest->mainconfig : "config.cfg";
 	qofs_t disklen = 0;
-	size_t nowlen = 0;
-	char *disk, *body, *now;
-	qboolean differs = true;
+	char *disk, *now;
+	char **a, **b;
+	size_t na, nb, i;
+	qboolean differs;
 
 	disk = FS_MallocFile(name, FS_GAME, &disklen);
 	if (!disk)
 		return true;	//never saved
-	body = strchr(disk, '\n');	//past the dated first line and the empty one after it
-	if (body)
-		body += (body[1] == '\n') ? 2 : 1;
-	now = Cmd_ConfigContentsText(&nowlen);
-	if (body && now)
-		differs = (size_t)(disk + disklen - body) != nowlen || memcmp(body, now, nowlen);
-	if (now)
-		BZ_Free(now);
+	now = Cmd_ConfigContentsText();
+	if (!now)
+	{
+		BZ_Free(disk);
+		return true;
+	}
+	a = Cmd_ConfigStatements(disk, &na);	//(its dated first line is a comment)
+	b = Cmd_ConfigStatements(now, &nb);
+	differs = na != nb;
+	for (i = 0; !differs && i < na; i++)
+		differs = strcmp(a[i], b[i]) != 0;
+	BZ_Free(a);
+	BZ_Free(b);
+	BZ_Free(now);
 	BZ_Free(disk);
 	return differs;
 }
