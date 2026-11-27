@@ -1294,6 +1294,8 @@ static const char *SV_SaveVarValue(const char *v, char *buf, size_t bufsize)
 	return COM_QuotedString(v, buf, bufsize, false);
 }
 
+static qboolean sv_autosaving;	//SV_AutoSave's saves are quiet
+
 //mapchange is true for Q2's map-change autosaves.
 void SV_Savegame (const char *savename, qboolean mapchange)
 {
@@ -1476,6 +1478,10 @@ void SV_Savegame (const char *savename, qboolean mapchange)
 	}
 
 	Q_strncpyz(sv.loadgame_on_restart, savename, sizeof(sv.loadgame_on_restart));
+
+	//this format says nothing of its own (the legacy one prints "Saving game to"): a save asked for gets a line
+	if (!mapchange && !sv_autosaving)
+		Con_TPrintf ("Game saved.\n");
 }
 
 
@@ -1612,7 +1618,9 @@ void SV_AutoSave(void)
 
 	autosavename = M_ChooseAutoSave();
 	Con_DPrintf("Autosaving to %s\n", autosavename);
+	sv_autosaving = true;
 	SV_Savegame(autosavename, false);
+	sv_autosaving = false;
 
 	sv.autosave_time = sv.time + sv_autosave.value * 60;
 #endif
