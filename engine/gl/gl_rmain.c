@@ -2820,6 +2820,8 @@ static qboolean R_RTFormatRenderable(uploadfmt_t fmt)
 	case PTI_RGBA32F:
 	case PTI_B10G11R11F:
 		return gl_config.ext_color_buffer_float;
+	case PTI_A2BGR10:	//gles2 samples it (EXT_texture_type_2_10_10_10_REV) but cannot draw into it: an incomplete fbo
+		return gl_config.glversion >= 3;
 	default:
 		return true;
 	}

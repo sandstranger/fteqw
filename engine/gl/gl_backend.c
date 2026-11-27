@@ -13217,7 +13217,7 @@ static qboolean GLBE_DrawSkyroomScaled(shader_t *skyshader)
 	h = max(1, oprect.height * s);
 	//float where R_RenderScene renders the scene to a float target, or the sky bands before the gamma pass
 	if ((r_refdef.flags & RDF_SCENEGAMMA) && !r_hdr_framebuffer.ival && !(vid.flags & (VID_SRGBAWARE|VID_FP16)) &&
-		GLBE_TileRenderer() && sh_config.texfmt[PTI_A2BGR10])
+		GLBE_TileRenderer() && sh_config.texfmt[PTI_A2BGR10] && (!gl_config.gles || gl_config.glversion >= 3))
 		ifmt = GL_RGB10_A2;	//FTESurf: the scene's own format there (R_SceneGammaTenBits): 10 bits for the gamma, 4 bytes a pixel
 	else if (((r_refdef.flags & RDF_SCENEGAMMA) || r_hdr_framebuffer.ival || (vid.flags & (VID_SRGBAWARE|VID_FP16))) && sh_config.texfmt[PTI_RGBA16F])
 		ifmt = GL_RGBA16F;
