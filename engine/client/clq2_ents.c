@@ -2665,9 +2665,17 @@ static qboolean CLQ2EX_FlareVisible(const float *eye, const float *org)
 
 //the rerelease's flares (misc_flare, RF_FLARE): a sprite over the world while its origin can be seen, fading in and out
 //(Q2REPRO's GL_DrawFlares: occlusion queries, there; a trace from the eye, here), and faded out near the viewer
+static shader_t *defaultflare;	//freed with the renderer (CLQ2_RendererRestarted)
+
+//vid_reload (a graphics preset, the software look...) freed the models and shaders; cached ones are found again
+void CLQ2_RendererRestarted(void)
+{
+	defaultflare = NULL;
+	CLQ2FX_RendererRestarted();
+}
+
 static void CLQ2EX_AddFlare(const entity_t *src, const entity_state_t *s1, q2centity_t *cent, unsigned int renderfx)
 {
-	static shader_t *defaultflare;
 	shader_t *shader = NULL;
 	qboolean def = false;
 	float d, alpha, frac, s, visible;

@@ -1972,6 +1972,8 @@ void CLQ2FX_BeginFrame(void);
 void CLQ2FX_AddEntities(void);
 void CLQ2FX_ClearState(void);
 void CLQ2FX_RegisterMedia(void);
+void CLQ2FX_RendererRestarted(void);
+void CLQ2_RendererRestarted(void);	//vid_reload: Quake 2's cached models and shaders are the old renderer's
 #endif
 
 #ifdef HLCLIENT

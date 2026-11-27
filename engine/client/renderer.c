@@ -2819,6 +2819,9 @@ TRACE(("dbg: R_ApplyRenderer: efrags\n"));
 
 	}
 	V_WorldFreed(false);	//no world, or a Quake 3 one, or reloaded above
+#ifdef Q2CLIENT
+	CLQ2_RendererRestarted();
+#endif
 
 #ifdef SKELETALOBJECTS
 	skel_reload();

@@ -346,5 +346,12 @@ void CLQ2FX_RegisterMedia(void)
 {
 	Q2FX_RegisterMedia();
 }
+/* the renderer restarted (vid_reload, a graphics preset): the old one's models and shaders are freed */
+void CLQ2FX_RendererRestarted(void)
+{
+	fx_particleshader = NULL;
+	fx_particletris = -1;
+	Q2FX_RendererRestarted(cls.protocol == CP_QUAKE2 && cl.worldmodel);	/* else when a Quake 2 map loads */
+}
 
 #endif

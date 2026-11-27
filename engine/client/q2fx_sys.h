@@ -13,6 +13,7 @@ in plain C types only.
 
 void Q2FX_ClearState(void);		/* map change / disconnect: particles, dlights, temp entities, sustains */
 void Q2FX_RegisterMedia(void);	/* the models and sounds the effects use (after the map loads) */
+void Q2FX_RendererRestarted(int reregister);	/* the models are new ones: temp entities holding the old go, the models are found again */
 
 /* the client state the effects read, set before they run: times in milliseconds as yquake2 counts them */
 void Q2FX_SetFrame(int time_ms, int servertime_ms, int serverframe, int playernum, float lerpfrac,

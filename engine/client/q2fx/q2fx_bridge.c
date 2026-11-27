@@ -151,6 +151,13 @@ void Q2FX_RegisterMedia(void)
 	CL_RegisterTEntModels();
 }
 
+void Q2FX_RendererRestarted(int reregister)
+{
+	CL_ClearTEnts();	/* explosions and beams point at the freed models */
+	if (reregister)
+		CL_RegisterTEntModels();
+}
+
 void Q2FX_SetFrame(int time_ms, int servertime_ms, int serverframe, int playernum, float lerpfrac,
 		const float *vieworg, const float *forward, const float *right, const float *up,
 		const float *gunoffset, const float *oldgunoffset, int handvalue,
