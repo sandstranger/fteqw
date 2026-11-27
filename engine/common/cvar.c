@@ -885,8 +885,9 @@ char *Cvar_CompleteVariable (char *partial)
 
 static qboolean cvar_archivedvaluechanged;
 qboolean Cvar_UnsavedArchive(void)
-{
-	return cvar_archivedvaluechanged;
+{	//the flag says something was set; whether what cfg_save would write changed is the answer (cmd.c)
+	extern qboolean Cmd_ConfigUnsaved(void);
+	return cvar_archivedvaluechanged && Cmd_ConfigUnsaved();
 }
 void Cvar_ConfigChanged(void)
 {
@@ -894,7 +895,9 @@ void Cvar_ConfigChanged(void)
 }
 void Cvar_Saved(void)
 {
+	extern void Cmd_ConfigSaved(void);
 	cvar_archivedvaluechanged = false;
+	Cmd_ConfigSaved();
 }
 
 /*

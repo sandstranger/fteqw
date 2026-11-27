@@ -4762,6 +4762,35 @@ static void Cvar_Watch_f(void)
 	}
 }
 
+//what cfg_save writes after its dated first line
+static void Cmd_WriteConfigContents(vfsfile_t *f, qboolean all, qboolean nohidden)
+{
+#ifdef HAVE_CLIENT
+	if (cfg_save_binds.ival)
+		Key_WriteBindings (f);
+	if (cfg_save_buttons.ival)
+		IN_WriteButtons(f, all);
+
+	#ifdef HAVE_CDPLAYER
+//		if (cfg_save_cdtracks.ival)
+			Media_SaveTracks(f);
+	#endif
+	if (cfg_save_infos.ival)
+		CL_SaveInfo(f);
+#else
+	VFS_WRITE(f, "// Dedicated Server config\n\n", 28);
+#endif
+#ifdef HAVE_SERVER
+	if (cfg_save_infos.ival)
+		SV_SaveInfos(f);
+#else
+	VFS_WRITE(f, "// no local/server infos\n\n", 26);
+#endif
+	if (cfg_save_aliases.ival)
+		Alias_WriteAliases (f);
+	Cvar_WriteVariables (f, all, nohidden);
+}
+
 static void Cmd_WriteConfig_f(void)
 {
 	char curtime[256];
@@ -4852,35 +4881,43 @@ static void Cmd_WriteConfig_f(void)
 		strftime(curtime, sizeof(curtime), "%Y-%m-%d %H:%M", localtime(&t));
 	}
 	VFS_PRINTF(f, "// %s config file (%s)\n\n", *fs_gamename.string?fs_gamename.string:FULLENGINENAME, curtime);
-#ifdef HAVE_CLIENT
-	if (cfg_save_binds.ival)
-		Key_WriteBindings (f);
-	if (cfg_save_buttons.ival)
-		IN_WriteButtons(f, all);
-	
-	#ifdef HAVE_CDPLAYER
-//		if (cfg_save_cdtracks.ival)
-			Media_SaveTracks(f);
-	#endif
-	if (cfg_save_infos.ival)
-		CL_SaveInfo(f);
-#else
-	VFS_WRITE(f, "// Dedicated Server config\n\n", 28);
-#endif
-#ifdef HAVE_SERVER
-	if (cfg_save_infos.ival)
-		SV_SaveInfos(f);
-#else
-	VFS_WRITE(f, "// no local/server infos\n\n", 26);
-#endif
-	if (cfg_save_aliases.ival)
-		Alias_WriteAliases (f);
-	Cvar_WriteVariables (f, all, nohidden);
+	Cmd_WriteConfigContents(f, all, nohidden);
 	VFS_CLOSE(f);
 
 	Cvar_Saved();
 
 	Con_Printf ("Wrote %s\n",displayname);
+}
+
+/*
+"Unsaved settings" was a flag that any bind and any archived cvar set raised, even one that put back the value it
+had (a game's default binds run again, a latched cvar set to itself...): the quit menu asked to save every session,
+saved or not. What cfg_save would write is hashed when the settings are loaded or saved, and they are unsaved only
+while that differs.
+*/
+static unsigned int cfg_savedhash;
+static unsigned int Cmd_ConfigHash(void)
+{
+	vfsfile_t *f = VFSPIPE_Open(1, false);
+	unsigned int h = 2166136261u;	//fnv-1a
+	qbyte buf[4096];
+	int len, i;
+	if (!f)
+		return 0;
+	Cmd_WriteConfigContents(f, cfg_save_all.ival, false);
+	while ((len = VFS_READ(f, buf, sizeof(buf))) > 0)
+		for (i = 0; i < len; i++)
+			h = (h ^ buf[i]) * 16777619u;
+	VFS_CLOSE(f);
+	return h;
+}
+void Cmd_ConfigSaved(void)
+{
+	cfg_savedhash = Cmd_ConfigHash();
+}
+qboolean Cmd_ConfigUnsaved(void)
+{
+	return Cmd_ConfigHash() != cfg_savedhash;
 }
 
 static void Cmd_Reset_f(void)
